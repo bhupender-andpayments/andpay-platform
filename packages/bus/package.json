@@ -1,0 +1,26 @@
+{
+  "name": "@andpay/bus",
+  "version": "0.0.0",
+  "description": "Internal event backbone: the Kafka/MSK publisher behind the PublisherPort, schema-registry adapters, and config-as-code topic provisioning (spec 03).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@andpay/envelope": "workspace:*",
+    "@andpay/outbox": "workspace:*",
+    "ajv": "^8.17.1",
+    "kafkajs": "^2.2.4"
+  }
+}
