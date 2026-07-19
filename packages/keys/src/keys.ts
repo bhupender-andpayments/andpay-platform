@@ -46,6 +46,23 @@ function seqSegment(seq: number | undefined, name: string): string | undefined {
   return String(seq)
 }
 
+/**
+ * A rule 2 child discriminator. It is usually an index (cycle_seq, k,
+ * installment_no) but chapter 06.A also uses a non-numeric discriminator, the
+ * payout cycle instance `{merchant_id}|{program_id}|cycle|{cycle_date}`. A
+ * number must be a non-negative integer; a string is validated as a leaf
+ * segment (non-empty, no delimiter).
+ */
+function discriminatorSegment(
+  disc: string | number | undefined,
+  name: string,
+): string | undefined {
+  if (disc === undefined) return undefined
+  if (typeof disc === 'number') return seqSegment(disc, name)
+  assertLeaf(disc, `${name} discriminator`)
+  return disc
+}
+
 /** Rule 1: `{Kc}|{flow}`. The client key Kc appears ONLY here, never below. */
 export function instanceKey(clientKey: string, flow: string): string {
   assertLeaf(clientKey, 'clientKey')
@@ -53,15 +70,20 @@ export function instanceKey(clientKey: string, flow: string): string {
   return `${clientKey}${DELIMITER}${flow}`
 }
 
-/** Rule 2: `{parent}|{qualifier}[|{seq}]`, for example `{batch_id}|unit|{k}`. */
+/**
+ * Rule 2: `{parent}|{qualifier}[|{disc}]`, for example `{batch_id}|beneficiary|{k}`
+ * or `{loan_id}|emi|{installment_no}`. The optional discriminator is usually an
+ * index but may be a string, such as the payout cycle date in
+ * `{merchant_id}|{program_id}|cycle|{cycle_date}` (chapter 06.A, D3).
+ */
 export function childKey(
   parentAggregateId: string,
   childQualifier: string,
-  seq?: number,
+  seq?: string | number,
 ): string {
   assertIdPosition(parentAggregateId, 'parentAggregateId')
   assertLeaf(childQualifier, 'childQualifier')
-  const s = seqSegment(seq, 'childKey')
+  const s = discriminatorSegment(seq, 'childKey')
   const base = `${parentAggregateId}${DELIMITER}${childQualifier}`
   return s === undefined ? base : `${base}${DELIMITER}${s}`
 }
@@ -92,9 +114,10 @@ export interface ParsedKey {
  *
  * NOTE: the four 06.A rules are structurally identical once composed (`{a}|{b}`
  * and `{a}|{b}|{c}` shapes recur across rules), so a bare key string does not
- * carry which rule produced it. `parse` therefore returns the structural
- * decomposition only; it does not force a rule classification. If chapter 06.A
- * defines a disambiguator, a `kind` field is an additive change here.
+ * carry which rule produced it. Chapter 06.A (verified) defines no disambiguator,
+ * so `parse` returns the structural decomposition only and does not force a rule
+ * classification; classification would require caller context or a future corpus
+ * addition, at which point a `kind` field is an additive change here.
  */
 export function parse(key: string): ParsedKey {
   if (key.length === 0) {

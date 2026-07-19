@@ -108,4 +108,37 @@ describe('@andpay/keys canonical grammar (chapter 06.A)', () => {
       expect(() => parse('')).toThrow(InvalidKeyError)
     })
   })
+
+  // Verified against chapter 06.A (06_settlement_refund_issuing.md).
+  describe('chapter 06.A canonical examples', () => {
+    it('rule 1 instance keys', () => {
+      expect(instanceKey('Kc', 'auth_capture')).toBe('Kc|auth_capture')
+      expect(instanceKey('Kc', 'disbursement')).toBe('Kc|disbursement')
+    })
+    it('rule 2 child keys with integer discriminators', () => {
+      expect(childKey('sub_1', 'cycle', 4)).toBe('sub_1|cycle|4')
+      expect(childKey('btch_1', 'beneficiary', 2)).toBe('btch_1|beneficiary|2')
+      expect(childKey('loan_1', 'emi', 12)).toBe('loan_1|emi|12')
+    })
+    it('rule 2 payout cycle instance: composite parent plus a date discriminator', () => {
+      expect(childKey('mrch_1|prog_1', 'cycle', '2026-07-19')).toBe(
+        'mrch_1|prog_1|cycle|2026-07-19',
+      )
+    })
+    it('rule 3 step keys, including composed attempt and capture steps', () => {
+      expect(stepKey(childKey('pi_1', 'attempt', 3), 'authorize')).toBe(
+        'pi_1|attempt|3|authorize',
+      )
+      expect(stepKey(childKey('pi_1', 'capture', 2), 'post')).toBe('pi_1|capture|2|post')
+      expect(stepKey('rfnd_1', 'status', 5)).toBe('rfnd_1|status|5')
+    })
+    it('rule 4 event keys, including a composite source id', () => {
+      expect(eventKey('rrn_1', 'attribute')).toBe('rrn_1|attribute')
+      expect(eventKey('ret_1', 'cash_return')).toBe('ret_1|cash_return')
+      expect(eventKey('cp_1|file_9', 'settle_post')).toBe('cp_1|file_9|settle_post')
+    })
+    it('rejects a string discriminator that contains a pipe', () => {
+      expect(() => childKey('mrch_1', 'cycle', 'a|b')).toThrow(InvalidKeyError)
+    })
+  })
 })
