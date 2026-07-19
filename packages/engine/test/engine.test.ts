@@ -114,11 +114,15 @@ describe('@andpay/engine D77 orchestration engine', () => {
     }
     const workerA: string[] = []
     const workerB: string[] = []
+    // batchSize N/2 caps each worker, so the N due timers split deterministically
+    // across the two workers via SKIP LOCKED; both do work.
     const [firedA, firedB] = await Promise.all([
-      claimAndFireDueTimers(prisma, now, collect(workerA), N),
-      claimAndFireDueTimers(prisma, now, collect(workerB), N),
+      claimAndFireDueTimers(prisma, now, collect(workerA), N / 2),
+      claimAndFireDueTimers(prisma, now, collect(workerB), N / 2),
     ])
 
+    expect(firedA).toHaveLength(N / 2) // worker A did half
+    expect(firedB).toHaveLength(N / 2) // worker B did half
     const overlap = firedA.filter((id) => firedB.includes(id))
     expect(overlap).toHaveLength(0) // no double-fire
     expect(new Set([...firedA, ...firedB]).size).toBe(N) // no skip
