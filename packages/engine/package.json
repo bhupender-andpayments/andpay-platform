@@ -1,0 +1,25 @@
+{
+  "name": "@andpay/engine",
+  "version": "0.0.0",
+  "description": "The D77 orchestration engine: an isolated step/compensation/timer layer (O4) over Postgres saga state (spec 03).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@andpay/ids": "workspace:*",
+    "@andpay/keys": "workspace:*",
+    "@andpay/outbox": "workspace:*"
+  }
+}

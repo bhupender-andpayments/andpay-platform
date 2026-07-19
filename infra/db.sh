@@ -12,11 +12,12 @@ set -euo pipefail
 export IDENTITY_DATABASE_URL="${IDENTITY_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity}"
 export TMS_DATABASE_URL="${TMS_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms}"
 export FULFILLMENT_DATABASE_URL="${FULFILLMENT_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment}"
+export ORCHESTRATOR_DATABASE_URL="${ORCHESTRATOR_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=orchestrator}"
 
 MODE="${1:-deploy}"
 NAME="${2:-init}"
 
-for ctx in identity tms fulfillment; do
+for ctx in identity tms fulfillment orchestrator; do
   schema="services/${ctx}/prisma/schema.prisma"
   echo ">>> ${ctx}"
   if [ "${MODE}" = "dev" ]; then

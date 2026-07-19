@@ -51,6 +51,44 @@ export function isId<K extends IdKind>(kind: K, value: string): value is Id<K> {
   }
 }
 
+function bigintToUuid(value: bigint): string {
+  const hex = value.toString(16).padStart(32, '0')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/**
+ * The native Postgres uuid form of an id, for storage (I3: stored as a native
+ * uuid only, the typed string is the wire format). Strips the prefix, decodes
+ * the payload, and formats the 128 bits as a canonical uuid string.
+ */
+export function toUuid(id: string): string {
+  const separator = id.indexOf('_')
+  const payload = separator >= 0 ? id.slice(separator + 1) : id
+  if (payload.length !== PAYLOAD_LENGTH) {
+    throw new InvalidIdError(
+      'wrong_length',
+      `expected a ${String(PAYLOAD_LENGTH)} character payload, got ${String(payload.length)}`,
+    )
+  }
+  const decoded = tryDecode128(payload)
+  if (decoded === null) {
+    throw new InvalidIdError('invalid_char', 'payload contains non-Crockford characters')
+  }
+  if (decoded >= TWO_POW_128) {
+    throw new InvalidIdError('out_of_range', 'payload encodes more than 128 bits')
+  }
+  return bigintToUuid(decoded)
+}
+
+/** Reconstruct the typed wire id of a kind from its stored native uuid (I3). */
+export function fromUuid<K extends IdKind>(kind: K, uuid: string): Id<K> {
+  const hex = uuid.replace(/-/g, '')
+  if (!/^[0-9a-fA-F]{32}$/.test(hex)) {
+    throw new InvalidIdError('invalid_char', 'not a canonical uuid')
+  }
+  return (ID_PREFIXES[kind] + encode128(BigInt(`0x${hex}`))) as Id<K>
+}
+
 /**
  * Recover the generation time of any well formed id (the accepted UUIDv7
  * disclosure, Decision 113f). The payload is the trailing 26 characters after

@@ -48,6 +48,18 @@ importers:
         specifier: ^2.2.4
         version: 2.2.4
 
+  packages/engine:
+    dependencies:
+      '@andpay/ids':
+        specifier: workspace:*
+        version: link:../ids
+      '@andpay/keys':
+        specifier: workspace:*
+        version: link:../keys
+      '@andpay/outbox':
+        specifier: workspace:*
+        version: link:../outbox
+
   packages/envelope: {}
 
   packages/ids: {}

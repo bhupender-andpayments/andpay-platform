@@ -14,15 +14,17 @@ import { join } from 'node:path'
  * USAGE so cross-schema access fails at the database regardless of the SQL.
  *
  * Vectors covered:
- *   A  a context migration declaring a foreign key (so none can cross a schema)
+ *   A  every context has a migration
  *   B  a prisma schema going multi-schema or losing its per-context url pin
- *   C  a context file naming another context schema (qualified: "tms".outbox)
+ *   C  a context file naming another schema (qualified: "tms".outbox), which
+ *      also catches a cross-schema foreign key (REFERENCES "tms"."..."); note
+ *      intra-schema FKs, e.g. saga_step -> saga_instance, are allowed
  *   E  a context file mutating search_path (the bare-name evasion of C)
  *   F  a context file connecting via another context's url or ?schema=
  *   D  a context importing another context's generated client or source
  */
 
-const CONTEXTS = ['identity', 'tms', 'fulfillment'] as const
+const CONTEXTS = ['identity', 'tms', 'fulfillment', 'orchestrator'] as const
 const root = process.cwd()
 
 function filesUnder(rel: string): string[] {
@@ -67,15 +69,6 @@ describe('cross-schema isolation guard', () => {
         p.endsWith('.sql'),
       )
       expect(migrations.length, `${ctx} has no migration`).toBeGreaterThan(0)
-    }
-  })
-
-  it('A: no migration declares a foreign key (so none can cross a schema)', () => {
-    for (const ctx of CONTEXTS) {
-      for (const { file, text } of contextFiles(ctx)) {
-        if (!file.endsWith('.sql')) continue
-        expect(/FOREIGN KEY|REFERENCES\s/i.test(text), `${file} must not declare a FK`).toBe(false)
-      }
     }
   })
 

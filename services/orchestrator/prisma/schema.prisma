@@ -1,0 +1,90 @@
+// Orchestration engine state (handoff spec 03, D77). Its own `orchestrator`
+// schema on the shared instance (spec 02 topology), pinned via the ?schema=
+// connection parameter. Platform-only infrastructure, not Program-scoped.
+//
+// Isolation (spec 9): these rows are the engine's own instances, not tenant data,
+// so the engine is NOT RLS-exempt (S13); it iterates its own instances under a
+// per-workload least-privilege role. FORCE RLS is applied in the migration.
+//
+// IDs (I3): saga_instance.id is stored as a native uuid; the sg_ typed string is
+// the wire form (via @andpay/ids toUuid/fromUuid). saga_timer uses an internal
+// surrogate uuid (spec 03 field 3), not a registry prefix.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("ORCHESTRATOR_DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+model SagaInstance {
+  id          String      @id @db.Uuid
+  flowType    String      @map("flow_type")
+  flowVersion Int         @map("flow_version")
+  currentStep String?     @map("current_step")
+  status      String // running | completed | compensated | failed
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  steps       SagaStep[]
+  timers      SagaTimer[]
+
+  @@map("saga_instance")
+}
+
+model SagaStep {
+  instanceId     String       @map("instance_id") @db.Uuid
+  name           String
+  status         String // running | completed | compensated | failed
+  attempts       Int          @default(0)
+  lastErrorClass String?      @map("last_error_class")
+  idempotencyKey String       @map("idempotency_key")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  instance       SagaInstance @relation(fields: [instanceId], references: [id])
+
+  @@id([instanceId, name])
+  @@map("saga_step")
+}
+
+model SagaTimer {
+  id         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  instanceId String       @map("instance_id") @db.Uuid
+  fireAt     DateTime     @map("fire_at") @db.Timestamptz(6)
+  purpose    String
+  status     String       @default("pending") // pending | claimed | fired
+  claimedAt  DateTime?    @map("claimed_at") @db.Timestamptz(6)
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  instance   SagaInstance @relation(fields: [instanceId], references: [id])
+
+  @@index([status, fireAt])
+  @@map("saga_timer")
+}
+
+// The mandatory engine outbox and inbox (E1, E6), reusing @andpay/outbox.
+model Outbox {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id")
+  eventType     String    @map("event_type")
+  partitionKey  String    @map("partition_key")
+  payload       Json      @db.JsonB
+  headers       Json?     @db.JsonB
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
+  attempts      Int       @default(0)
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox")
+}
+
+model Inbox {
+  consumer    String
+  dedupKey    String   @map("dedup_key")
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  @@id([consumer, dedupKey])
+  @@map("inbox")
+}

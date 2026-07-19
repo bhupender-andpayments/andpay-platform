@@ -1,4 +1,4 @@
-export { newId, parseId, isId, timestampOf } from './api.js'
+export { newId, parseId, isId, timestampOf, toUuid, fromUuid } from './api.js'
 export { InvalidIdError, type InvalidIdReason } from './errors.js'
 export { ID_PREFIXES, ID_KINDS } from './registry.js'
 export type {
@@ -12,5 +12,6 @@ export type {
   ShptId,
   VndrId,
   ApiId,
+  SgId,
 } from './registry.js'
 export { PAYLOAD_LENGTH } from './crockford.js'

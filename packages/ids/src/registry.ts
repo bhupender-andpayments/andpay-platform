@@ -17,6 +17,9 @@ export const ID_PREFIXES = {
   shpt: 'shpt_',
   vndr: 'vndr_',
   api: 'api_',
+  // sg_ (saga / process-manager instance). A corpus-registered prefix
+  // (Section 11), implemented here per handoff spec 03 field 3; not invented.
+  sg: 'sg_',
 } as const
 
 /** The set of registered id kinds. */
@@ -42,3 +45,4 @@ export type BtchId = Id<'btch'>
 export type ShptId = Id<'shpt'>
 export type VndrId = Id<'vndr'>
 export type ApiId = Id<'api'>
+export type SgId = Id<'sg'>

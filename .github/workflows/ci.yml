@@ -8,26 +8,15 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: andpay
-          POSTGRES_PASSWORD: andpay_dev
-          POSTGRES_DB: andpay
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U andpay -d andpay"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
     env:
       IDENTITY_DATABASE_URL: postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity
       TMS_DATABASE_URL: postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms
       FULFILLMENT_DATABASE_URL: postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment
+      ORCHESTRATOR_DATABASE_URL: postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=orchestrator
       OUTBOX_TEST_DATABASE_URL: postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=outbox_test
+      KAFKA_BROKERS: localhost:19092
+      SCHEMA_REGISTRY_URL: http://localhost:18081
+      KAFKAJS_NO_PARTITIONER_WARNING: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -39,11 +28,16 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Apply per-context migrations and generate their clients, then set up the
-      # outbox library's own test schema. Clients are generated (gitignored) so
-      # typecheck and the integration tests can resolve them.
+      # Bring up the local substrate (postgres plus redpanda) via the dev compose.
+      # MSK and Glue themselves are AWS CDK config-as-code under infra/aws, applied
+      # out of band; CI verifies the mechanism against the local stand-in.
+      - run: docker compose -f infra/docker-compose.dev.yml up -d --wait
+      # Apply per-context and orchestrator migrations, generate their clients, and
+      # set up the outbox library's own test schema.
       - run: bash ./infra/db.sh
       - run: pnpm --filter @andpay/outbox db:push:test
+      # Build workspace dists so cross-package imports (@andpay/*) resolve.
+      - run: pnpm -r build
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test

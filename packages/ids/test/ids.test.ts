@@ -4,6 +4,8 @@ import {
   parseId,
   isId,
   timestampOf,
+  toUuid,
+  fromUuid,
   InvalidIdError,
   ID_KINDS,
   ID_PREFIXES,
@@ -81,5 +83,25 @@ describe('@andpay/ids acceptance checks', () => {
     const recovered = timestampOf(id).getTime()
     expect(recovered).toBeGreaterThanOrEqual(before - 1)
     expect(recovered).toBeLessThanOrEqual(after + 1)
+  })
+})
+
+describe('@andpay/ids uuid storage conversion (I3)', () => {
+  it('round trips id -> uuid -> id for every registered kind', () => {
+    for (const kind of ID_KINDS) {
+      const id = newId(kind)
+      const uuid = toUuid(id)
+      expect(uuid).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      )
+      expect(fromUuid(kind, uuid)).toBe(id)
+    }
+  })
+
+  it('mints and validates the sg saga instance prefix', () => {
+    const id = newId('sg')
+    expect(id.startsWith('sg_')).toBe(true)
+    expect(parseId('sg', id)).toBe(id)
+    expect(ID_PREFIXES.sg).toBe('sg_')
   })
 })
