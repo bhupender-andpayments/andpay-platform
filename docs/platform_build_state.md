@@ -58,7 +58,10 @@ Open items for the plan chat to ratify (see the returned status):
 - ESLint plus typescript-eslint as the lint tool (Section 4 swappable default).
 
 ### Spec 02: Per-context schemas, outbox/inbox, and the 06.A key grammar
-- Status: DONE
+- Status: BUILT, evidence provided 2026-07-19; awaiting plan-chat ratification to
+  BUILT-V1. The four load-bearing artifacts (atomicity, cross-schema guard teeth,
+  migration reality via psql, relay concurrency) were pasted for review; the
+  authoritative build-state flip is the plan chat's to make.
 - Landed: 2026-07-19
 - Layer: substrate. Decision 118, build step 2.
 - Source: handoff spec 02 plus chapter 06.A (docs/06_settlement_refund_issuing.md).
@@ -86,7 +89,13 @@ Acceptance checks (spec 02 Section 12): 8 of 8 green.
    callers: pass.
 5. key grammar: two-attempts-different-keys, raw pipe rejected, client key never
    below the instance key: pass.
-6. cross-schema guard (static test over migrations and schemas): pass.
+6. cross-schema guard: pass. The static guard (test/architecture.test.ts) forbids
+   (A) a context migration referencing another schema or declaring any FK,
+   (B) a prisma schema going multi-schema or losing its per-context url pin,
+   (C) any file in a context referencing another context's schema in raw SQL
+   (the spec-06 "Fulfillment queries tms" case), and (D) a context importing
+   another context's generated client or source. Teeth verified: a planted
+   Fulfillment file querying "tms"."outbox" fails check C.
 7. migrate deploy on a clean Postgres creates each schema with outbox and inbox,
    no cross-schema FK, re-run is a no-op: pass (verified end to end).
 8. no PII column in any table created here; no secret or PII in any fixture: pass.
