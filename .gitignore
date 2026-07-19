@@ -5,3 +5,12 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# Prisma generated clients (regenerated from schema.prisma)
+services/*/generated/
+packages/*/generated/
+
+# Local env (never commit real credentials, S4). Keep the example only.
+.env
+.env.*
+!.env.example

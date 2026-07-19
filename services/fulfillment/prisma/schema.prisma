@@ -1,0 +1,50 @@
+// Fulfillment context persistence (handoff spec 02).
+// This schema.prisma carries ONLY the shared infrastructure tables (outbox,
+// inbox). Domain tables arrive in later specs. The datasource is pinned to the
+// `fulfillment` schema of the shared instance via the ?schema= parameter in the
+// connection string; this client can never see another context's schema (C4).
+//
+// Isolation note (spec 9): these infrastructure tables carry no tenant-visible
+// rows, so RLS is not yet applicable. RLS and program_id scoping arrive with the
+// domain tables in later specs; this is a DEFERRED item, not silently skipped.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("FULFILLMENT_DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+/// Transactional outbox (E1). A state change and its emitted fact commit
+/// atomically in one local transaction. IDs-only payloads, no PII (S7), no
+/// secrets (S4).
+model Outbox {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id")
+  eventType     String    @map("event_type")
+  partitionKey  String    @map("partition_key")
+  payload       Json      @db.JsonB
+  headers       Json?     @db.JsonB
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
+  attempts      Int       @default(0)
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox")
+}
+
+/// Consumer inbox for effectively-once local effects (E6). Dedup on
+/// (consumer, dedup_key); the insert and the effect commit in one local
+/// transaction. No money floor anywhere (S20).
+model Inbox {
+  consumer    String
+  dedupKey    String   @map("dedup_key")
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  @@id([consumer, dedupKey])
+  @@map("inbox")
+}

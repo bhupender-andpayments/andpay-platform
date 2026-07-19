@@ -1,0 +1,29 @@
+# Local/dev database for the AndPayments platform (handoff spec 02, Section 2).
+# ONE postgres:16 instance. The schema-per-context split (identity, tms,
+# fulfillment) is created by each context's Prisma migrations, not here. Do not
+# add service containers here; those arrive with each service spec.
+#
+# Bring up:   docker compose -f infra/docker-compose.dev.yml up -d
+# Tear down:  docker compose -f infra/docker-compose.dev.yml down
+# Wipe data:  docker compose -f infra/docker-compose.dev.yml down -v
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: andpay-postgres-dev
+    environment:
+      POSTGRES_USER: andpay
+      POSTGRES_PASSWORD: andpay_dev
+      POSTGRES_DB: andpay
+    ports:
+      - "5432:5432"
+    volumes:
+      - andpay_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U andpay -d andpay"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  andpay_pgdata:
