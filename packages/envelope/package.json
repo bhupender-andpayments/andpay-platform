@@ -1,0 +1,20 @@
+{
+  "name": "@andpay/envelope",
+  "version": "0.0.0",
+  "description": "The E4 message envelope codec (id, type, version, timestamp, subject, dedup_key, trace_id) for the AndPayments event backbone.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  }
+}

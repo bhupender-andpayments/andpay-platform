@@ -1,9 +1,10 @@
-# Local/dev database for the AndPayments platform (handoff spec 02, Section 2).
-# ONE postgres:16 instance. The schema-per-context split (identity, tms,
-# fulfillment) is created by each context's Prisma migrations, not here. Do not
-# add service containers here; those arrive with each service spec.
+# Local/dev infrastructure for the AndPayments platform (handoff specs 02, 03).
+# ONE postgres:16 (schema per context, spec 02) and ONE Redpanda (Kafka API plus
+# a built-in schema registry, the LOCAL dev stand-in for AWS MSK plus Glue behind
+# the swappable ports, spec 03). MSK and Glue themselves are AWS CDK config-as-code
+# under infra/aws, applied out of band; nothing here provisions AWS.
 #
-# Bring up:   docker compose -f infra/docker-compose.dev.yml up -d
+# Bring up:   docker compose -f infra/docker-compose.dev.yml up -d --wait
 # Tear down:  docker compose -f infra/docker-compose.dev.yml down
 # Wipe data:  docker compose -f infra/docker-compose.dev.yml down -v
 
@@ -25,5 +26,38 @@ services:
       timeout: 5s
       retries: 20
 
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: andpay-redpanda-dev
+    command:
+      - redpanda
+      - start
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+      - --schema-registry-addr
+      - internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr
+      - redpanda:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+    ports:
+      - "19092:19092" # Kafka API (host)
+      - "18081:18081" # Schema Registry REST (host)
+      - "9644:9644" # Admin API (host)
+    volumes:
+      - andpay_redpanda:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
 volumes:
   andpay_pgdata:
+  andpay_redpanda:

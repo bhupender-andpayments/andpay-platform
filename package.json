@@ -12,7 +12,9 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run --typecheck",
     "build": "pnpm -r build",
-    "db:up": "docker compose -f infra/docker-compose.dev.yml up -d",
+    "dev:up": "docker compose -f infra/docker-compose.dev.yml up -d --wait",
+    "dev:down": "docker compose -f infra/docker-compose.dev.yml down",
+    "db:up": "docker compose -f infra/docker-compose.dev.yml up -d --wait",
     "db:down": "docker compose -f infra/docker-compose.dev.yml down",
     "db:migrate": "./infra/db.sh",
     "db:migrate:dev": "./infra/db.sh dev init"
