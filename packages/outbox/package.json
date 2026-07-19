@@ -1,0 +1,21 @@
+{
+  "name": "@andpay/outbox",
+  "version": "0.0.0",
+  "description": "Transactional outbox (E1) and consumer inbox (E6) for the AndPayments platform.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "db:push:test": "prisma db push --schema prisma/schema.prisma"
+  }
+}

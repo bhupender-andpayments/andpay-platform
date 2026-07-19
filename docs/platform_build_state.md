@@ -57,10 +57,51 @@ Open items for the plan chat to ratify (see the returned status):
 - Kind identifiers as prefix stems, newId(kind) returning the branded type.
 - ESLint plus typescript-eslint as the lint tool (Section 4 swappable default).
 
-### Spec 02: Schemas and the 06.A idempotency key grammar
+### Spec 02: Per-context schemas, outbox/inbox, and the 06.A key grammar
+- Status: DONE
+- Landed: 2026-07-19
+- Layer: substrate. Decision 118, build step 2.
+- Source: handoff spec 02 plus chapter 06.A (docs/06_settlement_refund_issuing.md).
+
+Delivered:
+- One postgres:16 instance, one schema per context (identity, tms, fulfillment),
+  one Prisma client per context pinned to its own schema via ?schema=. No
+  cross-schema query, no cross-schema FK. Initial migrations create each schema
+  with the outbox and inbox tables only (no domain tables).
+- @andpay/outbox (BUILT-V1): enqueue (E1, atomic with the caller's transaction),
+  onceWithin (E6 consumer inbox, effectively-once, no money floor S20), relayOnce
+  (FOR UPDATE SKIP LOCKED, at-least-once), and a swappable PublisherPort with
+  in-memory and log implementations. The real MSK relay is spec 03; the Event
+  backbone row stays DESIGNED.
+- @andpay/keys (BUILT-V1): the canonical 06.A grammar, reconciled with the
+  chapter (see spec 01 ledger entry updated at commit for keys).
+- infra/docker-compose.dev.yml, infra/db.sh, and CI wired to a postgres:16
+  service running migrate deploy, lint, typecheck, and test.
+
+Acceptance checks (spec 02 Section 12): 8 of 8 green.
+1. enqueue in a rolled-back transaction leaves no outbox row: pass.
+2. enqueue outside a transaction throws: pass.
+3. relay publishes each unpublished row once; a re-run publishes nothing: pass.
+4. onceWithin runs the effect once and skips duplicates, including concurrent
+   callers: pass.
+5. key grammar: two-attempts-different-keys, raw pipe rejected, client key never
+   below the instance key: pass.
+6. cross-schema guard (static test over migrations and schemas): pass.
+7. migrate deploy on a clean Postgres creates each schema with outbox and inbox,
+   no cross-schema FK, re-run is a no-op: pass (verified end to end).
+8. no PII column in any table created here; no secret or PII in any fixture: pass.
+
+Isolation note (spec 9): the infrastructure tables carry no tenant-visible rows,
+so RLS is not yet applicable. RLS and program_id scoping are a DEFERRED item for
+the domain-table specs, recorded here, not silently skipped.
+
+Milestone: spec 02 done. Per-context schemas plus outbox/inbox plus the 06.A key
+library in place; the one-instance schema-per-context topology is realized.
+
+### Spec 03 and beyond: MSK bus, relay adapter, orchestration engine
 - Status: PENDING
-- Notes: arrives per spec 02 (spec 01 Sections 10 and 12 reference it). Not yet
-  received.
+- Notes: spec 03 brings the MSK bus, the real relay adapter behind the
+  PublisherPort seam, and the D77 orchestration engine. Not yet received.
 
 ## Environment baseline (local)
 - Node local: 24.x (CI pinned to Node 22 per spec).

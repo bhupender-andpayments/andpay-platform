@@ -7,6 +7,28 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: andpay
+          POSTGRES_PASSWORD: andpay_dev
+          POSTGRES_DB: andpay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U andpay -d andpay"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      IDENTITY_DATABASE_URL: postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity
+      TMS_DATABASE_URL: postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms
+      FULFILLMENT_DATABASE_URL: postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment
+      OUTBOX_TEST_DATABASE_URL: postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=outbox_test
+
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -17,5 +39,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Apply per-context migrations and generate their clients, then set up the
+      # outbox library's own test schema. Clients are generated (gitignored) so
+      # typecheck and the integration tests can resolve them.
+      - run: bash ./infra/db.sh
+      - run: pnpm --filter @andpay/outbox db:push:test
       - run: pnpm lint
+      - run: pnpm typecheck
       - run: pnpm test

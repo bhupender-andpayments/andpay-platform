@@ -53,10 +53,29 @@ something a spec does not grant, STOP and escalate to the architecture chat.
 
 ## Repository shape
 
-- `packages/` shared libraries. `packages/ids` is `@andpay/ids`, the typed
-  public ID library every later service imports.
-- `services/` per-context services (identity, tms, fulfillment), empty until
-  their specs arrive.
+- `packages/` shared libraries: `@andpay/ids` (typed public IDs), `@andpay/keys`
+  (the 06.A idempotency key grammar), `@andpay/outbox` (transactional outbox and
+  consumer inbox).
+- `services/` per-context services (identity, tms, fulfillment). Each carries a
+  `prisma/` project pinned to its own schema (outbox and inbox only for now);
+  domain tables arrive with each service spec.
 - `apps/` portals (ops-portal, vendor-portal), empty until their specs arrive.
-- `infra/` infrastructure, empty until its spec arrives.
+- `infra/` local dev infrastructure: `docker-compose.dev.yml` (one postgres:16)
+  and `db.sh` (migrate plus generate).
 - `docs/` corpus copies for the team.
+
+## Local development
+
+- Database: `pnpm db:up` starts one postgres:16 with a schema per context. Then
+  `bash ./infra/db.sh` applies migrations and generates the per-context Prisma
+  clients, and `pnpm --filter @andpay/outbox db:push:test` sets up the outbox
+  library's own test schema.
+- Schema-per-context is a build-time choice; the physical split to an
+  instance-per-context later is a connection-string change only. Never write a
+  cross-schema query, join, or FK (C4, T1, T7).
+- Tests: `pnpm test` runs everything. The `@andpay/outbox` tests are integration
+  tests and need the database up first (`pnpm db:up`). `pnpm lint` and
+  `pnpm typecheck` do not need the database.
+- Generated Prisma clients live under `services/*/generated` and
+  `packages/*/generated` and are gitignored; regenerate them with the commands
+  above.

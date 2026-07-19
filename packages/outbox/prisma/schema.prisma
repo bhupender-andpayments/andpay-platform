@@ -1,0 +1,42 @@
+// Test-only schema for @andpay/outbox. The library itself is client-agnostic
+// (it operates on any Prisma transaction client via raw SQL); this schema and
+// its generated client exist ONLY to exercise the library against a real
+// Postgres in its own `outbox_test` schema. Services define the same outbox and
+// inbox models in their own schemas (see services/*/prisma/schema.prisma).
+//
+// Set up with: OUTBOX_TEST_DATABASE_URL=... pnpm --filter @andpay/outbox db:push:test
+
+datasource db {
+  provider = "postgresql"
+  url      = env("OUTBOX_TEST_DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+model Outbox {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id")
+  eventType     String    @map("event_type")
+  partitionKey  String    @map("partition_key")
+  payload       Json      @db.JsonB
+  headers       Json?     @db.JsonB
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
+  attempts      Int       @default(0)
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox")
+}
+
+model Inbox {
+  consumer    String
+  dedupKey    String   @map("dedup_key")
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  @@id([consumer, dedupKey])
+  @@map("inbox")
+}
