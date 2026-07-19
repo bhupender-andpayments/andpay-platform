@@ -90,12 +90,17 @@ Acceptance checks (spec 02 Section 12): 8 of 8 green.
 5. key grammar: two-attempts-different-keys, raw pipe rejected, client key never
    below the instance key: pass.
 6. cross-schema guard: pass. The static guard (test/architecture.test.ts) forbids
-   (A) a context migration referencing another schema or declaring any FK,
+   (A) a context migration declaring any FK,
    (B) a prisma schema going multi-schema or losing its per-context url pin,
-   (C) any file in a context referencing another context's schema in raw SQL
-   (the spec-06 "Fulfillment queries tms" case), and (D) a context importing
-   another context's generated client or source. Teeth verified: a planted
-   Fulfillment file querying "tms"."outbox" fails check C.
+   (C) a context file naming another context's schema by qualified identifier,
+   (E) a context file mutating search_path (the bare-name evasion of C),
+   (F) a context file connecting via another context's url or ?schema=, and
+   (D) a context importing another context's generated client or source. Teeth
+   verified: a planted Fulfillment file with a qualified "tms"."outbox" query, a
+   SET search_path TO tms, and a TMS_DATABASE_URL each fail checks C, E, and F
+   respectively. The guard is a static net, not a proof; the definitive C4
+   enforcement is per-context pinned clients now and per-context DB roles with
+   schema-scoped USAGE when S13 lands with the domain tables.
 7. migrate deploy on a clean Postgres creates each schema with outbox and inbox,
    no cross-schema FK, re-run is a no-op: pass (verified end to end).
 8. no PII column in any table created here; no secret or PII in any fixture: pass.

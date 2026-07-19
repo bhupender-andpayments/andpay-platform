@@ -3,18 +3,23 @@ import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
- * Cross-schema isolation guard (spec 02 Section 2; C4, T1, T7).
+ * Cross-schema isolation guard (spec 02 Section 2; C4, T1, T7). Runs with no
+ * database.
  *
- * No query and no foreign key crosses a context schema boundary; a cross-context
- * reference is a typed ID string only. Each context owns its own migrations and
- * they never touch another schema. This runs with no database.
+ * This is a STATIC net, not a proof. It catches the realistic and accidental
+ * breach vectors below. It cannot catch a dynamically constructed schema name.
+ * The definitive C4 enforcement is architectural: one Prisma client per context
+ * pinned via ?schema= (the typed API cannot express a cross-schema query), and,
+ * when S13 lands with the domain tables, per-context DB roles with schema-scoped
+ * USAGE so cross-schema access fails at the database regardless of the SQL.
  *
- * The guard has teeth on the realistic breach vectors:
- *   A. a context migration referencing another context's schema, or any FK;
- *   B. a prisma schema going multi-schema or losing its per-context url pin;
- *   C. any file in a context referencing another context's schema in raw SQL
- *      (the "spec 06 writes a Fulfillment query against tms" case);
- *   D. a context importing another context's generated client or source.
+ * Vectors covered:
+ *   A  a context migration declaring a foreign key (so none can cross a schema)
+ *   B  a prisma schema going multi-schema or losing its per-context url pin
+ *   C  a context file naming another context schema (qualified: "tms".outbox)
+ *   E  a context file mutating search_path (the bare-name evasion of C)
+ *   F  a context file connecting via another context's url or ?schema=
+ *   D  a context importing another context's generated client or source
  */
 
 const CONTEXTS = ['identity', 'tms', 'fulfillment'] as const
@@ -29,74 +34,88 @@ function filesUnder(rel: string): string[] {
     .filter((p) => statSync(join(root, p)).isFile())
 }
 
-function migrationsFor(ctx: string): { file: string; sql: string }[] {
-  return filesUnder(join('services', ctx, 'prisma', 'migrations'))
-    .filter((p) => p.endsWith('.sql'))
-    .map((file) => ({ file, sql: readFileSync(join(root, file), 'utf8') }))
+function contextFiles(ctx: string): { file: string; text: string }[] {
+  return filesUnder(join('services', ctx))
+    .filter((p) => /\.(ts|sql|prisma)$/.test(p))
+    .map((file) => ({ file, text: readFileSync(join(root, file), 'utf8') }))
 }
 
-// Unambiguous cross-schema references to `other`: a double-quoted qualified
-// identifier ("tms".) or an SQL clause targeting that schema (FROM tms.). These
-// do NOT match event-type strings like fct.identity.merchant.v1.
-function crossSchemaPatterns(other: string): RegExp[] {
+// Any change to the connection search_path from application or migration code is
+// forbidden: it reaches another schema with a bare, unqualified table name and
+// evades the qualified-identifier check (C).
+const SEARCH_PATH_MUTATION =
+  /\bset\s+(local\s+)?search_path\b|\bset\s+schema\b|set_config\s*\(\s*['"]search_path/i
+
+function crossSchemaQualified(other: string): RegExp[] {
   return [
     new RegExp(`"${other}"\\s*\\.`, 'i'),
     new RegExp(`\\b(from|join|into|update|delete\\s+from)\\s+"?${other}"?\\s*\\.`, 'i'),
   ]
 }
 
+function otherContextConnection(other: string): RegExp[] {
+  return [
+    new RegExp(`\\b${other.toUpperCase()}_DATABASE_URL\\b`),
+    new RegExp(`schema=${other}\\b`, 'i'),
+  ]
+}
+
 describe('cross-schema isolation guard', () => {
-  it('A: every context has a migration and none references another schema', () => {
+  it('A: every context has at least one migration', () => {
     for (const ctx of CONTEXTS) {
-      const migrations = migrationsFor(ctx)
+      const migrations = filesUnder(join('services', ctx, 'prisma', 'migrations')).filter((p) =>
+        p.endsWith('.sql'),
+      )
       expect(migrations.length, `${ctx} has no migration`).toBeGreaterThan(0)
-      const others = CONTEXTS.filter((c) => c !== ctx)
-      for (const { file, sql } of migrations) {
-        for (const other of others) {
-          for (const pattern of crossSchemaPatterns(other)) {
-            expect(pattern.test(sql), `${file} must not reference schema "${other}"`).toBe(
-              false,
-            )
-          }
-        }
-      }
     }
   })
 
   it('A: no migration declares a foreign key (so none can cross a schema)', () => {
     for (const ctx of CONTEXTS) {
-      for (const { file, sql } of migrationsFor(ctx)) {
-        expect(/FOREIGN KEY|REFERENCES\s/i.test(sql), `${file} must not declare a FK`).toBe(
-          false,
-        )
+      for (const { file, text } of contextFiles(ctx)) {
+        if (!file.endsWith('.sql')) continue
+        expect(/FOREIGN KEY|REFERENCES\s/i.test(text), `${file} must not declare a FK`).toBe(false)
       }
     }
   })
 
   it('B: each prisma schema is single-schema and pinned to its own env url', () => {
     for (const ctx of CONTEXTS) {
-      const schema = readFileSync(
-        join(root, 'services', ctx, 'prisma', 'schema.prisma'),
-        'utf8',
-      )
+      const schema = readFileSync(join(root, 'services', ctx, 'prisma', 'schema.prisma'), 'utf8')
       expect(schema).not.toMatch(/@@schema/)
       expect(schema).not.toMatch(/multiSchema/)
       expect(schema).toContain(`env("${ctx.toUpperCase()}_DATABASE_URL")`)
     }
   })
 
-  it('C: no file in a context references another context schema in raw SQL', () => {
+  it('C: no context file names another context schema by qualified identifier', () => {
     for (const ctx of CONTEXTS) {
       const others = CONTEXTS.filter((c) => c !== ctx)
-      for (const file of filesUnder(join('services', ctx))) {
-        if (!/\.(ts|sql|prisma)$/.test(file)) continue
-        const content = readFileSync(join(root, file), 'utf8')
+      for (const { file, text } of contextFiles(ctx)) {
         for (const other of others) {
-          for (const pattern of crossSchemaPatterns(other)) {
-            expect(
-              pattern.test(content),
-              `${file} must not reference schema "${other}"`,
-            ).toBe(false)
+          for (const pattern of crossSchemaQualified(other)) {
+            expect(pattern.test(text), `${file} must not reference schema "${other}"`).toBe(false)
+          }
+        }
+      }
+    }
+  })
+
+  it('E: no context file mutates the connection search_path', () => {
+    for (const ctx of CONTEXTS) {
+      for (const { file, text } of contextFiles(ctx)) {
+        expect(SEARCH_PATH_MUTATION.test(text), `${file} must not change search_path`).toBe(false)
+      }
+    }
+  })
+
+  it('F: no context file connects to another context (url or ?schema=)', () => {
+    for (const ctx of CONTEXTS) {
+      const others = CONTEXTS.filter((c) => c !== ctx)
+      for (const { file, text } of contextFiles(ctx)) {
+        for (const other of others) {
+          for (const pattern of otherContextConnection(other)) {
+            expect(pattern.test(text), `${file} must not connect to context "${other}"`).toBe(false)
           }
         }
       }
@@ -106,12 +125,11 @@ describe('cross-schema isolation guard', () => {
   it('D: no context imports another context generated client or source', () => {
     for (const ctx of CONTEXTS) {
       const others = CONTEXTS.filter((c) => c !== ctx)
-      for (const file of filesUnder(join('services', ctx))) {
+      for (const { file, text } of contextFiles(ctx)) {
         if (!file.endsWith('.ts')) continue
-        const content = readFileSync(join(root, file), 'utf8')
         for (const other of others) {
           expect(
-            content.includes(`services/${other}/`),
+            text.includes(`services/${other}/`),
             `${file} must not import from services/${other}`,
           ).toBe(false)
         }

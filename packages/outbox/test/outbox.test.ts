@@ -40,6 +40,29 @@ describe('@andpay/outbox', () => {
     expect(await prisma.outbox.count()).toBe(0)
   })
 
+  // Acceptance 1, the load-bearing E1 property: a second write and the outbox
+  // row share ONE transaction, so they commit together or roll back together.
+  it('rolls back a second write and the outbox row together in one transaction', async () => {
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await onceWithin(tx, 'consumer_e1', 'dedup_e1', async () => undefined) // inbox write
+        await enqueue(tx, event()) // outbox write, same tx
+        throw new Error('rollback both')
+      }),
+    ).rejects.toThrow('rollback both')
+    expect(await prisma.inbox.count()).toBe(0)
+    expect(await prisma.outbox.count()).toBe(0)
+  })
+
+  it('commits a second write and the outbox row together in one transaction', async () => {
+    await prisma.$transaction(async (tx) => {
+      await onceWithin(tx, 'consumer_e1', 'dedup_e1', async () => undefined)
+      await enqueue(tx, event())
+    })
+    expect(await prisma.inbox.count()).toBe(1)
+    expect(await prisma.outbox.count()).toBe(1)
+  })
+
   it('commits the outbox row atomically with the transaction', async () => {
     await prisma.$transaction(async (tx) => {
       await enqueue(tx, event())
