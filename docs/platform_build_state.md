@@ -112,10 +112,54 @@ the domain-table specs, recorded here, not silently skipped.
 Milestone: spec 02 done. Per-context schemas plus outbox/inbox plus the 06.A key
 library in place; the one-instance schema-per-context topology is realized.
 
-### Spec 03 and beyond: MSK bus, relay adapter, orchestration engine
-- Status: PENDING
-- Notes: spec 03 brings the MSK bus, the real relay adapter behind the
-  PublisherPort seam, and the D77 orchestration engine. Not yet received.
+### Spec 03: Event backbone bring-up (envelope, publisher, registry, D77 engine)
+- Status: BUILT, evidence provided 2026-07-20; awaiting plan-chat ratification to
+  flip the Event backbone, @andpay/envelope, and orchestration-engine rows to
+  BUILT-V1. The authoritative flip is the plan chat's to make.
+- Landed: 2026-07-20
+- Layer: substrate. Decision 118 build step, Decisions 77, 119, 120.
+- Source: handoff spec 03 plus architecture_rules E1-E9, O1-O5, S6, S7, S11-S12, S23.
+
+Scope split (this machine has no AWS; Claude Code runs no AWS command):
+- Verified locally against a real Kafka (Redpanda, the dev stand-in for MSK plus
+  Glue behind the swappable ports) and Postgres: checks 1 to 6.
+- AWS MSK, Glue, ap-south-1 residency, and SPIFFE/mTLS plus broker ACLs are AWS
+  CDK config-as-code under infra/aws, applied by the owner; check 7 residency is
+  the CDK region pin (owner deploys and verifies).
+
+Delivered:
+- @andpay/envelope (BUILT-V1 candidate): the E4 codec, JSON on the wire (D120).
+- @andpay/bus: the Kafka/MSK publisher behind the spec-02 PublisherPort (C6), the
+  schema-registry port (Redpanda dev adapter, Glue prod via CDK, D120), config-
+  as-code topic provisioning, and a fact-consumer helper.
+- @andpay/engine (BUILT-V1 candidate): the D77 step/compensation/timer layer,
+  isolated (O4), client-agnostic.
+- services/orchestrator: the orchestrator schema (saga_instance, saga_step,
+  saga_timer, outbox, inbox), intra-schema FKs, FORCE RLS on every table (gate 17
+  recorded; permissive policy, per-workload role and Program predicates deferred,
+  no Program-scoped data in this build).
+- @andpay/ids: sg_ prefix (corpus-registered) plus toUuid/fromUuid (I3 storage).
+- infra: Redpanda added to the dev compose; infra/aws CDK for MSK plus Glue in
+  ap-south-1/ap-south-2 with a residency guard; CI runs the full local stack.
+
+Acceptance checks (spec 03 Section 12):
+1. real bus round-trip (outbox to Kafka to inbox-deduped consumer, re-delivery a
+   no-op, trace_id propagated): GREEN (local Redpanda).
+2. schema-registry FULL-compat enforcement (incompatible rejected with the raw
+   registry error, additive accepted): GREEN (local Redpanda registry).
+3. envelope round-trip of all seven E4 fields plus payload: GREEN.
+4. engine step plus compensation (O3) and idempotent re-delivered step: GREEN.
+5. durable timer, two concurrent workers, no double-fire and no skip: GREEN.
+6. config-as-code topic provisioning idempotent on re-apply: GREEN.
+7. residency (MSK/Glue in ap-south-1) plus IDs-only payload: IDs-only shown
+   locally; ap-south-1 is the CDK region pin (infra/aws), owner deploys and
+   verifies (Claude Code runs no AWS command).
+
+Event backbone row: the internal MSK bus is BUILT against the local stand-in with
+the MSK swap as config-as-code; the real MSK/Glue deploy and its residency
+evidence are the owner's. Milestone on ratification: spec 03 done, the event
+backbone (envelope, publisher, schema registry, topic taxonomy) and the D77
+engine scaffolding in place; D118 sequence continues at step 5 (Identity-min).
 
 ## Environment baseline (local)
 - Node local: 24.x (CI pinned to Node 22 per spec).

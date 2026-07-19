@@ -10,6 +10,9 @@ coverage/
 services/*/generated/
 packages/*/generated/
 
+# CDK build output
+infra/aws/cdk.out/
+
 # Local env (never commit real credentials, S4). Keep the example only.
 .env
 .env.*

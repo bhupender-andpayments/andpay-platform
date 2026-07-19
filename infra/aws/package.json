@@ -1,0 +1,24 @@
+{
+  "name": "andpay-event-backbone-cdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AWS CDK config-as-code for the event backbone: MSK plus Glue Schema Registry, pinned to ap-south-1 (S6). Deployed out of band; not part of the pnpm workspace.",
+  "bin": {
+    "andpay-event-backbone-cdk": "bin/app.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy --all"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.160.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.160.0",
+    "constructs": "^10.4.0"
+  }
+}
