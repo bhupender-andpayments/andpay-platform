@@ -45,6 +45,8 @@ something a spec does not grant, STOP and escalate to the architecture chat.
   the risk register, and the new-component gate. Read it before any design review.
 - `docs/handoff_spec_01_platform_bootstrap.md` is the spec this repository was
   bootstrapped from.
+- `docs/platform_build_state.md` is the repo side build ledger: what has landed
+  here and its verification. The authoritative build state lives in the corpus.
 - The remaining corpus files (architure_context.md, chapters 04 to 07,
   00_intake_and_build_protocol.md, platform_build_state.md) live in the
   architecture chat and should be copied into `docs/` as the team needs them.
