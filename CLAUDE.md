@@ -55,10 +55,15 @@ something a spec does not grant, STOP and escalate to the architecture chat.
 
 - `packages/` shared libraries: `@andpay/ids` (typed public IDs), `@andpay/keys`
   (the 06.A idempotency key grammar), `@andpay/outbox` (transactional outbox and
-  consumer inbox).
-- `services/` per-context services (identity, tms, fulfillment). Each carries a
-  `prisma/` project pinned to its own schema (outbox and inbox only for now);
-  domain tables arrive with each service spec.
+  consumer inbox), `@andpay/envelope` (the E4 codec), `@andpay/bus` (the Kafka
+  publisher and schema-registry ports), `@andpay/engine` (the D77 saga engine),
+  and `@andpay/authz` (the secret-free D3 verify, api_/apsk_ resolve, and D2
+  two-gate evaluator every context imports).
+- `services/` per-context services (identity, tms, fulfillment, orchestrator,
+  auth). Each carries a `prisma/` project pinned to its own schema;
+  `services/auth` also holds the D121 stores and all D3 token and class-6
+  credential issuance and lifecycle (the sole secret-holder, spec 04). Domain
+  tables arrive with each service spec.
 - `apps/` portals (ops-portal, vendor-portal), empty until their specs arrive.
 - `infra/` local dev infrastructure: `docker-compose.dev.yml` (one postgres:16)
   and `db.sh` (migrate plus generate).

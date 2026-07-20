@@ -15,4 +15,15 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    // Allow intentionally-unused identifiers prefixed with _ (interface-mandated
+    // stub parameters that a concrete implementation does not consume, e.g. the
+    // deferred MFA adapters and the unwired Identity fact-read seam).
+    rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
+    },
+  },
 )
