@@ -1,0 +1,23 @@
+{
+  "name": "@andpay/authz",
+  "version": "0.0.0",
+  "description": "Secret-free auth verification library imported by every context: D3 claim types, local JWKS verify with RFC 8725 hardening, api_/apsk_ edge resolution, denylist check, and the D2 two-gate evaluator. Holds no signing key, no pepper, no store, and never calls Auth.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "jose": "^5.9.6"
+  }
+}
