@@ -1,6 +1,7 @@
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose'
 import type { LeanClaim, Plane } from './claims.js'
 import { AuthzError } from './errors.js'
+import { isDenylisted } from './denylist.js'
 
 export interface VerifyOptions {
   // The verifier holds only public keys (JWKS), never the signing key (D3).
@@ -39,11 +40,9 @@ export async function verifyAccessToken(jwt: string, opts: VerifyOptions): Promi
     throw new AuthzError('token-verify-failed', err instanceof Error ? err.name : 'verify-failed')
   }
 
-  const denylist = opts.denylist
   if (
-    denylist &&
-    ((typeof payload.sub === 'string' && denylist.has(payload.sub)) ||
-      (typeof payload.jti === 'string' && denylist.has(payload.jti)))
+    (typeof payload.sub === 'string' && isDenylisted(payload.sub, opts.denylist)) ||
+    (typeof payload.jti === 'string' && isDenylisted(payload.jti, opts.denylist))
   ) {
     throw new AuthzError('denylisted')
   }
