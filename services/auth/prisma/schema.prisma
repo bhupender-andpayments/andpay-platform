@@ -70,6 +70,7 @@ model VendorCredential {
   epoch            Int       @default(1)
   status           String // ACTIVE | REVOKED (5d)
   issuedBy         String    @map("issued_by") @db.Uuid
+  idempotencyKey   String?   @unique @map("idempotency_key")
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   rotatedAt        DateTime? @map("rotated_at") @db.Timestamptz(6)
 
