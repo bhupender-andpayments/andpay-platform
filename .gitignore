@@ -17,3 +17,7 @@ infra/aws/cdk.out/
 .env
 .env.*
 !.env.example
+
+#docs
+docs/
+evidence/
