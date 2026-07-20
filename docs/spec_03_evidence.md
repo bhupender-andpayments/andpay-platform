@@ -101,6 +101,14 @@ outbox (E1, committed with the step; compensation is a forward action, not a
 rollback). A step re-driven three times runs its action once (idempotent),
 attempts stays 1.
 
+Note: the raw capture above predates a follow-up change. The throwaway reference
+PM's illustrative command topic was renamed to a test-only name
+(`cmd.test.reference_pm.v1`) so it never references the real Fulfillment command
+`cmd.fulfillment.batch.v1`. No schema was ever registered for the real command:
+the engine has no schema-registry code, the local registry holds only test
+subjects, and Glue (production) is not deployed. The real Fulfillment command
+schema arrives fresh at step 7, not pre-seeded.
+
 ---
 
 ## Check 5: durable timer, two genuinely concurrent workers (Decision 77)
