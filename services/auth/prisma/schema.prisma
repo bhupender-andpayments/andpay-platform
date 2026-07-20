@@ -1,0 +1,167 @@
+// The Auth context store (handoff spec 04, Decision 121). Its own `auth` schema
+// on the shared instance (spec 02 topology), pinned via the ?schema= connection
+// parameter. Auth is the sole holder of the class-3 internal-principal store and
+// the class-6 credential registry; no other context reads them (C1, C4).
+//
+// Isolation (spec 9): FORCE RLS on every table with a per-workload least-
+// privilege role is applied in the migration. Most of this schema is platform-
+// only (class-3 tables have no tenant scope, D121/4c), so the policy is
+// permissive for now; Program-scoped predicates arrive with Program-scoped data.
+//
+// IDs (I3): entity ids are stored as native uuid. The api_ typed string is the
+// wire form (via @andpay/ids toUuid/fromUuid). Internal principals and refresh
+// tokens use surrogate uuids, not registry prefixes (spec 04 Section 3). The
+// apsk_ secret is NEVER stored (only its peppered HMAC, 5c) and is not an id.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("AUTH_DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+// Class-3 internal human (D121, 16.1). No PII beyond the login handle needed to
+// authenticate. Status not delete (5d pattern). Role resolves to a permission
+// set from config-as-code (D2/S10).
+model InternalPrincipal {
+  id           String          @id @db.Uuid
+  loginHandle  String          @unique @map("login_handle")
+  passwordHash String          @map("password_hash")
+  status       String // ACTIVE | DISABLED
+  role         String
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  mfa          MfaEnrollment[]
+
+  @@map("internal_principal")
+}
+
+// Class-3 MFA enrollment (6a). The TOTP secret or WebAuthn credential is
+// custodied in Secrets Manager; the row holds only a reference, never the
+// secret (S4).
+model MfaEnrollment {
+  id          String            @id @db.Uuid
+  principalId String            @map("principal_id") @db.Uuid
+  factor      String // webauthn | totp | sms (phishing-resistance-ranked, 6a)
+  secretRef   String?           @map("secret_ref")
+  status      String
+  enrolledAt  DateTime          @default(now()) @map("enrolled_at") @db.Timestamptz(6)
+  principal   InternalPrincipal @relation(fields: [principalId], references: [id])
+
+  @@index([principalId])
+  @@map("mfa_enrollment")
+}
+
+// Class-6 vendor credential (Decision 105, S14 5a-5e). The api_ record id is
+// loggable; the apsk_ secret is NEVER stored, only its peppered HMAC (5c), under
+// a unique index which is also the lookup path. Bound to a Fulfillment-owned
+// vndr_ (referenced, not owned, D115).
+model VendorCredential {
+  apiId            String    @id @map("api_id") @db.Uuid
+  pepperedHash     String    @unique @map("peppered_hash")
+  fingerprint      String
+  vndrId           String    @map("vndr_id") @db.Uuid
+  workQueue        String    @map("work_queue")
+  permissionSetRef String    @map("permission_set_ref")
+  mode             String // live | test (5b hard plane boundary)
+  epoch            Int       @default(1)
+  status           String // ACTIVE | REVOKED (5d)
+  issuedBy         String    @map("issued_by") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  rotatedAt        DateTime? @map("rotated_at") @db.Timestamptz(6)
+
+  @@index([vndrId])
+  @@map("vendor_credential")
+}
+
+// D3 refresh-token family (6b). Opaque, rotating, one-time-use, hashed at rest,
+// client-bound; reuse revokes the whole family.
+model RefreshToken {
+  id              String   @id @db.Uuid
+  tokenHash       String   @unique @map("token_hash")
+  familyId        String   @map("family_id") @db.Uuid
+  principalId     String   @map("principal_id") @db.Uuid
+  clientBind      String   @map("client_bind")
+  used            Boolean  @default(false)
+  revoked         Boolean  @default(false)
+  issuedAt        DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
+  idleExpires     DateTime @map("idle_expires") @db.Timestamptz(6)
+  absoluteExpires DateTime @map("absolute_expires") @db.Timestamptz(6)
+
+  @@index([familyId])
+  @@map("refresh_token")
+}
+
+// D3 emergency denylist: any principal id or jti, checked cheaply on the hot
+// path.
+model Denylist {
+  entry   String   @id
+  reason  String?
+  addedAt DateTime @default(now()) @map("added_at") @db.Timestamptz(6)
+
+  @@map("denylist")
+}
+
+// Session state for idle/absolute bounds (6b). Kept minimal; largely derived
+// from the refresh-token family.
+model Session {
+  id          String   @id @db.Uuid
+  principalId String   @map("principal_id") @db.Uuid
+  familyId    String   @map("family_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+
+  @@index([principalId])
+  @@map("session")
+}
+
+// 6e authz-audit record (IDs and enums only, S7/S10.5). Emitted via the outbox
+// committed with the operation; tamper-evident hash-chain/WORM hardening is
+// DEFERRED, the record shape and emission path are built now.
+model AuthzAudit {
+  id           String    @id @db.Uuid
+  principalId  String    @map("principal_id")
+  cls          Int
+  operation    String
+  decision     String // ALLOW | DENY
+  resourceIds  String[]  @map("resource_ids")
+  outcome      String
+  reasonCode   String?   @map("reason_code")
+  acr          String?
+  authTime     DateTime? @map("auth_time") @db.Timestamptz(6)
+  asserterSvid String?   @map("asserter_svid")
+  traceId      String    @map("trace_id")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt])
+  @@map("authz_audit")
+}
+
+// The mandatory context outbox and inbox (E1, E6), reusing @andpay/outbox.
+model Outbox {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id")
+  eventType     String    @map("event_type")
+  partitionKey  String    @map("partition_key")
+  payload       Json      @db.JsonB
+  headers       Json?     @db.JsonB
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
+  attempts      Int       @default(0)
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox")
+}
+
+model Inbox {
+  consumer    String
+  dedupKey    String   @map("dedup_key")
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  @@id([consumer, dedupKey])
+  @@map("inbox")
+}

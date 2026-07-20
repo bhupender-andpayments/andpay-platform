@@ -24,7 +24,7 @@ import { join } from 'node:path'
  *   D  a context importing another context's generated client or source
  */
 
-const CONTEXTS = ['identity', 'tms', 'fulfillment', 'orchestrator'] as const
+const CONTEXTS = ['identity', 'tms', 'fulfillment', 'orchestrator', 'auth'] as const
 const root = process.cwd()
 
 function filesUnder(rel: string): string[] {

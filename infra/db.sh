@@ -13,11 +13,12 @@ export IDENTITY_DATABASE_URL="${IDENTITY_DATABASE_URL:-postgresql://andpay:andpa
 export TMS_DATABASE_URL="${TMS_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms}"
 export FULFILLMENT_DATABASE_URL="${FULFILLMENT_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment}"
 export ORCHESTRATOR_DATABASE_URL="${ORCHESTRATOR_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=orchestrator}"
+export AUTH_DATABASE_URL="${AUTH_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=auth}"
 
 MODE="${1:-deploy}"
 NAME="${2:-init}"
 
-for ctx in identity tms fulfillment orchestrator; do
+for ctx in identity tms fulfillment orchestrator auth; do
   schema="services/${ctx}/prisma/schema.prisma"
   echo ">>> ${ctx}"
   if [ "${MODE}" = "dev" ]; then
