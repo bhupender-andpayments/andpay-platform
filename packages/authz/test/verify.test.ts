@@ -76,4 +76,32 @@ describe('verifyAccessToken (RFC 8725 hardening, S10)', () => {
       verifyAccessToken(t, { jwks, expectedIss: iss, expectedAud: aud, denylist: new Set(['jti_1']) }),
     ).rejects.toThrow()
   })
+
+  it('rejects algorithm confusion: an HS256 token signed with the EC public key material (verifier pins ES256)', async () => {
+    const pub = jwks.keys[0]!
+    const hmacKey = new TextEncoder().encode(String(pub.x) + String(pub.y))
+    const now = Math.floor(Date.now() / 1000)
+    const forged = await new SignJWT(base)
+      .setProtectedHeader({ alg: 'HS256', kid: 'dev-1', typ: 'at+jwt' })
+      .setIssuer(iss).setAudience(aud).setSubject('prn_1')
+      .setIssuedAt(now).setNotBefore(now).setExpirationTime(now + 600).setJti('jti_hs')
+      .sign(hmacKey)
+    await expect(verifyAccessToken(forged, { jwks, expectedIss: iss, expectedAud: aud })).rejects.toThrow()
+  })
+
+  it('rejects an RS256 token (algorithm is not the pinned ES256)', async () => {
+    const rsa = await generateKeyPair('RS256', { extractable: true })
+    const now = Math.floor(Date.now() / 1000)
+    const t = await new SignJWT(base)
+      .setProtectedHeader({ alg: 'RS256', kid: 'dev-1', typ: 'at+jwt' })
+      .setIssuer(iss).setAudience(aud).setSubject('prn_1')
+      .setIssuedAt(now).setNotBefore(now).setExpirationTime(now + 600).setJti('jti_rs')
+      .sign(rsa.privateKey)
+    await expect(verifyAccessToken(t, { jwks, expectedIss: iss, expectedAud: aud })).rejects.toThrow()
+  })
+
+  it('rejects a wrong typ header (not at+jwt)', async () => {
+    const t = await mint({}, { typ: 'JWT' })
+    await expect(verifyAccessToken(t, { jwks, expectedIss: iss, expectedAud: aud })).rejects.toThrow()
+  })
 })

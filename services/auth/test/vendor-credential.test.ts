@@ -112,4 +112,9 @@ describe('class-6 vendor credential lifecycle (105, 5a-5e, check 5)', () => {
       issueVendorCredential({ vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: 'req-7' }, weak, { db, pepper: pepperPort, traceId: 't', now: 1000 }),
     ).rejects.toThrow()
   })
+
+  it('resolveVendorCredential fails closed on an unknown or malformed secret (5e), distinct from revoke', async () => {
+    await expect(resolveVendorCredential('apsk_live_UNKNOWNSECRETVALUE000000000000', { db, pepper, expectedMode: 'live' })).rejects.toThrow()
+    await expect(resolveVendorCredential('not-an-apsk-secret', { db, pepper, expectedMode: 'live' })).rejects.toThrow()
+  })
 })

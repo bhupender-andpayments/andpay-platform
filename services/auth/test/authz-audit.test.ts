@@ -10,6 +10,7 @@ import { LocalPepperAdapter } from '../src/ports/pepper.js'
 import { TotpAdapter } from '../src/ports/mfa.js'
 import { login, type LoginDeps } from '../src/login.js'
 import { authorizeAudited } from '../src/authorize.js'
+import { emitAuthzAudit } from '../src/audit.js'
 import { issueVendorCredential } from '../src/credentials.js'
 import { loadConfig } from '../src/config/index.js'
 import { AUTH_ISS } from '../src/index.js'
@@ -91,5 +92,20 @@ describe('6e authz-audit emission via the outbox (check 8)', () => {
     const issue = audits.find((a) => JSON.stringify(a.payload).includes('vendor_credential:create'))
     expect(issue).toBeDefined()
     expect(JSON.stringify(issue!.payload).includes(secret)).toBe(false)
+  })
+
+  it('the audit record rides the operation transaction (E1): absent after rollback, present after commit', async () => {
+    const rec = { principalId: opsId, cls: 3 as const, operation: 'atomicity-probe', decision: 'ALLOW' as const, outcome: 'ok', traceId: 'trace-e1' }
+    await db
+      .$transaction(async (tx) => {
+        await emitAuthzAudit(tx, rec)
+        throw new Error('force rollback')
+      })
+      .catch(() => undefined)
+    expect(await db.outbox.count({ where: { eventType: 'authz.audit' } })).toBe(0)
+    await db.$transaction(async (tx) => {
+      await emitAuthzAudit(tx, rec)
+    })
+    expect(await db.outbox.count({ where: { eventType: 'authz.audit' } })).toBe(1)
   })
 })

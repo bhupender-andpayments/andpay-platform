@@ -1,127 +1,117 @@
 # Spec 04 (Auth slice) evidence
 
 > Raw acceptance evidence for handoff spec 04. Committed OUTSIDE docs/ (docs/ is
-> gitignored per the owner's choice). This is the repo-side evidence record; the
-> authoritative BUILT-V1 flip in platform_build_state.md is the plan chat's to
-> make. Claude Code does NOT self-flip BUILT-V1.
-
-## Build state
-- Status: BUILT, evidence provided 2026-07-20; AWAITING plan-chat ratification to
-  flip the auth-slice and 6e-emission rows to BUILT-V1.
-- Layer: platform service (Auth). Decision 118 build step 4. Decisions 105, 121;
-  16.1 to 16.5; S10 to S15, S22, S23.
-- Commits: incremental on main, one coherent unit each (see git log).
+> gitignored per the owner's choice). Repo-side record; the authoritative
+> BUILT-V1 flip in platform_build_state.md is the plan chat's to make. Claude Code
+> does NOT self-flip BUILT-V1. Raw output below; a green summary is a claim.
 
 ## Full-suite verification (raw)
 ```
-pnpm build      -> exit 0 (all packages + services/auth built)
+pnpm build      -> exit 0 (all packages + services/auth)
 pnpm lint       -> exit 0 (clean)
 pnpm typecheck  -> exit 0 (no errors)
 pnpm test       -> Test Files  23 passed (23)
-                   Tests      138 passed (138)
+                   Tests      143 passed (143)
                    Type Errors  no errors
 ```
-Local stack up: postgres:16 (5432) + redpanda (kafka 19092, schema registry 18081).
+Local stack: postgres:16 (5432) + redpanda (kafka 19092, schema registry 18081).
 
-## REPO SHAPE delivered (spec Section 6)
-- `@andpay/authz` (secret-free library, imported by every context): D3 claim types,
-  local JWKS verify with RFC 8725 hardening, api_/apsk_ edge-resolve-to-claim, the
-  denylist check, the D2 two-gate evaluator. Pure functions over injected material
-  (JWKS, pepper, projection, denylist, role-config); holds no signing key, no
-  pepper, no store, and never calls Auth.
-- `services/auth` (sole secret-holder): the `auth` prisma schema (FORCE RLS), the
-  KMS-signing / pepper / MFA ports with local dev adapters, config-as-code
-  (roles, vendor sets, audiences, step-up catalog), token issuance + login + acr
-  gate, the refresh-token family, the class-6 credential lifecycle + fact, and 6e
-  authz-audit emission.
+## Clarification: internal-principal `sub` is a bare surrogate uuid (Section 3, I3/I4)
+`internal_principal.id` is `@db.Uuid`; `login()` sets the token `sub` to that uuid. There is no `prn_` prefix anywhere in the code or schema. The `prn_ops1` in the first evidence run was a hand-typed display literal passed as `principalId` in a since-deleted scratch script. Raw (check 1 below): `sub=bf3e2b8e-3c53-47ee-8f88-1b601f6ab730`, matches the bare-uuid regex.
 
 ## Ratified interpretive choices (locked with the plan chat before build)
-- A. Lean claim keys: OIDC-aligned `iss sub aud iat exp nbf jti` + `cls mode scope psr epoch acr amr auth_time`. `mode` added per S2/S16 (always present; class-3 v1 always live). Class-3 `scope` is empty; ceiling resolves from the role via `psr` (4c/D121).
-- B. `acr` in {AAL1,AAL2,AAL3}; `amr` per RFC 8176 (pwd/otp/sms/hwk/swk); WebAuthn to hwk.
-- C. Audiences: `andpay:internal-admin` (class-3 JWT), `andpay:vendor` (class-6, checked at resolution, never a JWT).
-- D. Config seed: class-3 roles support_readonly/ops/admin (AAL2) plus super_admin (AAL3, defined but login gated closed, WebAuthn deferred); class-6 sets vendor_manufacturer/vendor_print.
-- E. `apsk_{live|test}_` + base64url(32 CSPRNG bytes) + a 4-char checksum; stored ONLY as the peppered HMAC; the display fingerprint is the first 8 hex of a non-reversible hash (nothing raw stored).
-- F. 6e authz-audit is an auth-INTERNAL outbox record (event_type `authz.audit`), never on the public fact bus; only `fct.auth.credential.v1` is public.
-- G. Libraries (Section 4 swappable): jose (JWT/JWKS/ES256), @node-rs/argon2 (Argon2id password verifier), Node crypto (HMAC/CSPRNG), otplib (TOTP).
-- H. Tunable defaults: access TTL 600s; class-3 refresh idle 1800s / absolute 28800s; step-up freshness 300s; S22 verify leeway 60s. (RBI admin-session clause 15.B may tighten later; a verify, not a change now.)
-- Additive migration 0002 (S23 expand-contract): the 06.A idempotency key on vendor_credential.
-- Tooling: eslint no-unused-vars now ignores `_`-prefixed identifiers (interface-mandated stub params).
+A. Lean claim keys: `iss sub aud iat exp nbf jti` + `cls mode scope psr epoch acr amr auth_time`; `mode` per S2/S16; class-3 `scope` empty, ceiling from role via `psr` (4c/D121). B. `acr` AAL1/2/3; `amr` RFC 8176; WebAuthn to hwk. C. Audiences `andpay:internal-admin` (class-3 JWT) and `andpay:vendor` (class-6, at resolution, never a JWT). D. Class-3 roles support_readonly/ops/admin (AAL2), super_admin (AAL3, defined, login gated closed); class-6 vendor_manufacturer/vendor_print. E. `apsk_{live|test}_` + base64url(32 CSPRNG bytes) + 4-char checksum; stored only as the peppered HMAC; fingerprint = first 8 hex of `sha256(RAW SECRET)` (see check 5, ratification of E pending, no rework). F. 6e is an auth-internal `authz.audit` outbox record, never public; only `fct.auth.credential.v1` is public. G. jose, @node-rs/argon2, Node crypto, otplib (Section 4 swappable). H. access TTL 600s, class-3 refresh idle 1800s / absolute 28800s, step-up freshness 300s (RBI 15.B may tighten later). Plus: additive migration 0002 (06.A idempotency key, S23 expand-contract); eslint ignores `_`-prefixed interface-stub params.
 
-## Acceptance checks (raw)
+## Acceptance checks (raw, grouped by test file)
 
-### Check 1: D3 issue + local JWKS verify + RFC 8725 rejections (LOAD-BEARING)
+### packages/authz/test/verify.test.ts (9) -> CHECK 1 (RFC 8725) + CHECK 4 (JWT denylist)
 ```
-JWT header : {"alg":"ES256","kid":"dev-1","typ":"at+jwt"}
-JWT claims : {"cls":3,"mode":"live","scope":{},"psr":"role:admin","epoch":1,"acr":"AAL2","amr":["pwd","otp"],"auth_time":1800000000,"iss":"andpay-auth","sub":"prn_ops1","aud":"andpay:internal-admin","iat":1800000000,"nbf":1800000000,"exp":1800000600,"jti":"cffa55ba-d26f-4b39-a258-8e02c562a09c"}
-JWKS (public only, no "d"): {"kty":"EC","x":"z3aOCJINkIkk5O6YvijDIKswGuOGwDbJhfpKTO8s934","y":"OB9Z48SXmYPCuC2WPJngpaQn5lf0b0O-m_L0Ppl9x3U","crv":"P-256","kid":"dev-1","alg":"ES256","use":"sig"}
-LOCAL VERIFY OK: cls=3 acr=AAL2 psr=role:admin mode=live
-WRONG-AUD REJECTED: token-verify-failed
-ALG:NONE REJECTED: token-verify-failed
+header : {"alg":"ES256","kid":"dev-1","typ":"at+jwt"}
+claims : {"cls":3,"mode":"live","scope":{},"psr":"role:admin","epoch":1,"acr":"AAL2","amr":["pwd","otp"],"auth_time":1800000000,"iss":"andpay-auth","sub":"bf3e2b8e-3c53-47ee-8f88-1b601f6ab730","aud":"andpay:internal-admin","iat":1800000000,"nbf":1800000000,"exp":1800000600,"jti":"06878eb6-4fe7-4881-9ee4-420f14d54a66"}
+sub is a BARE surrogate uuid, no registry prefix: true
+JWKS public-only (no "d"): {"kty":"EC","x":"-kIHG3zw...","y":"-y754uRs...","crv":"P-256","kid":"dev-1","alg":"ES256","use":"sig"}
+LOCAL VERIFY OK: cls=3
+wrong-aud       => token-verify-failed / JWTClaimValidationFailed
+alg:none        => token-verify-failed / JOSEAlgNotAllowed
+HS256 confusion => token-verify-failed / JOSEAlgNotAllowed   (HS256 signed with the EC public key material; verifier pins ES256)
+RS256           => token-verify-failed / JOSEAlgNotAllowed
+wrong typ (JWT) => token-verify-failed / JWTClaimValidationFailed
+(the token below is validly signed + unexpired; ONLY the denylist rejects it)
+denylist by SUB => denylisted / denylisted
+denylist by JTI => denylisted / denylisted
 ```
-Tests: packages/authz/test/verify.test.ts (6), services/auth/test/issue-and-acr.test.ts (8).
 
-### Check 2: MFA and assurance acr gate (6a)
-- A class-3 login with password only reaches AAL1 and is DENIED against the AAL2 platform floor; password + TOTP reaches AAL2 and issues a session (services/auth/test/login.test.ts, end to end against the DB).
-- enforceRoleAssurance('AAL3', 'AAL2') throws: the super_admin path (requiredAcr AAL3, WebAuthn deferred) denies an AAL2 proof, so super_admin login is gated closed (services/auth/test/issue-and-acr.test.ts).
-
-### Check 3: refresh-token family, reuse revokes the whole family (LOAD-BEARING)
+### services/auth/test/{login,issue-and-acr}.test.ts (3 + 8) -> CHECK 2 (acr gate)
 ```
-rotate r0 -> r1: rows (used/revoked) = [{"used":true,"revoked":false},{"used":false,"revoked":false}]
-REUSE of rotated r0 => refresh-reuse-family-revoked
-legit r1 after family revoke => refresh-revoked
-family after reuse (all revoked) = [true,true]
+computeAcr([pwd])       = AAL1
+computeAcr([pwd,otp])   = AAL2
+AAL2 floor vs AAL1 (password-only) => assurance-insufficient / requires AAL2, reached AAL1
+super_admin AAL3 vs AAL2           => assurance-insufficient / requires AAL3, reached AAL2
+integrated login password-only     => assurance-insufficient / requires AAL2, reached AAL1
+integrated login password+TOTP     => acr=AAL2  session issued  token sub=da2a1c6a-...-9b0363f0fbe8 (bare uuid)
 ```
-Tests: services/auth/test/refresh-family.test.ts (4, incl. idle and absolute bounds).
 
-### Check 4: denylist rejects an otherwise-valid credential/token (D3)
-- A denylisted sub or jti is rejected by verifyAccessToken even when the JWT is validly signed and unexpired (packages/authz/test/verify.test.ts).
-- A denylisted api_ id fails resolveVendorCredential immediately though the credential is ACTIVE (services/auth/test/vendor-credential.test.ts; see check 5 raw).
-
-### Check 5: class-6 peppered-HMAC storage + structural exclusion (LOAD-BEARING)
+### services/auth/test/refresh-family.test.ts (4) -> CHECK 3 (session bounds)
 ```
-show-once secret         : apsk_live_bPa5p... (len 57)
-api_ id (loggable)       : api_01kxzw21b1fc5r6xf7zg50vg0q
-stored row               : {"peppered_hash":"598b131b038cc6be02f0...","fingerprint":"82a69315","status":"ACTIVE","mode":"live"}
-stored HMAC == HMAC(secret, pepper): true
-raw secret present in row?         : false
-grant ledger:post => permission-not-in-class6-universe
-grant kyc:attest => permission-not-in-class6-universe
-grant posture:loosen => permission-not-in-class6-universe
-grant api_keys:manage => permission-not-in-class6-universe
-grant device:activate => permission-not-in-class6-universe
-resolve ACTIVE           : cls=6
-after status revoke => credential-revoked
+rotate r0 -> r1 rows (used/revoked): [{"used":true,"revoked":false},{"used":false,"revoked":false}]
+reuse rotated r0         => refresh-reuse-family-revoked
+legit r1 after revoke    => refresh-revoked
+family after reuse (all revoked): [true,true]
+idle-expired (+1801s)    => refresh-idle-expired
+absolute-expired (+3700s, idle still fresh, forces full re-auth) => refresh-absolute-expired
 ```
-Tests: services/auth/test/vendor-credential.test.ts (7, incl. idempotency and step-up).
 
-### Check 6: distinct planes, class 6 never a JWT (105f)
-- An internal-admin JWT presented at the vendor edge is rejected (not an apsk_ secret).
-- A resolved class-6 credential carries aud `andpay:vendor`, never `andpay:internal-admin`.
-- Issuance returns a single-segment apsk_ secret (not a three-segment JWT): class 6 is never minted a JWT.
-Tests: services/auth/test/planes-scope-redaction.test.ts (7).
-
-### Check 7: scope resolves with ZERO Identity read (LOAD-BEARING, D121)
+### services/auth/test/vendor-credential.test.ts (8) -> CHECK 5 + CHECK 4 (api_ denylist)
 ```
-class-3 authorize from config-as-code only (vendor_credential:create): true
-class-6 scope from credential binding: vndr=vndr_01kxzw21b0ekya9wvf3tbr51f7 wq=wq-A
-class-6 authorize own work-queue     : true
-class-6 authorize another queue      : false
-Identity fact-read seam when invoked : identity-seam-not-wired (unwired, never read in this slice)
+show-once secret          : apsk_live_GfdD9... (len 57)
+stored peppered_hash == HMAC(secret, pepper): true
+raw secret present in row : false
+secret construction       : apsk_{live|test}_ + base64url(32 CSPRNG bytes) + 4-char checksum (as built)
+fingerprint is sha256(RAW SECRET)[:8] (NOT the peppered HMAC, NOT the api_ id): true
+grant ledger:post      => permission-not-in-class6-universe
+grant kyc:attest       => permission-not-in-class6-universe
+grant posture:loosen   => permission-not-in-class6-universe
+grant api_keys:manage  => permission-not-in-class6-universe
+grant device:activate  => permission-not-in-class6-universe
+fail-closed unknown apsk_ => credential-unknown      (5e, distinct from both revoke paths)
+fail-closed malformed     => mode-mismatch
+resolve ACTIVE            : cls=6
+credential status before denylist: ACTIVE (not revoked)
+credential status after addToDenylist: ACTIVE (still ACTIVE; denylist is a DISTINCT channel)
+resolve ACTIVE-but-denylisted api_ => denylisted             (CHECK 4, api_ path)
+resolve after STATUS revoke        => credential-revoked     (distinct mechanism, 5d)
 ```
-Enforced structurally: authorize and resolveVendorCredential take no Identity input; the cross-schema guard forbids any services/identity import (test/architecture.test.ts).
 
-### Check 8: 6e authz-audit emission via the outbox
-- An authentication, every DENY, and a vendor-credential issuance each emit an IDs-only `authz.audit` outbox record committed with the operation; no password, TOTP, or apsk_ secret appears in any record (services/auth/test/authz-audit.test.ts, 4).
+### services/auth/test/planes-scope-redaction.test.ts (7) -> CHECK 6 (planes) + CHECK 7 (no Identity read)
+```
+internal-admin JWT at vendor edge  => mode-mismatch          (a JWT is not an apsk_ secret; rejected at resolution)
+class-6 resolved claim aud (plane) : andpay:vendor  (sub=api_01kxzysmtfeqcrzfcc828w5eya)
+class-6 claim would be rejected on the internal-admin plane: true
+apsk_ secret segment count (a JWT has 3): 1                  (class 6 is never minted a JWT)
+class-3 authorize from config only (vendor_credential:create): true
+class-6 authorize own work-queue   : true
+class-6 authorize another queue    : false
+(authorize + resolveVendorCredential take NO Identity reader; the Identity seam is unwired and throws)
+```
 
-### Check 9: residency and secret redaction
-- infra/aws AuthKeysStack pins the D3 signing key as a multi-region KMS key (D79) and the pepper (Secrets Manager) to ap-south-1/ap-south-2 behind the S6 residency guard; static residency guard test green (test/residency.test.ts, 4). Live cdk synth/deploy and its residency proof are the owner's (Claude Code runs no AWS command).
-- redactSecrets scrubs apsk_ tokens before the first log line (5c); audit records and errors carry only codes/ids, never the presented secret (services/auth/test/planes-scope-redaction.test.ts).
+### services/auth/test/authz-audit.test.ts (5) -> CHECK 8 (6e emission + E1 atomicity)
+```
+authn record   : {"id":"61ac...","acr":"AAL2","cls":3,"outcome":"authenticated","traceId":"trace-login","authTime":1800000000,"decision":"ALLOW","operation":"login","principalId":"da2a1c6a-..."}
+DENY record    : {"id":"cd6b...","acr":"AAL2","cls":3,"outcome":"denied","traceId":"trace-deny","authTime":1800000000,"decision":"DENY","operation":"mfa:reset","reasonCode":"permission-denied","principalId":"da2a1c6a-..."}
+issuance record: {"id":"ecb5...","acr":"AAL2","cls":3,"outcome":"issued","traceId":"trace-issue","decision":"ALLOW","operation":"vendor_credential:create","principalId":"da2a1c6a-...","resourceIds":["api_01kxzysmvve7...","vndr_01kxzysmsze6..."]}
+any password / TOTP secret / apsk_ in the three records? false
+E1: authz.audit rows after ROLLED-BACK operation: 0
+E1: authz.audit rows after COMMITTED operation : 1
+```
+
+### CHECK 9 (residency + redaction): test/residency.test.ts (4) + planes-scope-redaction.test.ts
+infra/aws AuthKeysStack pins the D3 signing key as a multi-region KMS key (D79) and the pepper (Secrets Manager) to ap-south-1/ap-south-2 behind the S6 residency guard; static residency guard green. Live `cdk synth`/deploy and its residency proof are the owner's (Claude Code runs no AWS command). `redactSecrets` scrubs `apsk_` tokens before the first log line (5c); the six audit records above carry no secret.
 
 ## Guard teeth (verified)
-Planting `import '@prisma/client'` into @andpay/authz made the "holds no store" guard FAIL (1 failed | 9 passed); removing it returned all 10 guard tests green. The @andpay/authz secret-free DO-NOT has teeth.
+Planting `import '@prisma/client'` into @andpay/authz made the "holds no store" guard FAIL (1 failed | 9 passed); removing it returned all 10 guard tests green.
 
-## Deferrals (registered, not silently skipped)
-Live AWS multi-region KMS key + Secrets Manager pepper + ap-south-1/2 residency live proof + SPIFFE/mTLS + broker ACLs (deploy). JWKS rotation. Full 5d N-concurrent credential rotation. Full step-up catalog breadth. The 6e tamper-evident hash-chain/WORM store and periodic integrity job (the emission path and record shape are built now). The NestJS HTTP shell (the nine checks are mechanism-level; portals wire HTTP at step 9). The Identity/enrollment fact-read seam (stubbed interface, wired at Identity-min, step 5). WebAuthn and SMS MFA adapters (interfaces only, so AAL3 is unattainable and super_admin login is gated closed).
+## Deferrals (registered, not skipped)
+Live AWS multi-region KMS + Secrets Manager pepper + ap-south-1/2 residency live proof + SPIFFE/mTLS + broker ACLs (deploy); JWKS rotation; full 5d N-concurrent rotation; full step-up catalog; the 6e tamper-evident hash-chain/WORM store + integrity job (emission path and record shape built now); the NestJS HTTP shell; the Identity fact-read seam (stubbed, wired at Identity-min step 5); WebAuthn and SMS MFA adapters (interface-only, so AAL3 is unattainable and super_admin login is gated closed).
 
 ## Next
-On consistent evidence, the plan chat flips the auth-slice and 6e-emission rows to BUILT-V1 in platform_build_state.md with a milestone line; the D118 sequence then continues at step 5 (Identity-min).
+On consistent evidence, the plan chat flips the auth-slice and 6e-emission rows to BUILT-V1 in platform_build_state.md with a milestone line; D118 then continues at step 5 (Identity-min).
