@@ -130,3 +130,37 @@ describe('cross-schema isolation guard', () => {
     }
   })
 })
+
+// The spec-04 REPO SHAPE DO-NOT: @andpay/authz is secret-free. It holds no
+// signing key, no pepper, no store, and never calls Auth. A static net over its
+// source (the pepper is INJECTED at runtime, so its absence is not statically
+// checkable here; the store/signing/Auth-coupling breaches are).
+describe('@andpay/authz secret-free DO-NOT (spec 04 REPO SHAPE)', () => {
+  const authzFiles = filesUnder(join('packages', 'authz', 'src'))
+    .filter((p) => p.endsWith('.ts'))
+    .map((file) => ({ file, text: readFileSync(join(root, file), 'utf8') }))
+
+  it('has files to check', () => {
+    expect(authzFiles.length).toBeGreaterThan(0)
+  })
+
+  it('holds no store: imports no database client', () => {
+    for (const { file, text } of authzFiles) {
+      expect(text.includes('@prisma/client'), `${file} must not import a db client`).toBe(false)
+      expect(/generated\/client/.test(text), `${file} must not import a generated client`).toBe(false)
+    }
+  })
+
+  it('never calls Auth: imports nothing from services/ (T4)', () => {
+    for (const { file, text } of authzFiles) {
+      expect(text.includes('services/'), `${file} must not import from services/`).toBe(false)
+    }
+  })
+
+  it('mints nothing: no token signing (SignJWT) and no key generation (holds no signing key)', () => {
+    for (const { file, text } of authzFiles) {
+      expect(text.includes('SignJWT'), `${file} must not sign tokens`).toBe(false)
+      expect(text.includes('generateKeyPair'), `${file} must not generate keys`).toBe(false)
+    }
+  })
+})
