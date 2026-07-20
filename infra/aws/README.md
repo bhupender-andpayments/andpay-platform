@@ -7,9 +7,11 @@ production target behind the swappable `PublisherPort` and schema-registry port
 `infra/docker-compose.dev.yml`); the application code is identical, only the
 client config differs.
 
-This project is deployed OUT OF BAND and is NOT part of the pnpm workspace. It has
-its own toolchain (aws-cdk-lib, ts-node). Claude Code never runs AWS commands;
-apply this yourself.
+This project is a STANDALONE pnpm root (its own `pnpm-workspace.yaml` and
+`pnpm-lock.yaml`), deliberately isolated from the repo-root workspace so the
+heavy, deploy-only `aws-cdk-lib` toolchain never bloats the main `pnpm install`
+or CI. Run all pnpm commands from THIS directory. Claude Code never runs AWS
+commands; apply this yourself.
 
 ## What it creates
 
@@ -25,9 +27,9 @@ apply this yourself.
 
 ```
 cd infra/aws
-npm install
-npx cdk synth        # renders the CloudFormation; ResidencyRegion output shows ap-south-1
-npx cdk deploy --all # requires AWS credentials; deploys primary (ap-south-1) and DR (ap-south-2)
+pnpm install          # standalone (this dir is its own pnpm root)
+pnpm exec cdk synth   # renders the CloudFormation; ResidencyRegion output shows ap-south-1 (no AWS calls)
+pnpm exec cdk deploy --all  # requires AWS credentials; deploys primary (ap-south-1) and DR (ap-south-2)
 ```
 
 Verify residency (acceptance check 7), on your machine with AWS access:

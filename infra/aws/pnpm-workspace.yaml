@@ -1,0 +1,4 @@
+# Marks infra/aws as its OWN standalone pnpm root, isolated from the repo-root
+# workspace. The heavy aws-cdk-lib toolchain is deploy-only, so it stays out of
+# the main `pnpm install` and CI. Run pnpm commands from this directory.
+packages: []

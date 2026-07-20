@@ -7,7 +7,7 @@
     "andpay-event-backbone-cdk": "bin/app.ts"
   },
   "scripts": {
-    "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "synth": "cdk synth",
     "deploy": "cdk deploy --all"
   },
