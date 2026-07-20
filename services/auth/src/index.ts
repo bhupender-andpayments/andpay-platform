@@ -20,3 +20,5 @@ export * from "./secret.js";
 export * from "./events.js";
 export * from "./denylist.js";
 export * from "./credentials.js";
+export * from "./audit.js";
+export * from "./authorize.js";

@@ -6,6 +6,7 @@ import type { MfaAdapter } from './ports/mfa.js'
 import { computeAcr, enforceRoleAssurance } from './assurance.js'
 import { issueAccessToken } from './issue.js'
 import { issueRefreshFamily } from './refresh.js'
+import { auditStandalone } from './audit.js'
 import { ROLES } from './config/roles.js'
 import { INTERNAL_ADMIN_PLANE } from './config/audiences.js'
 
@@ -22,6 +23,7 @@ export interface LoginDeps {
   idleSec: number
   absoluteSec: number
   clientBind: string
+  traceId: string
   now?: number
 }
 
@@ -85,6 +87,17 @@ export async function login(
     idleSec: deps.idleSec,
     absoluteSec: deps.absoluteSec,
     now,
+  })
+
+  await auditStandalone(deps.db, {
+    principalId: principal.id,
+    cls: 3,
+    operation: 'login',
+    decision: 'ALLOW',
+    outcome: 'authenticated',
+    acr,
+    authTime: now,
+    traceId: deps.traceId,
   })
 
   return { accessToken, refreshToken, principalId: principal.id, acr }

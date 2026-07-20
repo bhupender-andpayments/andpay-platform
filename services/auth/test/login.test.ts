@@ -42,6 +42,7 @@ function deps(): LoginDeps {
     idleSec: 1800,
     absoluteSec: 28800,
     clientBind: 'client-A',
+    traceId: 'trace-login',
   }
 }
 

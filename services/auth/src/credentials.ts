@@ -14,6 +14,7 @@ import type { PepperPort } from './ports/pepper.js'
 import { mintSecret } from './secret.js'
 import { credentialFactEnvelope, AUTH_CREDENTIAL_TOPIC } from './events.js'
 import { loadDenylist } from './denylist.js'
+import { emitAuthzAudit } from './audit.js'
 import { requireStepUp } from './stepup.js'
 import { STEP_UP_CATALOG } from './config/step-up-catalog.js'
 import { VENDOR_SETS } from './config/vendor-sets.js'
@@ -107,6 +108,17 @@ export async function issueVendorCredential(
       eventType: AUTH_CREDENTIAL_TOPIC,
       partitionKey: apiId,
       payload: env,
+    })
+    await emitAuthzAudit(tx, {
+      principalId: actor.operatorId,
+      cls: actor.claim.cls,
+      operation: 'vendor_credential:create',
+      decision: 'ALLOW',
+      outcome: 'issued',
+      resourceIds: [apiId, input.vndrId],
+      acr: actor.claim.acr,
+      authTime: actor.claim.auth_time,
+      traceId: deps.traceId,
     })
   })
 
