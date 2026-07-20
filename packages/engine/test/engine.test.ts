@@ -32,11 +32,14 @@ describe('@andpay/engine D77 orchestration engine', () => {
           name: 'reserve',
           action: async (ctx) => {
             reserveRuns++
-            // emit a command ONLY through the engine outbox (E1), atomic with the step
+            // emit a command ONLY through the engine outbox (E1), atomic with the
+            // step. This throwaway reference PM uses a TEST-ONLY topic so it never
+            // references or pre-seeds the real Fulfillment command (cmd.fulfillment.*),
+            // which arrives with its own schema at step 7.
             await enqueue(ctx.tx, {
               aggregateType: 'saga',
               aggregateId: ctx.sagaId,
-              eventType: 'cmd.fulfillment.batch.v1',
+              eventType: 'cmd.test.reference_pm.v1',
               partitionKey: ctx.sagaId,
               payload: { command: 'reserve_batch', sagaId: ctx.sagaId },
             })
