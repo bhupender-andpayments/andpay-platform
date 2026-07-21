@@ -28,6 +28,7 @@ export type ProjectResult =
       mrchId: string
       enrollmentId: string
       mintedMerchant: boolean
+      updatedMerchant: boolean
     }
 
 // Interactive-transaction client: the full client without the top-level
@@ -42,12 +43,15 @@ async function setProgramContext(tx: Tx, programUuid: string): Promise<void> {
 
 // Resolve the sponsor bank tenant by its bank_reference_code, minting a tnnt_ on
 // first sight. Concurrency-safe: the losing INSERT is swallowed by ON CONFLICT
-// and re-resolves to the winner (a boundary, not a lint).
-async function resolveTenant(tx: Tx, bankReferenceCode: string): Promise<string> {
+// and re-resolves to the winner. `created` is true only when we minted it.
+async function resolveTenant(
+  tx: Tx,
+  bankReferenceCode: string,
+): Promise<{ tenantUuid: string; created: boolean }> {
   const hit = await tx.$queryRaw<{ id: string }[]>`
     SELECT id FROM tenant WHERE bank_reference_code = ${bankReferenceCode}
   `
-  if (hit.length > 0) return hit[0]!.id
+  if (hit.length > 0) return { tenantUuid: hit[0]!.id, created: false }
   const candidate = toUuid(newId('tnnt'))
   const won = await tx.$queryRaw<{ id: string }[]>`
     INSERT INTO tenant (id, display_name, bank_reference_code, status)
@@ -55,23 +59,28 @@ async function resolveTenant(tx: Tx, bankReferenceCode: string): Promise<string>
     ON CONFLICT (bank_reference_code) DO NOTHING
     RETURNING id
   `
-  if (won.length > 0) return candidate
+  if (won.length > 0) return { tenantUuid: candidate, created: true }
   const w = await tx.$queryRaw<{ id: string }[]>`
     SELECT id FROM tenant WHERE bank_reference_code = ${bankReferenceCode}
   `
-  return w[0]!.id
+  return { tenantUuid: w[0]!.id, created: false }
 }
 
 // Resolve the Program by (tenant, product_type), minting a prog_ on first sight.
 // STATED V1 ASSUMPTION: one Program per bank per product. Sets the program
-// context before the write so the write-gate passes (07.B).
-async function resolveProgram(tx: Tx, tenantUuid: string, productType: string): Promise<string> {
+// context before the write so the write-gate passes (07.B). `created` is true
+// only when we minted it.
+async function resolveProgram(
+  tx: Tx,
+  tenantUuid: string,
+  productType: string,
+): Promise<{ programUuid: string; created: boolean }> {
   const hit = await tx.$queryRaw<{ id: string }[]>`
     SELECT id FROM program WHERE tenant_id = ${tenantUuid}::uuid AND product_type = ${productType}
   `
   if (hit.length > 0) {
     await setProgramContext(tx, hit[0]!.id)
-    return hit[0]!.id
+    return { programUuid: hit[0]!.id, created: false }
   }
   const candidate = toUuid(newId('prog'))
   await setProgramContext(tx, candidate)
@@ -81,30 +90,39 @@ async function resolveProgram(tx: Tx, tenantUuid: string, productType: string): 
     ON CONFLICT (tenant_id, product_type) DO NOTHING
     RETURNING id
   `
-  if (won.length > 0) return candidate
+  if (won.length > 0) return { programUuid: candidate, created: true }
   const w = await tx.$queryRaw<{ id: string }[]>`
     SELECT id FROM program WHERE tenant_id = ${tenantUuid}::uuid AND product_type = ${productType}
   `
   await setProgramContext(tx, w[0]!.id)
-  return w[0]!.id
+  return { programUuid: w[0]!.id, created: false }
+}
+
+interface MerchantFields {
+  displayName: string
+  legalName: string
+  mcc: string
+  registeredAddress: string
 }
 
 // The Fork B merchant resolver: match by (tenant, bank_merchant_reference) via
 // the DB-enforced merchant_bank_ref UNIQUE. On first sight mint a mrch_ and
 // insert the resolver row; the merchant row is created ONLY when we win the
 // resolver insert, so a loser leaves no orphan and re-resolves to the winner.
+// On a hit, apply the bank-file fields when they differ and report the diff, so
+// the caller emits MerchantUpdated only on an actual change.
 async function resolveMerchant(
   tx: Tx,
   tenantUuid: string,
   bankMerchantReference: string,
   vpaHint: string | undefined,
-  merchantFields: { displayName: string; legalName: string; mcc: string; registeredAddress: string },
-): Promise<{ merchantUuid: string; minted: boolean }> {
+  fields: MerchantFields,
+): Promise<{ merchantUuid: string; minted: boolean; updated: boolean }> {
   const hit = await tx.$queryRaw<{ merchant_id: string }[]>`
     SELECT merchant_id FROM merchant_bank_ref
     WHERE tenant_id = ${tenantUuid}::uuid AND bank_merchant_reference = ${bankMerchantReference}
   `
-  if (hit.length > 0) return { merchantUuid: hit[0]!.merchant_id, minted: false }
+  if (hit.length > 0) return applyMerchantFields(tx, hit[0]!.merchant_id, fields)
 
   const candidate = toUuid(newId('mrch'))
   const won = await tx.$queryRaw<{ merchant_id: string }[]>`
@@ -117,121 +135,165 @@ async function resolveMerchant(
     await tx.merchant.create({
       data: {
         id: candidate,
-        displayName: merchantFields.displayName,
-        legalName: merchantFields.legalName,
-        mcc: merchantFields.mcc,
-        registeredAddress: merchantFields.registeredAddress,
+        displayName: fields.displayName,
+        legalName: fields.legalName,
+        mcc: fields.mcc,
+        registeredAddress: fields.registeredAddress,
         activationState: 'PENDING',
         status: 'ACTIVE',
       },
     })
-    return { merchantUuid: candidate, minted: true }
+    return { merchantUuid: candidate, minted: true, updated: false }
   }
   // lost the race: the concurrent winner committed the resolver row and the
-  // merchant; re-resolve to it and discard our candidate (no merchant created).
+  // merchant; re-resolve to it and apply our fields if they differ.
   const w = await tx.$queryRaw<{ merchant_id: string }[]>`
     SELECT merchant_id FROM merchant_bank_ref
     WHERE tenant_id = ${tenantUuid}::uuid AND bank_merchant_reference = ${bankMerchantReference}
   `
-  return { merchantUuid: w[0]!.merchant_id, minted: false }
+  return applyMerchantFields(tx, w[0]!.merchant_id, fields)
 }
 
-// Consume one bank-file row fact, project the identity graph, and emit the four
-// identity facts, all in one transaction (E1) guarded by the inbox (E6). Pure
-// fact-in, fact-out: no product call (C2), no cross-context read (C4).
+// Compare the bank-file fields to the stored merchant; update and report a diff
+// only when a row-sourced field actually changed (activation_state and status
+// are Identity-managed and never sourced from the row).
+async function applyMerchantFields(
+  tx: Tx,
+  merchantUuid: string,
+  fields: MerchantFields,
+): Promise<{ merchantUuid: string; minted: boolean; updated: boolean }> {
+  const stored = await tx.merchant.findUniqueOrThrow({ where: { id: merchantUuid } })
+  const changed =
+    stored.displayName !== fields.displayName ||
+    stored.legalName !== fields.legalName ||
+    stored.mcc !== fields.mcc ||
+    stored.registeredAddress !== fields.registeredAddress
+  if (!changed) return { merchantUuid, minted: false, updated: false }
+  await tx.merchant.update({
+    where: { id: merchantUuid },
+    data: {
+      displayName: fields.displayName,
+      legalName: fields.legalName,
+      mcc: fields.mcc,
+      registeredAddress: fields.registeredAddress,
+    },
+  })
+  return { merchantUuid, minted: false, updated: true }
+}
+
+// Consume one bank-file row fact, project the identity graph, and emit the
+// identity facts, all in one transaction (E1) guarded by the inbox (E6).
+//
+// Fact hygiene: emit the tenant, program, and merchant fact ONLY on a state
+// change (a first mint, or MerchantUpdated on an actual field diff), never on a
+// pure no-change. ALWAYS emit the per-row fct.identity.enrollment.v1 carrying
+// the row's source correlation id, so TMS-thin can attach its assignment to the
+// resolved mrch_ at step 6 for every dispatch row (D116). Pure fact-in,
+// fact-out: no product call (C2), no cross-context read (C4).
 export async function projectRowFact(db: IdentityDb, env: RowFactEnvelope): Promise<ProjectResult> {
   const p = env.payload
   let out: ProjectResult = { deduped: true }
 
   await db.$transaction(async (tx) => {
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
-      const tenantUuid = await resolveTenant(tx, p.bankReferenceCode)
-      const programUuid = await resolveProgram(tx, tenantUuid, p.productType)
-      const { merchantUuid, minted } = await resolveMerchant(
-        tx,
-        tenantUuid,
-        p.bankMerchantReference,
-        p.vpaHint,
-        { displayName: p.displayName, legalName: p.legalName, mcc: p.mcc, registeredAddress: p.registeredAddress },
-      )
+      const tenant = await resolveTenant(tx, p.bankReferenceCode)
+      const program = await resolveProgram(tx, tenant.tenantUuid, p.productType)
+      const merchant = await resolveMerchant(tx, tenant.tenantUuid, p.bankMerchantReference, p.vpaHint, {
+        displayName: p.displayName,
+        legalName: p.legalName,
+        mcc: p.mcc,
+        registeredAddress: p.registeredAddress,
+      })
 
       // Ensure the (Program, merchant) enrollment. A new Program for an existing
       // merchant is a NEW enrollment, never a new merchant (I1, I5). The program
       // context is already set for the write-gate.
       const enrollment = await tx.enrollment.upsert({
-        where: { programId_merchantId: { programId: programUuid, merchantId: merchantUuid } },
-        create: { programId: programUuid, merchantId: merchantUuid, tenantId: tenantUuid, status: 'ACTIVE' },
+        where: { programId_merchantId: { programId: program.programUuid, merchantId: merchant.merchantUuid } },
+        create: { programId: program.programUuid, merchantId: merchant.merchantUuid, tenantId: tenant.tenantUuid, status: 'ACTIVE' },
         update: {},
       })
 
-      const tnntId = fromUuid('tnnt', tenantUuid)
-      const progId = fromUuid('prog', programUuid)
-      const mrchId = fromUuid('mrch', merchantUuid)
+      const tnntId = fromUuid('tnnt', tenant.tenantUuid)
+      const progId = fromUuid('prog', program.programUuid)
+      const mrchId = fromUuid('mrch', merchant.merchantUuid)
 
-      // Emit the four identity facts (E1), each carrying the propagated trace_id
-      // (S21) and a deterministic 06.A dedup key derived from the source event.
-      const tenantEnv = tenantFactEnvelope({
-        payload: { tnntId, displayName: p.bankReferenceCode, bankReferenceCode: p.bankReferenceCode, status: 'ACTIVE' },
-        dedupKey: eventKey(env.id, 'identity.tenant'),
-        traceId: env.traceId,
-      })
-      await enqueue(tx, {
-        aggregateType: 'tenant',
-        aggregateId: tnntId,
-        eventType: IDENTITY_TENANT_TOPIC,
-        partitionKey: tnntId,
-        payload: tenantEnv,
-      })
+      // Emit changed facts only. Each carries the propagated trace_id (S21) and a
+      // deterministic 06.A dedup key derived from the source event.
+      if (tenant.created) {
+        await enqueue(tx, {
+          aggregateType: 'tenant',
+          aggregateId: tnntId,
+          eventType: IDENTITY_TENANT_TOPIC,
+          partitionKey: tnntId,
+          payload: tenantFactEnvelope({
+            payload: { tnntId, displayName: p.bankReferenceCode, bankReferenceCode: p.bankReferenceCode, status: 'ACTIVE' },
+            dedupKey: eventKey(env.id, 'identity.tenant'),
+            traceId: env.traceId,
+          }),
+        })
+      }
 
-      const programEnv = programFactEnvelope({
-        payload: { progId, tnntId, productType: p.productType, status: 'ACTIVE' },
-        dedupKey: eventKey(env.id, 'identity.program'),
-        traceId: env.traceId,
-      })
-      await enqueue(tx, {
-        aggregateType: 'program',
-        aggregateId: progId,
-        eventType: IDENTITY_PROGRAM_TOPIC,
-        partitionKey: progId,
-        payload: programEnv,
-      })
+      if (program.created) {
+        await enqueue(tx, {
+          aggregateType: 'program',
+          aggregateId: progId,
+          eventType: IDENTITY_PROGRAM_TOPIC,
+          partitionKey: progId,
+          payload: programFactEnvelope({
+            payload: { progId, tnntId, productType: p.productType, status: 'ACTIVE' },
+            dedupKey: eventKey(env.id, 'identity.program'),
+            traceId: env.traceId,
+          }),
+        })
+      }
 
-      const merchantEnv = merchantFactEnvelope({
-        payload: {
-          eventType: minted ? 'MerchantCreated' : 'MerchantUpdated',
-          mrchId,
-          displayName: p.displayName,
-          legalName: p.legalName,
-          mcc: p.mcc,
-          registeredAddress: p.registeredAddress,
-          activationState: 'PENDING',
-          status: 'ACTIVE',
-        },
-        dedupKey: eventKey(env.id, 'identity.merchant'),
-        traceId: env.traceId,
-      })
-      await enqueue(tx, {
-        aggregateType: 'merchant',
-        aggregateId: mrchId,
-        eventType: IDENTITY_MERCHANT_TOPIC,
-        partitionKey: mrchId,
-        payload: merchantEnv,
-      })
+      if (merchant.minted || merchant.updated) {
+        await enqueue(tx, {
+          aggregateType: 'merchant',
+          aggregateId: mrchId,
+          eventType: IDENTITY_MERCHANT_TOPIC,
+          partitionKey: mrchId,
+          payload: merchantFactEnvelope({
+            payload: {
+              eventType: merchant.minted ? 'MerchantCreated' : 'MerchantUpdated',
+              mrchId,
+              displayName: p.displayName,
+              legalName: p.legalName,
+              mcc: p.mcc,
+              registeredAddress: p.registeredAddress,
+              activationState: 'PENDING',
+              status: 'ACTIVE',
+            },
+            dedupKey: eventKey(env.id, 'identity.merchant'),
+            traceId: env.traceId,
+          }),
+        })
+      }
 
-      const enrollmentEnv = enrollmentFactEnvelope({
-        payload: { enrollmentId: enrollment.id, mrchId, progId, tnntId, status: enrollment.status, sourceEventId: env.dedupKey },
-        dedupKey: eventKey(env.id, 'identity.enrollment'),
-        traceId: env.traceId,
-      })
+      // Always emit the per-row enrollment fact (the sponsorship-relationship
+      // fact), carrying this row's source correlation id for TMS-thin to attach.
       await enqueue(tx, {
         aggregateType: 'enrollment',
         aggregateId: mrchId,
         eventType: IDENTITY_ENROLLMENT_TOPIC,
         partitionKey: mrchId,
-        payload: enrollmentEnv,
+        payload: enrollmentFactEnvelope({
+          payload: { enrollmentId: enrollment.id, mrchId, progId, tnntId, status: enrollment.status, sourceEventId: env.dedupKey },
+          dedupKey: eventKey(env.id, 'identity.enrollment'),
+          traceId: env.traceId,
+        }),
       })
 
-      out = { deduped: false, tnntId, progId, mrchId, enrollmentId: enrollment.id, mintedMerchant: minted }
+      out = {
+        deduped: false,
+        tnntId,
+        progId,
+        mrchId,
+        enrollmentId: enrollment.id,
+        mintedMerchant: merchant.minted,
+        updatedMerchant: merchant.updated,
+      }
     })
   })
 

@@ -205,3 +205,69 @@ describe('consume-project-emit (spec 05, checks 3, 5, 7, 8, 9)', () => {
     }
   })
 })
+
+type FactRow = { eventType: string; payload: unknown }
+const topicsOf = (facts: FactRow[]): string[] => facts.map((f) => f.eventType).sort()
+const merchantEventType = (facts: FactRow[]): string | undefined => {
+  const m = facts.find((f) => f.eventType === IDENTITY_MERCHANT_TOPIC)
+  return m ? (m.payload as { payload: { eventType: string } }).payload.eventType : undefined
+}
+
+describe('fact hygiene: emit on change, always enrollment (spec 05)', () => {
+  it('a create row emits all four facts with MerchantCreated', async () => {
+    await projectRowFact(db, row({}, 'file1|1'))
+    const facts = await db.outbox.findMany()
+    expect(topicsOf(facts)).toEqual([
+      'fct.identity.enrollment.v1',
+      'fct.identity.merchant.v1',
+      'fct.identity.program.v1',
+      'fct.identity.tenant.v1',
+    ])
+    expect(merchantEventType(facts)).toBe('MerchantCreated')
+  })
+
+  it('a no-change reuse row emits ONLY the enrollment fact (suppresses tenant/program/merchant)', async () => {
+    await projectRowFact(db, row({}, 'file1|1'))
+    await db.$executeRawUnsafe('TRUNCATE outbox')
+    await projectRowFact(db, row({}, 'file1|2'))
+    const facts = await db.outbox.findMany()
+    expect(topicsOf(facts)).toEqual(['fct.identity.enrollment.v1'])
+    expect(merchantEventType(facts)).toBeUndefined()
+  })
+
+  it('a new-Program reuse emits program and enrollment only (no tenant, no merchant)', async () => {
+    await projectRowFact(db, row({ productType: 'soundbox_dispatch' }, 'file1|1'))
+    await db.$executeRawUnsafe('TRUNCATE outbox')
+    await projectRowFact(db, row({ productType: 'pos_terminal' }, 'file2|1'))
+    const facts = await db.outbox.findMany()
+    expect(topicsOf(facts)).toEqual(['fct.identity.enrollment.v1', 'fct.identity.program.v1'])
+  })
+
+  it('a field-diff reuse updates the merchant and emits MerchantUpdated plus enrollment', async () => {
+    const first = await projectRowFact(db, row({ displayName: 'Acme Traders' }, 'file1|1'))
+    if (first.deduped) throw new Error('unexpected dedupe')
+    await db.$executeRawUnsafe('TRUNCATE outbox')
+    await projectRowFact(db, row({ displayName: 'Acme Traders LLP' }, 'file1|2'))
+    const facts = await db.outbox.findMany()
+    expect(topicsOf(facts)).toEqual(['fct.identity.enrollment.v1', 'fct.identity.merchant.v1'])
+    expect(merchantEventType(facts)).toBe('MerchantUpdated')
+    const stored = await db.merchant.findUniqueOrThrow({ where: { id: toUuid(first.mrchId) } })
+    expect(stored.displayName).toBe('Acme Traders LLP')
+  })
+
+  it('always emits the enrollment fact carrying this row source correlation id', async () => {
+    await projectRowFact(db, row({}, 'file1|1'))
+    await db.$executeRawUnsafe('TRUNCATE outbox')
+    await projectRowFact(db, row({}, 'file7|9'))
+    const enr = await db.outbox.findFirstOrThrow({ where: { eventType: IDENTITY_ENROLLMENT_TOPIC } })
+    expect((enr.payload as { payload: { sourceEventId: string } }).payload.sourceEventId).toBe('file7|9')
+  })
+
+  it('a reuse row never carries MerchantCreated', async () => {
+    await projectRowFact(db, row({}, 'file1|1'))
+    await db.$executeRawUnsafe('TRUNCATE outbox')
+    await projectRowFact(db, row({ displayName: 'Changed Co' }, 'file1|2'))
+    const facts = await db.outbox.findMany()
+    expect(merchantEventType(facts)).not.toBe('MerchantCreated')
+  })
+})
