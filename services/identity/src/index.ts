@@ -1,3 +1,5 @@
 export { type IdentityDb, PrismaClient } from './db.js'
 export * from './events.js'
+export * from './row-fact.js'
+export * from './redact.js'
 export { IDENTITY_FACT_SCHEMAS } from './fact-schemas.js'
