@@ -1,12 +1,11 @@
-// Identity context persistence (handoff spec 02).
-// This schema.prisma carries ONLY the shared infrastructure tables (outbox,
-// inbox). Domain tables arrive in later specs. The datasource is pinned to the
-// `identity` schema of the shared instance via the ?schema= parameter in the
-// connection string; this client can never see another context's schema (C4).
-//
-// Isolation note (spec 9): these infrastructure tables carry no tenant-visible
-// rows, so RLS is not yet applicable. RLS and program_id scoping arrive with the
-// domain tables in later specs; this is a DEFERRED item, not silently skipped.
+// Identity Registry persistence (handoff spec 05, built on spec 02 topology).
+// Pinned to the `identity` schema of the shared instance via the ?schema=
+// parameter in IDENTITY_DATABASE_URL; this client can never see another
+// context's schema (C4). Domain tables: merchant (canonical identity),
+// merchant_bank_ref (the DB-enforced (tenant, bank reference) merchant resolver,
+// Fork B), tenant (the sponsor bank as a portal-access tenant), program (the
+// sponsorship wrapper), enrollment (the sponsorship relationship). Plus the
+// shared outbox (E1) and inbox (E6). No KYC (bank-held, K3), no money (S20).
 
 datasource db {
   provider = "postgresql"
@@ -16,6 +15,86 @@ datasource db {
 generator client {
   provider = "prisma-client-js"
   output   = "../generated/client"
+}
+
+/// The canonical merchant (07.A class 2). One legal entity, one mrch_ (I1),
+/// Program-agnostic. Carries NO tenant_id / bank_id / program_id /
+/// bank_merchant_reference column (I5, T3: neither sponsorship nor a bank-scoped
+/// reference is ever a merchant attribute) and NO KYC/PAN/GSTIN (K3, bank-held).
+model Merchant {
+  id                String   @id @db.Uuid
+  displayName       String   @map("display_name")
+  legalName         String   @map("legal_name")
+  mcc               String
+  registeredAddress String   @map("registered_address")
+  activationState   String   @map("activation_state")
+  status            String // ACTIVE | SUSPENDED (a status, never a delete)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("merchant")
+}
+
+/// The Identity-owned merchant resolver (Fork B). The DB-ENFORCED
+/// (tenant, bank_merchant_reference) to mrch_ dedup: UNIQUE fails a concurrent
+/// double-mint closed, a boundary not a lint. Identity RESOLUTION, a fact
+/// distinct from sponsorship (T2); carries no program_id. The tenant-scoped
+/// reference and the vpa dedup hint live here, never on the merchant (I5) and
+/// never on the enrollment.
+model MerchantBankRef {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId              String   @map("tenant_id") @db.Uuid
+  bankMerchantReference String   @map("bank_merchant_reference")
+  merchantId            String   @map("merchant_id") @db.Uuid
+  vpaHint               String?  @map("vpa_hint")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([tenantId, bankMerchantReference])
+  @@map("merchant_bank_ref")
+}
+
+/// The sponsor bank as a portal-access tenant (I5). NOT a bank_ counterparty id
+/// (that is Counterparty Directory's namespace, not built in the soundbox).
+model Tenant {
+  id                String   @id @db.Uuid
+  displayName       String   @map("display_name")
+  bankReferenceCode String   @unique @map("bank_reference_code")
+  status            String
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("tenant")
+}
+
+/// The Program (the sponsorship wrapper), Program-scoped by its own id. STATED
+/// V1 ASSUMPTION (not corpus law): one Program per bank per product for the
+/// soundbox, so the Program is derivable from (tenant, product_type) with no
+/// discriminator in the row fact. UNIQUE(tenant_id, product_type) enforces it;
+/// cheap to relax later (drop the unique, add a scheme discriminator).
+model Program {
+  id          String   @id @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  productType String   @map("product_type")
+  status      String
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([tenantId, productType])
+  @@map("program")
+}
+
+/// The sponsorship relationship only (07.A class 1). Resolution and the bank
+/// reference live in merchant_bank_ref, not here (T2). A new Program for an
+/// existing merchant is a NEW enrollment, never a new merchant (I1, I5).
+model Enrollment {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId String   @map("merchant_id") @db.Uuid
+  programId  String   @map("program_id") @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  status     String // ACTIVE | SUSPENDED
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([programId, merchantId])
+  @@map("enrollment")
 }
 
 /// Transactional outbox (E1). A state change and its emitted fact commit

@@ -1,0 +1,23 @@
+{
+  "name": "@andpay/identity-service",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Identity Registry minimal slice (spec 05): the canonical bank-sponsored merchant, the sponsor bank as a tenant, the Program, a DB-enforced (tenant, bank_merchant_reference) merchant resolver, and the merchant-in-Program enrollment, upserted from the TMS-thin bank-file row fact and published as fct.identity.* facts. Holds no KYC (bank-held) and no money.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "db:migrate": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:generate": "prisma generate --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@andpay/envelope": "workspace:*",
+    "@andpay/ids": "workspace:*",
+    "@andpay/keys": "workspace:*",
+    "@andpay/outbox": "workspace:*"
+  },
+  "devDependencies": {
+    "@andpay/bus": "workspace:*"
+  }
+}
