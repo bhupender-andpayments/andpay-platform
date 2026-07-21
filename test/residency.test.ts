@@ -42,4 +42,19 @@ describe('AWS residency guard (S6, India-only; deploy-deferred)', () => {
     expect(authKeys.includes('SIGN_VERIFY')).toBe(true)
     expect(authKeys.includes("region: 'ap-south-2'")).toBe(true)
   })
+
+  // The four identity facts (spec 05) are registered for Glue on the
+  // India-pinned event-backbone stack, so their schemas are residency-bound too
+  // (check 6, deploy-deferred live proof).
+  it('registers the four identity fact schemas for Glue under the India-pinned backbone (spec 05)', () => {
+    const topics = src('lib/topics.ts')
+    for (const fact of [
+      'fct.identity.merchant.v1',
+      'fct.identity.tenant.v1',
+      'fct.identity.program.v1',
+      'fct.identity.enrollment.v1',
+    ]) {
+      expect(topics.includes(fact), `FACT_SCHEMAS missing ${fact}`).toBe(true)
+    }
+  })
 })

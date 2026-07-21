@@ -13,15 +13,71 @@ export interface FactSchema {
 // stay FULL-compatible (E3, E8). IDs-only, never PII (S7).
 export const FACT_SCHEMAS: FactSchema[] = [
   {
+    // Identity merchant fact (spec 05). IDs-and-minimal: NO KYC, PAN, or GSTIN
+    // (S7, K3). registered_address is minimized reference identity. Open model,
+    // minimal required, so additive optional fields stay FULL-compatible.
     name: 'fct.identity.merchant.v1',
     schema: {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
       properties: {
-        id: { type: 'string' },
+        eventType: { type: 'string' },
+        mrchId: { type: 'string' },
+        displayName: { type: 'string' },
+        legalName: { type: 'string' },
+        mcc: { type: 'string' },
+        registeredAddress: { type: 'string' },
+        activationState: { type: 'string' },
         status: { type: 'string' },
       },
-      required: ['id', 'status'],
+      required: ['mrchId', 'status'],
+    },
+  },
+  {
+    name: 'fct.identity.tenant.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        tnntId: { type: 'string' },
+        displayName: { type: 'string' },
+        bankReferenceCode: { type: 'string' },
+        status: { type: 'string' },
+      },
+      required: ['tnntId', 'status'],
+    },
+  },
+  {
+    name: 'fct.identity.program.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        progId: { type: 'string' },
+        tnntId: { type: 'string' },
+        productType: { type: 'string' },
+        status: { type: 'string' },
+      },
+      required: ['progId', 'status'],
+    },
+  },
+  {
+    // The sponsorship-relationship fact (I5). Carries the source-row correlation
+    // id so TMS-thin attaches its assignment to the resolved mrch_ without a C4
+    // read. The bank_merchant_reference and vpa_hint stay in the resolver (T2).
+    name: 'fct.identity.enrollment.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        enrollmentId: { type: 'string' },
+        mrchId: { type: 'string' },
+        progId: { type: 'string' },
+        tnntId: { type: 'string' },
+        status: { type: 'string' },
+        sourceEventId: { type: 'string' },
+      },
+      required: ['enrollmentId', 'mrchId', 'status'],
     },
   },
   {
@@ -56,6 +112,9 @@ export const FACT_SCHEMAS: FactSchema[] = [
 // provisioning step against the cluster, never a runtime control-plane call).
 export const TOPIC_NAMES = [
   'fct.identity.merchant.v1',
+  'fct.identity.tenant.v1',
+  'fct.identity.program.v1',
+  'fct.identity.enrollment.v1',
   'fct.tms.assignment.v1',
   'fct.fulfillment.batch.v1',
   'fct.fulfillment.unit.v1',

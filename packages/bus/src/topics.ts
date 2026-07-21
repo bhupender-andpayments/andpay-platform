@@ -19,6 +19,9 @@ const THIRTY_DAYS_MS = String(30 * 24 * 60 * 60 * 1000)
 
 export const SOUNDBOX_TOPICS: TopicSpec[] = [
   { name: 'fct.identity.merchant.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  { name: 'fct.identity.tenant.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  { name: 'fct.identity.program.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  { name: 'fct.identity.enrollment.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.tms.assignment.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.batch.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.unit.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
