@@ -11,6 +11,10 @@ export default tseslint.config(
       // Standalone CDK project with its own toolchain (aws-cdk-lib), deployed
       // out of band and not part of the workspace typecheck/lint.
       'infra/aws/**',
+      // Local-only development reference (gitignored): corpus copies, build
+      // ledger, plans, and raw acceptance-evidence scripts. Not shipped source.
+      'docs/**',
+      'evidence/**',
     ],
   },
   js.configs.recommended,
