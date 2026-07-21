@@ -20,6 +20,11 @@ export const ID_PREFIXES = {
   // sg_ (saga / process-manager instance). A corpus-registered prefix
   // (Section 11), implemented here per handoff spec 03 field 3; not invented.
   sg: 'sg_',
+  // tnnt_ (Tenant, the operator: a bank today, AndPayments later) and prog_
+  // (Program, the sponsorship wrapper). Both are Section 11 registry rows owned
+  // by Platform/Identity, implemented here per handoff spec 05; not invented.
+  tnnt: 'tnnt_',
+  prog: 'prog_',
 } as const
 
 /** The set of registered id kinds. */
@@ -46,3 +51,5 @@ export type ShptId = Id<'shpt'>
 export type VndrId = Id<'vndr'>
 export type ApiId = Id<'api'>
 export type SgId = Id<'sg'>
+export type TnntId = Id<'tnnt'>
+export type ProgId = Id<'prog'>

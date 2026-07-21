@@ -105,3 +105,27 @@ describe('@andpay/ids uuid storage conversion (I3)', () => {
     expect(ID_PREFIXES.sg).toBe('sg_')
   })
 })
+
+describe('@andpay/ids identity prefixes (spec 05, Section 11)', () => {
+  it('mints and validates the tnnt tenant prefix', () => {
+    const id = newId('tnnt')
+    expect(id.startsWith('tnnt_')).toBe(true)
+    expect(parseId('tnnt', id)).toBe(id)
+    expect(fromUuid('tnnt', toUuid(id))).toBe(id)
+    expect(ID_PREFIXES.tnnt).toBe('tnnt_')
+  })
+
+  it('mints and validates the prog program prefix', () => {
+    const id = newId('prog')
+    expect(id.startsWith('prog_')).toBe(true)
+    expect(parseId('prog', id)).toBe(id)
+    expect(fromUuid('prog', toUuid(id))).toBe(id)
+    expect(ID_PREFIXES.prog).toBe('prog_')
+  })
+
+  it('rejects a tnnt id parsed as a prog id (wrong prefix)', () => {
+    const t = newId('tnnt')
+    expect(() => parseId('prog', t)).toThrow(InvalidIdError)
+    expect(isId('prog', t)).toBe(false)
+  })
+})
