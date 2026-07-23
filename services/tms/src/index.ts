@@ -5,5 +5,12 @@ export * from './redact.js'
 export { TMS_FACT_SCHEMAS } from './fact-schemas.js'
 export { ingestRequestRow, type BankRequestRow } from './ingest.js'
 export { projectMerchantFact, projectTenantFact } from './projections.js'
-export { createAssignmentFromEnrollment, emitDemandFact, amendShipTo, type EnrollmentFactView } from './assignment.js'
+export {
+  createAssignmentFromEnrollment,
+  emitDemandFact,
+  amendShipTo,
+  activateAssignment,
+  type EnrollmentFactView,
+} from './assignment.js'
 export { ingestDamageRow, type BankDamageRow } from './damage.js'
+export { UnwiredDevicePort, type DevicePort, type ActivationCommand, type ActivationResult } from './device-port.js'

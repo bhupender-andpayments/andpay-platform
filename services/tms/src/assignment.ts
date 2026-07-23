@@ -8,8 +8,11 @@ import {
   TMS_ASSIGNMENT_TOPIC,
   shipToAmendedFactEnvelope,
   TMS_SHIP_TO_AMENDED_TOPIC,
+  activatedFactEnvelope,
+  TMS_ACTIVATED_TOPIC,
 } from './events.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import type { DevicePort } from './device-port.js'
 
 // The consumer view of the identity enrollment fact (T7). Declared LOCALLY,
 // never imported from the identity service (C4). Drift is caught by the wire
@@ -210,4 +213,43 @@ export async function amendShipTo(
     amended = ran
   })
   return { amended }
+}
+
+// D116 activation (Fork C): device activation orchestration flows through the
+// DevicePort seam (C6/T11), never a direct partner or AWS IoT call from this
+// function. The port call happens OUTSIDE the transaction (it is an external
+// side effect); the state change and fact emission are wrapped together in one
+// onceWithin-guarded transaction (E1, E6) keyed on `${asgnId}|activate`, so a
+// redelivered activation call does not re-run the effect. Device identity and
+// activation facts are identical across adapter families (C6/T11 applied to
+// devices).
+export async function activateAssignment(
+  db: TmsDb,
+  asgnId: string,
+  port: DevicePort,
+  deviceRef: string,
+  traceId: string,
+): Promise<{ activated: boolean }> {
+  const result = await port.activate({ asgnId, deviceRef }) // through the device port (Fork C)
+  const asgnUuid = toUuid(asgnId)
+  const dedupKey = `${asgnId}|activate`
+  let activated = false
+  await db.$transaction(async (tx: Tx) => {
+    const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
+      await tx.$executeRaw`UPDATE assignment SET activated_at = ${result.activatedAt}::timestamptz, demand_state = 'activated', updated_at = now() WHERE id = ${asgnUuid}::uuid`
+      await enqueue(tx, {
+        aggregateType: 'assignment',
+        aggregateId: asgnId,
+        eventType: TMS_ACTIVATED_TOPIC,
+        partitionKey: asgnId,
+        payload: activatedFactEnvelope({
+          payload: { asgnId, activatedAt: result.activatedAt },
+          dedupKey: eventKey(dedupKey, 'tms.assignment.activated'),
+          traceId,
+        }),
+      })
+    })
+    activated = ran
+  })
+  return { activated }
 }
