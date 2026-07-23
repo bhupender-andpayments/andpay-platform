@@ -179,8 +179,9 @@ export async function createAssignmentFromEnrollment(
 
 // D116 superseding re-instruction (Fork D): a ship-to amend after the assignment
 // has already been snapshotted into the demand fact. Idempotent on
-// (asgnId, amendmentSeq) via a stable inbox key (06.A rule 4 shape, composed
-// locally since this is not itself sourced from an inbound envelope). The
+// (asgnId, amendmentSeq) via a stable inbox key (06.A rule 3 shape, composed
+// locally since this is not itself sourced from an inbound envelope; the fact
+// dedupKey below wraps this key via eventKey, which is 06.A rule 4). The
 // post-batch amendment lock is fixture-deferred (gated on a Fulfillment batch
 // fact, step 7); v1 here just performs the amend and emits the fact.
 export async function amendShipTo(

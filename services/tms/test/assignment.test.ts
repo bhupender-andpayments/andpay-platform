@@ -3,7 +3,7 @@ import { newEnvelope, type Envelope } from '@andpay/envelope'
 import { newId, toUuid, fromUuid, parseId } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import { createAssignmentFromEnrollment, emitDemandFact, type EnrollmentFactView } from '../src/assignment.js'
-import { TMS_ASSIGNMENT_TOPIC } from '../src/events.js'
+import { TMS_ASSIGNMENT_TOPIC, type AssignmentFactPayload } from '../src/events.js'
 
 const url =
   process.env.TMS_DATABASE_URL ??
@@ -79,12 +79,35 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
     expect(asgn[0]!.demand_state).toBe('pooled-for-fulfillment')
     expect(asgn[0]!.source_event_id).toBe('file-1|1')
 
-    const ob = await db.$queryRaw<{ event_type: string; partition_key: string; payload: { subject: string; traceId: string } }[]>`SELECT event_type, partition_key, payload FROM outbox`
+    const ob = await db.$queryRaw<{ event_type: string; partition_key: string; payload: Envelope<AssignmentFactPayload> }[]>`SELECT event_type, partition_key, payload FROM outbox`
     expect(ob).toHaveLength(1)
     expect(ob[0]!.event_type).toBe(TMS_ASSIGNMENT_TOPIC)
     expect(ob[0]!.partition_key).toBe(res.asgnId)          // partitions on asgn_ (E5)
     expect(ob[0]!.payload.traceId).toBe('trace-9')          // trace_id propagates (check 9)
     expect(ob[0]!.payload.subject).toBe(res.asgnId)         // envelope subject = asgn_ wire id (E5)
+
+    // check 4 (positive direction): ingest.test.ts proves the QR/VPA value is
+    // ABSENT from the row fact (S7/S5); this proves the D117 custody handoff
+    // lands on the other side, PRESENT on the emitted fct.tms.assignment.v1
+    // inner payload, alongside the full merchant/bank/ship-to/demand snapshot
+    // (D116). Asserted against the outbox row's envelope (what actually goes
+    // on the bus), not the assignment table, so a wrong column mapping inside
+    // emitDemandFact's payload build would be caught even if the table
+    // snapshot itself were correct.
+    const fact = ob[0]!.payload.payload
+    expect(fact.qrValue).toBe('upi://pay?pa=acme@hdfcbank')
+    expect(fact.vpaValue).toBe('acme@hdfcbank')
+    expect(fact.shipToAddress).toBe('221B Baker Street')
+    expect(fact.merchantDisplayName).toBe('Acme')
+    expect(fact.merchantLegalName).toBe('Acme Pvt Ltd')
+    expect(fact.merchantMcc).toBe('5814')
+    expect(fact.bankReferenceCode).toBe('HDFC')
+    expect(fact.bankDisplayName).toBe('HDFC Bank')
+    expect(fact.soundbox).toBe(true)
+    expect(fact.standeeCount).toBe(1)
+    expect(fact.stickerCount).toBe(2)
+    expect(fact.billable).toBe(true)
+    expect(fact.demandState).toBe('pooled-for-fulfillment')
   })
 
   it('a redelivered enrollment fact creates no second assignment (check 3, inbox + source_event_id UNIQUE)', async () => {
