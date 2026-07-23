@@ -1,0 +1,23 @@
+{
+  "name": "@andpay/tms-service",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TMS-thin (spec 06): bank request-file and damage-file ingest, the asgn_ assignment aggregate with event-carried merchant/bank/ship-to snapshots and QR/VPA value custody, the damage/replacement workflow, and the device-port activation seam. Consumes fct.identity.* and emits fct.tms.*. Holds no identity, no KYC, and no money.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "db:migrate": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:generate": "prisma generate --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@andpay/envelope": "workspace:*",
+    "@andpay/ids": "workspace:*",
+    "@andpay/keys": "workspace:*",
+    "@andpay/outbox": "workspace:*"
+  },
+  "devDependencies": {
+    "@andpay/bus": "workspace:*"
+  }
+}

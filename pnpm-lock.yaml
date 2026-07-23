@@ -120,6 +120,25 @@ importers:
         specifier: workspace:*
         version: link:../../packages/bus
 
+  services/tms:
+    dependencies:
+      '@andpay/envelope':
+        specifier: workspace:*
+        version: link:../../packages/envelope
+      '@andpay/ids':
+        specifier: workspace:*
+        version: link:../../packages/ids
+      '@andpay/keys':
+        specifier: workspace:*
+        version: link:../../packages/keys
+      '@andpay/outbox':
+        specifier: workspace:*
+        version: link:../../packages/outbox
+    devDependencies:
+      '@andpay/bus':
+        specifier: workspace:*
+        version: link:../../packages/bus
+
 packages:
 
   '@emnapi/core@1.11.2':
