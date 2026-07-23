@@ -17,4 +17,17 @@ describe('@andpay/bus SOUNDBOX_TOPICS (spec 05 identity facts)', () => {
       expect(names).toContain(topic)
     })
   }
+
+  it('includes all five tms facts (spec 06)', () => {
+    const names = SOUNDBOX_TOPICS.map((t) => t.name)
+    for (const t of [
+      'fct.tms.bank_file_row.v1',
+      'fct.tms.assignment.v1',
+      'fct.tms.assignment.ship_to_amended.v1',
+      'fct.tms.assignment.replacement_raised.v1',
+      'fct.tms.assignment.activated.v1',
+    ]) {
+      expect(names).toContain(t)
+    }
+  })
 })

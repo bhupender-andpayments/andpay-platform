@@ -57,4 +57,20 @@ describe('AWS residency guard (S6, India-only; deploy-deferred)', () => {
       expect(topics.includes(fact), `FACT_SCHEMAS missing ${fact}`).toBe(true)
     }
   })
+
+  // The five tms facts (spec 06, TMS-thin) are registered for Glue on the
+  // India-pinned event-backbone stack, so their schemas are residency-bound too
+  // (check 5, deploy-deferred live proof).
+  it('registers the five tms fact schemas for Glue under the India-pinned backbone (spec 06)', () => {
+    const topics = src('lib/topics.ts')
+    for (const fact of [
+      'fct.tms.bank_file_row.v1',
+      'fct.tms.assignment.v1',
+      'fct.tms.assignment.ship_to_amended.v1',
+      'fct.tms.assignment.replacement_raised.v1',
+      'fct.tms.assignment.activated.v1',
+    ]) {
+      expect(topics.includes(fact), `FACT_SCHEMAS missing ${fact}`).toBe(true)
+    }
+  })
 })
