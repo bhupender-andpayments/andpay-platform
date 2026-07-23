@@ -1,12 +1,16 @@
-// TMS context persistence (handoff spec 02).
-// This schema.prisma carries ONLY the shared infrastructure tables (outbox,
-// inbox). Domain tables arrive in later specs. The datasource is pinned to the
-// `tms` schema of the shared instance via the ?schema= parameter in the
-// connection string; this client can never see another context's schema (C4).
+// TMS-thin persistence (handoff spec 06, built on spec 02 topology).
+// Pinned to the `tms` schema of the shared instance via the ?schema= parameter
+// in TMS_DATABASE_URL; this client can never see another context's schema (C4).
+// Domain tables: assignment (the demand aggregate, Program-scoped), pending_row
+// (ingest staging ahead of Identity resolution), merchant_projection and
+// tenant_projection (event-carried read-models from fct.identity.*, T7),
+// ingest_file and quarantine_row (the S8 ingest ledger). Plus the shared outbox
+// (E1) and inbox (E6). No Fulfillment status columns (T2, T12), no money (S20).
 //
-// Isolation note (spec 9): these infrastructure tables carry no tenant-visible
-// rows, so RLS is not yet applicable. RLS and program_id scoping arrive with the
-// domain tables in later specs; this is a DEFERRED item, not silently skipped.
+// RLS: FORCE ROW LEVEL SECURITY on every table (S13, gate item 17 PARTIAL).
+// assignment alone carries the program_id WITH CHECK write-gate (07.A class 1);
+// the rest are permissive in v1 (ratified): they are written at ingest before
+// the Program resolves, or are event-fed read-models with no prog_ to gate on.
 
 datasource db {
   provider = "postgresql"
@@ -47,4 +51,112 @@ model Inbox {
 
   @@id([consumer, dedupKey])
   @@map("inbox")
+}
+
+/// The demand aggregate (07.A class 1, Program-scoped). Externally the BRD
+/// Dispatch ID. References mrch_/prog_/tnnt_ (I5, T3); carries event-carried
+/// snapshots and the bank-supplied QR/VPA value (D116, D117). NO Fulfillment
+/// status column (T2, T12). source_event_id is the {file_id}|{row_no} that
+/// created it (06.A), UNIQUE for one-assignment-per-row idempotency.
+model Assignment {
+  id                  String    @id @db.Uuid
+  merchantId          String    @map("merchant_id") @db.Uuid
+  programId           String    @map("program_id") @db.Uuid
+  tenantId            String    @map("tenant_id") @db.Uuid
+  merchantDisplayName String    @map("merchant_display_name")
+  merchantLegalName   String    @map("merchant_legal_name")
+  merchantMcc         String    @map("merchant_mcc")
+  bankReferenceCode   String    @map("bank_reference_code")
+  bankDisplayName     String    @map("bank_display_name")
+  shipToAddress       String    @map("ship_to_address")
+  qrValue             String    @map("qr_value")
+  vpaValue            String    @map("vpa_value")
+  soundbox            Boolean
+  standeeCount        Int       @map("standee_count")
+  stickerCount        Int       @map("sticker_count")
+  billable            Boolean
+  replacementOf       String?   @map("replacement_of") @db.Uuid
+  damageReason        String?   @map("damage_reason")
+  bankRemarks         String?   @map("bank_remarks")
+  caseStatus          String?   @map("case_status") // Open | In-Progress | Closed (replacements only)
+  demandState         String    @map("demand_state") // received | pooled-for-fulfillment | closed | replacement-raised | activated
+  activatedAt         DateTime? @map("activated_at") @db.Timestamptz(6)
+  sourceEventId       String    @unique @map("source_event_id")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("assignment")
+}
+
+/// TMS-internal ingest staging (not a fact). Holds the TMS-owned slice of a
+/// request row (demand, QR/VPA value, ship-to) while the assignment awaits the
+/// Identity enrollment fact. correlation_id is the {file_id}|{row_no} join key.
+/// Permissive in v1 (ratified): written at ingest before Program resolution.
+model PendingRow {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  correlationId   String   @unique @map("correlation_id")
+  tenantReference String   @map("tenant_reference")
+  soundbox        Boolean
+  standeeCount    Int      @map("standee_count")
+  stickerCount    Int      @map("sticker_count")
+  qrValue         String   @map("qr_value")
+  vpaValue        String   @map("vpa_value")
+  shipToAddress   String   @map("ship_to_address")
+  status          String // awaiting-identity | consumed
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("pending_row")
+}
+
+/// TMS read-model from fct.identity.merchant.v1 (T7). The source of the
+/// assignment's merchant snapshot. Event-carried, never a read of Identity (C4).
+model MerchantProjection {
+  id          String   @id @db.Uuid
+  displayName String   @map("display_name")
+  legalName   String   @map("legal_name")
+  mcc         String
+  status      String   // ACTIVE | SUSPENDED
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("merchant_projection")
+}
+
+/// TMS read-model from fct.identity.tenant.v1 (T7). The source of the
+/// assignment's bank snapshot.
+model TenantProjection {
+  id                String   @id @db.Uuid
+  displayName       String   @map("display_name")
+  bankReferenceCode String   @map("bank_reference_code")
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("tenant_projection")
+}
+
+/// The S8 ingest record. Permissive in v1 (ratified): a file can span Programs
+/// and is written before resolution.
+model IngestFile {
+  fileId          String   @id @map("file_id")
+  source          String // bank_request | bank_damage
+  tenantReference String   @map("tenant_reference")
+  rowTotal        Int      @default(0) @map("row_total")
+  rowAccepted     Int      @default(0) @map("row_accepted")
+  rowRejected     Int      @default(0) @map("row_rejected")
+  status          String // received | processed
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("ingest_file")
+}
+
+/// Rejected or discrepant rows (S8 row-level rejection, never an auto-create).
+/// raw_row is stored redacted for log. Permissive in v1 (ratified).
+model QuarantineRow {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fileId     String   @map("file_id")
+  rowNo      Int      @map("row_no")
+  rawRow     String   @map("raw_row")
+  reasonCode String   @map("reason_code")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([fileId, rowNo])
+  @@map("quarantine_row")
 }
