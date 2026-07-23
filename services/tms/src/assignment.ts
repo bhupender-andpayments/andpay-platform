@@ -3,7 +3,12 @@ import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { eventKey } from '@andpay/keys'
 import type { Envelope } from '@andpay/envelope'
 import type { TmsDb } from './db.js'
-import { assignmentFactEnvelope, TMS_ASSIGNMENT_TOPIC } from './events.js'
+import {
+  assignmentFactEnvelope,
+  TMS_ASSIGNMENT_TOPIC,
+  shipToAmendedFactEnvelope,
+  TMS_SHIP_TO_AMENDED_TOPIC,
+} from './events.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 
 // The consumer view of the identity enrollment fact (T7). Declared LOCALLY,
@@ -167,4 +172,42 @@ export async function createAssignmentFromEnrollment(
     })
   })
   return result
+}
+
+// D116 superseding re-instruction (Fork D): a ship-to amend after the assignment
+// has already been snapshotted into the demand fact. Idempotent on
+// (asgnId, amendmentSeq) via a stable inbox key (06.A rule 4 shape, composed
+// locally since this is not itself sourced from an inbound envelope). The
+// post-batch amendment lock is fixture-deferred (gated on a Fulfillment batch
+// fact, step 7); v1 here just performs the amend and emits the fact.
+export async function amendShipTo(
+  db: TmsDb,
+  asgnId: string,
+  newShipToAddress: string,
+  amendmentSeq: number,
+  traceId: string,
+): Promise<{ amended: boolean }> {
+  const asgnUuid = toUuid(asgnId)
+  // Idempotent on (asgnId, amendmentSeq) via a stable inbox key (06.A rule 3).
+  const dedupKey = `${asgnId}|ship_to_amend|${amendmentSeq}`
+  let amended = false
+  await db.$transaction(async (tx: Tx) => {
+    const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
+      // Post-batch lock is fixture-deferred (gated on a Fulfillment batch fact, step 7).
+      await tx.$executeRaw`UPDATE assignment SET ship_to_address = ${newShipToAddress}, updated_at = now() WHERE id = ${asgnUuid}::uuid`
+      await enqueue(tx, {
+        aggregateType: 'assignment',
+        aggregateId: asgnId,
+        eventType: TMS_SHIP_TO_AMENDED_TOPIC,
+        partitionKey: asgnId,
+        payload: shipToAmendedFactEnvelope({
+          payload: { asgnId, shipToAddress: newShipToAddress, amendmentSeq },
+          dedupKey: eventKey(dedupKey, 'tms.assignment.ship_to_amended'),
+          traceId,
+        }),
+      })
+    })
+    amended = ran
+  })
+  return { amended }
 }
