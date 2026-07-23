@@ -1,0 +1,117 @@
+import { enqueue } from '@andpay/outbox'
+import { newId, toUuid, fromUuid } from '@andpay/ids'
+import { eventKey } from '@andpay/keys'
+import type { TmsDb } from './db.js'
+import { emitDemandFact } from './assignment.js'
+import { replacementRaisedFactEnvelope, TMS_REPLACEMENT_RAISED_TOPIC } from './events.js'
+import { setProgramContext, type Tx } from './internal.js'
+
+export interface BankDamageRow {
+  fileId: string
+  rowNo: number
+  tenantReference: string
+  vpaValue: string
+  damageReason: string
+  bankRemarks: string
+  shipToAddress: string
+}
+
+interface OriginalRow {
+  id: string
+  merchant_id: string
+  program_id: string
+  tenant_id: string
+  merchant_display_name: string
+  merchant_legal_name: string
+  merchant_mcc: string
+  bank_reference_code: string
+  bank_display_name: string
+  qr_value: string
+  vpa_value: string
+  soundbox: boolean
+  standee_count: number
+  sticker_count: number
+}
+
+// Damage-file ingest (D116). Matches an original asgn_ by (tenant, vpa), creates
+// a NEW non-billable replacement referencing it (case_status Open, damage reason
+// from the row, bank remarks), moves the original to replacement-raised, and
+// emits both the linkage fact and the demand fact (ratified). Idempotent on the
+// damage {file_id}|{row_no} via the replacement's source_event_id UNIQUE.
+export async function ingestDamageRow(
+  db: TmsDb,
+  row: BankDamageRow,
+  traceId: string,
+): Promise<'replaced' | 'duplicate' | 'quarantined'> {
+  const correlationId = `${row.fileId}|${row.rowNo}`
+  let outcome: 'replaced' | 'duplicate' | 'quarantined' = 'quarantined'
+
+  await db.$transaction(async (tx: Tx) => {
+    const matches = await tx.$queryRaw<OriginalRow[]>`
+      SELECT id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
+             bank_reference_code, bank_display_name, qr_value, vpa_value, soundbox, standee_count, sticker_count
+      FROM assignment
+      WHERE bank_reference_code = ${row.tenantReference} AND vpa_value = ${row.vpaValue} AND replacement_of IS NULL
+    `
+    if (matches.length !== 1) {
+      await tx.$executeRaw`
+        INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+        VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_damage'}, ${matches.length === 0 ? 'no_match' : 'ambiguous_match'})
+        ON CONFLICT (file_id, row_no) DO NOTHING
+      `
+      outcome = 'quarantined'
+      return
+    }
+    const o = matches[0]!
+    await setProgramContext(tx, o.program_id)
+
+    const replUuid = toUuid(newId('asgn'))
+    // updated_at is @updatedAt in the Prisma schema, which is client-API
+    // middleware only (it does not run for $queryRaw/$executeRaw) and the
+    // column has no DB-level DEFAULT, so it must be set explicitly here, same
+    // as createAssignmentFromEnrollment's INSERT in assignment.ts.
+    const won = await tx.$queryRaw<{ id: string }[]>`
+      INSERT INTO assignment (
+        id, merchant_id, program_id, tenant_id,
+        merchant_display_name, merchant_legal_name, merchant_mcc,
+        bank_reference_code, bank_display_name, ship_to_address,
+        qr_value, vpa_value, soundbox, standee_count, sticker_count,
+        billable, replacement_of, damage_reason, bank_remarks, case_status,
+        demand_state, source_event_id, updated_at
+      ) VALUES (
+        ${replUuid}::uuid, ${o.merchant_id}::uuid, ${o.program_id}::uuid, ${o.tenant_id}::uuid,
+        ${o.merchant_display_name}, ${o.merchant_legal_name}, ${o.merchant_mcc},
+        ${o.bank_reference_code}, ${o.bank_display_name}, ${row.shipToAddress},
+        ${o.qr_value}, ${o.vpa_value}, ${o.soundbox}, ${o.standee_count}, ${o.sticker_count},
+        ${false}, ${o.id}::uuid, ${row.damageReason}, ${row.bankRemarks}, ${'Open'},
+        ${'received'}, ${correlationId}, now()
+      )
+      ON CONFLICT (source_event_id) DO NOTHING
+      RETURNING id
+    `
+    if (won.length === 0) {
+      outcome = 'duplicate'
+      return
+    }
+
+    const replId = fromUuid('asgn', replUuid)
+    // linkage fact
+    await enqueue(tx, {
+      aggregateType: 'assignment',
+      aggregateId: replId,
+      eventType: TMS_REPLACEMENT_RAISED_TOPIC,
+      partitionKey: replId,
+      payload: replacementRaisedFactEnvelope({
+        payload: { asgnId: replId, replacedAsgnId: fromUuid('asgn', o.id), damageReason: row.damageReason, bankRemarks: row.bankRemarks },
+        dedupKey: eventKey(correlationId, 'tms.assignment.replacement_raised'),
+        traceId,
+      }),
+    })
+    // demand fact + pooled-for-fulfillment (billable=false already stored)
+    await emitDemandFact(tx, replUuid, correlationId, traceId)
+    // the original moves to replacement-raised
+    await tx.$executeRaw`UPDATE assignment SET demand_state = 'replacement-raised', updated_at = now() WHERE id = ${o.id}::uuid`
+    outcome = 'replaced'
+  })
+  return outcome
+}
