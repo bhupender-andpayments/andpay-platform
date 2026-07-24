@@ -7,6 +7,13 @@
 // consumer against the JWKS (16.3, T4).
 export const AUTH_ISS = "andpay-auth";
 
+// The Auth-context Prisma client (D121, C4), mirroring the identity/tms/
+// fulfillment index.ts precedent: re-exported here so a root integration test
+// can construct its OWN auth db handle pinned to ?schema=auth, exactly as it
+// does for every other context (this line was missing before Task 11, which is
+// the first root test to need it).
+export { type AuthDb, PrismaClient } from "./db.js";
+
 export * from "./ports/kms-signing.js";
 export * from "./ports/pepper.js";
 export * from "./ports/mfa.js";

@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { newId, toUuid } from '@andpay/ids'
+import { newId, toUuid, fromUuid } from '@andpay/ids'
 import type { LeanClaim } from '@andpay/authz'
 import { newEnvelope, type Envelope } from '@andpay/envelope'
+import { onceWithin, enqueue } from '@andpay/outbox'
 import { PrismaClient } from '../generated/client/index.js'
 import { ingestIntakeSheet, type IntakeSheet, type IntakeRow } from '../src/intake.js'
 import { projectDemandFact } from '../src/pool.js'
-import { UNIT_TOPIC, type AssignmentFactView, type UnitFactPayload } from '../src/events.js'
+import { CONSUMER } from '../src/internal.js'
+import { UNIT_TOPIC, unitFactEnvelope, type AssignmentFactView, type UnitFactPayload } from '../src/events.js'
 
 const url =
   process.env.FULFILLMENT_DATABASE_URL ??
@@ -431,5 +433,102 @@ describe('ingestIntakeSheet (manufacturer intake, the only Unit-creating channel
 
     const unitCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
     expect(Number(unitCount[0]!.n)).toBe(0) // the intake sheet is the ONLY Unit-creating channel (D103d)
+  })
+
+  // E1 (check 9, the Task 7 deferral, landed here per Task 11): the unit INSERT
+  // and its unit-fact enqueue must commit or roll back TOGETHER. Wrapping a
+  // call to ingestIntakeSheet in an outer transaction that throws afterward
+  // would prove nothing: ingestIntakeSheet opens its OWN top-level
+  // db.$transaction (STEP C), which has already committed by the time an outer
+  // wrapper's throw runs (the documented TMS assignment-test E1 trap, mirrored
+  // by pool.test.ts's own E1 test in this same service). Replicate the exact
+  // SERIALIZED-row write sequence (the unit INSERT, then the enqueue) inside
+  // ONE transaction this test controls, force a throw after both have run, and
+  // assert unit AND outbox (and inbox) are empty afterward. Then prove the
+  // positive direction with a real successful ingestIntakeSheet call, reusing
+  // the SAME {vendor}|{file_id} key (nothing was burned by the rollback: the
+  // inbox row rolled back too).
+  it('E1: the unit INSERT and the unit-fact enqueue commit or roll back together', async () => {
+    const vndrId = newId('vndr')
+    const workQueue = 'wq-e1'
+    const fileId = 'file-e1'
+    const vndrUuid = toUuid(vndrId)
+    const unitUuid = toUuid(newId('unit'))
+    const deviceSerial = 'SER-E1-ROLLBACK'
+
+    await expect(
+      db.$transaction(async (tx) => {
+        await onceWithin(tx, CONSUMER, `${vndrId}|${fileId}`, async () => {
+          const won = await tx.$queryRaw<{ id: string }[]>`
+            INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, updated_at)
+            VALUES (${unitUuid}::uuid, ${'SERIALIZED'}, ${'SOUNDBOX'}, ${vndrUuid}::uuid, ${'IN_STOCK'}, ${deviceSerial}, ${JSON.stringify(deviceQrFixture(deviceSerial))}::jsonb, now())
+            ON CONFLICT (device_serial) DO NOTHING
+            RETURNING id::text AS id
+          `
+          expect(won).toHaveLength(1) // the write really ran (not a conflict no-op)
+          const unitId = fromUuid('unit', unitUuid)
+          await enqueue(tx, {
+            aggregateType: 'unit',
+            aggregateId: unitId,
+            eventType: UNIT_TOPIC,
+            partitionKey: unitId,
+            payload: unitFactEnvelope({
+              payload: {
+                unitId,
+                kind: 'SERIALIZED',
+                productType: 'SOUNDBOX',
+                manufacturerVndr: vndrId,
+                status: 'IN_STOCK',
+                deviceSerial,
+              },
+              dedupKey: `${deviceSerial}|intake`,
+              traceId: 'trace-e1-rollback',
+            }),
+          })
+        })
+        throw new Error('force rollback')
+      }),
+    ).rejects.toThrow('force rollback')
+
+    const u0 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
+    const o0 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox`
+    const i0 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM inbox`
+    expect(Number(u0[0]!.n)).toBe(0) // the unit INSERT rolled back
+    expect(Number(o0[0]!.n)).toBe(0) // the enqueue rolled back WITH it (E1)
+    expect(Number(i0[0]!.n)).toBe(0) // the inbox insert rolled back too
+
+    // Fix wave 1 (check-9 E1 strengthening, attempted and rejected): this
+    // replica technique proves the outbox and the unit/inbox state roll back
+    // together, but it does NOT itself prove the REAL ingestIntakeSheet keeps
+    // its write and its enqueue inside ONE physical transaction; a future
+    // refactor splitting STEP C above into two separate db.$transaction calls
+    // would not be caught here. That single-transaction property is currently
+    // verified by code inspection (STEP C, the one db.$transaction call in
+    // src/intake.ts). A vi.spyOn(fulfillmentDb, '$transaction') call-count
+    // assertion was attempted to close this gap and was verified empirically
+    // NOT to be reliable: Prisma constructs $transaction as a bound
+    // own-instance function (not a plain prototype method), and vi.spyOn's
+    // replacement DEFEATS the real call instead of passing through to it (the
+    // transaction body never runs; $transaction resolves to undefined
+    // synchronously, and a real ingestIntakeSheet call under the spy reports
+    // a false deduped:true with zero rows ever written). A spy that silently
+    // breaks the very code path it is meant to observe is worse than no test
+    // at all, so it was dropped in favor of this comment; see the Task 11
+    // fix-wave report for the reproduction.
+
+    // positive direction: a real successful ingestIntakeSheet leaves the unit
+    // + fact, reusing the exact same vndrId/fileId (and hence the same
+    // {vendor}|{file_id} inbox key) as the rolled-back attempt above.
+    const claim = classSixClaim(vndrId, workQueue)
+    const sheet: IntakeSheet = { fileId, vndrId, workQueue, rows: [serializedRow(deviceSerial)] }
+    const ok = await ingestIntakeSheet(db, claim, sheet, 'trace-e1-ok')
+    expect(ok.rejected).toBeUndefined()
+    expect(ok.deduped).toBe(false)
+    expect(ok.createdUnitIds).toHaveLength(1)
+
+    const u1 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
+    const o1 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox`
+    expect(Number(u1[0]!.n)).toBe(1)
+    expect(Number(o1[0]!.n)).toBe(1)
   })
 })

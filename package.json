@@ -20,8 +20,12 @@
     "db:migrate:dev": "./infra/db.sh dev init"
   },
   "devDependencies": {
+    "@andpay/auth-service": "workspace:*",
+    "@andpay/authz": "workspace:*",
     "@andpay/envelope": "workspace:*",
+    "@andpay/fulfillment-service": "workspace:*",
     "@andpay/identity-service": "workspace:*",
+    "@andpay/ids": "workspace:*",
     "@andpay/tms-service": "workspace:*",
     "@eslint/js": "^9.18.0",
     "@prisma/client": "^6.3.0",

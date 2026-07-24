@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import type { Envelope } from '@andpay/envelope'
+import { onceWithin, enqueue } from '@andpay/outbox'
 import { PrismaClient } from '../generated/client/index.js'
 import { ensurePool, triggerBatch, onDemandAccrued } from '../src/batching.js'
+import { CONSUMER, setProgramContext } from '../src/internal.js'
 import { poolConfig } from '../src/config/pool-config.js'
-import { BATCH_TOPIC, type BatchFactPayload } from '../src/events.js'
+import { BATCH_TOPIC, batchFactEnvelope, type BatchFactPayload } from '../src/events.js'
 
 const url =
   process.env.FULFILLMENT_DATABASE_URL ??
@@ -356,5 +358,133 @@ describe('onDemandAccrued / triggerBatch (batching pool anchor and lot-size trig
     `
     expect(entries).toHaveLength(total)
     expect(entries.every((e) => e.pool_status === 'BATCHED')).toBe(true)
+  })
+
+  // E1 (check 9): the pending_pool_entry mark-BATCHED UPDATE, the batch INSERT,
+  // and the batch-fact enqueue must commit or roll back TOGETHER. As with the
+  // pool/intake E1 precedents, wrapping a call to triggerBatch in an outer
+  // transaction that throws afterward proves nothing: triggerBatch opens its
+  // OWN top-level db.$transaction, already committed by the time an outer
+  // wrapper's throw runs. Replicate the exact write sequence (the pool FOR
+  // UPDATE lock, the mark-BATCHED UPDATE, the batch INSERT, the enqueue) inside
+  // ONE transaction this test controls, force a throw after ALL of them have
+  // run, and assert the batch row and the outbox fact are ABSENT AND the
+  // pending_pool_entry row is STILL POOLED (not flipped to BATCHED, no batch
+  // ref set). Then prove the positive direction with a real successful
+  // triggerBatch call, reusing the SAME epoch (nothing was burned by the
+  // rollback: the inbox row rolled back too).
+  it('E1: the mark-BATCHED update, the batch INSERT, and the batch-fact enqueue commit or roll back together', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+
+    await ensurePool(db, tenantWire, programWire)
+    const seeded = await seedPooled(tenantUuid, programUuid, 'trace-e1-batch', BASE)
+
+    const reason = 'LOT_SIZE'
+    const epoch = 'epoch-e1-rollback'
+    const btchUuid = toUuid(newId('btch'))
+
+    await expect(
+      db.$transaction(async (tx) => {
+        await onceWithin(tx, CONSUMER, `batch|${tenantWire}|${programWire}|${reason}|${epoch}`, async () => {
+          await setProgramContext(tx, programUuid)
+          const pool = await tx.$queryRaw<{ pm_instance_id: string }[]>`
+            SELECT pm_instance_id::text AS pm_instance_id FROM batch_pool
+            WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid
+            FOR UPDATE
+          `
+          expect(pool).toHaveLength(1)
+
+          const claimed = await tx.$queryRaw<{ id: string; trace_id: string; created_at: Date }[]>`
+            UPDATE pending_pool_entry
+            SET pool_status = 'BATCHED', batch = ${btchUuid}::uuid, updated_at = now()
+            WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid AND pool_status = 'POOLED'
+            RETURNING id::text AS id, trace_id, created_at
+          `
+          expect(claimed).toHaveLength(1) // the seeded row was really claimed
+
+          await tx.$executeRaw`
+            INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
+            VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BORN', ${reason}, ${null}::uuid, ${claimed.length}, now())
+          `
+
+          const btchWire = fromUuid('btch', btchUuid)
+          await enqueue(tx, {
+            aggregateType: 'batch',
+            aggregateId: btchWire,
+            eventType: BATCH_TOPIC,
+            partitionKey: btchWire,
+            payload: batchFactEnvelope({
+              payload: {
+                btchId: btchWire,
+                tenantId: tenantWire,
+                programId: programWire,
+                triggerReason: reason,
+                unitCount: claimed.length,
+                asgnIds: [seeded.asgnWire],
+              },
+              dedupKey: btchWire,
+              traceId: claimed[0]!.trace_id,
+            }),
+          })
+        })
+        throw new Error('force rollback')
+      }),
+    ).rejects.toThrow('force rollback')
+
+    const b0 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM batch`
+    const o0 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox`
+    const i0 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM inbox`
+    expect(Number(b0[0]!.n)).toBe(0) // the batch INSERT rolled back
+    expect(Number(o0[0]!.n)).toBe(0) // the enqueue rolled back WITH it (E1)
+    expect(Number(i0[0]!.n)).toBe(0) // the inbox insert rolled back too
+
+    const entryAfterRollback = await db.$queryRaw<{ pool_status: string; batch: string | null }[]>`
+      SELECT pool_status, batch::text AS batch FROM pending_pool_entry WHERE asgn_id = ${seeded.asgnUuid}::uuid
+    `
+    expect(entryAfterRollback[0]!.pool_status).toBe('POOLED') // NOT flipped to BATCHED
+    expect(entryAfterRollback[0]!.batch).toBeNull()
+
+    // Fix wave 1 (check-9 E1 strengthening, attempted and rejected): this
+    // replica technique proves the pool/batch/outbox/inbox state rolls back
+    // together, but it does NOT itself prove the REAL triggerBatch keeps its
+    // writes and its enqueue inside ONE physical transaction; a future
+    // refactor splitting its single db.$transaction call (see src/batching.ts)
+    // into two would not be caught here. That single-transaction property is
+    // currently verified by code inspection. A
+    // vi.spyOn(fulfillmentDb, '$transaction') call-count assertion was
+    // attempted to close this gap (ensurePool called first/outside the spy
+    // window, so its own transaction would not be counted), and was verified
+    // empirically NOT to be reliable: Prisma constructs $transaction as a
+    // bound own-instance function (not a plain prototype method), and
+    // vi.spyOn's replacement DEFEATS the real call instead of passing through
+    // to it (the transaction body never runs; $transaction resolves to
+    // undefined synchronously, verified directly against a real
+    // ingestIntakeSheet call in services/fulfillment/test/intake.test.ts,
+    // which reported a false deduped:true with zero rows ever written under
+    // the same spy). A spy that silently breaks the very code path it is
+    // meant to observe is worse than no test at all, so it was dropped in
+    // favor of this comment; see the Task 11 fix-wave report for the
+    // reproduction.
+
+    // positive direction: a real successful triggerBatch, reusing the SAME
+    // epoch as the rolled-back attempt (nothing was burned: the inbox row
+    // rolled back too).
+    const ok = await triggerBatch(db, tenantWire, programWire, reason, { epoch })
+    expect(ok).not.toBeNull()
+    expect(ok!.unitCount).toBe(1)
+
+    const b1 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM batch`
+    const o1 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = ${BATCH_TOPIC}`
+    expect(Number(b1[0]!.n)).toBe(1)
+    expect(Number(o1[0]!.n)).toBe(1)
+
+    const entryAfterReal = await db.$queryRaw<{ pool_status: string; batch: string | null }[]>`
+      SELECT pool_status, batch::text AS batch FROM pending_pool_entry WHERE asgn_id = ${seeded.asgnUuid}::uuid
+    `
+    expect(entryAfterReal[0]!.pool_status).toBe('BATCHED')
+    expect(entryAfterReal[0]!.batch).toBe(toUuid(ok!.btchId))
   })
 })
