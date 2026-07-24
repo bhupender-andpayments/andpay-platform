@@ -6,3 +6,11 @@ export { loadFulfillmentConfig } from './authz-config.js'
 export { type Tx, CONSUMER, setProgramContext } from './internal.js'
 export { type CreateVendorInput, type OpsActor, createVendor } from './vendor.js'
 export { projectDemandFact } from './pool.js'
+export {
+  type SerializedIntakeRow,
+  type QuantityLineIntakeRow,
+  type IntakeRow,
+  type IntakeSheet,
+  type IntakeResult,
+  ingestIntakeSheet,
+} from './intake.js'
