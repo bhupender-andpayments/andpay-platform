@@ -6,6 +6,14 @@ export { loadFulfillmentConfig } from './authz-config.js'
 export { type Tx, CONSUMER, setProgramContext } from './internal.js'
 export { type CreateVendorInput, type OpsActor, createVendor } from './vendor.js'
 export { projectDemandFact } from './pool.js'
+export { poolConfig, type PoolCfg } from './config/pool-config.js'
+export {
+  ensurePool,
+  triggerBatch,
+  onDemandAccrued,
+  type PoolAnchor,
+  type TriggerBatchOpts,
+} from './batching.js'
 export {
   type SerializedIntakeRow,
   type QuantityLineIntakeRow,

@@ -1,0 +1,315 @@
+import { newId, toUuid, fromUuid } from '@andpay/ids'
+import { onceWithin, enqueue } from '@andpay/outbox'
+import { setTimer } from '@andpay/engine'
+import type { FulfillmentDb } from './db.js'
+import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { poolConfig } from './config/pool-config.js'
+import { BATCH_TOPIC, batchFactEnvelope } from './events.js'
+
+/**
+ * Thrown internally when ensurePool's own transaction loses the batch_pool
+ * ON CONFLICT (tenant_id, program_id) DO NOTHING race. Throwing rolls back the
+ * WHOLE creating transaction, including the just-inserted saga_instance, so
+ * the losing racer leaves no orphan saga_instance behind. Never escapes this
+ * module (caught in ensurePool's own catch).
+ */
+class PoolRaceLost extends Error {
+  constructor() {
+    super('batch_pool creation race lost; the winning racer holds the row')
+    this.name = 'PoolRaceLost'
+  }
+}
+
+/**
+ * Thrown internally when triggerBatch's pool lock SELECT finds no batch_pool
+ * row (should not happen: ensurePool always runs first and creates the
+ * anchor before any trigger reason can fire). This is an anomaly, not a
+ * legitimate no-op, so it MUST throw rather than return: throwing from inside
+ * the onceWithin callback rolls back the WHOLE enclosing $transaction,
+ * including the just-inserted inbox dedup row, so the epoch is never burned
+ * and a legitimate later retry (once the anomaly is fixed) can still create
+ * the batch. A bare return here would let the transaction commit the inbox
+ * row while creating nothing, permanently deduping away every future retry
+ * for that epoch. Deliberately NOT caught in triggerBatch: it propagates to
+ * the caller so the anomaly surfaces instead of being silently swallowed.
+ */
+class PoolNotFound extends Error {
+  constructor() {
+    super('batch_pool row not found for trigger; ensurePool should have run first')
+    this.name = 'PoolNotFound'
+  }
+}
+
+export interface PoolAnchor {
+  poolId: string
+  pmInstanceId: string
+}
+
+/**
+ * Find-or-create the per-(tenant, program) batch_pool anchor: the row that
+ * maps a pool to its saga_instance (the D77 PM instance the pool's timers hang
+ * off, D107a) so the engine's setTimer (which needs a saga_instance FK) can
+ * arm the pool's max_wait timer.
+ *
+ * Fast path: a plain SELECT, the common case on every accrual (called on
+ * every non-deduped demand fact; no transaction, no lock). On a miss,
+ * inline-atomic create: this duplicates SagaEngine.start's 3-line
+ * saga_instance INSERT rather than calling the class method, because start()
+ * writes on its own connection and cannot join this tx; setTimer /
+ * claimAndFireDueTimers ARE reused (the engine itself, not a re-implementation
+ * of it). The batch_pool INSERT is ON CONFLICT (tenant_id, program_id) DO
+ * NOTHING; a losing racer throws PoolRaceLost, which rolls back its own
+ * saga_instance INSERT too (no orphan saga_instance is ever committed), then
+ * re-SELECTs batch_pool: the ON CONFLICT DO NOTHING blocks on the winning
+ * row's lock until that transaction commits, so the re-SELECT is guaranteed to
+ * find the row.
+ */
+export async function ensurePool(
+  db: FulfillmentDb,
+  tenantWire: string,
+  programWire: string,
+): Promise<PoolAnchor> {
+  const tenantUuid = toUuid(tenantWire)
+  const programUuid = toUuid(programWire)
+
+  const existing = await db.$queryRaw<{ id: string; pm_instance_id: string }[]>`
+    SELECT id::text AS id, pm_instance_id::text AS pm_instance_id
+    FROM batch_pool WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid
+  `
+  if (existing.length > 0) {
+    return { poolId: existing[0]!.id, pmInstanceId: existing[0]!.pm_instance_id }
+  }
+
+  try {
+    return await db.$transaction(async (tx: Tx) => {
+      const sagaId = newId('sg')
+      const pmInstanceId = toUuid(sagaId)
+      await tx.$executeRaw`
+        INSERT INTO saga_instance (id, flow_type, flow_version, status, updated_at)
+        VALUES (${pmInstanceId}::uuid, 'batching_pool', 1, 'running', now())
+      `
+
+      // batch_pool is PROGRAM-SCOPED (07.B): the write-gate needs app.program_id
+      // set before the INSERT below (critique fix).
+      await setProgramContext(tx, programUuid)
+
+      const won = await tx.$queryRaw<{ id: string; pm_instance_id: string }[]>`
+        INSERT INTO batch_pool (id, tenant_id, program_id, pm_instance_id, created_at)
+        VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${programUuid}::uuid, ${pmInstanceId}::uuid, now())
+        ON CONFLICT (tenant_id, program_id) DO NOTHING
+        RETURNING id::text AS id, pm_instance_id::text AS pm_instance_id
+      `
+      if (won.length === 0) {
+        throw new PoolRaceLost()
+      }
+
+      // Arm the FIRST max-wait window for the newly created pool.
+      await setTimer(
+        tx,
+        pmInstanceId,
+        new Date(Date.now() + poolConfig(tenantWire, programWire).maxWaitSeconds * 1000),
+        'max_wait',
+      )
+
+      return { poolId: won[0]!.id, pmInstanceId: won[0]!.pm_instance_id }
+    })
+  } catch (e) {
+    if (!(e instanceof PoolRaceLost)) throw e
+
+    const rows = await db.$queryRaw<{ id: string; pm_instance_id: string }[]>`
+      SELECT id::text AS id, pm_instance_id::text AS pm_instance_id
+      FROM batch_pool WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid
+    `
+    const row = rows[0]
+    if (!row) throw e // should never happen: the winner is guaranteed to have committed
+    return { poolId: row.id, pmInstanceId: row.pm_instance_id }
+  }
+}
+
+export interface TriggerBatchOpts {
+  /** The onceWithin idempotency epoch, scoped by `{tenant}|{program}|{reason}`. */
+  epoch: string
+  /** The firing DueTimer.id for a MAX_WAIT trigger (Task 9); left pending by the supersede sweep. */
+  firingTimerId?: string
+  /** The class-3 actor for a MANUAL trigger (Task 10); recorded on batch.triggered_by_actor. */
+  actorUuid?: string
+  /**
+   * The triggering demand fact's traceId (LOT_SIZE only). Deliberately NOT
+   * used for the batch fact's traceId: to keep trace derivation uniform and
+   * testable across every trigger reason, triggerBatch always derives the
+   * batch fact's traceId from the deterministically-oldest claimed
+   * pending_pool_entry's trace_id instead (one documented rule for LOT_SIZE,
+   * MAX_WAIT, and MANUAL alike, check 8). Kept on the options shape so a
+   * caller may still pass it without a type error.
+   */
+  traceId?: string
+}
+
+/**
+ * Create a Batch from every currently-POOLED pending_pool_entry row of one
+ * (tenant, program) pool, for the given trigger reason. Shared by LOT_SIZE
+ * (Task 8), MAX_WAIT (Task 9), and MANUAL (Task 10).
+ *
+ * ONE db.$transaction (E1): the whole body runs under
+ * `onceWithin(tx, CONSUMER, "batch|{tenant}|{program}|{reason}|{epoch}", fn)`,
+ * so a redelivered trigger for the same epoch is a no-op.
+ *
+ * Inside fn:
+ *  - `SELECT ... FROM batch_pool ... FOR UPDATE` locks the pool row, which
+ *    serializes EVERY trigger reason on this pool (critical fix C4): LOT_SIZE
+ *    and MAX_WAIT can never both claim the same POOLED rows.
+ *  - the pending_pool_entry mark-BATCHED UPDATE's RETURNING row count IS the
+ *    gate: an empty return (nothing POOLED) creates no batch and touches no
+ *    timer (C4 fix). Postgres does not support ORDER BY on an
+ *    UPDATE ... RETURNING, so the deterministic-oldest ordering (by
+ *    created_at, then id) is done in JS over the returned rows.
+ *  - the batch fact's traceId is the deterministically-oldest claimed entry's
+ *    trace_id, for every reason (documented rule above).
+ *  - the pool's timers are superseded-and-re-armed (critique fix C2): every
+ *    other pending timer on the pool is superseded and exactly one fresh
+ *    max_wait timer is armed, so at most one pending timer per pool survives
+ *    and a stale timer can never prematurely sweep the next window.
+ *
+ * Returns null when the epoch was already processed (deduped) or nothing was
+ * POOLED (no spurious/empty batch).
+ */
+export async function triggerBatch(
+  db: FulfillmentDb,
+  tenantWire: string,
+  programWire: string,
+  reason: string,
+  opts: TriggerBatchOpts,
+): Promise<{ btchId: string; unitCount: number } | null> {
+  const tenantUuid = toUuid(tenantWire)
+  const programUuid = toUuid(programWire)
+  let result: { btchId: string; unitCount: number } | null = null
+
+  await db.$transaction(async (tx: Tx) => {
+    await onceWithin(
+      tx,
+      CONSUMER,
+      `batch|${tenantWire}|${programWire}|${reason}|${opts.epoch}`,
+      async () => {
+        // pending_pool_entry and batch are PROGRAM-SCOPED (07.A).
+        await setProgramContext(tx, programUuid)
+
+        // The pool lock: serializes every trigger reason on this pool (C4 fix).
+        const pool = await tx.$queryRaw<{ pm_instance_id: string }[]>`
+          SELECT pm_instance_id::text AS pm_instance_id FROM batch_pool
+          WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid
+          FOR UPDATE
+        `
+        // Anomaly, not a legitimate no-op (see PoolNotFound doc comment): throw
+        // so the whole transaction, inbox insert included, rolls back and the
+        // epoch stays retryable, instead of a bare return committing the dedup
+        // row over nothing.
+        if (pool.length === 0) throw new PoolNotFound()
+        const pmInstanceId = pool[0]!.pm_instance_id
+
+        const btchUuid = toUuid(newId('btch'))
+
+        const claimed = await tx.$queryRaw<
+          { id: string; asgn_id: string; trace_id: string; created_at: Date }[]
+        >`
+          UPDATE pending_pool_entry
+          SET pool_status = 'BATCHED', batch = ${btchUuid}::uuid, updated_at = now()
+          WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid AND pool_status = 'POOLED'
+          RETURNING id::text AS id, asgn_id::text AS asgn_id, trace_id, created_at
+        `
+        if (claimed.length === 0) return // nothing POOLED: no batch, no timer churn
+
+        const sorted = [...claimed].sort((a, b) => {
+          const byCreatedAt = a.created_at.getTime() - b.created_at.getTime()
+          if (byCreatedAt !== 0) return byCreatedAt
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+        })
+        const oldestTraceId = sorted[0]!.trace_id
+        const btchWire = fromUuid('btch', btchUuid)
+
+        await tx.$executeRaw`
+          INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
+          VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BORN', ${reason}, ${opts.actorUuid ?? null}::uuid, ${claimed.length}, now())
+        `
+
+        await enqueue(tx, {
+          aggregateType: 'batch',
+          aggregateId: btchWire,
+          eventType: BATCH_TOPIC,
+          partitionKey: btchWire,
+          payload: batchFactEnvelope({
+            payload: {
+              btchId: btchWire,
+              tenantId: tenantWire,
+              programId: programWire,
+              triggerReason: reason,
+              unitCount: claimed.length,
+              asgnIds: sorted.map((c) => fromUuid('asgn', c.asgn_id)),
+            },
+            dedupKey: btchWire,
+            traceId: oldestTraceId,
+          }),
+        })
+
+        // SUPERSEDE + RE-ARM (critique fix C2): every other pending max_wait
+        // timer on this pool is superseded (the currently-firing MAX_WAIT
+        // timer, opts.firingTimerId, Task 9, is deliberately left alone here
+        // so claimAndFireDueTimers can mark it fired without a self-conflict),
+        // and exactly one fresh max_wait timer is armed. At most one pending
+        // timer per pool survives, so a stale timer never prematurely sweeps
+        // the next window. Scoped to purpose = 'max_wait' so the "exactly one
+        // pending max_wait timer per pool" invariant is explicit: a future
+        // non-max_wait timer purpose on the same saga instance is never
+        // wrongly superseded here.
+        await tx.$executeRaw`
+          UPDATE saga_timer SET status = 'superseded'
+          WHERE instance_id = ${pmInstanceId}::uuid AND status = 'pending' AND purpose = 'max_wait'
+          AND (${opts.firingTimerId ?? null}::uuid IS NULL OR id <> ${opts.firingTimerId ?? null}::uuid)
+        `
+        await setTimer(
+          tx,
+          pmInstanceId,
+          new Date(Date.now() + poolConfig(tenantWire, programWire).maxWaitSeconds * 1000),
+          'max_wait',
+        )
+
+        result = { btchId: btchWire, unitCount: claimed.length }
+      },
+    )
+  })
+
+  return result
+}
+
+/**
+ * Called after a NON-deduped projectDemandFact. Ensures the pool anchor
+ * exists, then triggers a LOT_SIZE batch once the POOLED count (HELD is
+ * excluded, `pool_status = 'POOLED'`) has reached minLotSize.
+ * `epoch = triggerDedupKey`, the demand fact's own dedupKey, so a redelivered
+ * demand fact can never double-trigger a LOT_SIZE batch.
+ */
+export async function onDemandAccrued(
+  db: FulfillmentDb,
+  tenantWire: string,
+  programWire: string,
+  triggerDedupKey: string,
+  traceId: string,
+): Promise<{ triggered: boolean; btchId?: string }> {
+  await ensurePool(db, tenantWire, programWire)
+
+  const tenantUuid = toUuid(tenantWire)
+  const programUuid = toUuid(programWire)
+  const counted = await db.$queryRaw<{ n: bigint }[]>`
+    SELECT count(*) AS n FROM pending_pool_entry
+    WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid AND pool_status = 'POOLED'
+  `
+  const count = Number(counted[0]?.n ?? 0)
+  if (count < poolConfig(tenantWire, programWire).minLotSize) {
+    return { triggered: false }
+  }
+
+  const res = await triggerBatch(db, tenantWire, programWire, 'LOT_SIZE', {
+    epoch: triggerDedupKey,
+    traceId,
+  })
+  return { triggered: res != null, btchId: res?.btchId }
+}
