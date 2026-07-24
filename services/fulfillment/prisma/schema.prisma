@@ -48,3 +48,180 @@ model Inbox {
   @@id([consumer, dedupKey])
   @@map("inbox")
 }
+
+/// Fulfillment vendor registry (D115/D121; the vndr_ business entity is
+/// Fulfillment-owned, the class-6 credential binding it is Auth-owned). PLATFORM
+/// -ONLY (a vendor references no Program). FORCE RLS permissive in v1.
+model Vendor {
+  id          String   @id @db.Uuid
+  type        String // MANUFACTURER | PRINT | COURIER
+  displayName String   @map("display_name")
+  status      String // ACTIVE | SUSPENDED
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("vndr")
+}
+
+/// The Unit aggregate (D106a/b). A common lifecycle spine with typed detail
+/// (T10): SERIALIZED devices carry device_serial (the natural birth key from the
+/// intake sheet) + device_qr detail; QUANTITY_LINE collateral carries a qr_string
+/// (the Acceptance/TMS value, transmitted never minted, T2) + running counts.
+/// PLATFORM-ONLY (raw inventory, not merchant/Program-attributed at birth). Born
+/// ONLY at manufacturer intake (D103d). shipment/printed_for_merchant stay null
+/// until the return sheet (spec 08).
+model Unit {
+  id                 String   @id @db.Uuid
+  kind               String // SERIALIZED | QUANTITY_LINE
+  productType        String   @map("product_type") // SOUNDBOX | STANDEE | STICKER | ...
+  manufacturerVndr   String   @map("manufacturer_vndr") @db.Uuid
+  batch              String?  @db.Uuid
+  status             String
+  // serialized-only
+  deviceSerial       String?  @unique @map("device_serial")
+  deviceQr           Json?    @map("device_qr") @db.JsonB
+  shipment           String?  @db.Uuid
+  printedForMerchant String?  @map("printed_for_merchant") @db.Uuid
+  location           String?
+  // quantity-line-only
+  qrString           String?  @map("qr_string")
+  procured           Int?
+  allocated          Int?
+  printed            Int?
+  dispatched         Int?
+  delivered          Int?
+  returned           Int?
+  scrapped           Int?
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("unit")
+}
+
+/// The per-pool demand projection built from fct.tms.assignment.v1 (T7). Holds
+/// the event-carried snapshot for spec-08 composition with no C4 read (D116).
+/// PROGRAM-SCOPED (07.A class 1): program_id write-gate.
+model PendingPoolEntry {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  asgnId              String   @unique @map("asgn_id") @db.Uuid
+  tenantId            String   @map("tenant_id") @db.Uuid
+  programId           String   @map("program_id") @db.Uuid
+  soundbox            Boolean
+  standeeCount        Int      @map("standee_count")
+  stickerCount        Int      @map("sticker_count")
+  billable            Boolean
+  merchantDisplayName String   @map("merchant_display_name")
+  merchantLegalName   String   @map("merchant_legal_name")
+  merchantMcc         String   @map("merchant_mcc")
+  bankReferenceCode   String   @map("bank_reference_code")
+  bankDisplayName     String   @map("bank_display_name")
+  shipToAddress       String   @map("ship_to_address")
+  qrValue             String   @map("qr_value")
+  vpaValue            String   @map("vpa_value")
+  poolStatus          String   @map("pool_status") // POOLED | HELD | BATCHED
+  batch               String?  @db.Uuid
+  sourceEventId       String   @map("source_event_id")
+  // E4 trace propagation through the pool projection (S21, Field 9): captured from
+  // the demand fact at pool-insert; the batch fact carries the deterministically-
+  // oldest batched entry's trace_id (critique fix C5).
+  traceId             String   @map("trace_id")
+  // record-HOLD is an audited class-3 op (S13); the hold actor lives here because a
+  // HOLD never creates a Batch (critique fix). The tamper-evident 6e write is step 9.
+  heldByActor         String?  @map("held_by_actor") @db.Uuid
+  heldAt              DateTime? @map("held_at") @db.Timestamptz(6)
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("pending_pool_entry")
+}
+
+/// The Batch aggregate (D102). PROGRAM-SCOPED. Born by the batching PM trigger.
+model Batch {
+  id               String   @id @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  programId        String   @map("program_id") @db.Uuid
+  printVndr        String?  @map("print_vndr") @db.Uuid
+  status           String // BORN | ...(spec 08)
+  triggerReason    String   @map("trigger_reason") // LOT_SIZE | MAX_WAIT | MANUAL
+  triggeredByActor String?  @map("triggered_by_actor") @db.Uuid
+  unitCount        Int      @map("unit_count")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("batch")
+}
+
+/// The per-(tenant, program) pool anchor (implementation of "one PM instance per
+/// pool"). Maps a pool to its saga_instance so the engine's setTimer (which needs
+/// a saga_instance FK) can anchor the pool's max-wait timer. PROGRAM-SCOPED.
+/// Lot-size/max-wait config is code (src/config/pool-config.ts), not here (S23).
+model BatchPool {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  programId     String   @map("program_id") @db.Uuid
+  pmInstanceId  String   @map("pm_instance_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([tenantId, programId])
+  @@map("batch_pool")
+}
+
+/// Quarantine home for D103d partial-file intake (SPEC Field 2). A malformed or
+/// ambiguous row in an otherwise valid manufacturer sheet lands here (plus an ops
+/// case) while the certain rows create Units. IDs/enums only, no PII, no raw QR
+/// (S7). PLATFORM-ONLY, permissive FORCE RLS in v1. No updated_at (append-only).
+model IntakeException {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  vndrId     String   @map("vndr_id") @db.Uuid
+  fileId     String   @map("file_id")
+  rowRef     String   @map("row_ref")
+  reasonCode String   @map("reason_code")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("intake_exception")
+}
+
+/// The D77 engine state tables, copied VERBATIM from the orchestrator engine DDL
+/// (the engine is schema-agnostic; these live in the fulfillment schema so the
+/// fulfillment-context PM never touches another schema, C4/D107b). Permissive RLS.
+model SagaInstance {
+  id          String    @id @db.Uuid
+  flowType    String    @map("flow_type")
+  flowVersion Int       @map("flow_version")
+  currentStep String?   @map("current_step")
+  status      String
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  steps       SagaStep[]
+  timers      SagaTimer[]
+
+  @@map("saga_instance")
+}
+
+model SagaStep {
+  instanceId     String       @map("instance_id") @db.Uuid
+  name           String
+  status         String
+  attempts       Int          @default(0)
+  lastErrorClass String?      @map("last_error_class")
+  idempotencyKey String       @map("idempotency_key")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  instance       SagaInstance @relation(fields: [instanceId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@id([instanceId, name])
+  @@map("saga_step")
+}
+
+model SagaTimer {
+  id         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  instanceId String       @map("instance_id") @db.Uuid
+  fireAt     DateTime     @map("fire_at") @db.Timestamptz(6)
+  purpose    String
+  status     String       @default("pending")
+  claimedAt  DateTime?    @map("claimed_at") @db.Timestamptz(6)
+  instance   SagaInstance @relation(fields: [instanceId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([status, fireAt])
+  @@map("saga_timer")
+}
