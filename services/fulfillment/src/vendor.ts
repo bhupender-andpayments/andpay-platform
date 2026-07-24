@@ -1,0 +1,38 @@
+import { newId, toUuid, fromUuid } from '@andpay/ids'
+import type { FulfillmentDb } from './db.js'
+import { type Tx } from './internal.js'
+
+export interface CreateVendorInput {
+  type: string // MANUFACTURER | PRINT | COURIER
+  displayName: string
+}
+
+export interface OpsActor {
+  operatorId: string
+}
+
+// Class-3 ops action (S13). Creates a Fulfillment-owned vndr_ (D115). vndr is
+// PLATFORM-ONLY (no Program scope), so this insert does not setProgramContext.
+// The tamper-evident 6e authz-audit write is the step-9 ops-portal edge's job
+// (C4: fulfillment cannot write Auth's 6e store); v1 records only the vendor
+// row. actor/traceId are accepted now so the call shape is stable once the
+// audited path lands.
+export async function createVendor(
+  db: FulfillmentDb,
+  input: CreateVendorInput,
+  _actor: OpsActor,
+  _traceId: string,
+): Promise<{ vndrId: string }> {
+  const uuid = toUuid(newId('vndr'))
+  await db.$transaction(async (tx: Tx) => {
+    // updated_at is @updatedAt in the Prisma schema, which is client-API
+    // middleware only (it does not run for $executeRaw) and the column has no
+    // DB-level DEFAULT, so it must be set explicitly here (same pattern as
+    // tms/src/damage.ts and tms/src/assignment.ts).
+    await tx.$executeRaw`
+      INSERT INTO vndr (id, type, display_name, status, updated_at)
+      VALUES (${uuid}::uuid, ${input.type}, ${input.displayName}, ${'ACTIVE'}, now())
+    `
+  })
+  return { vndrId: fromUuid('vndr', uuid) }
+}
