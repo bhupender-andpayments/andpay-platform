@@ -73,4 +73,28 @@ describe('AWS residency guard (S6, India-only; deploy-deferred)', () => {
       expect(topics.includes(fact), `FACT_SCHEMAS missing ${fact}`).toBe(true)
     }
   })
+
+  // The two fulfillment facts (spec 07) are registered for Glue on the
+  // India-pinned event-backbone stack, so their schemas are residency-bound too
+  // (check 8, deploy-deferred live proof).
+  //
+  // Scoped to the FACT_SCHEMAS array slice only, excluding TOPIC_NAMES (which
+  // also lists these names), and pinned to the real property tokens so this
+  // bites on both regressions: the FACT_SCHEMAS entry being deleted (the name
+  // would then survive only in TOPIC_NAMES, outside this slice) and the schema
+  // being reverted to the old placeholder shape (which used a generic `id`
+  // field, not `unitId` / `btchId`).
+  it('registers the two fulfillment fact schemas for Glue under the India-pinned backbone (spec 07)', () => {
+    const topics = src('lib/topics.ts')
+    const factSchemasStart = topics.indexOf('export const FACT_SCHEMAS')
+    const topicNamesStart = topics.indexOf('export const TOPIC_NAMES')
+    expect(factSchemasStart, 'FACT_SCHEMAS not found in lib/topics.ts').toBeGreaterThan(-1)
+    expect(topicNamesStart, 'TOPIC_NAMES not found after FACT_SCHEMAS in lib/topics.ts').toBeGreaterThan(factSchemasStart)
+    const factSchemas = topics.slice(factSchemasStart, topicNamesStart)
+
+    expect(factSchemas.includes("name: 'fct.fulfillment.unit.v1'"), 'FACT_SCHEMAS missing the fct.fulfillment.unit.v1 entry').toBe(true)
+    expect(factSchemas.includes("name: 'fct.fulfillment.batch.v1'"), 'FACT_SCHEMAS missing the fct.fulfillment.batch.v1 entry').toBe(true)
+    expect(factSchemas.includes('unitId'), 'fct.fulfillment.unit.v1 schema is missing the real unitId property (placeholder shape?)').toBe(true)
+    expect(factSchemas.includes('btchId'), 'fct.fulfillment.batch.v1 schema is missing the real btchId property (placeholder shape?)').toBe(true)
+  })
 })

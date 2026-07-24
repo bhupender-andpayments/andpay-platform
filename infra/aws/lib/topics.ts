@@ -171,11 +171,24 @@ export const FACT_SCHEMAS: FactSchema[] = [
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
       properties: {
-        id: { type: 'string' },
-        batchId: { type: 'string' },
-        status: { type: 'string' },
+        unitId: { type: 'string' }, kind: { type: 'string' }, productType: { type: 'string' },
+        manufacturerVndr: { type: 'string' }, status: { type: 'string' },
+        deviceSerial: { type: 'string' }, count: { type: 'integer' }, batchId: { type: 'string' },
       },
-      required: ['id', 'status'],
+      required: ['unitId', 'kind', 'status'],
+    },
+  },
+  {
+    name: 'fct.fulfillment.batch.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        btchId: { type: 'string' }, tenantId: { type: 'string' }, programId: { type: 'string' },
+        triggerReason: { type: 'string' }, unitCount: { type: 'integer' },
+        asgnIds: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['btchId', 'triggerReason'],
     },
   },
 ]
