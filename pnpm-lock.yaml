@@ -110,6 +110,31 @@ importers:
         specifier: ^12.0.1
         version: 12.0.1
 
+  services/fulfillment:
+    dependencies:
+      '@andpay/authz':
+        specifier: workspace:*
+        version: link:../../packages/authz
+      '@andpay/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@andpay/envelope':
+        specifier: workspace:*
+        version: link:../../packages/envelope
+      '@andpay/ids':
+        specifier: workspace:*
+        version: link:../../packages/ids
+      '@andpay/keys':
+        specifier: workspace:*
+        version: link:../../packages/keys
+      '@andpay/outbox':
+        specifier: workspace:*
+        version: link:../../packages/outbox
+    devDependencies:
+      '@andpay/bus':
+        specifier: workspace:*
+        version: link:../../packages/bus
+
   services/identity:
     dependencies:
       '@andpay/envelope':

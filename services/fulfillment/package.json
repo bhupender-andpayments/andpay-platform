@@ -1,0 +1,25 @@
+{
+  "name": "@andpay/fulfillment-service",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fulfillment rail inbound (spec 07): the fct.tms.assignment.v1 demand consumer, the per-(tenant, program) pending-pool projection, the vndr_ registry and raw-device inventory, the manufacturer intake sheet (the only Unit-creating channel), and the batching process manager to Batch birth. Consumes fct.tms.assignment.v1, emits fct.fulfillment.{unit,batch}.v1. Holds no money.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "db:migrate": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:generate": "prisma generate --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@andpay/authz": "workspace:*",
+    "@andpay/engine": "workspace:*",
+    "@andpay/envelope": "workspace:*",
+    "@andpay/ids": "workspace:*",
+    "@andpay/keys": "workspace:*",
+    "@andpay/outbox": "workspace:*"
+  },
+  "devDependencies": {
+    "@andpay/bus": "workspace:*"
+  }
+}
