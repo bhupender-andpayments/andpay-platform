@@ -1,6 +1,6 @@
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { onceWithin, enqueue } from '@andpay/outbox'
-import { setTimer } from '@andpay/engine'
+import { setTimer, claimAndFireDueTimers } from '@andpay/engine'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 import { poolConfig } from './config/pool-config.js'
@@ -260,10 +260,34 @@ export async function triggerBatch(
         // pending max_wait timer per pool" invariant is explicit: a future
         // non-max_wait timer purpose on the same saga instance is never
         // wrongly superseded here.
+        //
+        // FOR UPDATE SKIP LOCKED (fix wave 1, cross-transaction deadlock): a
+        // plain UPDATE ... WHERE here would try to lock EVERY matching pending
+        // max_wait row, including one an in-flight claimAndFireDueTimers MAX_WAIT
+        // fire already holds FOR UPDATE (packages/engine's own claim SELECT,
+        // Decision 77). That fire's own effect is this very triggerBatch call,
+        // opened on a SEPARATE transaction/connection, so this UPDATE and that
+        // FOR UPDATE claim can deadlock AB-BA: a concurrent same-pool trigger
+        // WITHOUT firingTimerId (LOT_SIZE via onDemandAccrued, or MANUAL) blocks
+        // waiting on the row the claim holds, while the claim's own transaction
+        // is awaiting (via a JS await) this effect to finish before it can ever
+        // release that lock. Postgres cannot detect this cycle (one edge is a
+        // JS await, not a DB wait), so it only resolves via Prisma's 5s
+        // transaction timeout. The inner subquery locks only the rows it can
+        // acquire immediately and skips any already locked by a concurrent
+        // fire; a skipped row is safe either way: it is about to be marked
+        // 'fired' by its own firing transaction, or it will be superseded on
+        // the next trigger. In the single-trigger, no-concurrency case nothing
+        // is locked by anyone else, so SKIP LOCKED skips nothing and behavior
+        // is unchanged.
         await tx.$executeRaw`
           UPDATE saga_timer SET status = 'superseded'
-          WHERE instance_id = ${pmInstanceId}::uuid AND status = 'pending' AND purpose = 'max_wait'
-          AND (${opts.firingTimerId ?? null}::uuid IS NULL OR id <> ${opts.firingTimerId ?? null}::uuid)
+          WHERE id IN (
+            SELECT id FROM saga_timer
+            WHERE instance_id = ${pmInstanceId}::uuid AND status = 'pending' AND purpose = 'max_wait'
+            AND (${opts.firingTimerId ?? null}::uuid IS NULL OR id <> ${opts.firingTimerId ?? null}::uuid)
+            FOR UPDATE SKIP LOCKED
+          )
         `
         await setTimer(
           tx,
@@ -312,4 +336,91 @@ export async function onDemandAccrued(
     traceId,
   })
   return { triggered: res != null, btchId: res?.btchId }
+}
+
+/**
+ * The MAX_WAIT trigger (Task 9, check 3b): a thin wrapper over the D77 engine's
+ * claimAndFireDueTimers, run on a poll cadence by whatever caller owns
+ * scheduling (a cron worker, spec 07 does not fix which). The engine's own
+ * transaction claims due timers with FOR UPDATE SKIP LOCKED (decision 77), so
+ * concurrent callers of this function claim disjoint timer sets: no timer
+ * double-fires and none is skipped (proven in test/batching-timer.test.ts).
+ *
+ * The effect receives a bare DueTimer (id, instanceId, purpose as uuid text
+ * strings) with NO tx handle (the engine contract): claimAndFireDueTimers
+ * commits the claim/mark-fired transaction independently of whatever the
+ * effect does, so the effect must open its own transaction, which
+ * triggerBatch does. This makes the effect at-least-once: a redelivery of the
+ * SAME timer (the row is only status-flipped to 'fired', never deleted) must
+ * be a safe no-op.
+ *
+ * Redelivery safety is `epoch: timer.id`: onceWithin's dedup key embeds the
+ * firing timer's own id, which is STABLE across redeliveries of the same fire
+ * (the row survives, only its status column changes), so a retry after a
+ * crash between the effect's commit and claimAndFireDueTimers' mark-fired
+ * UPDATE is deduped. A freshly re-armed next-window timer gets a NEW id (an
+ * INSERT, not an UPDATE of the old row), so it is never wrongly deduped
+ * against the previous window's epoch.
+ *
+ * `firingTimerId: timer.id` also flows into triggerBatch's supersede sweep so
+ * that sweep deliberately EXCLUDES the currently-firing timer: without this,
+ * the supersede UPDATE would try to lock the very saga_timer row that the
+ * enclosing claimAndFireDueTimers transaction already holds under its own
+ * FOR UPDATE SKIP LOCKED claim, deadlocking the effect's own transaction
+ * against the transaction that is awaiting it.
+ *
+ * A miss on the batch_pool lookup (`rows.length === 0`) is a silent no-op, not
+ * an anomaly: it means the pool's batch_pool row is gone (never happens in
+ * this spec, pools are never deleted) or the timer belongs to some other flow
+ * on the same saga_instance table (never true today: batching_pool instances
+ * only ever carry max_wait timers). Guarded defensively rather than thrown,
+ * since throwing here would abort the WHOLE claim transaction and stall every
+ * other due timer in the same claimAndFireDueTimers batch.
+ *
+ * No traceId flows through this path (documented on TriggerBatchOpts.traceId
+ * above): the batch fact's traceId is always the deterministically-oldest
+ * claimed pending_pool_entry's trace_id, derived inside triggerBatch.
+ *
+ * Crash-window note (fix wave 1): if the process crashes between this effect's
+ * own transaction commit (the batch, the outbox row, and the supersede/re-arm)
+ * and claimAndFireDueTimers' own mark-fired UPDATE, the firing timer transiently
+ * reverts to 'pending' on restart and is later marked 'superseded' by an
+ * unrelated trigger (the next LOT_SIZE, MANUAL, or MAX_WAIT run on the same
+ * pool) instead of ever reaching 'fired'. This is a terminal-status/audit
+ * ambiguity only: no double-batch results (epoch = timer.id dedups the retry
+ * via onceWithin) and no re-arm is lost (the fresh max_wait timer from the
+ * effect's own commit already survived).
+ *
+ * `batchSize` (fix wave 1) is passed straight through to the engine's
+ * claimAndFireDueTimers, defaulting to 100 (unchanged behavior); a caller can
+ * override it to cap how many due timers one call claims (used by
+ * test/batching-timer.test.ts to force a deterministic split across
+ * concurrent workers).
+ */
+export async function runDueBatchTimers(
+  db: FulfillmentDb,
+  now: Date,
+  batchSize = 100,
+): Promise<string[]> {
+  return claimAndFireDueTimers(
+    db,
+    now,
+    async (timer) => {
+      if (timer.purpose !== 'max_wait') return
+
+      const rows = await db.$queryRaw<{ tenant_id: string; program_id: string }[]>`
+        SELECT tenant_id::text AS tenant_id, program_id::text AS program_id
+        FROM batch_pool WHERE pm_instance_id = ${timer.instanceId}::uuid
+      `
+      if (rows.length === 0) return
+
+      const tenantWire = fromUuid('tnnt', rows[0]!.tenant_id)
+      const programWire = fromUuid('prog', rows[0]!.program_id)
+      await triggerBatch(db, tenantWire, programWire, 'MAX_WAIT', {
+        epoch: timer.id,
+        firingTimerId: timer.id,
+      })
+    },
+    batchSize,
+  )
 }
