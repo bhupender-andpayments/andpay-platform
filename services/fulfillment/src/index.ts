@@ -11,6 +11,9 @@ export {
   ensurePool,
   triggerBatch,
   onDemandAccrued,
+  runDueBatchTimers,
+  manualTrigger,
+  holdEntry,
   type PoolAnchor,
   type TriggerBatchOpts,
 } from './batching.js'

@@ -5,6 +5,7 @@ import type { FulfillmentDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 import { poolConfig } from './config/pool-config.js'
 import { BATCH_TOPIC, batchFactEnvelope } from './events.js'
+import type { OpsActor } from './vendor.js'
 
 /**
  * Thrown internally when ensurePool's own transaction loses the batch_pool
@@ -423,4 +424,95 @@ export async function runDueBatchTimers(
     },
     batchSize,
   )
+}
+
+/**
+ * The MANUAL trigger (Task 10, check 3c): a class-3 ops action (S13) that
+ * creates a Batch below minLotSize, on demand, bypassing the lot-size gate
+ * entirely (unlike onDemandAccrued, this never checks the POOLED count).
+ *
+ * `ensurePool` runs first so the pool anchor (and its first max_wait timer)
+ * exists even if this is the very first touch of the pool, then delegates to
+ * the shared `triggerBatch('MANUAL', ...)`. The caller-supplied `opsToken` IS
+ * the MANUAL idempotency epoch (per the epoch-namespacing rule: MANUAL's
+ * epoch is an ops-supplied token, distinct from LOT_SIZE's demand-fact
+ * dedupKey and MAX_WAIT's firing timer id), so a re-invocation with the SAME
+ * opsToken is deduped by triggerBatch's own onceWithin and creates no second
+ * batch.
+ *
+ * Actor recording: `triggerBatch` already writes
+ * `triggered_by_actor = ${opts.actorUuid ?? null}::uuid` on the batch INSERT
+ * (Task 8). `actorUuid` here is `actor.operatorId` directly: in v1 the caller
+ * (a test fixture today, the step-9 ops-portal edge later) supplies
+ * `operatorId` as a uuid string already. Real class-3 principal resolution
+ * (resolving an authenticated ops session to that uuid) is the step-9 portal
+ * edge's job, and the tamper-evident 6e audit-store write is ALSO deferred to
+ * step 9 (C4: fulfillment cannot write Auth's 6e store); v1 records only
+ * `batch.triggered_by_actor`.
+ *
+ * Returns null when nothing was POOLED (nothing to batch) or the opsToken was
+ * already processed (deduped).
+ */
+export async function manualTrigger(
+  db: FulfillmentDb,
+  tenantWire: string,
+  programWire: string,
+  actor: OpsActor,
+  opsToken: string,
+  traceId: string,
+): Promise<{ btchId: string } | null> {
+  await ensurePool(db, tenantWire, programWire)
+
+  const res = await triggerBatch(db, tenantWire, programWire, 'MANUAL', {
+    epoch: opsToken,
+    actorUuid: actor.operatorId,
+    traceId,
+  })
+  return res ? { btchId: res.btchId } : null
+}
+
+/**
+ * record-HOLD (Task 10, check 3d): moves one POOLED pending_pool_entry to
+ * HELD, excluding it from every future trigger. `pending_pool_entry` is
+ * PROGRAM-SCOPED (07.B), and this function is only given an asgnId (no
+ * programId), so it must look the row's own program_id up FIRST and set the
+ * program context before the write-gated UPDATE (critique fix).
+ *
+ * ONE db.$transaction: the program_id SELECT and the HELD UPDATE run under
+ * the same tx so the program context set via `setProgramContext` is visible
+ * to the UPDATE (SET LOCAL is transaction-scoped).
+ *
+ * The `AND pool_status = 'POOLED'` guard on the UPDATE means an already-HELD
+ * or already-BATCHED entry is left untouched (no-op, not an error): a HOLD is
+ * only ever a POOLED -> HELD transition, never a re-hold or an un-batch.
+ *
+ * HELD entries are ALREADY excluded from every trigger: `onDemandAccrued`'s
+ * POOLED count and `triggerBatch`'s mark-BATCHED claim both filter
+ * `pool_status = 'POOLED'` (unchanged by this task; verified, not modified).
+ *
+ * Actor recording: `held_by_actor`/`held_at` were added to the schema in
+ * Task 2 (critique fix). As with `manualTrigger`, `actor.operatorId` is
+ * written directly as the uuid; the tamper-evident 6e audit-store write is
+ * deferred to step 9 (C4), same deferral as above.
+ *
+ * A no-op (nothing found for asgnId) resolves silently: there is nothing to
+ * hold, which is not an error condition for this class-3 op.
+ */
+export async function holdEntry(db: FulfillmentDb, asgnIdWire: string, actor: OpsActor): Promise<void> {
+  const asgnUuid = toUuid(asgnIdWire)
+
+  await db.$transaction(async (tx: Tx) => {
+    const rows = await tx.$queryRaw<{ program_id: string }[]>`
+      SELECT program_id::text AS program_id FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
+    `
+    if (rows.length === 0) return // nothing to hold
+
+    await setProgramContext(tx, rows[0]!.program_id)
+
+    await tx.$executeRaw`
+      UPDATE pending_pool_entry
+      SET pool_status = 'HELD', held_by_actor = ${actor.operatorId}::uuid, held_at = now(), updated_at = now()
+      WHERE asgn_id = ${asgnUuid}::uuid AND pool_status = 'POOLED'
+    `
+  })
 }
