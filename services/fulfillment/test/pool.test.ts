@@ -46,6 +46,8 @@ function fixturePayload(overrides: Partial<AssignmentFactView> = {}): Assignment
     billable: true,
     demandState: 'pooled-for-fulfillment',
     sourceEventId: 'file-1|1',
+    contactName: 'Jane Doe',
+    mobile: '9876543210',
     ...overrides,
   }
 }
@@ -74,6 +76,7 @@ describe('projectDemandFact (pending-pool projection from fct.tms.assignment.v1,
         asgn_id: string
         tenant_id: string
         program_id: string
+        merchant_id: string
         soundbox: boolean
         standee_count: number
         sticker_count: number
@@ -84,15 +87,17 @@ describe('projectDemandFact (pending-pool projection from fct.tms.assignment.v1,
         bank_reference_code: string
         bank_display_name: string
         ship_to_address: string
+        ship_to_contact_name: string | null
+        ship_to_mobile: string | null
         qr_value: string
         vpa_value: string
         pool_status: string
         source_event_id: string
         trace_id: string
       }[]
-    >`SELECT asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable,
+    >`SELECT asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
              merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
-             ship_to_address, qr_value, vpa_value, pool_status, source_event_id, trace_id
+             ship_to_address, ship_to_contact_name, ship_to_mobile, qr_value, vpa_value, pool_status, source_event_id, trace_id
       FROM pending_pool_entry WHERE asgn_id = ${toUuid(payload.asgnId)}::uuid`
 
     expect(rows).toHaveLength(1)
@@ -100,6 +105,7 @@ describe('projectDemandFact (pending-pool projection from fct.tms.assignment.v1,
     expect(row.asgn_id).toBe(toUuid(payload.asgnId))
     expect(row.tenant_id).toBe(toUuid(payload.tnntId))
     expect(row.program_id).toBe(toUuid(payload.progId))
+    expect(row.merchant_id).toBe(toUuid(payload.mrchId))
     expect(row.soundbox).toBe(true)
     expect(row.standee_count).toBe(1)
     expect(row.sticker_count).toBe(2)
@@ -110,6 +116,8 @@ describe('projectDemandFact (pending-pool projection from fct.tms.assignment.v1,
     expect(row.bank_reference_code).toBe('HDFC')
     expect(row.bank_display_name).toBe('HDFC Bank')
     expect(row.ship_to_address).toBe('221B Baker Street')
+    expect(row.ship_to_contact_name).toBe('Jane Doe')       // snapshot (D116)
+    expect(row.ship_to_mobile).toBe('9876543210')           // snapshot (D116)
     expect(row.qr_value).toBe('upi://pay?pa=acme@hdfcbank') // snapshot (D116)
     expect(row.vpa_value).toBe('acme@hdfcbank')              // snapshot (D116)
     expect(row.pool_status).toBe('POOLED')

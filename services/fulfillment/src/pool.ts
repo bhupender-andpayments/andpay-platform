@@ -21,13 +21,13 @@ export async function projectDemandFact(db: FulfillmentDb, env: Envelope<Assignm
       // onceWithin and is not the precedent here).
       const won = await tx.$queryRaw<{ id: string }[]>`
         INSERT INTO pending_pool_entry (
-          asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable,
+          asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
           merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
-          ship_to_address, qr_value, vpa_value, pool_status, source_event_id, trace_id, updated_at
+          ship_to_address, ship_to_contact_name, ship_to_mobile, qr_value, vpa_value, pool_status, source_event_id, trace_id, updated_at
         ) VALUES (
-          ${toUuid(p.asgnId)}::uuid, ${toUuid(p.tnntId)}::uuid, ${progUuid}::uuid, ${p.soundbox}, ${p.standeeCount}, ${p.stickerCount}, ${p.billable},
+          ${toUuid(p.asgnId)}::uuid, ${toUuid(p.tnntId)}::uuid, ${progUuid}::uuid, ${toUuid(p.mrchId)}::uuid, ${p.soundbox}, ${p.standeeCount}, ${p.stickerCount}, ${p.billable},
           ${p.merchantDisplayName}, ${p.merchantLegalName}, ${p.merchantMcc}, ${p.bankReferenceCode}, ${p.bankDisplayName},
-          ${p.shipToAddress}, ${p.qrValue}, ${p.vpaValue}, ${'POOLED'}, ${p.sourceEventId}, ${env.traceId}, now()
+          ${p.shipToAddress}, ${p.contactName ?? null}, ${p.mobile ?? null}, ${p.qrValue}, ${p.vpaValue}, ${'POOLED'}, ${p.sourceEventId}, ${env.traceId}, now()
         )
         ON CONFLICT (asgn_id) DO NOTHING
         RETURNING id::text AS id
