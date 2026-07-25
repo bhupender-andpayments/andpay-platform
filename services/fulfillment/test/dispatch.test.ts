@@ -103,9 +103,15 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     const btchWire = newId('btch')
     const btchUuid = toUuid(btchWire)
 
-    await seedBankConfig(tenantUuid, 'HDFC')
+    // TWO bank_composition_config rows, same tenant, DISTINCT bank_code (fold-2
+    // hardening): proves the compose lookup keys on the entry's OWN
+    // bank_reference_code, not a single tenant-wide row. Entry a stays HDFC;
+    // entry b is deliberately batched under a DIFFERENT bank (ICICI) in the
+    // SAME batch, which is legitimate (a batch may mix banks).
+    const hdfcConfigId = await seedBankConfig(tenantUuid, 'HDFC')
+    const iciciConfigId = await seedBankConfig(tenantUuid, 'ICICI')
     const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-a', 'HDFC')
-    const b = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-b', 'HDFC')
+    const b = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-b', 'ICICI')
 
     const env = batchFactEnvelope({
       payload: {
@@ -144,6 +150,17 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       expect(Object.keys(row)).not.toContain('ship_to_address')
       expect(Object.keys(row)).not.toContain('ship_to_contact_name')
       expect(Object.keys(row)).not.toContain('ship_to_mobile')
+      // fold-2 hardening: each entry's artifacts reference ITS OWN bank
+      // config, never the other bank's. A tenant-wide `LIMIT 1` lookup
+      // (the rejected design) would fail this for entry b.
+      expect(row.bank_config_ref).not.toBeNull()
+      if (row.asgn_id === a.asgnUuid) {
+        expect(row.bank_config_ref).toBe(hdfcConfigId)
+      } else if (row.asgn_id === b.asgnUuid) {
+        expect(row.bank_config_ref).toBe(iciciConfigId)
+      } else {
+        throw new Error(`unexpected asgn_id on composed_artifact row: ${row.asgn_id}`)
+      }
     }
     const asgnsWithArtifacts = new Set(artifacts.map((r) => r.asgn_id))
     expect(asgnsWithArtifacts).toEqual(new Set([a.asgnUuid, b.asgnUuid]))
@@ -183,6 +200,21 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     expect(instances).toHaveLength(1)
     expect(instances[0]!.flow_type).toBe('dispatch_lifecycle')
     expect(instances[0]!.status).toBe('running') // fold 4: stays running (event-driven wait)
+
+    // fold-3 hardening: each saga_step's idempotency_key is the wire-form
+    // stepKey(btchWire, <name>), NOT stepKey(btchUuid, <name>) or any other
+    // uuid form. This fails if the key regresses to the uuid form.
+    const composeStep = await db.$queryRaw<{ idempotency_key: string }[]>`
+      SELECT idempotency_key FROM saga_step WHERE instance_id = ${btchUuid}::uuid AND name = 'compose'
+    `
+    expect(composeStep).toHaveLength(1)
+    expect(composeStep[0]!.idempotency_key).toBe(stepKey(btchWire, 'compose'))
+
+    const dispatchStep = await db.$queryRaw<{ idempotency_key: string }[]>`
+      SELECT idempotency_key FROM saga_step WHERE instance_id = ${btchUuid}::uuid AND name = 'dispatch'
+    `
+    expect(dispatchStep).toHaveLength(1)
+    expect(dispatchStep[0]!.idempotency_key).toBe(stepKey(btchWire, 'dispatch'))
 
     // redelivery of the SAME envelope (same dedupKey) is a no-op.
     const res2 = await consumeBatchFact(db, env)
