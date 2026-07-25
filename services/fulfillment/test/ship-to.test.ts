@@ -3,6 +3,7 @@ import { newEnvelope, type Envelope } from '@andpay/envelope'
 import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import { projectShipToAmended, NotYet } from '../src/ship-to.js'
+import { buildDispatchPackage } from '../src/package.js'
 import { TMS_SHIP_TO_AMENDED_TOPIC, type ShipToAmendedFactView } from '../src/events.js'
 
 const url =
@@ -11,7 +12,7 @@ const url =
 const db = new PrismaClient({ datasourceUrl: url })
 
 beforeEach(async () => {
-  await db.$executeRawUnsafe('TRUNCATE pending_pool_entry, outbox, inbox')
+  await db.$executeRawUnsafe('TRUNCATE pending_pool_entry, composed_artifact, shpt, outbox, inbox')
 })
 afterAll(async () => {
   await db.$disconnect()
@@ -253,5 +254,138 @@ describe('projectShipToAmended (D116 ship-to consume + lock, defer reissue)', ()
     expect(row.ship_to_address).toBe('Original Address') // NOT silently overwritten
     expect(row.ship_to_superseded).toBe(true)
     expect(row.superseded_ship_to).toBe('Raced Address')
+  })
+})
+
+// Check 11 (LOAD-BEARING, FIRM from the Q2 round): the D116 post-composition
+// ship-to lock. The whole point of "consume + lock, defer reissue" is the
+// NO-SILENT-MUTATION guarantee: once an assignment is composed, a later ship-to
+// amend must NOT rewrite the issued collateral. This block seeds a fully
+// composed AND dispatched assignment (a composed_artifact against the asgn and
+// a born shpt_), snapshots the composed_artifact, the on-hand-off dispatch
+// package, and the shpt_ row, delivers a post-composition amend, and asserts
+// all three are byte-identical afterward. (ship_to_superseded is the lock flag
+// the Q2 round calls "ship_to_locked"; superseded_ship_to holds the pending new
+// address for the deferred reissue.)
+describe('check 11: D116 post-composition ship-to lock, no silent mutation (FIRM, Q2)', () => {
+  async function seedComposedDispatched(
+    tenantUuid: string,
+    programUuid: string,
+    asgnUuid: string,
+    btchUuid: string,
+  ): Promise<{ awb: string; shptUuid: string }> {
+    const merchantUuid = toUuid(newId('mrch'))
+    await db.$executeRaw`
+      INSERT INTO pending_pool_entry (
+        asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
+        merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+        ship_to_address, ship_to_contact_name, ship_to_mobile, qr_value, vpa_value, pool_status, batch,
+        dispatch_state, source_event_id, trace_id, updated_at
+      ) VALUES (
+        ${asgnUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${merchantUuid}::uuid, true, 0, 0, true,
+        'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'Original Address',
+        'Original Contact', '9000000000', 'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${btchUuid}::uuid,
+        'SENT_TO_VENDOR', 'file-11|1', 'trace-11', now()
+      )
+    `
+    await db.$executeRaw`
+      INSERT INTO composed_artifact (id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr, bank_config_ref)
+      VALUES (gen_random_uuid(), ${asgnUuid}::uuid, ${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'SOUNDBOX_IMG', 's3://ap-south-1/artifacts/orig', 'Acme', 'upi://pay?pa=acme@hdfcbank', NULL)
+    `
+    const shptUuid = toUuid(newId('shpt'))
+    const awb = 'AWB-LOCK-1'
+    await db.$executeRaw`
+      INSERT INTO shpt (id, awb, courier_partner, status, dispatch_date, tenant_id, program_id, updated_at)
+      VALUES (${shptUuid}::uuid, ${awb}, NULL, 'DISPATCHED_BY_VENDOR', now(), ${tenantUuid}::uuid, ${programUuid}::uuid, now())
+    `
+    return { awb, shptUuid }
+  }
+
+  it('POST-composition amend LOCKS (ship_to_superseded=true, superseded_ship_to=new, ship_to_address preserved) and leaves composed_artifact + dispatch package + shpt_ UNCHANGED; a re-delivered amend is idempotent', async () => {
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+    const asgnWire = newId('asgn')
+    const asgnUuid = toUuid(asgnWire)
+    const { awb, shptUuid } = await seedComposedDispatched(tenantUuid, programUuid, asgnUuid, btchUuid)
+
+    // Snapshot the three issued artifacts BEFORE the amend.
+    const artBefore = await db.$queryRaw<{ asset_reference: string; label_display_name: string; label_qr: string; artifact_type: string }[]>`
+      SELECT asset_reference, label_display_name, label_qr, artifact_type FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid ORDER BY artifact_type
+    `
+    const shptBefore = await db.$queryRaw<{ awb: string; status: string; courier_partner: string | null }[]>`
+      SELECT awb, status, courier_partner::text AS courier_partner FROM shpt WHERE id = ${shptUuid}::uuid
+    `
+    const pkgBefore = await buildDispatchPackage(db, btchWire, 'ship')
+
+    // Deliver a POST-composition ship-to amend (new address + contact + mobile).
+    const env = amendEnv(
+      { asgnId: asgnWire, shipToAddress: 'Amended Post Address', amendmentSeq: 1, contactName: 'Amended Contact', mobile: '9222222222' },
+      'evt-11|fulfillment.ship_to',
+      'trace-11a',
+    )
+    const res = await projectShipToAmended(db, env)
+    expect(res.deduped).toBe(false)
+    expect(res.applied).toBe('locked')
+
+    // The LOCK: superseded flag set, pending new address captured, snapshot ship_to_address PRESERVED.
+    const row = await readEntry(asgnUuid)
+    expect(row.ship_to_superseded).toBe(true) // the "ship_to_locked" flag
+    expect(row.superseded_ship_to).toBe('Amended Post Address')
+    expect(row.ship_to_address).toBe('Original Address')
+
+    // NO SILENT MUTATION 1: the retained composed_artifact is byte-identical.
+    const artAfter = await db.$queryRaw<{ asset_reference: string; label_display_name: string; label_qr: string; artifact_type: string }[]>`
+      SELECT asset_reference, label_display_name, label_qr, artifact_type FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid ORDER BY artifact_type
+    `
+    expect(artAfter).toEqual(artBefore)
+
+    // NO SILENT MUTATION 2: the issued dispatch package (ship view) is byte-identical
+    // and still carries the ORIGINAL address, NOT the superseded/new one.
+    const pkgAfter = await buildDispatchPackage(db, btchWire, 'ship')
+    expect(pkgAfter).toEqual(pkgBefore)
+    expect(JSON.stringify(pkgAfter)).toContain('Original Address')
+    expect(JSON.stringify(pkgAfter)).not.toContain('Amended Post Address')
+
+    // NO SILENT MUTATION 3: the shpt_ row is untouched.
+    const shptAfter = await db.$queryRaw<{ awb: string; status: string; courier_partner: string | null }[]>`
+      SELECT awb, status, courier_partner::text AS courier_partner FROM shpt WHERE id = ${shptUuid}::uuid
+    `
+    expect(shptAfter).toEqual(shptBefore)
+    expect(shptAfter[0]!.awb).toBe(awb)
+
+    // Reissue deferred: no fact emitted by the lock.
+    const outboxCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox`
+    expect(Number(outboxCount[0]!.n)).toBe(0)
+
+    // IDEMPOTENT: a re-delivered amend (same dedupKey) is an inbox no-op; everything still unchanged.
+    const again = await projectShipToAmended(db, env)
+    expect(again.deduped).toBe(true)
+    const rowAgain = await readEntry(asgnUuid)
+    expect(rowAgain.ship_to_address).toBe('Original Address')
+    expect(rowAgain.superseded_ship_to).toBe('Amended Post Address')
+    expect(await buildDispatchPackage(db, btchWire, 'ship')).toEqual(pkgBefore)
+  })
+
+  it('PRE-composition amend (dispatch_state NULL) updates the pending_pool_entry snapshot in place (amendable-until-composed half of the FIRM rule)', async () => {
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    const asgnWire = newId('asgn')
+    const asgnUuid = toUuid(asgnWire)
+    await seedEntry(tenantUuid, programUuid, asgnUuid) // dispatch_state NULL
+
+    const env = amendEnv(
+      { asgnId: asgnWire, shipToAddress: 'Pre Composition New', amendmentSeq: 1 },
+      'evt-11pre|fulfillment.ship_to',
+      'trace-11pre',
+    )
+    const res = await projectShipToAmended(db, env)
+    expect(res.applied).toBe('pre_composition')
+
+    const row = await readEntry(asgnUuid)
+    expect(row.ship_to_address).toBe('Pre Composition New') // snapshot updated in place
+    expect(row.ship_to_superseded).toBe(false) // not locked: still amendable
+    expect(row.superseded_ship_to).toBeNull()
   })
 })
