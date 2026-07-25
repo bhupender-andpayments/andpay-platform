@@ -25,3 +25,4 @@ export {
   type IntakeResult,
   ingestIntakeSheet,
 } from './intake.js'
+export { consumeBatchFact } from './dispatch.js'
