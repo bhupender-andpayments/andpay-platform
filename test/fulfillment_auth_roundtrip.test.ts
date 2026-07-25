@@ -13,6 +13,7 @@ import {
   PrismaClient as FulfillmentClient,
   createVendor,
   ingestIntakeSheet,
+  ingestReturnSheet,
   projectDemandFact,
   onDemandAccrued,
   triggerBatch,
@@ -20,11 +21,14 @@ import {
   poolConfig,
   UNIT_TOPIC,
   BATCH_TOPIC,
+  PRINT_FOR_TOPIC,
   type FulfillmentDb,
   type IntakeSheet,
+  type ReturnSheet,
   type AssignmentFactView,
   type UnitFactPayload,
   type BatchFactPayload,
+  type PrintForFactPayload,
 } from '@andpay/fulfillment-service'
 
 // Root-only integration seam (this file is under test/, not services/<ctx>, so
@@ -80,7 +84,7 @@ const opsActor = { operatorId, claim: opsActorClaim(1000) }
 beforeEach(async () => {
   await authDb.$executeRawUnsafe('TRUNCATE vendor_credential, denylist, authz_audit, outbox, inbox')
   await fulfillmentDb.$executeRawUnsafe(
-    'TRUNCATE vndr, unit, intake_exception, pending_pool_entry, batch, batch_pool, saga_timer, saga_step, saga_instance, outbox, inbox CASCADE',
+    'TRUNCATE vndr, unit, intake_exception, pending_pool_entry, shpt, composed_artifact, batch, batch_pool, saga_timer, saga_step, saga_instance, outbox, inbox CASCADE',
   )
 })
 afterAll(async () => {
@@ -101,6 +105,57 @@ interface BatchOutboxRow {
   event_type: string
   partition_key: string
   payload: Envelope<BatchFactPayload>
+}
+interface PrintForOutboxRow {
+  event_type: string
+  partition_key: string
+  payload: Envelope<PrintForFactPayload>
+}
+
+// A fixture in-inventory unit (as if manufacturer intake, check 6 above,
+// already created it): SERIALIZED, IN_STOCK, no batch/shipment/
+// printed_for_merchant yet. Clones services/fulfillment/test/return-sheet.test.ts's
+// seedUnit exactly (a raw insert, on fulfillmentDb only): check 3's return-edge
+// proof is about the REAL class-6 credential driving ingestReturnSheet, not
+// about the unit's own manufacturer-intake lineage (already proven end to end
+// above).
+async function seedReturnUnit(deviceSerial: string): Promise<void> {
+  const unitUuid = toUuid(newId('unit'))
+  const manufacturerVndrUuid = toUuid(newId('vndr'))
+  await fulfillmentDb.$executeRaw`
+    INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, updated_at)
+    VALUES (${unitUuid}::uuid, 'SERIALIZED', 'SOUNDBOX', ${manufacturerVndrUuid}::uuid, 'IN_STOCK', ${deviceSerial}, '{}'::jsonb, now())
+  `
+}
+
+interface SeedReturnEntryOpts {
+  asgnUuid: string
+  tenantUuid: string
+  programUuid: string
+  merchantUuid: string
+  batchUuid: string
+  traceId: string
+}
+
+// A fixture pending_pool_entry, already SENT_TO_VENDOR (as if the dispatch PM
+// already ran compose+dispatch): the event-carried snapshot ingestReturnSheet
+// reads, with no C4 read of merchant/ship-to. Clones
+// services/fulfillment/test/return-sheet.test.ts's seedPendingEntry exactly,
+// carrying every NOT NULL snapshot column.
+async function seedReturnPendingEntry(opts: SeedReturnEntryOpts): Promise<void> {
+  await fulfillmentDb.$executeRaw`
+    INSERT INTO pending_pool_entry (
+      asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
+      merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+      ship_to_address, qr_value, vpa_value, pool_status, batch, dispatch_state, source_event_id, trace_id,
+      created_at, updated_at
+    ) VALUES (
+      ${opts.asgnUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, ${opts.merchantUuid}::uuid,
+      true, 1, 0, true, 'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
+      'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${opts.batchUuid}::uuid, 'SENT_TO_VENDOR',
+      'file-root-return|1', ${opts.traceId}, now(), now()
+    )
+  `
 }
 
 describe('root class-6 binding round trip: createVendor -> issueVendorCredential -> resolveVendorCredential -> ingestIntakeSheet (check 6)', () => {
@@ -294,6 +349,203 @@ describe('root class-6 binding round trip: createVendor -> issueVendorCredential
       expect(decision.allowed, `${forbidden} must be denied`).toBe(false)
       expect(decision.reason, `${forbidden} must be denied on permission-denied`).toBe('permission-denied')
     }
+  })
+})
+
+describe('root class-6 binding round trip: createVendor -> issueVendorCredential -> resolveVendorCredential -> ingestReturnSheet (check 3, S14)', () => {
+  it('the REAL resolved class-6 print-vendor claim (not a fixture) authorizes its own-vendor return sheet, pairs the Unit to its asgn, and births the Shipment; ingestReturnSheet receives ONLY the fulfillment db handle', async () => {
+    // 1. Fulfillment creates its own vndr_ (class-3 ops action, S13), type
+    // PRINT this time: the print/ship vendor RETURN edge, not the
+    // MANUFACTURER intake edge proven above (check 6).
+    const { vndrId } = await createVendor(
+      fulfillmentDb,
+      { type: 'PRINT', displayName: 'Acme Print Co' },
+      { operatorId },
+      'trace-root-create-print-vendor',
+    )
+    expect(vndrId.startsWith('vndr_')).toBe(true)
+
+    const workQueue = 'wq-root-print'
+
+    // 2. Auth issues the class-6 vendor credential, bound to vndrId/workQueue,
+    // permissionSetRef 'vset:vendor_print' (auth's own local vendor-set
+    // declaration, services/auth/src/config/vendor-sets.ts; fulfillment's OWN
+    // local vendor-set, authz-config.ts, maps vendor_print to EXACTLY
+    // 'batch:pull-artifacts' and 'sheet:submit-return', which the sheet ingest
+    // below authorizes against).
+    const issued = await issueVendorCredential(
+      { vndrId, workQueue, permissionSetRef: 'vset:vendor_print', mode: 'test', idempotencyKey: 'root-issue-return-v1' },
+      opsActor,
+      { db: authDb, pepper: pepperPort, traceId: 'trace-root-issue-return', now: 1000 },
+    )
+    expect(issued.reused).toBe(false)
+    expect(issued.secret.startsWith('apsk_test_')).toBe(true)
+    expect(issued.apiId.startsWith('api_')).toBe(true)
+
+    // 3. Auth resolves the show-once secret to the uniform class-6 LeanClaim,
+    // using the SAME underlying pepper (the raw string this time, not the
+    // PepperPort) so the peppered-hash lookup matches.
+    const claim = await resolveVendorCredential(issued.secret, {
+      db: authDb,
+      pepper,
+      expectedMode: 'test',
+      now: 1000,
+    })
+    expect(claim.cls).toBe(6)
+    expect(claim.sub).toBe(issued.apiId)
+    expect(claim.scope.vndr).toBe(vndrId)
+    expect(claim.scope.wq).toBe(workQueue)
+    expect(claim.psr).toBe('vset:vendor_print')
+
+    // 4. Seed the in-inventory unit and the SENT_TO_VENDOR pending_pool_entry
+    // (the event-carried asgn snapshot ingestReturnSheet reads, with no C4
+    // read of merchant/ship-to), cloning
+    // services/fulfillment/test/return-sheet.test.ts's own seed shape.
+    const deviceSerial = 'SER-ROOT-RETURN-1'
+    await seedReturnUnit(deviceSerial)
+    const asgnWire = newId('asgn')
+    const asgnUuid = toUuid(asgnWire)
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    const merchantUuid = toUuid(newId('mrch'))
+    const batchUuid = toUuid(newId('btch'))
+    const snapshotTraceId = 'trace-root-return-snapshot'
+    await seedReturnPendingEntry({ asgnUuid, tenantUuid, programUuid, merchantUuid, batchUuid, traceId: snapshotTraceId })
+
+    // 5. Feed the REAL resolved claim (not a fixture, unlike
+    // services/fulfillment/test/return-sheet.test.ts's classSixClaim helper)
+    // to ingestReturnSheet. This mirrors check 6's intake round trip above,
+    // for the return edge. ingestReturnSheet's own signature takes ONLY
+    // fulfillmentDb: no auth db handle crosses this boundary (check 5, S14);
+    // this call site never mentions authDb.
+    const sheet: ReturnSheet = {
+      fileId: 'file-root-return-1',
+      vndrId,
+      workQueue,
+      rows: [{ deviceSerial, asgnId: asgnWire, awb: 'AWB-ROOT-1' }],
+    }
+    const res = await ingestReturnSheet(fulfillmentDb, claim, sheet, 'trace-root-return-ingest')
+    expect(res.rejected).toBeUndefined()
+    expect(res.deduped).toBe(false)
+    expect(res.pairedUnitIds).toHaveLength(1)
+    expect(res.quarantined).toBe(0)
+    expect(res.shptIds).toHaveLength(1)
+    const shptWire = res.shptIds[0]!
+
+    // check 3 pairing: unit.batch/printed_for_merchant/shipment all written,
+    // end to end through the REAL credential.
+    const units = await fulfillmentDb.$queryRaw<
+      { batch: string | null; printed_for_merchant: string | null; shipment: string | null }[]
+    >`SELECT batch::text AS batch, printed_for_merchant::text AS printed_for_merchant, shipment::text AS shipment FROM unit WHERE device_serial = ${deviceSerial}`
+    expect(units).toHaveLength(1)
+    expect(units[0]!.batch).toBe(batchUuid)
+    expect(units[0]!.printed_for_merchant).toBe(merchantUuid)
+    expect(units[0]!.shipment).toBe(toUuid(shptWire))
+
+    // one fct.fulfillment.unit.print_for.v1 fact in the fulfillment outbox,
+    // carrying the asgn snapshot's OWN trace_id (fold correction 3), not the
+    // ingest call's traceId.
+    const pf = await fulfillmentDb.$queryRaw<PrintForOutboxRow[]>`
+      SELECT event_type, partition_key, payload FROM outbox WHERE event_type = ${PRINT_FOR_TOPIC}
+    `
+    expect(pf).toHaveLength(1)
+    expect(pf[0]!.payload.payload.unitId).toBe(res.pairedUnitIds[0])
+    expect(pf[0]!.payload.payload.asgnId).toBe(asgnWire)
+    expect(pf[0]!.payload.payload.deviceId).toBe(deviceSerial)
+    expect(pf[0]!.payload.payload.shptId).toBe(shptWire)
+    expect(pf[0]!.payload.traceId).toBe(snapshotTraceId)
+
+    // one shpt row, born DISPATCHED_BY_VENDOR on this AWB.
+    const shptRows = await fulfillmentDb.$queryRaw<{ status: string; awb: string }[]>`
+      SELECT status, awb FROM shpt WHERE id = ${toUuid(shptWire)}::uuid
+    `
+    expect(shptRows).toHaveLength(1)
+    expect(shptRows[0]!.status).toBe('DISPATCHED_BY_VENDOR')
+    expect(shptRows[0]!.awb).toBe('AWB-ROOT-1')
+  })
+
+  it("105c cross-vendor rejection with REAL claims: print-vendor V2's own real resolved claim cannot submit a return sheet scoped to vndrId V1 -- ZERO fulfillment writes", async () => {
+    const { vndrId: v1 } = await createVendor(
+      fulfillmentDb,
+      { type: 'PRINT', displayName: 'Acme Print Co' },
+      { operatorId },
+      'trace-root-create-print-v1',
+    )
+    const { vndrId: v2 } = await createVendor(
+      fulfillmentDb,
+      { type: 'PRINT', displayName: 'Other Print Co' },
+      { operatorId },
+      'trace-root-create-print-v2',
+    )
+    const workQueue = 'wq-root-print-cross'
+
+    // V2's OWN real class-6 credential: issued and resolved by Auth, scope.vndr = v2.
+    const issuedV2 = await issueVendorCredential(
+      { vndrId: v2, workQueue, permissionSetRef: 'vset:vendor_print', mode: 'test', idempotencyKey: 'root-issue-return-cross-v2' },
+      opsActor,
+      { db: authDb, pepper: pepperPort, traceId: 'trace-root-issue-return-v2', now: 1000 },
+    )
+    const claimV2 = await resolveVendorCredential(issuedV2.secret, { db: authDb, pepper, expectedMode: 'test', now: 1000 })
+    expect(claimV2.cls).toBe(6)
+    expect(claimV2.scope.vndr).toBe(v2)
+
+    // a legitimate v1 unit + SENT_TO_VENDOR asgn snapshot, so the cross-vendor
+    // attempt below can be proven to add NOTHING (not merely that a small
+    // total exists).
+    const deviceSerial = 'SER-ROOT-RETURN-CROSS'
+    await seedReturnUnit(deviceSerial)
+    const asgnWire = newId('asgn')
+    const asgnUuid = toUuid(asgnWire)
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    const merchantUuid = toUuid(newId('mrch'))
+    const batchUuid = toUuid(newId('btch'))
+    await seedReturnPendingEntry({
+      asgnUuid,
+      tenantUuid,
+      programUuid,
+      merchantUuid,
+      batchUuid,
+      traceId: 'trace-root-return-cross-snapshot',
+    })
+
+    // V2's OWN real resolved claim (scope.vndr = v2) is fed a sheet claiming
+    // to be FOR v1: the class-6 own-vendor-only gate (105c) must deny on
+    // scope-mismatch, exactly as
+    // services/fulfillment/test/return-sheet.test.ts's fixture-claim version
+    // (b) proves, but here with a REAL Auth-resolved claim on both sides of
+    // the mismatch.
+    const crossSheet: ReturnSheet = {
+      fileId: 'file-root-return-cross',
+      vndrId: v1, // the sheet claims to be FOR v1, but claimV2.scope.vndr is v2
+      workQueue,
+      rows: [{ deviceSerial, asgnId: asgnWire, awb: 'AWB-ROOT-CROSS' }],
+    }
+    const crossRes = await ingestReturnSheet(fulfillmentDb, claimV2, crossSheet, 'trace-root-return-cross-ingest')
+    expect(crossRes.rejected).toBe('unauthorized')
+    expect(crossRes.pairedUnitIds).toHaveLength(0)
+    expect(crossRes.quarantined).toBe(0)
+    expect(crossRes.shptIds).toHaveLength(0)
+    expect(crossRes.deduped).toBe(false)
+
+    // ZERO fulfillment writes: no shpt, no unit update, no intake_exception,
+    // no print_for fact (authorize denies before any transaction opens, STEP
+    // A of ingestReturnSheet).
+    const unitRow = await fulfillmentDb.$queryRaw<{ shipment: string | null; batch: string | null }[]>`
+      SELECT shipment::text AS shipment, batch::text AS batch FROM unit WHERE device_serial = ${deviceSerial}
+    `
+    expect(unitRow[0]!.shipment).toBeNull()
+    expect(unitRow[0]!.batch).toBeNull()
+    const shptCount = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM shpt`
+    expect(Number(shptCount[0]!.n)).toBe(0)
+    const exceptionCount = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM intake_exception`
+    expect(Number(exceptionCount[0]!.n)).toBe(0)
+    const printForCount = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = ${PRINT_FOR_TOPIC}`
+    expect(Number(printForCount[0]!.n)).toBe(0)
+    const entry = await fulfillmentDb.$queryRaw<{ dispatch_state: string | null }[]>`
+      SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
+    `
+    expect(entry[0]!.dispatch_state).toBe('SENT_TO_VENDOR') // untouched
   })
 })
 
