@@ -43,6 +43,9 @@ export const TMS_FACT_SCHEMAS: Record<string, object> = {
       billable: { type: 'boolean' },
       demandState: { type: 'string' },
       sourceEventId: { type: 'string' },
+      // spec 06a: recipient contact snapshot, OPTIONAL (FULL compat, no v2).
+      contactName: { type: 'string' },
+      mobile: { type: 'string' },
     },
     required: ['asgnId', 'demandState'],
   },
@@ -53,6 +56,9 @@ export const TMS_FACT_SCHEMAS: Record<string, object> = {
       asgnId: { type: 'string' },
       shipToAddress: { type: 'string' },
       amendmentSeq: { type: 'integer' },
+      // spec 06a: recipient contact block on the amend, OPTIONAL (FULL compat).
+      contactName: { type: 'string' },
+      mobile: { type: 'string' },
     },
     required: ['asgnId', 'amendmentSeq'],
   },

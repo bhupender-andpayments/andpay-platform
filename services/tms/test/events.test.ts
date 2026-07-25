@@ -58,6 +58,8 @@ describe('tms fact envelopes', () => {
         billable: true,
         demandState: 'pooled-for-fulfillment',
         sourceEventId: 'file-1|1',
+        contactName: 'Jane Doe',
+        mobile: '+91-9000000000',
       },
       dedupKey: 'evt-1|tms.assignment',
       traceId: 'trace-1',
@@ -65,6 +67,9 @@ describe('tms fact envelopes', () => {
     expect(env.type).toBe(TMS_ASSIGNMENT_TOPIC)
     expect(env.version).toBe(1)
     expect(env.subject).toBe('asgn_x')
+    // 06a: the recipient contact snapshot passes through the envelope (check 1)
+    expect(env.payload.contactName).toBe('Jane Doe')
+    expect(env.payload.mobile).toBe('+91-9000000000')
   })
 
   it('amend, replacement, and activated facts partition on asgnId', () => {

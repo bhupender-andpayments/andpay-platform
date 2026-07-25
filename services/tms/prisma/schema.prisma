@@ -69,6 +69,12 @@ model Assignment {
   bankReferenceCode   String    @map("bank_reference_code")
   bankDisplayName     String    @map("bank_display_name")
   shipToAddress       String    @map("ship_to_address")
+  // spec 06a: recipient contact snapshot (BRD FR-01b bank-file columns, FR-04
+  // dispatch label). Entitled shipping-recipient PII (D104), redacted from logs
+  // (S7). Nullable at the DB (additive to a BUILT-V1 table, and the fact fields
+  // are optional under D120 FULL compat); ingest makes them mandatory per row.
+  contactName         String?   @map("contact_name")
+  mobile              String?
   qrValue             String    @map("qr_value")
   vpaValue            String    @map("vpa_value")
   soundbox            Boolean
@@ -102,6 +108,10 @@ model PendingRow {
   qrValue         String   @map("qr_value")
   vpaValue        String   @map("vpa_value")
   shipToAddress   String   @map("ship_to_address")
+  // spec 06a: recipient contact snapshot parsed at ingest (BRD FR-01b), carried
+  // into the assignment snapshot at creation. Nullable at the DB; ingest-mandatory.
+  contactName     String?  @map("contact_name")
+  mobile          String?
   status          String // awaiting-identity | consumed
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 

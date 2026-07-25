@@ -32,6 +32,15 @@ describe('tms schema (spec 06 sections 2, 5, 9)', () => {
     }
   })
 
+  it('06a: assignment and pending_row carry the recipient contact_name and mobile snapshot fields (check 1)', async () => {
+    const asgn = await columns('assignment')
+    expect(asgn, 'assignment missing contact_name').toContain('contact_name')
+    expect(asgn, 'assignment missing mobile').toContain('mobile')
+    const pend = await columns('pending_row')
+    expect(pend, 'pending_row missing contact_name').toContain('contact_name')
+    expect(pend, 'pending_row missing mobile').toContain('mobile')
+  })
+
   it('the idempotency uniques exist', async () => {
     const idx = await db.$queryRaw<{ tablename: string; indexdef: string }[]>`
       SELECT tablename, indexdef FROM pg_indexes WHERE schemaname = 'tms'

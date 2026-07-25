@@ -111,6 +111,35 @@ describe('TMS_FACT_SCHEMAS conform to the real emitted payloads (D120)', () => {
     expect(conforms(schema, env.payload)).toBe(true)
   })
 
+  it('06a check 2: fct.tms.assignment.v1 declares contactName/mobile as OPTIONAL (D120 FULL-compat, no v2)', () => {
+    const schema = requireSchema(TMS_ASSIGNMENT_TOPIC)
+    expect(schema.properties?.contactName, 'schema must declare contactName').toBeDefined()
+    expect(schema.properties?.mobile, 'schema must declare mobile').toBeDefined()
+    // optional: NOT in required, so a pre-extension payload still validates (backward compat)
+    expect(schema.required ?? []).not.toContain('contactName')
+    expect(schema.required ?? []).not.toContain('mobile')
+    const preExtension: AssignmentFactPayload = {
+      asgnId: 'asgn_1', mrchId: 'mrch_1', progId: 'prog_1', tnntId: 'tnnt_1',
+      merchantDisplayName: 'Acme', merchantLegalName: 'Acme Pvt Ltd', merchantMcc: '5814',
+      bankReferenceCode: 'HDFC', bankDisplayName: 'HDFC Bank', shipToAddress: '221B Baker Street',
+      qrValue: 'upi://pay?pa=acme@hdfcbank', vpaValue: 'acme@hdfcbank', soundbox: true,
+      standeeCount: 1, stickerCount: 2, billable: true, demandState: 'received', sourceEventId: 'file-1|1',
+    }
+    // a PRE-extension payload (no contactName/mobile) still conforms (backward-compat)
+    expect(conforms(schema, preExtension)).toBe(true)
+    // a NEW payload carrying them also conforms, and they are typed strings (forward-compat)
+    const extended: AssignmentFactPayload = { ...preExtension, contactName: 'Jane Doe', mobile: '+91-9000000000' }
+    expect(conforms(schema, extended)).toBe(true)
+  })
+
+  it('06a: fct.tms.assignment.ship_to_amended.v1 declares contactName/mobile as OPTIONAL (recipient block on the amend)', () => {
+    const schema = requireSchema(TMS_SHIP_TO_AMENDED_TOPIC)
+    expect(schema.properties?.contactName).toBeDefined()
+    expect(schema.properties?.mobile).toBeDefined()
+    expect(schema.required ?? []).not.toContain('contactName')
+    expect(schema.required ?? []).not.toContain('mobile')
+  })
+
   it('fct.tms.assignment.ship_to_amended.v1: schema matches the ship-to amend fact payload', () => {
     const schema = requireSchema(TMS_SHIP_TO_AMENDED_TOPIC)
     const payload: ShipToAmendedFactPayload = {

@@ -33,12 +33,21 @@ export interface AssignmentFactPayload {
   billable: boolean
   demandState: string
   sourceEventId: string
+  // spec 06a: recipient contact snapshot (BRD FR-04). Optional on the wire for
+  // D120 FULL compat (a pre-extension fact validates); populated for every new
+  // assignment (ingest-mandatory). Entitled shipping-recipient PII (D104).
+  contactName?: string
+  mobile?: string
 }
 
 export interface ShipToAmendedFactPayload {
   asgnId: string
   shipToAddress: string
   amendmentSeq: number
+  // spec 06a: an amend can correct the recipient contact/phone too, not only the
+  // address. Optional, FULL-compat.
+  contactName?: string
+  mobile?: string
 }
 
 export interface ReplacementRaisedFactPayload {
