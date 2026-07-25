@@ -19,6 +19,10 @@ const DOMAIN_AND_SAGA_TABLES = [
   'saga_instance',
   'saga_step',
   'saga_timer',
+  // spec 08 outbound (folded into the same FORCE-RLS/existence sweep)
+  'composed_artifact',
+  'shpt',
+  'bank_composition_config',
 ] as const
 
 async function columns(table: string): Promise<string[]> {
@@ -37,8 +41,8 @@ async function tables(): Promise<string[]> {
   return rows.map((r) => r.table_name)
 }
 
-describe('fulfillment schema (spec 07 domain + saga + quarantine)', () => {
-  it('all 9 domain/saga tables exist alongside outbox/inbox', async () => {
+describe('fulfillment schema (spec 07 domain + saga + quarantine, spec 08 outbound)', () => {
+  it('all 12 domain/saga tables exist alongside outbox/inbox', async () => {
     const all = await tables()
     for (const t of [...DOMAIN_AND_SAGA_TABLES, 'outbox', 'inbox']) {
       expect(all, `${t} missing`).toContain(t)
@@ -136,7 +140,7 @@ describe('fulfillment schema (spec 07 domain + saga + quarantine)', () => {
     }
   })
 
-  it('FORCE RLS is enabled and forced on every fulfillment table (11 tables: 9 domain/saga + outbox/inbox)', async () => {
+  it('FORCE RLS is enabled and forced on every fulfillment table (14 tables: 12 domain/saga + outbox/inbox)', async () => {
     const rows = await db.$queryRaw<{ relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }[]>`
       SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -151,21 +155,147 @@ describe('fulfillment schema (spec 07 domain + saga + quarantine)', () => {
     }
   })
 
-  it('only pending_pool_entry/batch/batch_pool have the program_id write-gate; the rest are permissive', async () => {
+  it('only pending_pool_entry/batch/batch_pool/composed_artifact/shpt have the program_id write-gate; the rest are permissive', async () => {
     const pols = await db.$queryRaw<{ tablename: string; qual: string | null; with_check: string | null }[]>`
       SELECT tablename, qual, with_check FROM pg_policies WHERE schemaname = 'fulfillment'
     `
-    for (const t of ['pending_pool_entry', 'batch', 'batch_pool']) {
+    for (const t of ['pending_pool_entry', 'batch', 'batch_pool', 'composed_artifact', 'shpt']) {
       const p = pols.find((x) => x.tablename === t)
       expect(p, `${t} policy missing`).toBeTruthy()
       expect(p!.with_check ?? '', `${t} must have the program_id write-gate`).toContain(
         "current_setting('app.program_id'",
       )
     }
-    for (const t of ['vndr', 'unit', 'intake_exception', 'saga_instance', 'saga_step', 'saga_timer', 'outbox', 'inbox']) {
+    for (const t of [
+      'vndr',
+      'unit',
+      'intake_exception',
+      'saga_instance',
+      'saga_step',
+      'saga_timer',
+      'outbox',
+      'inbox',
+      'bank_composition_config',
+    ]) {
       const p = pols.find((x) => x.tablename === t)
       expect(p, `${t} policy missing`).toBeTruthy()
       expect(p!.with_check ?? 'true', `${t} must be permissive in v1`).not.toContain('current_setting')
+    }
+  })
+})
+
+describe('fulfillment schema (spec 08 outbound: composed_artifact, shpt, bank_composition_config)', () => {
+  it('composed_artifact carries the retained QR collateral columns', async () => {
+    const cols = await columns('composed_artifact')
+    for (const c of [
+      'asgn_id',
+      'btch_id',
+      'tenant_id',
+      'program_id',
+      'artifact_type',
+      'asset_reference',
+      'label_display_name',
+      'label_qr',
+      'bank_config_ref',
+      'created_at',
+    ]) {
+      expect(cols, `composed_artifact missing ${c}`).toContain(c)
+    }
+  })
+
+  it('shpt carries the Shipment aggregate columns and awb is UNIQUE', async () => {
+    const cols = await columns('shpt')
+    for (const c of [
+      'awb',
+      'courier_partner',
+      'status',
+      'dispatch_date',
+      'tenant_id',
+      'program_id',
+      'created_at',
+      'updated_at',
+    ]) {
+      expect(cols, `shpt missing ${c}`).toContain(c)
+    }
+
+    const idx = await db.$queryRaw<{ tablename: string; indexdef: string }[]>`
+      SELECT tablename, indexdef FROM pg_indexes WHERE schemaname = 'fulfillment'
+    `
+    const hasUnique = (table: string, ...tokens: string[]) =>
+      idx.some(
+        (r) => r.tablename === table && r.indexdef.includes('UNIQUE') && tokens.every((t) => r.indexdef.includes(t)),
+      )
+    expect(hasUnique('shpt', 'awb'), 'shpt missing UNIQUE index on awb').toBe(true)
+  })
+
+  it('bank_composition_config carries the composition config columns and UNIQUE(tenant_id, bank_code)', async () => {
+    const cols = await columns('bank_composition_config')
+    for (const c of [
+      'tenant_id',
+      'bank_code',
+      'logo_master_ref',
+      'logo_derivative_ref',
+      'branding_params',
+      'image_templates',
+      'created_at',
+      'updated_at',
+    ]) {
+      expect(cols, `bank_composition_config missing ${c}`).toContain(c)
+    }
+
+    const idx = await db.$queryRaw<{ tablename: string; indexdef: string }[]>`
+      SELECT tablename, indexdef FROM pg_indexes WHERE schemaname = 'fulfillment'
+    `
+    const hasUnique = (table: string, ...tokens: string[]) =>
+      idx.some(
+        (r) => r.tablename === table && r.indexdef.includes('UNIQUE') && tokens.every((t) => r.indexdef.includes(t)),
+      )
+    expect(
+      hasUnique('bank_composition_config', 'tenant_id', 'bank_code'),
+      'bank_composition_config missing UNIQUE(tenant_id, bank_code)',
+    ).toBe(true)
+  })
+
+  it('pending_pool_entry carries the spec-08 dispatch-state and ship-to-amendment columns, plus the 06a recipient snapshot', async () => {
+    const cols = await columns('pending_pool_entry')
+    for (const c of [
+      'dispatch_state',
+      'merchant_id',
+      'ship_to_amendment_seq',
+      'ship_to_superseded',
+      'superseded_ship_to',
+      'ship_to_contact_name',
+      'ship_to_mobile',
+    ]) {
+      expect(cols, `pending_pool_entry missing ${c}`).toContain(c)
+    }
+  })
+
+  it('composed_artifact, shpt, bank_composition_config carry no shipping-recipient PII column, and no separate dispatch-package table exists (check 2)', async () => {
+    for (const t of ['composed_artifact', 'shpt', 'bank_composition_config']) {
+      const cols = await columns(t)
+      for (const c of cols) {
+        expect(c.startsWith('ship_to'), `${t}.${c} looks like a shipping-recipient PII column`).toBe(false)
+        expect(c.startsWith('contact'), `${t}.${c} looks like a shipping-recipient PII column`).toBe(false)
+        expect(c.includes('mobile'), `${t}.${c} looks like a shipping-recipient PII column`).toBe(false)
+      }
+    }
+
+    const all = await tables()
+    for (const t of all) {
+      expect(t.includes('package'), `${t} looks like a separately stored dispatch-package table (D104: not persisted)`).toBe(
+        false,
+      )
+    }
+  })
+
+  it('no money table exists in the fulfillment schema after the outbound additions (S20, check 8)', async () => {
+    const all = await tables()
+    for (const forbidden of ['ledger', 'account', 'entry', 'posting_keys']) {
+      expect(all, `fulfillment schema must not carry a money table ${forbidden}`).not.toContain(forbidden)
+    }
+    for (const t of ['composed_artifact', 'shpt', 'bank_composition_config']) {
+      expect(/ledger|account|posting/i.test(t), `${t} looks like a money-surface table name`).toBe(false)
     }
   })
 })

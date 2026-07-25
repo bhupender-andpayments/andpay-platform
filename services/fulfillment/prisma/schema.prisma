@@ -129,6 +129,27 @@ model PendingPoolEntry {
   // HOLD never creates a Batch (critique fix). The tamper-evident 6e write is step 9.
   heldByActor         String?  @map("held_by_actor") @db.Uuid
   heldAt              DateTime? @map("held_at") @db.Timestamptz(6)
+  // spec 08: the Fulfillment-owned dispatch state, advanced by the dispatch PM
+  // (distinct from pool_status and from any TMS state, T2/T12).
+  dispatchState       String?  @map("dispatch_state") // QR_GENERATED | SENT_TO_VENDOR | DISPATCHED_BY_VENDOR
+  // spec 08: the merchant id, carried in the event-carried snapshot so print-for
+  // can set unit.printed_for_merchant with no C4 read (D116). Populated by
+  // projectDemandFact from the demand fact's mrchId.
+  merchantId          String?  @map("merchant_id") @db.Uuid
+  // spec 08: D116 consume-and-lock. amendment_seq gates monotonic apply; a
+  // post-composition amend sets superseded=true and stores the pending new
+  // address (the reissue is a recorded deferral). superseded_ship_to is PII,
+  // redacted from every log line (S7/S4).
+  shipToAmendmentSeq  Int?     @map("ship_to_amendment_seq")
+  shipToSuperseded    Boolean  @default(false) @map("ship_to_superseded")
+  supersededShipTo    String?  @map("superseded_ship_to")
+  // controller correction: the TMS spec 06a recipient contact snapshot
+  // (contact_name/mobile on fct.tms.assignment.v1), carried here so the
+  // dispatch label/ship adapter never needs a cross-context read (C4).
+  // Entitled shipping-recipient PII (D104), redacted from logs (S7).
+  // Populated by the pool projection (a later task).
+  shipToContactName   String?  @map("ship_to_contact_name")
+  shipToMobile        String?  @map("ship_to_mobile")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -224,4 +245,61 @@ model SagaTimer {
 
   @@index([status, fireAt])
   @@map("saga_timer")
+}
+
+/// The retained QR collateral (D104-entitled label artifact, FR-03 "stored
+/// against the Dispatch ID"). Holds display name + QR/VPA (entitled, retained
+/// 24mo NFR); NO shipping recipient PII, NO KYC/PAN/GSTIN. PROGRAM-SCOPED.
+model ComposedArtifact {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  asgnId           String   @map("asgn_id") @db.Uuid
+  btchId           String   @map("btch_id") @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  programId        String   @map("program_id") @db.Uuid
+  artifactType     String   @map("artifact_type") // SOUNDBOX_IMG | STANDEE_IMG | STICKER_IMG
+  assetReference   String   @map("asset_reference") // India-resident object-store ref (S6); rasterization deferred
+  labelDisplayName String   @map("label_display_name") // entitled label content (merchant display name)
+  labelQr          String   @map("label_qr") // the QR/VPA value, transmitted never minted (T2)
+  bankConfigRef    String?  @map("bank_config_ref") @db.Uuid // reference to bank_composition_config.id, if present
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("composed_artifact")
+}
+
+/// The Shipment aggregate (D106c). One AWB = one shpt_ (dedup on awb UNIQUE).
+/// courier_partner is the vndr_ of type COURIER, nullable until the step-8
+/// courier master binds it. status born DISPATCHED_BY_VENDOR; carrier states
+/// advanced ONLY by the step-8 courier channel. PROGRAM-SCOPED.
+model Shpt {
+  id             String   @id @db.Uuid
+  awb            String   @unique
+  courierPartner String?  @map("courier_partner") @db.Uuid
+  status         String // DISPATCHED_BY_VENDOR | IN_TRANSIT | OUT_FOR_DELIVERY | DELIVERED | FAILED (step 8)
+  dispatchDate   DateTime @map("dispatch_date") @db.Timestamptz(6)
+  tenantId       String   @map("tenant_id") @db.Uuid
+  programId      String   @map("program_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("shpt")
+}
+
+/// Fulfillment composition config (FR-03/FR-11), keyed by bank reference. Logo
+/// master + required derivative asset refs (India object store, S6), branding
+/// params, image templates per product_type as JSONB. NOT identity, NOT PII
+/// (S5-minimized). Tenant-keyed REFERENCE; permissive FORCE RLS in v1 (write-
+/// gated at step 9). Rows seeded by tests in v1; upload UI is step 9.
+model BankCompositionConfig {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String   @map("tenant_id") @db.Uuid
+  bankCode          String   @map("bank_code")
+  logoMasterRef     String   @map("logo_master_ref")
+  logoDerivativeRef String   @map("logo_derivative_ref")
+  brandingParams    Json     @map("branding_params") @db.JsonB
+  imageTemplates    Json     @map("image_templates") @db.JsonB // per product_type {SOUNDBOX,STANDEE,STICKER}
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([tenantId, bankCode])
+  @@map("bank_composition_config")
 }
