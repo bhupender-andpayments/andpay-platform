@@ -6,6 +6,7 @@ export { loadFulfillmentConfig } from './authz-config.js'
 export { type Tx, CONSUMER, setProgramContext } from './internal.js'
 export { type CreateVendorInput, type OpsActor, createVendor } from './vendor.js'
 export { projectDemandFact } from './pool.js'
+export { projectShipToAmended, NotYet } from './ship-to.js'
 export { poolConfig, type PoolCfg } from './config/pool-config.js'
 export {
   ensurePool,
