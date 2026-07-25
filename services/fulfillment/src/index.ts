@@ -26,3 +26,4 @@ export {
   ingestIntakeSheet,
 } from './intake.js'
 export { consumeBatchFact } from './dispatch.js'
+export { type AdapterFunction, type PackageLine, buildDispatchPackage } from './package.js'
