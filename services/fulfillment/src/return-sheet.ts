@@ -170,10 +170,12 @@ export async function ingestReturnSheet(
         const row = sheet.rows[i]!
         const rowRef = `row-${i}`
 
-        // (1) find `unit` by device_serial; if none, quarantine (D103d: NO
-        // auto-create, ever). unit is permissive RLS, no program context needed.
-        const unitRows = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id::text AS id FROM unit WHERE device_serial = ${row.deviceSerial}
+        // (1) find `unit` by device_serial, ALSO reading its current shipment
+        // (used by the already-paired guard right below); if none found,
+        // quarantine (D103d: NO auto-create, ever). unit is permissive RLS,
+        // no program context needed.
+        const unitRows = await tx.$queryRaw<{ id: string; shipment: string | null }[]>`
+          SELECT id::text AS id, shipment::text AS shipment FROM unit WHERE device_serial = ${row.deviceSerial}
         `
         if (unitRows.length === 0) {
           await tx.$executeRaw`
@@ -185,6 +187,26 @@ export async function ingestReturnSheet(
         }
         const unitUuid = unitRows[0]!.id
         const unitWire = fromUuid('unit', unitUuid)
+
+        // Review fix (orphan shpt guard): a unit that is ALREADY paired
+        // (unit.shipment IS NOT NULL, persisted from an earlier successful
+        // row, same file or an earlier one) is quarantined HERE, BEFORE the
+        // shpt birth below. Without this guard the SAME device_serial
+        // reappearing with a NEW awb would still INSERT a real shpt row and
+        // emit a real (zero-unit) shipment fact: the per-unit onceWithin
+        // below would no-op (the unit is already paired, so its body never
+        // runs again), so the newly-born shpt would collect no units at all,
+        // while unit.shipment keeps pointing at the ORIGINAL awb's shpt.
+        // Reading persisted unit.shipment (not an in-process set) catches
+        // this whether the repeat is within THIS file or in a later one.
+        if (unitRows[0]!.shipment !== null) {
+          await tx.$executeRaw`
+            INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+            VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'unit_already_paired'})
+          `
+          quarantined++
+          continue
+        }
 
         // row.asgnId is genuinely untrusted file content (unlike sheet.vndrId,
         // which is cross-checked against the authorized claim's own scope
@@ -340,7 +362,18 @@ export async function ingestReturnSheet(
           partitionKey: btchWire,
           payload: dispatchFactEnvelope({
             payload: { btchId: btchWire, asgnIds, dispatchState: 'DISPATCHED_BY_VENDOR' },
-            dedupKey: `${btchWire}|DISPATCHED_BY_VENDOR`,
+            // Review fix (partial-batch dedupKey): scoped to THIS file
+            // (consistent with the 103c {vendor}|{file_id} file-idempotency
+            // grammar). A batch can ship across multiple return files
+            // (partial shipment); without the file scope, a second file
+            // covering DIFFERENT asgns of the SAME batch would emit a second
+            // fact with a disjoint asgnIds payload but the IDENTICAL
+            // dedupKey as the first file's fact, which a downstream
+            // onceWithin consumer would silently drop. A re-upload of the
+            // SAME file still dedups correctly: the file-level
+            // onceWithin(`${sheet.vndrId}|${sheet.fileId}`) guard above
+            // no-ops the whole re-ingest before this code ever runs again.
+            dedupKey: `${btchWire}|DISPATCHED_BY_VENDOR|${sheet.fileId}`,
             traceId: oldestTraceId(group.entries),
           }),
         })

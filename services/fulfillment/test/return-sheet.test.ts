@@ -79,22 +79,29 @@ interface SeedEntryOpts {
   merchantUuid: string
   batchUuid: string
   traceId: string
+  // optional deterministic created_at (fold correction 3 test, so a
+  // multi-entry group's oldest-covered-entry trace derivation is exercised
+  // against a KNOWN ordering instead of whatever the wall clock happens to
+  // produce across back-to-back inserts). Defaults to "now" when omitted.
+  createdAt?: Date
 }
 
 // A fixture pending_pool_entry, already SENT_TO_VENDOR (as if the dispatch PM,
 // dispatch.ts, already ran compose+dispatch): the event-carried snapshot the
 // return-sheet ingest reads (no C4 read of merchant/ship-to).
 async function seedPendingEntry(opts: SeedEntryOpts): Promise<void> {
+  const createdAt = opts.createdAt ?? new Date()
   await db.$executeRaw`
     INSERT INTO pending_pool_entry (
       asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
       merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
-      ship_to_address, qr_value, vpa_value, pool_status, batch, dispatch_state, source_event_id, trace_id, updated_at
+      ship_to_address, qr_value, vpa_value, pool_status, batch, dispatch_state, source_event_id, trace_id,
+      created_at, updated_at
     ) VALUES (
       ${opts.asgnUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, ${opts.merchantUuid}::uuid,
       true, 1, 0, true, 'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
       'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${opts.batchUuid}::uuid, 'SENT_TO_VENDOR',
-      'file-1|1', ${opts.traceId}, now()
+      'file-1|1', ${opts.traceId}, ${createdAt}, now()
     )
   `
 }
@@ -284,9 +291,15 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     const asgnA = newId('asgn')
     const asgnB = newId('asgn')
     const asgnC = newId('asgn')
-    await seedPendingEntry({ asgnUuid: toUuid(asgnA), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')), batchUuid, traceId: 'trace-a' })
-    await seedPendingEntry({ asgnUuid: toUuid(asgnB), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')), batchUuid, traceId: 'trace-b' })
-    await seedPendingEntry({ asgnUuid: toUuid(asgnC), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')), batchUuid, traceId: 'trace-c' })
+    // Deterministic created_at ordering (fold correction 3): trace-a is
+    // seeded strictly OLDEST, then trace-b, then trace-c, so the
+    // oldest-covered-entry derivation below is asserted against a KNOWN
+    // ordering rather than relying on the wall clock across back-to-back
+    // inserts (which could tie or, worse, land in insertion order by luck).
+    const baseCreatedAt = new Date('2026-01-01T00:00:00.000Z')
+    await seedPendingEntry({ asgnUuid: toUuid(asgnA), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')), batchUuid, traceId: 'trace-a', createdAt: baseCreatedAt })
+    await seedPendingEntry({ asgnUuid: toUuid(asgnB), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')), batchUuid, traceId: 'trace-b', createdAt: new Date(baseCreatedAt.getTime() + 1000) })
+    await seedPendingEntry({ asgnUuid: toUuid(asgnC), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')), batchUuid, traceId: 'trace-c', createdAt: new Date(baseCreatedAt.getTime() + 2000) })
 
     const sheet: ReturnSheet = {
       fileId: 'return-file-3',
@@ -327,6 +340,20 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     expect(shipmentRows).toHaveLength(2)
     const shipmentByAwb = new Map(shipmentRows.map((r) => [r.payload.payload.awb, r.payload.payload]))
     expect(shipmentByAwb.get('AWB-1')!.unitIds).toHaveLength(2) // both SER-A and SER-B units
+
+    // fold correction 3, exercised on a MULTI-entry group (not just the
+    // single-entry case in test (a)): the batch group covers all three
+    // asgns (trace-a/b/c); its dispatch fact's traceId must be the
+    // deterministic oldest, 'trace-a' (seeded oldest by created_at above),
+    // never an unordered pick.
+    const dispatchRows = await db.$queryRaw<DispatchOutboxRow[]>`SELECT event_type, partition_key, payload FROM outbox WHERE event_type = ${DISPATCH_TOPIC}`
+    expect(dispatchRows).toHaveLength(1) // ONE (program, batch) group covers all three asgns
+    expect(dispatchRows[0]!.payload.traceId).toBe('trace-a')
+
+    // the AWB-1 shpt covers only trace-a and trace-b; its shipment fact's
+    // traceId must be the oldest of THOSE two, also 'trace-a'.
+    const awb1ShipmentRow = shipmentRows.find((r) => r.payload.payload.awb === 'AWB-1')!
+    expect(awb1ShipmentRow.payload.traceId).toBe('trace-a')
   })
 
   it('(d) FOLD-1: a return file spanning TWO different programs (each its own batch) moves BOTH asgns to DISPATCHED_BY_VENDOR and emits BOTH per-batch dispatch facts, with no RLS error', async () => {
@@ -466,5 +493,145 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     const unitAfterReal = await db.$queryRaw<{ shipment: string | null }[]>`SELECT shipment::text AS shipment FROM unit WHERE id = ${unitUuid}::uuid`
     expect(unitAfterReal[0]!.shipment).not.toBeNull()
     expect(unitAfterReal[0]!.shipment).toBe(toUuid(ok.shptIds[0]!))
+  })
+
+  it('(f) review fix: a device_serial that reappears with a NEW awb while its unit is ALREADY paired is quarantined unit_already_paired, producing no orphan shpt and no orphan shipment fact', async () => {
+    const fx = await fullFixture('SER-DUP', 'trace-dup-1')
+    const claim = classSixClaim(fx.vndrId, fx.workQueue)
+    const fileId = 'return-file-dup'
+    const sheet: ReturnSheet = {
+      fileId,
+      vndrId: fx.vndrId,
+      workQueue: fx.workQueue,
+      rows: [
+        { deviceSerial: 'SER-DUP', asgnId: fx.asgnWire, awb: 'AWB-OLD' },
+        { deviceSerial: 'SER-DUP', asgnId: fx.asgnWire, awb: 'AWB-NEW' }, // SAME device, reappears with a NEW awb
+      ],
+    }
+
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-dup-call')
+    expect(res.rejected).toBeUndefined()
+    expect(res.pairedUnitIds).toHaveLength(1) // only row 0 pairs
+    expect(res.quarantined).toBe(1) // row 1 quarantined
+    expect(res.shptIds).toHaveLength(1) // only AWB-OLD's shpt is newly born, no orphan for AWB-NEW
+
+    // exactly ONE shpt exists (no orphan shpt for AWB-NEW).
+    const shptRows = await db.$queryRaw<{ id: string; awb: string }[]>`SELECT id::text AS id, awb FROM shpt`
+    expect(shptRows).toHaveLength(1)
+    expect(shptRows[0]!.awb).toBe('AWB-OLD')
+
+    // unit.shipment still points at AWB-OLD's shpt, untouched by row 1.
+    const unitRow = await db.$queryRaw<{ shipment: string | null }[]>`SELECT shipment::text AS shipment FROM unit WHERE device_serial = 'SER-DUP'`
+    expect(unitRow[0]!.shipment).toBe(shptRows[0]!.id)
+
+    // exactly ONE shipment fact (no zero-unit orphan fact for AWB-NEW).
+    const shipmentRows = await db.$queryRaw<ShipmentOutboxRow[]>`SELECT event_type, partition_key, payload FROM outbox WHERE event_type = ${SHIPMENT_TOPIC}`
+    expect(shipmentRows).toHaveLength(1)
+    expect(shipmentRows[0]!.payload.payload.awb).toBe('AWB-OLD')
+    expect(shipmentRows[0]!.payload.payload.unitIds).toHaveLength(1)
+
+    // row 1 landed unit_already_paired in intake_exception.
+    const exc = await db.$queryRaw<{ reason_code: string; row_ref: string }[]>`SELECT reason_code, row_ref FROM intake_exception ORDER BY row_ref`
+    expect(exc).toHaveLength(1)
+    expect(exc[0]!.row_ref).toBe('row-1')
+    expect(exc[0]!.reason_code).toBe('unit_already_paired')
+  })
+
+  it('(g) review fix: two separate return files shipping DIFFERENT asgns of the SAME batch (a partial shipment) each emit their OWN DISPATCHED_BY_VENDOR dispatch fact, with distinct file-scoped dedupKeys and disjoint asgnIds', async () => {
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-print-partial'
+    const claim = classSixClaim(vndrId, workQueue)
+
+    await seedUnit('SER-PART-1')
+    await seedUnit('SER-PART-2')
+
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    const batchUuid = toUuid(newId('btch')) // the SAME batch, shipped across TWO files
+    const asgn1 = newId('asgn')
+    const asgn2 = newId('asgn')
+    await seedPendingEntry({ asgnUuid: toUuid(asgn1), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')), batchUuid, traceId: 'trace-part-1' })
+    await seedPendingEntry({ asgnUuid: toUuid(asgn2), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')), batchUuid, traceId: 'trace-part-2' })
+
+    const fileId1 = 'return-file-partial-1'
+    const sheet1: ReturnSheet = {
+      fileId: fileId1,
+      vndrId,
+      workQueue,
+      rows: [{ deviceSerial: 'SER-PART-1', asgnId: asgn1, awb: 'AWB-PART-1' }],
+    }
+    const res1 = await ingestReturnSheet(db, claim, sheet1, 'trace-partial-1')
+    expect(res1.rejected).toBeUndefined()
+    expect(res1.pairedUnitIds).toHaveLength(1)
+
+    const fileId2 = 'return-file-partial-2'
+    const sheet2: ReturnSheet = {
+      fileId: fileId2,
+      vndrId,
+      workQueue,
+      rows: [{ deviceSerial: 'SER-PART-2', asgnId: asgn2, awb: 'AWB-PART-2' }],
+    }
+    const res2 = await ingestReturnSheet(db, claim, sheet2, 'trace-partial-2')
+    expect(res2.rejected).toBeUndefined()
+
+    const dispatchRows = await db.$queryRaw<DispatchOutboxRow[]>`SELECT event_type, partition_key, payload FROM outbox WHERE event_type = ${DISPATCH_TOPIC} ORDER BY payload->>'traceId'`
+    expect(dispatchRows).toHaveLength(2) // BOTH files' dispatch facts survive, neither dropped as a dedup collision
+    const byTrace = new Map(dispatchRows.map((r) => [r.payload.traceId, r.payload]))
+
+    const file1Fact = byTrace.get('trace-part-1')!
+    const file2Fact = byTrace.get('trace-part-2')!
+    expect(file1Fact.payload.asgnIds).toEqual([asgn1])
+    expect(file2Fact.payload.asgnIds).toEqual([asgn2])
+    expect(file1Fact.dedupKey).not.toBe(file2Fact.dedupKey) // DISTINCT dedupKeys
+    expect(file1Fact.dedupKey).toBe(`${fromUuid('btch', batchUuid)}|DISPATCHED_BY_VENDOR|${fileId1}`)
+    expect(file2Fact.dedupKey).toBe(`${fromUuid('btch', batchUuid)}|DISPATCHED_BY_VENDOR|${fileId2}`)
+    for (const r of dispatchRows) expect(r.payload.payload.dispatchState).toBe('DISPATCHED_BY_VENDOR')
+  })
+
+  it('(h) review fix: a malformed asgnId lands invalid_asgn_id, and an asgnId with no pending_pool_entry lands asgn_not_found, neither auto-creating or auto-pairing anything', async () => {
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-print-quarantine'
+    const claim = classSixClaim(vndrId, workQueue)
+
+    await seedUnit('SER-BADID')
+    await seedUnit('SER-NOENTRY')
+
+    const orphanAsgn = newId('asgn') // well-formed asgn_ wire id, but NO pending_pool_entry seeded for it
+
+    const fileId = 'return-file-quarantine'
+    const sheet: ReturnSheet = {
+      fileId,
+      vndrId,
+      workQueue,
+      rows: [
+        { deviceSerial: 'SER-BADID', asgnId: 'malformed-asgn-id', awb: 'AWB-BADID' }, // non-empty, not a well-formed asgn_ wire id
+        { deviceSerial: 'SER-NOENTRY', asgnId: orphanAsgn, awb: 'AWB-NOENTRY' },
+      ],
+    }
+
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-quarantine')
+    expect(res.rejected).toBeUndefined()
+    expect(res.pairedUnitIds).toHaveLength(0)
+    expect(res.quarantined).toBe(2)
+    expect(res.shptIds).toHaveLength(0)
+
+    const exc = await db.$queryRaw<{ reason_code: string; row_ref: string }[]>`SELECT reason_code, row_ref FROM intake_exception ORDER BY row_ref`
+    expect(exc).toHaveLength(2)
+    expect(exc[0]!.row_ref).toBe('row-0')
+    expect(exc[0]!.reason_code).toBe('invalid_asgn_id')
+    expect(exc[1]!.row_ref).toBe('row-1')
+    expect(exc[1]!.reason_code).toBe('asgn_not_found')
+
+    // neither row auto-created a unit or paired the existing ones.
+    const units = await db.$queryRaw<
+      { device_serial: string; shipment: string | null; batch: string | null }[]
+    >`SELECT device_serial, shipment::text AS shipment, batch::text AS batch FROM unit WHERE device_serial IN ('SER-BADID', 'SER-NOENTRY') ORDER BY device_serial`
+    expect(units).toHaveLength(2)
+    for (const u of units) {
+      expect(u.shipment).toBeNull()
+      expect(u.batch).toBeNull()
+    }
+    const shptCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM shpt`
+    expect(Number(shptCount[0]!.n)).toBe(0)
   })
 })
