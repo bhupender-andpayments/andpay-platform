@@ -22,6 +22,13 @@ export function redactPoolEntryForLog(e: {
   shipToAddress?: string
   qrValue?: string
   vpaValue?: string
+  // 06a/D116 additions (spec 08 outbound, Task 10): the recipient-contact
+  // snapshot and the post-composition superseded-ship-to lock. Accepted here
+  // (so a caller may pass the whole pending_pool_entry row through unchanged)
+  // and dropped by the same omission as shipToAddress/qrValue/vpaValue above.
+  shipToContactName?: string
+  shipToMobile?: string
+  supersededShipTo?: string
 }): LoggablePoolEntry {
   return {
     asgnId: e.asgnId,
@@ -55,5 +62,49 @@ export function redactUnitForLog(u: {
     productType: u.productType,
     manufacturerVndr: u.manufacturerVndr,
     status: u.status,
+  }
+}
+
+// The D116 ship-to amend fact (fct.tms.assignment.ship_to_amended.v1,
+// ShipToAmendedFactView): the recipient PII it carries (address, contact
+// name, mobile) never reaches a log line. Ids/enums only, allow-list style.
+export interface LoggableShipToAmend {
+  asgnId: string
+  amendmentSeq: number
+}
+export function redactShipToAmendForLog(a: {
+  asgnId: string
+  amendmentSeq: number
+  shipToAddress?: string
+  contactName?: string
+  mobile?: string
+}): LoggableShipToAmend {
+  return {
+    asgnId: a.asgnId,
+    amendmentSeq: a.amendmentSeq,
+  }
+}
+
+// The per-adapter dispatch PACKAGE line (package.ts's PackageLine, D104): the
+// entitled label content (display name, QR/VPA value) and the entitled ship
+// view's recipient block are BOTH dropped here (S7). Even the print+ship
+// adapter's own entitled label content never hits a log line: only the
+// asgn_ id and the artifact object-store references are kept.
+export interface LoggablePackageLine {
+  asgnId: string
+  artifactRefs: string[]
+}
+export function redactPackageLineForLog(line: {
+  asgnId: string
+  artifactRefs: string[]
+  labelDisplayName: string
+  labelQr: string
+  shipToAddress?: string
+  contactName?: string | null
+  mobile?: string | null
+}): LoggablePackageLine {
+  return {
+    asgnId: line.asgnId,
+    artifactRefs: line.artifactRefs,
   }
 }
