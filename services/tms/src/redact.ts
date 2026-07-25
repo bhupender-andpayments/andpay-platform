@@ -25,6 +25,10 @@ export function redactAssignmentForLog(a: {
   shipToAddress?: string
   qrValue?: string
   vpaValue?: string
+  // spec 06a: recipient contact snapshot is entitled PII (D104); accepted here
+  // only to be DROPPED by the allow-list output below (never logged, S7/S4).
+  contactName?: string
+  mobile?: string
 }): LoggableAssignment {
   return {
     asgnId: a.asgnId,

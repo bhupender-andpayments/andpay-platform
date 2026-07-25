@@ -39,4 +39,37 @@ describe('ship-to amend (check 7, D116 superseding re-instruction)', () => {
     const ob2 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox`
     expect(Number(ob2[0]!.n)).toBe(1)
   })
+
+  it('06a check 5: an amend can correct the recipient contact/mobile block, on the snapshot and the fact', async () => {
+    const asgnId = await seedAssignment()
+    const r = await amendShipTo(db, asgnId, 'New Addr', 1, 't', { contactName: 'New Contact', mobile: '+91-1111111111' })
+    expect(r.amended).toBe(true)
+
+    const row = await db.$queryRaw<{ ship_to_address: string; contact_name: string | null; mobile: string | null }[]>`
+      SELECT ship_to_address, contact_name, mobile FROM assignment WHERE id = ${toUuid(asgnId)}::uuid
+    `
+    expect(row[0]!.ship_to_address).toBe('New Addr')
+    expect(row[0]!.contact_name).toBe('New Contact')
+    expect(row[0]!.mobile).toBe('+91-1111111111')
+
+    const ob = await db.$queryRaw<{ payload: { payload: { contactName?: string; mobile?: string } } }[]>`
+      SELECT payload FROM outbox WHERE event_type = ${TMS_SHIP_TO_AMENDED_TOPIC}
+    `
+    expect(ob).toHaveLength(1)
+    expect(ob[0]!.payload.payload.contactName).toBe('New Contact')
+    expect(ob[0]!.payload.payload.mobile).toBe('+91-1111111111')
+  })
+
+  it('06a: an address-only amend (no recipient arg) PRESERVES an existing contact/mobile (COALESCE, not wiped)', async () => {
+    const asgnId = await seedAssignment()
+    await db.$executeRaw`UPDATE assignment SET contact_name = 'Existing Contact', mobile = '+91-7777777777' WHERE id = ${toUuid(asgnId)}::uuid`
+    const r = await amendShipTo(db, asgnId, 'New Addr', 1, 't') // no recipient argument
+    expect(r.amended).toBe(true)
+    const row = await db.$queryRaw<{ ship_to_address: string; contact_name: string | null; mobile: string | null }[]>`
+      SELECT ship_to_address, contact_name, mobile FROM assignment WHERE id = ${toUuid(asgnId)}::uuid
+    `
+    expect(row[0]!.ship_to_address).toBe('New Addr')
+    expect(row[0]!.contact_name).toBe('Existing Contact') // preserved by COALESCE
+    expect(row[0]!.mobile).toBe('+91-7777777777')
+  })
 })

@@ -19,6 +19,11 @@ export interface BankRequestRow {
   standeeCount: number
   stickerCount: number
   shipToAddress: string
+  // spec 06a: mandatory recipient contact columns (BRD FR-01b). A row missing
+  // either is a row-level rejection (S8 reject path); they never reach the row
+  // fact (S7/S5), only pending_row and the assignment snapshot.
+  contactName: string
+  mobile: string
   vpaHint?: string
 }
 
@@ -33,12 +38,21 @@ export async function ingestRequestRow(
 ): Promise<'accepted' | 'duplicate' | 'quarantined'> {
   const correlationId = `${row.fileId}|${row.rowNo}`
 
-  if (!validateQrVpaFormat(row.qrValue, row.vpaValue)) {
+  // S8 row-level validation: format-only for QR/VPA (D117), plus the FR-01b
+  // mandatory recipient contact/mobile (spec 06a). Either failure quarantines
+  // the row via the same reject/report path; an empty contact_name or mobile
+  // counts as missing.
+  const rejectReason = !validateQrVpaFormat(row.qrValue, row.vpaValue)
+    ? 'invalid_qr_vpa_format'
+    : !row.contactName || !row.mobile
+      ? 'missing_recipient_contact'
+      : null
+  if (rejectReason) {
     let quarantined = false
     await db.$transaction(async (tx: Tx) => {
       const won = await tx.$queryRaw<{ id: string }[]>`
         INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
-        VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_request'}, ${'invalid_qr_vpa_format'})
+        VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_request'}, ${rejectReason})
         ON CONFLICT (file_id, row_no) DO NOTHING
         RETURNING id
       `
@@ -57,9 +71,9 @@ export async function ingestRequestRow(
   await db.$transaction(async (tx: Tx) => {
     const won = await tx.$queryRaw<{ id: string }[]>`
       INSERT INTO pending_row
-        (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, status)
+        (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, status)
       VALUES
-        (${correlationId}, ${row.bankReferenceCode}, ${row.soundbox}, ${row.standeeCount}, ${row.stickerCount}, ${row.qrValue}, ${row.vpaValue}, ${row.shipToAddress}, ${'awaiting-identity'})
+        (${correlationId}, ${row.bankReferenceCode}, ${row.soundbox}, ${row.standeeCount}, ${row.stickerCount}, ${row.qrValue}, ${row.vpaValue}, ${row.shipToAddress}, ${row.contactName}, ${row.mobile}, ${'awaiting-identity'})
       ON CONFLICT (correlation_id) DO NOTHING
       RETURNING id
     `

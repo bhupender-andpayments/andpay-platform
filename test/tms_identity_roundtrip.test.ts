@@ -37,7 +37,7 @@ describe('TMS-thin to Identity-min round trip (checks 1, 2)', () => {
       fileId: 'file-1', rowNo: 1, bankMerchantReference: 'BM-1', displayName: 'Acme', legalName: 'Acme Pvt Ltd',
       mcc: '5814', registeredAddress: '221B Baker Street', bankReferenceCode: 'HDFC', productType: 'soundbox',
       vpaValue: 'acme@hdfcbank', qrValue: 'upi://pay?pa=acme@hdfcbank', soundbox: true, standeeCount: 1, stickerCount: 2,
-      shipToAddress: '221B Baker Street', vpaHint: 'acme@hdfcbank',
+      shipToAddress: '221B Baker Street', contactName: 'Jane Doe', mobile: '+91-9000000000', vpaHint: 'acme@hdfcbank',
     }, 'trace-1')
     expect(outcome).toBe('accepted')
 

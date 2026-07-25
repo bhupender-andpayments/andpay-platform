@@ -33,6 +33,8 @@ interface PendingRowRow {
   qr_value: string
   vpa_value: string
   ship_to_address: string
+  contact_name: string | null
+  mobile: string | null
 }
 interface MerchantProjRow { display_name: string; legal_name: string; mcc: string }
 interface TenantProjRow { display_name: string; bank_reference_code: string }
@@ -56,6 +58,8 @@ interface AssignmentSnapshotRow {
   sticker_count: number
   billable: boolean
   source_event_id: string
+  contact_name: string | null
+  mobile: string | null
 }
 
 // Emit the demand fact for an already-inserted assignment (row present) and move
@@ -66,7 +70,7 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
     SELECT a.merchant_id, a.program_id, a.tenant_id, a.merchant_display_name AS display_name,
            a.merchant_legal_name AS legal_name, a.merchant_mcc AS mcc, a.bank_reference_code, a.bank_display_name,
            a.ship_to_address, a.qr_value, a.vpa_value, a.soundbox, a.standee_count, a.sticker_count,
-           a.billable, a.source_event_id
+           a.billable, a.source_event_id, a.contact_name, a.mobile
     FROM assignment a WHERE a.id = ${asgnUuid}::uuid
   `
   if (rows.length === 0) throw new Error(`emitDemandFact: assignment ${asgnUuid} not found`)
@@ -97,6 +101,10 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
         billable: a.billable,
         demandState: 'pooled-for-fulfillment',
         sourceEventId: a.source_event_id,
+        // spec 06a: recipient contact snapshot. Null (a pre-06a row) becomes an
+        // absent optional field, keeping the fact D120 FULL-compatible.
+        contactName: a.contact_name ?? undefined,
+        mobile: a.mobile ?? undefined,
       },
       dedupKey: eventKey(envId, 'tms.assignment'),
       traceId,
@@ -122,7 +130,7 @@ export async function createAssignmentFromEnrollment(
   await db.$transaction(async (tx: Tx) => {
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       const pend = await tx.$queryRaw<PendingRowRow[]>`
-        SELECT soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address
+        SELECT soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile
         FROM pending_row WHERE correlation_id = ${p.sourceEventId}
       `
       if (pend.length === 0) throw new Error(`pending row not found for ${p.sourceEventId}`)
@@ -156,13 +164,13 @@ export async function createAssignmentFromEnrollment(
           merchant_display_name, merchant_legal_name, merchant_mcc,
           bank_reference_code, bank_display_name, ship_to_address,
           qr_value, vpa_value, soundbox, standee_count, sticker_count,
-          billable, demand_state, source_event_id, updated_at
+          billable, demand_state, source_event_id, contact_name, mobile, updated_at
         ) VALUES (
           ${asgnUuid}::uuid, ${mrchUuid}::uuid, ${progUuid}::uuid, ${tnntUuid}::uuid,
           ${m.display_name}, ${m.legal_name}, ${m.mcc},
           ${t.bank_reference_code}, ${t.display_name}, ${pr.ship_to_address},
           ${pr.qr_value}, ${pr.vpa_value}, ${pr.soundbox}, ${pr.standee_count}, ${pr.sticker_count},
-          ${true}, ${'received'}, ${p.sourceEventId}, now()
+          ${true}, ${'received'}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, now()
         )
         ON CONFLICT (source_event_id) DO NOTHING
         RETURNING id
@@ -190,22 +198,34 @@ export async function amendShipTo(
   newShipToAddress: string,
   amendmentSeq: number,
   traceId: string,
+  recipient?: { contactName?: string; mobile?: string },
 ): Promise<{ amended: boolean }> {
   const asgnUuid = toUuid(asgnId)
   // Idempotent on (asgnId, amendmentSeq) via a stable inbox key (06.A rule 3).
   const dedupKey = `${asgnId}|ship_to_amend|${amendmentSeq}`
+  // spec 06a: an amend may correct the recipient contact/mobile too. COALESCE so
+  // an address-only amend (recipient omitted) never wipes an existing contact.
+  const contactName = recipient?.contactName ?? null
+  const mobile = recipient?.mobile ?? null
   let amended = false
   await db.$transaction(async (tx: Tx) => {
     const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
       // Post-batch lock is fixture-deferred (gated on a Fulfillment batch fact, step 7).
-      await tx.$executeRaw`UPDATE assignment SET ship_to_address = ${newShipToAddress}, updated_at = now() WHERE id = ${asgnUuid}::uuid`
+      await tx.$executeRaw`
+        UPDATE assignment
+        SET ship_to_address = ${newShipToAddress},
+            contact_name = COALESCE(${contactName}::text, contact_name),
+            mobile = COALESCE(${mobile}::text, mobile),
+            updated_at = now()
+        WHERE id = ${asgnUuid}::uuid
+      `
       await enqueue(tx, {
         aggregateType: 'assignment',
         aggregateId: asgnId,
         eventType: TMS_SHIP_TO_AMENDED_TOPIC,
         partitionKey: asgnId,
         payload: shipToAmendedFactEnvelope({
-          payload: { asgnId, shipToAddress: newShipToAddress, amendmentSeq },
+          payload: { asgnId, shipToAddress: newShipToAddress, amendmentSeq, contactName: recipient?.contactName, mobile: recipient?.mobile },
           dedupKey: eventKey(dedupKey, 'tms.assignment.ship_to_amended'),
           traceId,
         }),
