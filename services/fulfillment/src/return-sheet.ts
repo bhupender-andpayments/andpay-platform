@@ -349,12 +349,24 @@ export async function ingestReturnSheet(
       for (const group of coveredGroups.values()) {
         await setProgramContext(tx, group.programUuid)
         const asgnUuidList = [...group.asgnUuids]
-        await tx.$executeRaw`
+        // Monotonicity guard (dispatch_state: null -> QR_GENERATED ->
+        // SENT_TO_VENDOR -> DISPATCHED_BY_VENDOR must never regress or skip a
+        // step): only ever advance an entry that has actually reached
+        // SENT_TO_VENDOR (compose+dispatch both ran). Without this, a return
+        // sheet arriving before the dispatch PM has run on this batch could
+        // jump a NULL/QR_GENERATED entry straight to DISPATCHED_BY_VENDOR.
+        // RETURNING is load-bearing: the emitted fact below must carry ONLY
+        // the asgnIds this UPDATE actually advanced, never the full covered
+        // group (which may include entries this UPDATE's WHERE excluded).
+        const advanced = await tx.$queryRaw<{ asgn_id: string }[]>`
           UPDATE pending_pool_entry SET dispatch_state = 'DISPATCHED_BY_VENDOR', updated_at = now()
           WHERE asgn_id = ANY(${asgnUuidList}::uuid[]) AND program_id = ${group.programUuid}::uuid
+            AND dispatch_state = 'SENT_TO_VENDOR'
+          RETURNING asgn_id::text AS asgn_id
         `
+        if (advanced.length === 0) continue // nothing in this group actually advanced: no fact to emit
         const btchWire = fromUuid('btch', group.btchUuid)
-        const asgnIds = asgnUuidList.map((u) => fromUuid('asgn', u))
+        const asgnIds = advanced.map((r) => fromUuid('asgn', r.asgn_id))
         await enqueue(tx, {
           aggregateType: 'batch',
           aggregateId: btchWire,

@@ -5,12 +5,14 @@ import { onceWithin, enqueue } from '@andpay/outbox'
 import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { ingestReturnSheet, type ReturnSheet, type ReturnRow } from '../src/return-sheet.js'
+import { consumeBatchFact } from '../src/dispatch.js'
 import { CONSUMER, setProgramContext } from '../src/internal.js'
 import {
   PRINT_FOR_TOPIC,
   SHIPMENT_TOPIC,
   DISPATCH_TOPIC,
   printForFactEnvelope,
+  batchFactEnvelope,
   type PrintForFactPayload,
   type ShipmentFactPayload,
   type DispatchFactPayload,
@@ -84,6 +86,12 @@ interface SeedEntryOpts {
   // against a KNOWN ordering instead of whatever the wall clock happens to
   // produce across back-to-back inserts). Defaults to "now" when omitted.
   createdAt?: Date
+  // optional dispatch_state override (monotonicity regression test): defaults
+  // to 'SENT_TO_VENDOR' (as-if the dispatch PM already ran) when omitted, the
+  // snapshot every other fixture in this file exercises. Pass null to
+  // simulate a return-sheet arriving BEFORE compose ever ran on the covered
+  // asgn (dispatch_state still NULL).
+  dispatchState?: string | null
 }
 
 // A fixture pending_pool_entry, already SENT_TO_VENDOR (as if the dispatch PM,
@@ -91,6 +99,7 @@ interface SeedEntryOpts {
 // return-sheet ingest reads (no C4 read of merchant/ship-to).
 async function seedPendingEntry(opts: SeedEntryOpts): Promise<void> {
   const createdAt = opts.createdAt ?? new Date()
+  const dispatchState = opts.dispatchState === undefined ? 'SENT_TO_VENDOR' : opts.dispatchState
   await db.$executeRaw`
     INSERT INTO pending_pool_entry (
       asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
@@ -100,7 +109,7 @@ async function seedPendingEntry(opts: SeedEntryOpts): Promise<void> {
     ) VALUES (
       ${opts.asgnUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, ${opts.merchantUuid}::uuid,
       true, 1, 0, true, 'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
-      'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${opts.batchUuid}::uuid, 'SENT_TO_VENDOR',
+      'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${opts.batchUuid}::uuid, ${dispatchState}::text,
       'file-1|1', ${opts.traceId}, ${createdAt}, now()
     )
   `
@@ -121,7 +130,9 @@ interface Fixture {
 // One full fixture: a PRINT vendor, a SENT_TO_VENDOR pending_pool_entry for
 // asgn_1, and an in-inventory unit for the given device serial. Returns every
 // id the caller needs to build a ReturnSheet + assert on the DB afterward.
-async function fullFixture(deviceSerial: string, traceId: string): Promise<Fixture> {
+// `dispatchState` defaults to 'SENT_TO_VENDOR' (as-if dispatch already ran);
+// pass null for the monotonicity regression test (return arrives before compose).
+async function fullFixture(deviceSerial: string, traceId: string, dispatchState?: string | null): Promise<Fixture> {
   const vndrId = await seedPrintVendor()
   const workQueue = 'wq-print-A'
   await seedUnit(deviceSerial)
@@ -131,7 +142,7 @@ async function fullFixture(deviceSerial: string, traceId: string): Promise<Fixtu
   const programUuid = toUuid(newId('prog'))
   const merchantUuid = toUuid(newId('mrch'))
   const batchUuid = toUuid(newId('btch'))
-  await seedPendingEntry({ asgnUuid, tenantUuid, programUuid, merchantUuid, batchUuid, traceId })
+  await seedPendingEntry({ asgnUuid, tenantUuid, programUuid, merchantUuid, batchUuid, traceId, dispatchState })
   return { vndrId, workQueue, asgnWire, asgnUuid, tenantUuid, programUuid, merchantUuid, batchUuid, traceId }
 }
 
@@ -633,5 +644,141 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     }
     const shptCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM shpt`
     expect(Number(shptCount[0]!.n)).toBe(0)
+  })
+
+  // Hardening regression (dispatch_state monotonicity: null -> QR_GENERATED ->
+  // SENT_TO_VENDOR -> DISPATCHED_BY_VENDOR must never regress or skip a step).
+  // (a) A return-sheet arriving for an asgn whose pending_pool_entry is still
+  // dispatch_state=NULL (simulating a return that lands before the dispatch PM's
+  // compose step has ever run on this batch) must NOT jump the entry straight to
+  // DISPATCHED_BY_VENDOR: the post-loop UPDATE is gated on
+  // `dispatch_state = 'SENT_TO_VENDOR'`, so it advances ZERO rows for this
+  // asgn and the group emits NO dispatch fact at all (skip-on-zero-advance).
+  // The entry must also NOT be left "stuck": a legitimate consumeBatchFact
+  // run afterward (its compose half gated on `dispatch_state IS NULL`) can
+  // still pick it up exactly as if the return had never arrived. Note:
+  // consumeBatchFact runs compose AND dispatch as two chained steps inside
+  // ONE call, so the observable end state after that single call is
+  // SENT_TO_VENDOR (compose flips NULL->QR_GENERATED, then its own
+  // already-existing dispatch-step guard immediately flips
+  // QR_GENERATED->SENT_TO_VENDOR); what matters for this regression is that
+  // it was free to move at all, proving the earlier zero-row UPDATE left no
+  // residue blocking compose's own `IS NULL` guard.
+  it('(i) monotonicity: a return-sheet arriving before compose never regresses dispatch_state, and compose can still advance it afterward', async () => {
+    const fx = await fullFixture('SER-MONO', 'trace-mono-1', null) // dispatch_state deliberately left NULL
+    const claim = classSixClaim(fx.vndrId, fx.workQueue)
+    const fileId = 'return-file-mono'
+    const sheet: ReturnSheet = {
+      fileId,
+      vndrId: fx.vndrId,
+      workQueue: fx.workQueue,
+      rows: [{ deviceSerial: 'SER-MONO', asgnId: fx.asgnWire, awb: 'AWB-MONO' }],
+    }
+
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-mono')
+    expect(res.rejected).toBeUndefined()
+    // unit pairing, shpt birth, and the print_for fact are independent of
+    // dispatch_state: they still happen normally.
+    expect(res.pairedUnitIds).toHaveLength(1)
+    expect(res.shptIds).toHaveLength(1)
+
+    // the covered entry's dispatch_state must NOT be advanced to
+    // DISPATCHED_BY_VENDOR: it never passed through SENT_TO_VENDOR.
+    const entryAfterReturn = await db.$queryRaw<{ dispatch_state: string | null }[]>`
+      SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${fx.asgnUuid}::uuid
+    `
+    expect(entryAfterReturn[0]!.dispatch_state).toBeNull()
+
+    // NO dispatch fact emitted: the group advanced zero rows.
+    const dispatchRowsAfterReturn = await db.$queryRaw<DispatchOutboxRow[]>`
+      SELECT event_type, partition_key, payload FROM outbox WHERE event_type = ${DISPATCH_TOPIC}
+    `
+    expect(dispatchRowsAfterReturn).toHaveLength(0)
+
+    // the entry is NOT stuck: consumeBatchFact's compose step, gated on
+    // `dispatch_state IS NULL`, still fires normally and advances it to
+    // QR_GENERATED (state was never regressed to something compose cannot
+    // move past).
+    const btchWire = fromUuid('btch', fx.batchUuid)
+    const tenantWire = fromUuid('tnnt', fx.tenantUuid)
+    const programWire = fromUuid('prog', fx.programUuid)
+    const env = batchFactEnvelope({
+      payload: {
+        btchId: btchWire,
+        tenantId: tenantWire,
+        programId: programWire,
+        triggerReason: 'LOT_SIZE',
+        unitCount: 1,
+        asgnIds: [fx.asgnWire],
+      },
+      dedupKey: btchWire,
+      traceId: 'trace-batch-mono',
+    })
+    const composeRes = await consumeBatchFact(db, env)
+    expect(composeRes.deduped).toBe(false)
+
+    const entryAfterCompose = await db.$queryRaw<{ dispatch_state: string | null }[]>`
+      SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${fx.asgnUuid}::uuid
+    `
+    expect(entryAfterCompose[0]!.dispatch_state).toBe('SENT_TO_VENDOR') // compose then dispatch both ran within consumeBatchFact
+  })
+
+  // (b) the normal happy path, mixed with a NULL sibling in the SAME
+  // (program, batch) group: proves the guard's RETURNING-based filter
+  // advances and reports ONLY the rows that were actually
+  // dispatch_state='SENT_TO_VENDOR', never the NULL one, and the emitted fact
+  // carries exactly that advanced set.
+  it('(j) a mixed group advances and fact-reports ONLY the SENT_TO_VENDOR entries, leaving a NULL sibling in the same batch untouched', async () => {
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-print-mono-mixed'
+    const claim = classSixClaim(vndrId, workQueue)
+
+    await seedUnit('SER-MIX-NULL')
+    await seedUnit('SER-MIX-SENT')
+
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    const batchUuid = toUuid(newId('btch')) // SAME batch/program for both asgns: one covered group
+    const asgnNull = newId('asgn')
+    const asgnSent = newId('asgn')
+    await seedPendingEntry({
+      asgnUuid: toUuid(asgnNull), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')),
+      batchUuid, traceId: 'trace-mix-null', dispatchState: null,
+    })
+    await seedPendingEntry({
+      asgnUuid: toUuid(asgnSent), tenantUuid, programUuid, merchantUuid: toUuid(newId('mrch')),
+      batchUuid, traceId: 'trace-mix-sent', dispatchState: 'SENT_TO_VENDOR',
+    })
+
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-mono-mixed',
+      vndrId,
+      workQueue,
+      rows: [
+        { deviceSerial: 'SER-MIX-NULL', asgnId: asgnNull, awb: 'AWB-MIX-NULL' },
+        { deviceSerial: 'SER-MIX-SENT', asgnId: asgnSent, awb: 'AWB-MIX-SENT' },
+      ],
+    }
+
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-mono-mixed')
+    expect(res.rejected).toBeUndefined()
+    expect(res.pairedUnitIds).toHaveLength(2) // pairing happens for both regardless of dispatch_state
+
+    const entryNull = await db.$queryRaw<{ dispatch_state: string | null }[]>`
+      SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${toUuid(asgnNull)}::uuid
+    `
+    const entrySent = await db.$queryRaw<{ dispatch_state: string | null }[]>`
+      SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${toUuid(asgnSent)}::uuid
+    `
+    expect(entryNull[0]!.dispatch_state).toBeNull() // NOT advanced
+    expect(entrySent[0]!.dispatch_state).toBe('DISPATCHED_BY_VENDOR') // advanced
+
+    // ONE dispatch fact for the group (not zero: at least one row advanced),
+    // carrying ONLY asgnSent, never asgnNull.
+    const dispatchRows = await db.$queryRaw<DispatchOutboxRow[]>`
+      SELECT event_type, partition_key, payload FROM outbox WHERE event_type = ${DISPATCH_TOPIC}
+    `
+    expect(dispatchRows).toHaveLength(1)
+    expect(dispatchRows[0]!.payload.payload.asgnIds).toEqual([asgnSent])
   })
 })

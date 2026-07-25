@@ -119,9 +119,15 @@ export async function consumeBatchFact(
             composed++
           }
         }
+        // Monotonicity guard (dispatch_state: null -> QR_GENERATED ->
+        // SENT_TO_VENDOR -> DISPATCHED_BY_VENDOR must never regress): only
+        // ever compose an entry from its true starting state, NULL. Without
+        // this, a future async consumer that races ahead (e.g. a return-sheet
+        // arriving before this step) could have this UPDATE stomp a later
+        // state (SENT_TO_VENDOR/DISPATCHED_BY_VENDOR) back down to QR_GENERATED.
         await tx.$executeRaw`
           UPDATE pending_pool_entry SET dispatch_state = 'QR_GENERATED', updated_at = now()
-          WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
+          WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid AND dispatch_state IS NULL
         `
         const asgnIds = entries.map((e) => fromUuid('asgn', e.asgn_id))
         await enqueue(tx, {
