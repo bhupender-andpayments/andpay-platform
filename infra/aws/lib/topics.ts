@@ -195,6 +195,44 @@ export const FACT_SCHEMAS: FactSchema[] = [
       required: ['btchId', 'triggerReason'],
     },
   },
+  {
+    name: 'fct.fulfillment.dispatch.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        btchId: { type: 'string' },
+        asgnIds: { type: 'array', items: { type: 'string' } },
+        dispatchState: { type: 'string' },
+      },
+      required: ['btchId', 'dispatchState'],
+    },
+  },
+  {
+    name: 'fct.fulfillment.unit.print_for.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        unitId: { type: 'string' }, asgnId: { type: 'string' }, deviceId: { type: 'string' },
+        printedForMerchant: { type: 'string' }, shptId: { type: 'string' }, awb: { type: 'string' },
+      },
+      required: ['unitId', 'asgnId', 'shptId'],
+    },
+  },
+  {
+    name: 'fct.fulfillment.shipment.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        shptId: { type: 'string' }, awb: { type: 'string' }, courierPartner: { type: 'string' },
+        dispatchDate: { type: 'string' }, unitIds: { type: 'array', items: { type: 'string' } },
+        status: { type: 'string' },
+      },
+      required: ['shptId', 'awb', 'status'],
+    },
+  },
 ]
 
 // Kafka topics to create on MSK (config-as-code; applied by the topic
@@ -211,6 +249,8 @@ export const TOPIC_NAMES = [
   'fct.tms.assignment.activated.v1',
   'fct.fulfillment.batch.v1',
   'fct.fulfillment.unit.v1',
+  'fct.fulfillment.dispatch.v1',
+  'fct.fulfillment.unit.print_for.v1',
   'fct.fulfillment.shipment.v1',
   'cmd.fulfillment.batch.v1',
 ]

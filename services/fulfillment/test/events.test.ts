@@ -2,10 +2,19 @@ import { describe, it, expect } from 'vitest'
 import {
   unitFactEnvelope,
   batchFactEnvelope,
+  dispatchFactEnvelope,
+  printForFactEnvelope,
+  shipmentFactEnvelope,
   UNIT_TOPIC,
   BATCH_TOPIC,
+  DISPATCH_TOPIC,
+  PRINT_FOR_TOPIC,
+  SHIPMENT_TOPIC,
   type UnitFactPayload,
   type BatchFactPayload,
+  type DispatchFactPayload,
+  type PrintForFactPayload,
+  type ShipmentFactPayload,
 } from '../src/events.js'
 
 describe('fulfillment fact envelopes (S7 ids-and-minimal)', () => {
@@ -70,5 +79,83 @@ describe('fulfillment fact envelopes (S7 ids-and-minimal)', () => {
     expect(env.payload.count).toBe(500)
     expect(env.payload.deviceSerial).toBeUndefined()
     expect(env.payload.batchId).toBeUndefined()
+  })
+
+  it('dispatch fact: type, version, subject (btchId), dedupKey, traceId, and payload passthrough', () => {
+    const payload: DispatchFactPayload = {
+      btchId: 'btch_1',
+      asgnIds: ['asgn_1', 'asgn_2'],
+      dispatchState: 'QR_GENERATED',
+    }
+    const env = dispatchFactEnvelope({
+      payload,
+      dedupKey: 'evt-4|fulfillment.dispatch',
+      traceId: 'trace-4',
+    })
+    expect(env.type).toBe(DISPATCH_TOPIC)
+    expect(env.type).toBe('fct.fulfillment.dispatch.v1')
+    expect(env.version).toBe(1)
+    expect(env.subject).toBe('btch_1')
+    expect(env.dedupKey).toBe('evt-4|fulfillment.dispatch')
+    expect(env.traceId).toBe('trace-4')
+    expect(env.payload).toEqual(payload)
+  })
+
+  it('print_for fact: type, version, subject (unitId), dedupKey, traceId, and payload passthrough', () => {
+    const payload: PrintForFactPayload = {
+      unitId: 'unit_1',
+      asgnId: 'asgn_1',
+      deviceId: 'device_1',
+      printedForMerchant: 'mrch_1',
+      shptId: 'shpt_1',
+      awb: 'awb_1',
+    }
+    const env = printForFactEnvelope({
+      payload,
+      dedupKey: 'evt-5|fulfillment.unit.print_for',
+      traceId: 'trace-5',
+    })
+    expect(env.type).toBe(PRINT_FOR_TOPIC)
+    expect(env.type).toBe('fct.fulfillment.unit.print_for.v1')
+    expect(env.version).toBe(1)
+    expect(env.subject).toBe('unit_1')
+    expect(env.dedupKey).toBe('evt-5|fulfillment.unit.print_for')
+    expect(env.traceId).toBe('trace-5')
+    expect(env.payload).toEqual(payload)
+  })
+
+  it('shipment fact: type, version, subject (shptId), dedupKey, traceId, and payload passthrough', () => {
+    const payload: ShipmentFactPayload = {
+      shptId: 'shpt_1',
+      awb: 'awb_1',
+      dispatchDate: '2026-07-25',
+      unitIds: ['unit_1', 'unit_2'],
+      status: 'DISPATCHED_BY_VENDOR',
+    }
+    const env = shipmentFactEnvelope({
+      payload,
+      dedupKey: 'evt-6|fulfillment.shipment',
+      traceId: 'trace-6',
+    })
+    expect(env.type).toBe(SHIPMENT_TOPIC)
+    expect(env.type).toBe('fct.fulfillment.shipment.v1')
+    expect(env.version).toBe(1)
+    expect(env.subject).toBe('shpt_1')
+    expect(env.dedupKey).toBe('evt-6|fulfillment.shipment')
+    expect(env.traceId).toBe('trace-6')
+    expect(env.payload).toEqual(payload)
+  })
+
+  it('shipment fact carries courierPartner when present (absent until step-8 courier master)', () => {
+    const payload: ShipmentFactPayload = {
+      shptId: 'shpt_2',
+      awb: 'awb_2',
+      courierPartner: 'vndr_courier_1',
+      dispatchDate: '2026-07-25',
+      unitIds: ['unit_3'],
+      status: 'DISPATCHED_BY_VENDOR',
+    }
+    const env = shipmentFactEnvelope({ payload, dedupKey: 'evt-7|fulfillment.shipment', traceId: 'trace-7' })
+    expect(env.payload.courierPartner).toBe('vndr_courier_1')
   })
 })

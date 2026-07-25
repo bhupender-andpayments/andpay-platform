@@ -25,4 +25,33 @@ export const FULFILLMENT_FACT_SCHEMAS: Record<string, object> = {
     },
     required: ['btchId', 'triggerReason'],
   },
+  'fct.fulfillment.dispatch.v1': {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    properties: {
+      btchId: { type: 'string' },
+      asgnIds: { type: 'array', items: { type: 'string' } },
+      dispatchState: { type: 'string' },
+    },
+    required: ['btchId', 'dispatchState'],
+  },
+  'fct.fulfillment.unit.print_for.v1': {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    properties: {
+      unitId: { type: 'string' }, asgnId: { type: 'string' }, deviceId: { type: 'string' },
+      printedForMerchant: { type: 'string' }, shptId: { type: 'string' }, awb: { type: 'string' },
+    },
+    required: ['unitId', 'asgnId', 'shptId'],
+  },
+  'fct.fulfillment.shipment.v1': {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    properties: {
+      shptId: { type: 'string' }, awb: { type: 'string' }, courierPartner: { type: 'string' },
+      dispatchDate: { type: 'string' }, unitIds: { type: 'array', items: { type: 'string' } },
+      status: { type: 'string' },
+    },
+    required: ['shptId', 'awb', 'status'],
+  },
 }

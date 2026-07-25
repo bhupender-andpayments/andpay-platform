@@ -29,6 +29,8 @@ export const SOUNDBOX_TOPICS: TopicSpec[] = [
   { name: 'fct.tms.assignment.activated.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.batch.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.unit.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  { name: 'fct.fulfillment.dispatch.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  { name: 'fct.fulfillment.unit.print_for.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.shipment.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'cmd.fulfillment.batch.v1', partitions: 3 },
 ]
