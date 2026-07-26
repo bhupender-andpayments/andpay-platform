@@ -32,4 +32,19 @@ describe('@andpay/audit chain primitives', () => {
     const b = canonicalChainPayload(rec({ resourceIds: ['y', 'x'] }))
     expect(a).toBe(b)
   })
+  it('is injective over resourceIds: a delimiter byte inside an element cannot be confused with an array boundary', () => {
+    const twoElements = canonicalChainPayload(rec({ resourceIds: ['a', 'b'] }))
+    const oneElementWithEmbeddedSep = canonicalChainPayload(rec({ resourceIds: ['a\x1eb'] }))
+    expect(twoElements).not.toBe(oneElementWithEmbeddedSep)
+  })
+  it('is injective over resourceIds: an empty array differs from an array holding one empty string', () => {
+    const empty = canonicalChainPayload(rec({ resourceIds: [] }))
+    const oneEmptyString = canonicalChainPayload(rec({ resourceIds: [''] }))
+    expect(empty).not.toBe(oneEmptyString)
+  })
+  it('undefined resourceIds and an empty array hash IDENTICALLY (required: the appender stores resourceIds ?? [] and the verifier reconstructs [] from an empty column, so they must agree)', () => {
+    const undef = canonicalChainPayload(rec({ resourceIds: undefined }))
+    const empty = canonicalChainPayload(rec({ resourceIds: [] }))
+    expect(undef).toBe(empty)
+  })
 })

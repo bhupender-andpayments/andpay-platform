@@ -8,39 +8,43 @@ import type { AuthzAuditRecord } from './record.js'
  */
 export const GENESIS_PREV_HASH: string = '0'.repeat(64)
 
-// Field and array delimiters that cannot appear in the IDs-only data this
-// record carries (S10.5, S7), so the canonical serialization stays
-// unambiguous without relying on JSON.stringify key order.
-const FIELD_SEP = '\x1f'
-const ARRAY_SEP = '\x1e'
-
-function field(value: string | number | undefined): string {
-  return value === undefined ? '' : String(value)
-}
-
 /**
- * Serializes the IDs-only fields of an AuthzAuditRecord in a FIXED key order,
- * independent of the input object's own key insertion order and stable
- * across Node versions. resourceIds is rendered from a sorted copy joined
- * with a distinct delimiter so the array boundary stays unambiguous.
+ * Serializes the IDs-only fields of an AuthzAuditRecord in a FIXED
+ * POSITIONAL array, independent of the input object's own key insertion
+ * order and stable across Node versions. JSON.stringify of a fixed-position
+ * array is INJECTIVE for this purpose: every control byte (including the
+ * old delimiter bytes 0x1e/0x1f) is escaped by JSON's own string encoding,
+ * and array element boundaries are structural, not delimiter-based, so an
+ * untrusted resourceIds element can never be reshaped into a different
+ * array by embedding a byte the encoding relies on (S10.5, S7).
+ * resourceIds is normalized: undefined and [] MUST serialize identically,
+ * because the appender stores `resourceIds ?? []` while the verifier
+ * reconstructs `[]` from an empty column; they have to agree for
+ * verifyAuthzChain to recompute the same hash for both.
  */
 export function canonicalChainPayload(record: AuthzAuditRecord): string {
-  const resourceIds = record.resourceIds ? [...record.resourceIds].sort().join(ARRAY_SEP) : ''
-  return [
-    field(record.principalId),
-    field(record.cls),
-    field(record.operation),
-    field(record.decision),
-    field(record.outcome),
-    resourceIds,
-    field(record.reasonCode),
-    field(record.acr),
-    field(record.authTime),
-    field(record.asserterSvid),
-    field(record.actorChannel),
-    field(record.traceId),
-  ].join(FIELD_SEP)
+  return JSON.stringify([
+    record.principalId,
+    record.cls,
+    record.operation,
+    record.decision,
+    record.outcome,
+    [...(record.resourceIds ?? [])].sort(),
+    record.reasonCode ?? null,
+    record.acr ?? null,
+    record.authTime ?? null,
+    record.asserterSvid ?? null,
+    record.actorChannel ?? null,
+    record.traceId,
+  ])
 }
+
+// Separates prevHashHex/seq/payload within the hash input. Unlike the old
+// per-record-field delimiters this replaces, a fixed separator byte here is
+// safe regardless of content: prevHashHex is always exactly 64 hex chars and
+// seq's string form is always digits only, so neither is attacker-controlled
+// or variable-length in a way that could shift a boundary.
+const HASH_INPUT_SEP = '\x1f'
 
 /**
  * The tamper-evident hash-chain link: binds this entry to its sequence
@@ -50,9 +54,9 @@ export function canonicalChainPayload(record: AuthzAuditRecord): string {
 export function computeEntryHash(prevHashHex: string, seq: number, record: AuthzAuditRecord): string {
   return createHash('sha256')
     .update(prevHashHex)
-    .update(FIELD_SEP)
+    .update(HASH_INPUT_SEP)
     .update(String(seq))
-    .update(FIELD_SEP)
+    .update(HASH_INPUT_SEP)
     .update(canonicalChainPayload(record))
     .digest('hex')
 }
