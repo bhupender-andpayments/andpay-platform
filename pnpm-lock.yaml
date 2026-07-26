@@ -112,6 +112,15 @@ importers:
         specifier: ^2.2.4
         version: 2.2.4
 
+  packages/edge:
+    dependencies:
+      '@andpay/audit':
+        specifier: workspace:*
+        version: link:../audit
+      '@andpay/authz':
+        specifier: workspace:*
+        version: link:../authz
+
   packages/engine:
     dependencies:
       '@andpay/ids':

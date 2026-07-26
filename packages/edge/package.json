@@ -1,0 +1,24 @@
+{
+  "name": "@andpay/edge",
+  "version": "0.0.0",
+  "description": "Framework-free vendor-edge local-verify core: resolve a presented credential to a lean claim via @andpay/authz (zero call to Auth, T4/S14/5e), then run the two-gate authorize and emit an IDs-only 6e authz-audit record. No NestJS, no DB, no HTTP; the HTTP app wires those.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@andpay/authz": "workspace:*",
+    "@andpay/audit": "workspace:*"
+  }
+}
