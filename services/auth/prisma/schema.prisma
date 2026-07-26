@@ -120,8 +120,13 @@ model Session {
 }
 
 // 6e authz-audit record (IDs and enums only, S7/S10.5). Emitted via the outbox
-// committed with the operation; tamper-evident hash-chain/WORM hardening is
-// DEFERRED, the record shape and emission path are built now.
+// committed with the operation, then appended into a tamper-evident
+// hash-chain by appendAuthzAudit (seq/prev_hash/entry_hash chained via
+// @andpay/audit's computeEntryHash) and checked end to end by the
+// verifyAuthzChain integrity job. actor_channel is the 10a edge-slice
+// provenance. There is no genesis row: seq starts at 1 and the first entry's
+// prev_hash is the GENESIS_PREV_HASH constant. The table is append-only (no
+// updated_at).
 model AuthzAudit {
   id           String    @id @db.Uuid
   principalId  String    @map("principal_id")
@@ -136,6 +141,10 @@ model AuthzAudit {
   asserterSvid String?   @map("asserter_svid")
   traceId      String    @map("trace_id")
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  seq          BigInt?   @unique
+  prevHash     String?   @map("prev_hash")
+  entryHash    String?   @map("entry_hash")
+  actorChannel String?   @map("actor_channel")
 
   @@index([createdAt])
   @@map("authz_audit")

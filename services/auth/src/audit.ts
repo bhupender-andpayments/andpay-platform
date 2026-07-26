@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { enqueue, type OutboxTx } from '@andpay/outbox'
-import type { PrincipalClass, Acr } from '@andpay/authz'
+import type { AuthzAuditRecord } from '@andpay/audit'
 import type { AuthDb } from './db.js'
 
 // The auth-INTERNAL audit event type (interpretive choice F): the 6e store is
@@ -9,28 +9,16 @@ import type { AuthDb } from './db.js'
 // public topic.
 export const AUTHZ_AUDIT_EVENT = 'authz.audit'
 
-// The 6e record shape: IDs and enums only, never PII, secrets, or bodies
-// (S7/S10.5). The api_ id and display fingerprint may appear; the secret never
-// does (the 5c redaction is upstream of the first write).
-export interface AuthzAuditRecord {
-  principalId: string
-  cls: PrincipalClass
-  operation: string
-  decision: 'ALLOW' | 'DENY'
-  outcome: string
-  resourceIds?: string[]
-  reasonCode?: string
-  acr?: Acr
-  authTime?: number
-  asserterSvid?: string
-  traceId: string
-}
+// The 6e record shape now lives in @andpay/audit (task 1), shared verbatim
+// with the tamper-evident hash-chain appender and integrity job
+// (authz-chain.ts, authz-chain-verify.ts) so all three never drift from one
+// definition. IDs and enums only, never PII, secrets, or bodies (S7/S10.5).
+export type { AuthzAuditRecord } from '@andpay/audit'
 
 // Emit an audit record to the outbox INSIDE the caller's transaction (E1),
-// committed with the operation, for at-least-once delivery to the audit sink by
-// a deferred idempotent consumer (E6). The tamper-evident hash-chain/WORM store
-// and the integrity job are DEFERRED; the emission path and record shape are
-// built now.
+// committed with the operation, for at-least-once delivery to the audit sink
+// by an idempotent consumer (E6). appendAuthzAudit (authz-chain.ts) is that
+// consumer: it chains the record into the tamper-evident hash-chain.
 export async function emitAuthzAudit(tx: OutboxTx, record: AuthzAuditRecord): Promise<void> {
   await enqueue(tx, {
     aggregateType: 'authz_audit',
