@@ -23,6 +23,9 @@ const DOMAIN_AND_SAGA_TABLES = [
   'composed_artifact',
   'shpt',
   'bank_composition_config',
+  // spec 09 courier channels
+  'shpt_status_event',
+  'courier_status_exception',
 ] as const
 
 async function columns(table: string): Promise<string[]> {
@@ -155,11 +158,11 @@ describe('fulfillment schema (spec 07 domain + saga + quarantine, spec 08 outbou
     }
   })
 
-  it('only pending_pool_entry/batch/batch_pool/composed_artifact/shpt have the program_id write-gate; the rest are permissive', async () => {
+  it('only pending_pool_entry/batch/batch_pool/composed_artifact/shpt/shpt_status_event have the program_id write-gate; the rest are permissive', async () => {
     const pols = await db.$queryRaw<{ tablename: string; qual: string | null; with_check: string | null }[]>`
       SELECT tablename, qual, with_check FROM pg_policies WHERE schemaname = 'fulfillment'
     `
-    for (const t of ['pending_pool_entry', 'batch', 'batch_pool', 'composed_artifact', 'shpt']) {
+    for (const t of ['pending_pool_entry', 'batch', 'batch_pool', 'composed_artifact', 'shpt', 'shpt_status_event']) {
       const p = pols.find((x) => x.tablename === t)
       expect(p, `${t} policy missing`).toBeTruthy()
       expect(p!.with_check ?? '', `${t} must have the program_id write-gate`).toContain(
@@ -176,11 +179,51 @@ describe('fulfillment schema (spec 07 domain + saga + quarantine, spec 08 outbou
       'outbox',
       'inbox',
       'bank_composition_config',
+      'courier_status_exception',
     ]) {
       const p = pols.find((x) => x.tablename === t)
       expect(p, `${t} policy missing`).toBeTruthy()
       expect(p!.with_check ?? 'true', `${t} must be permissive in v1`).not.toContain('current_setting')
     }
+  })
+
+  it('vndr carries the courier_code lookup key with a UNIQUE index', async () => {
+    const cols = await columns('vndr')
+    expect(cols).toContain('courier_code')
+    const idx = await db.$queryRaw<{ indexdef: string }[]>`
+      SELECT indexdef FROM pg_indexes WHERE schemaname = 'fulfillment' AND tablename = 'vndr'
+    `
+    expect(idx.some((i) => /UNIQUE/.test(i.indexdef) && /courier_code/.test(i.indexdef))).toBe(true)
+  })
+
+  it('shpt carries the carrier-status denormalization columns', async () => {
+    const cols = await columns('shpt')
+    expect(cols).toContain('status_at')
+    expect(cols).toContain('status_source')
+  })
+
+  it('shpt_status_event is the append-only trail with no updated_at', async () => {
+    const cols = await columns('shpt_status_event')
+    for (const c of ['shpt_id', 'status', 'courier_timestamp', 'status_source', 'source_ref', 'received_at', 'trace_id', 'program_id']) {
+      expect(cols, `${c} missing`).toContain(c)
+    }
+    expect(cols).not.toContain('updated_at')
+  })
+
+  it('courier_status_exception carries the subject and channel, and tolerates an unknown program', async () => {
+    const cols = await columns('courier_status_exception')
+    for (const c of ['vndr_id', 'subject_ref', 'channel', 'reason_code']) {
+      expect(cols, `${c} missing`).toContain(c)
+    }
+    expect(cols).not.toContain('program_id')
+    const nn = await db.$queryRaw<{ column_name: string; is_nullable: string }[]>`
+      SELECT column_name, is_nullable FROM information_schema.columns
+      WHERE table_schema = 'fulfillment' AND table_name = 'courier_status_exception'
+    `
+    const byName = new Map(nn.map((r) => [r.column_name, r.is_nullable]))
+    expect(byName.get('file_id')).toBe('YES')
+    expect(byName.get('row_ref')).toBe('YES')
+    expect(byName.get('reason_code')).toBe('NO')
   })
 })
 

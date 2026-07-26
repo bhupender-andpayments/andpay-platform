@@ -57,6 +57,7 @@ model Vendor {
   type        String // MANUFACTURER | PRINT | COURIER
   displayName String   @map("display_name")
   status      String // ACTIVE | SUSPENDED
+  courierCode String?  @unique @map("courier_code")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -274,7 +275,9 @@ model Shpt {
   id             String   @id @db.Uuid
   awb            String   @unique
   courierPartner String?  @map("courier_partner") @db.Uuid
-  status         String // DISPATCHED_BY_VENDOR | IN_TRANSIT | OUT_FOR_DELIVERY | DELIVERED | FAILED (step 8)
+  status         String // DISPATCHED_BY_VENDOR | PICKED_UP | IN_TRANSIT | OUT_FOR_DELIVERY | DELIVERED | FAILED | RETURNED
+  statusAt       DateTime? @map("status_at") @db.Timestamptz(6)
+  statusSource   String?   @map("status_source") // WEBHOOK | BATCH_FILE | OPS_MANUAL
   dispatchDate   DateTime @map("dispatch_date") @db.Timestamptz(6)
   tenantId       String   @map("tenant_id") @db.Uuid
   programId      String   @map("program_id") @db.Uuid
@@ -302,4 +305,41 @@ model BankCompositionConfig {
 
   @@unique([tenantId, bankCode])
   @@map("bank_composition_config")
+}
+
+/// Append-only carrier-status trail (BRD FR-06: each update is timestamped and
+/// stored). NEVER mutated; a correction is a new forward event (107a). The
+/// latest status is denormalized onto shpt.status/status_at under
+/// last-status-wins (C3); shpt_ stays the sole owner (T2). PROGRAM-SCOPED.
+/// courier_timestamp is REPORTED data; received_at is platform time (S22).
+model ShptStatusEvent {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shptId           String   @map("shpt_id") @db.Uuid
+  programId        String   @map("program_id") @db.Uuid
+  status           String
+  courierTimestamp DateTime @map("courier_timestamp") @db.Timestamptz(6)
+  statusSource     String   @map("status_source")
+  sourceRef        String   @map("source_ref")
+  receivedAt       DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+  traceId          String   @map("trace_id")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([shptId])
+  @@map("shpt_status_event")
+}
+
+/// Courier-channel quarantine (103d), sibling of intake_exception. An unknown
+/// AWB or courier is recorded here, NEVER auto-created. Carries no program_id:
+/// an unresolved AWB has no Program yet. file_id/row_ref are null on webhook.
+model CourierStatusException {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  vndrId     String   @map("vndr_id") @db.Uuid
+  channel    String // BATCH_FILE | WEBHOOK
+  subjectRef String   @map("subject_ref")
+  fileId     String?  @map("file_id")
+  rowRef     String?  @map("row_ref")
+  reasonCode String   @map("reason_code")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("courier_status_exception")
 }
