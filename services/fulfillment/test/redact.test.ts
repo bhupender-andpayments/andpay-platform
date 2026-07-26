@@ -4,6 +4,7 @@ import {
   redactUnitForLog,
   redactShipToAmendForLog,
   redactPackageLineForLog,
+  redactCourierStatusForLog,
 } from '../src/redact.js'
 
 describe('redactPoolEntryForLog (S7/S4)', () => {
@@ -126,5 +127,24 @@ describe('redactPackageLineForLog (S7, D104)', () => {
     expect(log.asgnId).toBe('asgn_w')
     expect(log.artifactRefs).toEqual(['s3://ap-south-1/fulfillment/artifacts/btch_1/asgn_w/SOUNDBOX_IMG'])
     expect(Object.keys(log).sort()).toEqual(['artifactRefs', 'asgnId'])
+  })
+})
+
+describe('redactCourierStatusForLog (S7)', () => {
+  it('keeps ids/status/timestamp only and drops any shipping PII (S7/5c)', () => {
+    const out = redactCourierStatusForLog({
+      shptId: 'shpt_x', awb: 'AWB1', status: 'DELIVERED', statusSource: 'WEBHOOK',
+      courierTimestamp: '2026-07-26T10:00:00.000Z', traceId: 't',
+      // planted PII that must never reach a log line
+      shipToAddress: '221B Baker Street', contactName: 'Jane Roe', mobile: '9998887777',
+    } as never)
+    expect(out).toEqual({
+      shptId: 'shpt_x', awb: 'AWB1', status: 'DELIVERED', statusSource: 'WEBHOOK',
+      courierTimestamp: '2026-07-26T10:00:00.000Z', traceId: 't',
+    })
+    const json = JSON.stringify(out)
+    expect(json).not.toContain('Baker')
+    expect(json).not.toContain('Jane')
+    expect(json).not.toContain('9998887777')
   })
 })

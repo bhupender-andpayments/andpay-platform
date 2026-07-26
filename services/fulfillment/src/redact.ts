@@ -108,3 +108,36 @@ export function redactPackageLineForLog(line: {
     artifactRefs: line.artifactRefs,
   }
 }
+
+// A courier carrier-status carries no PII by construction (ids, an AWB tracking
+// number, a status token, a timestamp). This redactor is the allow-list that
+// keeps it that way: any shipping PII a future caller might pass is dropped by
+// omission before the first log line (S7/S4/5c).
+export interface LoggableCourierStatus {
+  shptId?: string
+  awb: string
+  status: string
+  statusSource: string
+  courierTimestamp: string
+  traceId: string
+}
+export function redactCourierStatusForLog(s: {
+  awb: string
+  status: string
+  statusSource: string
+  courierTimestamp: string
+  traceId: string
+  shptId?: string
+  shipToAddress?: string
+  contactName?: string
+  mobile?: string
+}): LoggableCourierStatus {
+  return {
+    ...(s.shptId !== undefined ? { shptId: s.shptId } : {}),
+    awb: s.awb,
+    status: s.status,
+    statusSource: s.statusSource,
+    courierTimestamp: s.courierTimestamp,
+    traceId: s.traceId,
+  }
+}
