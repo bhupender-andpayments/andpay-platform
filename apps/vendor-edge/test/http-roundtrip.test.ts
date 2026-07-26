@@ -349,6 +349,66 @@ describe('oversized multipart at the edge (authenticated-DoS guard on /vendor/in
   })
 })
 
+describe('schema-invalid at the edge (D5.2: HTTP 400 PLUS an audited schema_invalid DENY)', () => {
+  it('a malformed /vendor/intake sheet (missing required "rows") returns 400 and leaves exactly ONE schema_invalid DENY authz.audit row, no Unit created', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const secret = 'apsk_test_manufacturer-schema-invalid-secret-jjjj'
+    await seedCredential({
+      apiId: newId('api'),
+      secret,
+      vndrId: vndrWire,
+      workQueue: 'wq-manufacturer',
+      permissionSetRef: 'vset:vendor_manufacturer',
+    })
+
+    // Missing the required "rows" field entirely: parseIntakeSheet throws
+    // EdgeParseError (S8) BEFORE any authorize is attempted, so the request
+    // is already authenticated (req.claim set by the guard) but never reaches
+    // authorizeAndAudit -- the D5.2 schema_invalid DENY is the controller's
+    // own audit emission, not authorizeAndAudit's.
+    const malformed = { fileId: 'file-schema-invalid-1', vndrId: vndrWire, workQueue: 'wq-manufacturer' }
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/intake')
+      .set('Authorization', bearer(secret))
+      .attach('file', Buffer.from(JSON.stringify(malformed), 'utf8'), 'sheet.json')
+    expect(res.status).toBe(400)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.operation).toBe('sheet:submit-intake')
+    expect(rows[0]!.reasonCode).toBe('schema_invalid')
+
+    const unitCount = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
+    expect(Number(unitCount[0]!.n)).toBe(0)
+  })
+
+  it('a malformed /vendor/courier/status webhook body (a top-level array, not an object) returns 400 and leaves exactly ONE schema_invalid DENY authz.audit row', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const secret = 'apsk_test_courier-schema-invalid-secret-kkkk'
+    await seedCredential({
+      apiId: newId('api'),
+      secret,
+      vndrId: vndrWire,
+      workQueue: 'courier-status',
+      permissionSetRef: 'vset:vendor_courier',
+    })
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/courier/status')
+      .set('Authorization', bearer(secret))
+      .send([1, 2, 3])
+    expect(res.status).toBe(400)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.operation).toBe('shipment:submit-status')
+    expect(rows[0]!.reasonCode).toBe('schema_invalid')
+  })
+})
+
 describe('cross-vendor scope-denied at the edge: /vendor/intake and /vendor/return', () => {
   it('a cross-vendor intake sheet returns 403 with a scope-denied DENY audited, and no Unit is created', async () => {
     const vndrAWire = fromUuid('vndr', toUuid(newId('vndr')))

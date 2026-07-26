@@ -20,9 +20,24 @@ function assertOnlyKeys(obj: Record<string, unknown>, allowed: readonly string[]
   }
 }
 
+// m1 defense-in-depth: a raw control byte (charCode < 0x20, which includes
+// the 0x1e/0x1f bytes the 6e hash-chain canonicalization used to join on)
+// can never enter an id/label field here, so it can never ride into an
+// authz-audit record's resourceIds either. This is belt-and-suspenders on
+// top of the chain's own injective JSON canonicalization (packages/audit/src/chain.ts):
+// even if some other future caller joined fields with a delimiter again, an
+// untrusted sheet could no longer smuggle that exact byte through the edge.
+export function hasControlChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) < 0x20) return true
+  }
+  return false
+}
+
 function requireString(obj: Record<string, unknown>, field: string, context: string): string {
   const v = obj[field]
   if (typeof v !== 'string' || v.length === 0) throw new EdgeParseError(`${context}: missing or invalid "${field}"`)
+  if (hasControlChar(v)) throw new EdgeParseError(`${context}: "${field}" contains a control character`)
   return v
 }
 

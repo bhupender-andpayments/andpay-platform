@@ -14,19 +14,33 @@ import { authorizeAndAudit } from '@andpay/edge'
 import { ingestStatusWebhook, loadFulfillmentConfig, emitVendorAuthzAudit } from '@andpay/fulfillment-service'
 import { EdgeCredentialGuard } from './guard.js'
 import { EDGE_DEPS, type EdgeDeps } from './deps.js'
-import { parseWebhookBody, EdgeParseError } from './sheet-parse.js'
+import { parseWebhookBody, hasControlChar, EdgeParseError } from './sheet-parse.js'
 import type { EdgeRequest } from './request.js'
+
+const WEBHOOK_OPERATION = 'shipment:submit-status'
 
 // A parsed webhook body's vndrId/workQueue are read loosely here (no throw on
 // a missing/mistyped field): the real schema gate for the webhook shape is
 // the handler's own per-courier mapper (status-webhook.ts), never duplicated
 // at the edge. An absent field here simply cannot match the claim's own
-// scope, so authorize denies on scope-denied; it never crashes.
+// scope, so authorize denies on scope-denied; it never crashes. The ONE
+// exception (m1 defense-in-depth) is a raw control byte in either field:
+// that DOES throw EdgeParseError, so it can never ride through to the
+// resourceIds this route hands authorizeAndAudit (and from there, the 6e
+// audit record).
 function readVendorFields(raw: unknown): { vndrId?: string; workQueue?: string } {
   const r = raw as Record<string, unknown>
+  const vndrId = r['vndrId']
+  const workQueue = r['workQueue']
+  if (typeof vndrId === 'string' && hasControlChar(vndrId)) {
+    throw new EdgeParseError('webhook body: "vndrId" contains a control character')
+  }
+  if (typeof workQueue === 'string' && hasControlChar(workQueue)) {
+    throw new EdgeParseError('webhook body: "workQueue" contains a control character')
+  }
   return {
-    vndrId: typeof r['vndrId'] === 'string' ? r['vndrId'] : undefined,
-    workQueue: typeof r['workQueue'] === 'string' ? r['workQueue'] : undefined,
+    vndrId: typeof vndrId === 'string' ? vndrId : undefined,
+    workQueue: typeof workQueue === 'string' ? workQueue : undefined,
   }
 }
 
@@ -46,22 +60,45 @@ export class CourierStatusController {
     const traceId = randomUUID()
 
     let raw: unknown
+    let vndrId: string | undefined
+    let workQueue: string | undefined
     try {
       raw = parseWebhookBody(body)
+      ;({ vndrId, workQueue } = readVendorFields(raw))
     } catch (err) {
-      if (err instanceof EdgeParseError) throw new BadRequestException(err.message)
+      if (err instanceof EdgeParseError) {
+        await this.auditSchemaInvalid(req, traceId)
+        throw new BadRequestException(err.message)
+      }
       throw err
     }
 
-    const { vndrId, workQueue } = readVendorFields(raw)
     const decision = await authorizeAndAudit(
       { cfg: loadFulfillmentConfig(), emit: (r) => emitVendorAuthzAudit(this.deps.fulfillmentDb, r), traceId },
       req.claim,
-      'shipment:submit-status',
+      WEBHOOK_OPERATION,
       { vndrId, workQueue },
     )
     if (!decision.allowed) throw new ForbiddenException()
 
     return ingestStatusWebhook(this.deps.fulfillmentDb, raw, req.claim, traceId)
+  }
+
+  // D5.2: a schema-invalid body is HTTP 400 PLUS an audited DENY
+  // (reasonCode 'schema_invalid'), never a silent 400. The request already
+  // authenticated (req.claim is set by the guard before this handler runs),
+  // so the record carries the real principal, not 'unknown'. IDs/enums only,
+  // no body, no secret (S10.5, S7).
+  private async auditSchemaInvalid(req: EdgeRequest, traceId: string): Promise<void> {
+    await emitVendorAuthzAudit(this.deps.fulfillmentDb, {
+      principalId: req.claim.sub,
+      cls: req.claim.cls,
+      operation: WEBHOOK_OPERATION,
+      decision: 'DENY',
+      outcome: 'denied',
+      reasonCode: 'schema_invalid',
+      actorChannel: 'vendor-edge',
+      traceId,
+    })
   }
 }
