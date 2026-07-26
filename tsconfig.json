@@ -2,7 +2,9 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
   },
-  "include": ["packages/*/src", "packages/*/test", "services/*/src", "services/*/test", "test", "*.config.ts"]
+  "include": ["packages/*/src", "packages/*/test", "services/*/src", "services/*/test", "apps/*/src", "apps/*/test", "test", "*.config.ts"]
 }
