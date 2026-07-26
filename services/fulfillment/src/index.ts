@@ -34,3 +34,12 @@ export {
   type ReturnResult,
   ingestReturnSheet,
 } from './return-sheet.js'
+export {
+  advanceShipmentStatus,
+  isKnownStatus,
+  LADDER_RANK,
+  TERMINAL,
+  type StatusUpdate,
+  type StatusSource,
+  type AdvanceOutcome,
+} from './courier-status.js'
