@@ -59,7 +59,7 @@ export async function ingestStatusWebhook(
   if (!decision.allowed) return { rejected: 'unauthorized' }
 
   const vndrUuid = toUuid(ev.vndrId)
-  let outcome: 'advanced' | 'trail_only' | 'quarantined' = 'quarantined'
+  let outcome: 'advanced' | 'trail_only' | 'quarantined' | 'deduped' = 'quarantined'
 
   // STEP C: event idempotency {vendor}|{eventId} via the inbox; a replay of the
   // same event does not run again (deduped).
@@ -106,10 +106,15 @@ export async function ingestStatusWebhook(
         traceId,
       })
       // 'unknown_awb' from advanceShipmentStatus is unreachable here (existence
-      // was already checked above); 'deduped' from the inner per-(shpt,status,ts)
-      // key cannot happen on the first delivery of a fresh eventId, because the
-      // outer {vendor}|{eventId} guard is what handles replay.
-      outcome = adv === 'advanced' ? 'advanced' : adv === 'trail_only' ? 'trail_only' : 'quarantined'
+      // was already checked above). A genuine quarantine only comes from the
+      // explicit quarantine() branches above, which already set outcome =
+      // 'quarantined' and write the exception row. If we reach this line,
+      // advanceShipmentStatus ran and can still return 'deduped' when the
+      // inner per-(shpt,status,ts) key was already claimed by another channel
+      // (e.g. the batch file adapter, or an earlier event with the same
+      // status and exact courierTimestamp); that is a clean no-op, not a
+      // quarantine, so it maps to 'deduped' here, not 'quarantined'.
+      outcome = adv === 'advanced' ? 'advanced' : adv === 'trail_only' ? 'trail_only' : 'deduped'
     })
   })
 

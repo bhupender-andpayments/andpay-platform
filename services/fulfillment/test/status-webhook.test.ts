@@ -98,6 +98,30 @@ describe('generic authenticated courier webhook handler', () => {
     expect(await factCount()).toBe(1)
   })
 
+  it('maps a cross-channel inner-transition dedup to deduped, not quarantined (I1 fix)', async () => {
+    const { vndrWire, claim } = await seedCourier()
+    await seedShipment('AWB1', toUuid(vndrWire))
+    const ts = '2026-07-26T10:00:00.000Z'
+    const first = await ingestStatusWebhook(db, {
+      vndrId: vndrWire, workQueue: 'courier-status', eventId: 'e-a',
+      awb: 'AWB1', status: 'PICKED_UP', courierTimestamp: ts,
+    }, claim, 't')
+    expect(first.outcome).toBe('advanced')
+
+    // Same awb + same status + same courierTimestamp, but a FRESH eventId, so
+    // the outer {vendor}|{eventId} inbox guard does NOT dedup; only the inner
+    // per-(shpt,status,ts) key in advanceShipmentStatus does.
+    const second = await ingestStatusWebhook(db, {
+      vndrId: vndrWire, workQueue: 'courier-status', eventId: 'e-b',
+      awb: 'AWB1', status: 'PICKED_UP', courierTimestamp: ts,
+    }, claim, 't')
+    expect(second.outcome).toBe('deduped')
+    expect(second.outcome).not.toBe('quarantined')
+    expect(await exceptions()).toHaveLength(0)
+    expect(await trailCount()).toBe(1)
+    expect(await factCount()).toBe(1)
+  })
+
   it('rejects a cross-vendor webhook (unauthorized, zero writes)', async () => {
     const { vndrWire } = await seedCourier()
     await seedShipment('AWB1', toUuid(vndrWire))
