@@ -103,6 +103,16 @@ describe('6e authz_audit tamper-evident hash-chain (task 2)', () => {
     expect(result.length).toBe(1)
   })
 
+  it('a record with a FRACTIONAL authTime round-trips exactly (no false brokenAtSeq from truncation)', async () => {
+    await db.$transaction((tx) => appendAuthzAudit(tx, rec({ operation: 'op-before' }), 'evt-frac-before'))
+    await db.$transaction((tx) =>
+      appendAuthzAudit(tx, rec({ operation: 'op-fractional', authTime: 1_700_000_000.75 }), 'evt-frac-mid'),
+    )
+    await db.$transaction((tx) => appendAuthzAudit(tx, rec({ operation: 'op-after' }), 'evt-frac-after'))
+    const result = await verifyAuthzChain(db)
+    expect(result).toEqual({ ok: true, length: 3 })
+  })
+
   it('two overlapping appenders serialize via the advisory lock: no duplicate seq, no forked chain', async () => {
     const results = await Promise.all([
       db.$transaction((tx) => appendAuthzAudit(tx, rec({ operation: 'concurrent-a' }), 'evt-conc-a')),

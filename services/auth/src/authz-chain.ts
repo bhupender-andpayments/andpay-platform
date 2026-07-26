@@ -54,12 +54,24 @@ export async function appendAuthzAudit(
     // Serialize against every other appender, even on an empty table.
     await chainTx.$executeRaw`SELECT pg_advisory_xact_lock(${CHAIN_LOCK_KEY})`
 
+    // WHERE seq IS NOT NULL makes the "no NULL-seq head" invariant explicit
+    // rather than relying on Postgres's default NULL-sorts-last behavior.
+    // appendAuthzAudit is the sole writer and always sets seq, so this is
+    // defensive and changes no behavior.
     const head = await chainTx.$queryRaw<HeadRow[]>`
-      SELECT seq, entry_hash FROM authz_audit ORDER BY seq DESC LIMIT 1
+      SELECT seq, entry_hash FROM authz_audit WHERE seq IS NOT NULL ORDER BY seq DESC LIMIT 1
     `
     const prev = head.length === 0 ? GENESIS_PREV_HASH : head[0]!.entry_hash
     seq = head.length === 0 ? 1 : Number(head[0]!.seq) + 1
-    const entryHash = computeEntryHash(prev, seq, record)
+    // authTime is normalized to integer epoch seconds so the hash round-trips
+    // exactly: it is stored via to_timestamp() into a TIMESTAMPTZ and read
+    // back via extract(epoch from auth_time)::bigint, which truncates any
+    // fractional seconds. Hashing the pre-truncated value would make
+    // verifyAuthzChain recompute a different hash than the one stored here,
+    // reporting a false brokenAtSeq on an untampered row.
+    const normalized =
+      record.authTime === undefined ? record : { ...record, authTime: Math.trunc(record.authTime) }
+    const entryHash = computeEntryHash(prev, seq, normalized)
     const id = randomUUID()
     const resourceIds = record.resourceIds ?? []
 
@@ -72,7 +84,7 @@ export async function appendAuthzAudit(
         ${id}::uuid, ${record.principalId}, ${record.cls}, ${record.operation}, ${record.decision},
         ${resourceIds}, ${record.outcome},
         ${record.reasonCode ?? null}, ${record.acr ?? null},
-        to_timestamp(${record.authTime ?? null}),
+        to_timestamp(${normalized.authTime ?? null}),
         ${record.asserterSvid ?? null}, ${record.actorChannel ?? null}, ${record.traceId},
         now(), ${seq}, ${prev}, ${entryHash}
       )
