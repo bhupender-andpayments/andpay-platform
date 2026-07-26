@@ -56,6 +56,18 @@ importers:
 
   apps/vendor-edge:
     dependencies:
+      '@andpay/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
+      '@andpay/authz':
+        specifier: workspace:*
+        version: link:../../packages/authz
+      '@andpay/edge':
+        specifier: workspace:*
+        version: link:../../packages/edge
+      '@andpay/fulfillment-service':
+        specifier: workspace:*
+        version: link:../../services/fulfillment
       '@nestjs/common':
         specifier: ^11.0.0
         version: 11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2)
