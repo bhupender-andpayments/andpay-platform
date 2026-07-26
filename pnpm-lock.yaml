@@ -8,12 +8,18 @@ importers:
 
   .:
     devDependencies:
+      '@andpay/audit':
+        specifier: workspace:*
+        version: link:packages/audit
       '@andpay/auth-service':
         specifier: workspace:*
         version: link:services/auth
       '@andpay/authz':
         specifier: workspace:*
         version: link:packages/authz
+      '@andpay/edge':
+        specifier: workspace:*
+        version: link:packages/edge
       '@andpay/envelope':
         specifier: workspace:*
         version: link:packages/envelope

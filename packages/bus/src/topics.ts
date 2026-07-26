@@ -37,6 +37,15 @@ export const SOUNDBOX_TOPICS: TopicSpec[] = [
   // lifecycle fact, so it is log-compacted (identity compacted-topic intent)
   // rather than retention-bounded. The latest value per apiId is kept forever.
   { name: 'cfg.auth.credential.v1', partitions: 3, config: { 'cleanup.policy': 'compact' } },
+  // The dedicated 6e authz-audit channel (spec 10a, task 8, D121): carries
+  // every authorization decision, Auth's own (emitAuthzAudit) and every
+  // context edge's (e.g. fulfillment's emitVendorAuthzAudit), to the ONE
+  // Auth-side consumer (consumeAuthzAudit) that appends it to the
+  // tamper-evident hash-chain. AUTH-INTERNAL, never a broadcast fct.* fact
+  // (audit.ts). Kafka is transport only, not the system of record (the
+  // append-only authz_audit table is), so a bounded retention sized to the
+  // same E9 rebuild/redelivery window as the fact topics is sufficient.
+  { name: 'authz.audit', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
 ]
 
 /** Derive the per-consumer retry and DLQ topics for a base topic (E7). */

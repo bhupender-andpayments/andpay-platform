@@ -164,3 +164,91 @@ describe('@andpay/authz secret-free DO-NOT (spec 04 REPO SHAPE)', () => {
     }
   })
 })
+
+// The T4 no-central-PDP DO-NOT (spec 10a, checks 2/4): apps/vendor-edge
+// resolves a presented credential LOCALLY via @andpay/edge/@andpay/authz and
+// fulfillment's own credential_projection; it NEVER calls Auth on the request
+// path (there is no PDP round trip; the edge IS the PDP, decentralized). A
+// static net over its source, no database or process needed: neither the
+// auth-service package nor a raw services/auth path may appear anywhere under
+// apps/vendor-edge/src.
+//
+// Plant-and-remove recipe (to prove this guard actually bites, rather than
+// being vacuously true): temporarily add a line such as
+//   import { resolveVendorCredential } from '@andpay/auth-service'
+// (or simply a comment containing the literal string 'services/auth') to any
+// file under apps/vendor-edge/src, e.g. apps/vendor-edge/src/guard.ts. Run
+// `pnpm exec vitest run test/architecture.test.ts`: this describe block
+// fails. Remove the planted line: it passes again.
+describe('no-central-PDP DO-NOT: apps/vendor-edge never calls Auth on the request path (T4, spec 10a)', () => {
+  const edgeAppFiles = filesUnder(join('apps', 'vendor-edge', 'src'))
+    .filter((p) => p.endsWith('.ts'))
+    .map((file) => ({ file, text: readFileSync(join(root, file), 'utf8') }))
+
+  it('has files to check', () => {
+    expect(edgeAppFiles.length).toBeGreaterThan(0)
+  })
+
+  it('no file under apps/vendor-edge/src references @andpay/auth-service or services/auth', () => {
+    for (const { file, text } of edgeAppFiles) {
+      expect(text.includes('@andpay/auth-service'), `${file} must not import @andpay/auth-service`).toBe(false)
+      expect(text.includes('services/auth'), `${file} must not reference services/auth`).toBe(false)
+    }
+  })
+})
+
+// The @andpay/edge framework-free DO-NOT (spec 10a REPO SHAPE), mirroring the
+// @andpay/authz secret-free guard above: @andpay/edge is the framework-free
+// local-verify core (its own package.json description: "No NestJS, no DB, no
+// HTTP; the HTTP app wires those"). A static net over its source: no NestJS
+// import, no Prisma client (real or generated), and no reference to any
+// services/ path (it must never import a context service directly, C4/T4).
+describe('@andpay/edge framework-free DO-NOT (spec 10a REPO SHAPE)', () => {
+  const edgePkgFiles = filesUnder(join('packages', 'edge', 'src'))
+    .filter((p) => p.endsWith('.ts'))
+    .map((file) => ({ file, text: readFileSync(join(root, file), 'utf8') }))
+
+  it('has files to check', () => {
+    expect(edgePkgFiles.length).toBeGreaterThan(0)
+  })
+
+  it('imports no NestJS and no Prisma client (real or generated), and references no services/ path', () => {
+    for (const { file, text } of edgePkgFiles) {
+      expect(text.includes('@nestjs'), `${file} must not import NestJS`).toBe(false)
+      expect(text.includes('@prisma/client'), `${file} must not import a db client`).toBe(false)
+      expect(/generated\/client/.test(text), `${file} must not import a generated client`).toBe(false)
+      expect(text.includes('services/'), `${file} must not reference services/`).toBe(false)
+    }
+  })
+})
+
+// S20 no-money static guard (check 7), migration-source level: runs with no
+// database, grepping the actual migration SQL the two migrations THIS spec
+// (10a) added (the auth authz_audit hash-chain columns, the fulfillment
+// credential_projection table) for a money-surface CREATE TABLE. The live-DB
+// no-money checks already exist per-context (services/fulfillment/test/
+// schema.test.ts, services/fulfillment/test/courier-checks.test.ts); this is
+// the static, migration-source counterpart scoped to the two migrations this
+// spec added (S20: the edge moves no money).
+describe('S20 no-money static guard: the two spec-10a migrations carry no money-surface table (check 7)', () => {
+  const spec10aMigrations = [
+    join('services', 'auth', 'prisma', 'migrations', '20260726000000_authz_audit_hash_chain', 'migration.sql'),
+    join('services', 'fulfillment', 'prisma', 'migrations', '20260726100000_credential_projection', 'migration.sql'),
+  ]
+
+  it('has migrations to check', () => {
+    for (const rel of spec10aMigrations) {
+      expect(existsSync(join(root, rel)), `${rel} missing`).toBe(true)
+    }
+  })
+
+  it('neither migration creates a ledger, accounts, entries, or posting_keys table', () => {
+    for (const rel of spec10aMigrations) {
+      const text = readFileSync(join(root, rel), 'utf8')
+      for (const forbidden of ['ledger', 'accounts', 'entries', 'posting_keys']) {
+        const pattern = new RegExp(`CREATE TABLE\\s+"?${forbidden}"?\\b`, 'i')
+        expect(pattern.test(text), `${rel} must not create a ${forbidden} table`).toBe(false)
+      }
+    }
+  })
+})

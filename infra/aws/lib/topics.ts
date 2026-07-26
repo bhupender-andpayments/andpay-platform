@@ -234,6 +234,57 @@ export const FACT_SCHEMAS: FactSchema[] = [
       required: ['shptId', 'awb', 'status'],
     },
   },
+  {
+    // The auth-config channel (spec 10a, 5c, check 1): a compacted keyed
+    // projection feed, not a lifecycle fact. Carries the class-6 peppered
+    // hash and its scope, the ONLY carrier of that verification material
+    // (useless without the runtime-injected pepper, 5c). IDs, enums, and the
+    // peppered hash ONLY, never a raw secret or PII (S7).
+    name: 'cfg.auth.credential.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        apiId: { type: 'string' },
+        pepperedHash: { type: 'string' },
+        vndrId: { type: 'string' },
+        workQueue: { type: 'string' },
+        permissionSetRef: { type: 'string' },
+        mode: { type: 'string' },
+        status: { type: 'string' },
+        epoch: { type: 'integer' },
+      },
+      required: ['apiId', 'pepperedHash', 'status'],
+    },
+  },
+  {
+    // The dedicated 6e authz-audit channel (spec 10a, D121): carries every
+    // authorization decision (auth's own, and every context edge's) to the
+    // ONE Auth-side appender for the tamper-evident hash-chain. AUTH-INTERNAL
+    // (never a broadcast fct.* fact): IDs and enums only, never PII or a
+    // secret (S7/S10.5).
+    name: 'authz.audit',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        principalId: { type: 'string' },
+        cls: { type: 'integer' },
+        operation: { type: 'string' },
+        decision: { type: 'string' },
+        outcome: { type: 'string' },
+        resourceIds: { type: 'array', items: { type: 'string' } },
+        reasonCode: { type: 'string' },
+        acr: { type: 'string' },
+        authTime: { type: 'integer' },
+        asserterSvid: { type: 'string' },
+        actorChannel: { type: 'string' },
+        traceId: { type: 'string' },
+      },
+      required: ['id', 'principalId', 'cls', 'operation', 'decision', 'outcome', 'traceId'],
+    },
+  },
 ]
 
 // Kafka topics to create on MSK (config-as-code; applied by the topic
@@ -254,4 +305,6 @@ export const TOPIC_NAMES = [
   'fct.fulfillment.unit.print_for.v1',
   'fct.fulfillment.shipment.v1',
   'cmd.fulfillment.batch.v1',
+  'cfg.auth.credential.v1',
+  'authz.audit',
 ]

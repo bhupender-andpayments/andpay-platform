@@ -30,4 +30,18 @@ describe('@andpay/bus SOUNDBOX_TOPICS (spec 05 identity facts)', () => {
       expect(names).toContain(t)
     }
   })
+
+  it('provisions cfg.auth.credential.v1, the auth-config channel, as a compacted topic (spec 10a, 5c, check 1)', () => {
+    expect(names).toContain('cfg.auth.credential.v1')
+    const topic = SOUNDBOX_TOPICS.find((t) => t.name === 'cfg.auth.credential.v1')
+    expect(topic).toBeDefined()
+    expect(topic!.config?.['cleanup.policy']).toBe('compact')
+  })
+
+  it('provisions authz.audit, the dedicated 6e audit channel, as its own topic (spec 10a, task 8, check 2)', () => {
+    expect(names).toContain('authz.audit')
+    const topic = SOUNDBOX_TOPICS.find((t) => t.name === 'authz.audit')
+    expect(topic).toBeDefined()
+    expect(topic!.partitions).toBeGreaterThan(0)
+  })
 })
