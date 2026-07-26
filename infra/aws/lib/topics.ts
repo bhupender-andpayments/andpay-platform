@@ -229,6 +229,7 @@ export const FACT_SCHEMAS: FactSchema[] = [
         shptId: { type: 'string' }, awb: { type: 'string' }, courierPartner: { type: 'string' },
         dispatchDate: { type: 'string' }, unitIds: { type: 'array', items: { type: 'string' } },
         status: { type: 'string' },
+        courierTimestamp: { type: 'string' }, statusSource: { type: 'string' },
       },
       required: ['shptId', 'awb', 'status'],
     },

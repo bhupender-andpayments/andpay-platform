@@ -43,13 +43,21 @@ export interface PrintForFactPayload {
   shptId: string
   awb: string
 }
+// One topic carries BOTH the spec-08 birth fact and the spec-09 carrier
+// transitions. dispatchDate and unitIds are birth-only, so they are OPTIONAL:
+// the REGISTERED wire schema already omits both from `required`, so this
+// relaxation makes TypeScript match the ratified wire rather than change it
+// (no v2, D120). courierTimestamp and statusSource are transition-only.
+// status is the discriminator: DISPATCHED_BY_VENDOR is the birth.
 export interface ShipmentFactPayload {
   shptId: string
   awb: string
-  courierPartner?: string // vndr_ of type COURIER, absent until step-8 courier master
-  dispatchDate: string
-  unitIds: string[]
-  status: string // DISPATCHED_BY_VENDOR at birth
+  courierPartner?: string // vndr_ of type COURIER
+  dispatchDate?: string
+  unitIds?: string[]
+  status: string
+  courierTimestamp?: string
+  statusSource?: string // WEBHOOK | BATCH_FILE | OPS_MANUAL
 }
 
 interface FactInput<T> {

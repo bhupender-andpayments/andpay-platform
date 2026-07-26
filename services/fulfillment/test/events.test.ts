@@ -16,6 +16,16 @@ import {
   type PrintForFactPayload,
   type ShipmentFactPayload,
 } from '../src/events.js'
+import { FULFILLMENT_FACT_SCHEMAS } from '../src/fact-schemas.js'
+
+// Local schema-shape narrowing, mirrors services/tms/test/fact-schemas.test.ts.
+// FULFILLMENT_FACT_SCHEMAS is exported as Record<string, object> so the
+// schema-registry map can hold heterogeneous JSON Schemas; narrowing to the
+// flat shape it actually uses is confined to this test file.
+interface JsonSchemaShape {
+  properties: Record<string, { type: string; items?: { type: string } }>
+  required: string[]
+}
 
 describe('fulfillment fact envelopes (S7 ids-and-minimal)', () => {
   it('unit fact: type, version, subject (unitId), dedupKey, traceId, and payload passthrough', () => {
@@ -157,5 +167,49 @@ describe('fulfillment fact envelopes (S7 ids-and-minimal)', () => {
     }
     const env = shipmentFactEnvelope({ payload, dedupKey: 'evt-7|fulfillment.shipment', traceId: 'trace-7' })
     expect(env.payload.courierPartner).toBe('vndr_courier_1')
+  })
+
+  it('a courier transition payload needs no unitIds or dispatchDate and validates against the registered schema', () => {
+    const env = shipmentFactEnvelope({
+      payload: {
+        shptId: 'shpt_01hp000000000000000000000a',
+        awb: 'AWB123456',
+        courierPartner: 'vndr_01hp000000000000000000000b',
+        status: 'PICKED_UP',
+        courierTimestamp: '2026-07-25T10:00:00.000Z',
+        statusSource: 'WEBHOOK',
+      },
+      dedupKey: 'shpt_01hp000000000000000000000a|PICKED_UP|2026-07-25T10:00:00.000Z',
+      traceId: 'trace-courier-1',
+    })
+    expect(env.payload.status).toBe('PICKED_UP')
+    expect(env.payload.unitIds).toBeUndefined()
+    const schema = FULFILLMENT_FACT_SCHEMAS['fct.fulfillment.shipment.v1'] as JsonSchemaShape
+    expect(schema.required).toEqual(['shptId', 'awb', 'status'])
+    for (const k of Object.keys(env.payload)) {
+      expect(Object.keys(schema.properties), `${k} not declared`).toContain(k)
+    }
+  })
+
+  it('the pre-extension birth payload still validates unchanged (D120 FULL compat)', () => {
+    const env = shipmentFactEnvelope({
+      payload: {
+        shptId: 'shpt_01hp000000000000000000000a',
+        awb: 'AWB123456',
+        dispatchDate: '2026-07-25T09:00:00.000Z',
+        unitIds: ['unit_01hp000000000000000000000c'],
+        status: 'DELIVERED',
+      },
+      dedupKey: 'shpt_01hp000000000000000000000a',
+      traceId: 'trace-birth-1',
+    })
+    expect(env.version).toBe(1)
+    expect(env.payload.unitIds).toHaveLength(1)
+  })
+
+  it('the extension adds no new status token to the wire contract (open string, no v2)', () => {
+    const schema = FULFILLMENT_FACT_SCHEMAS['fct.fulfillment.shipment.v1'] as JsonSchemaShape
+    expect(schema.properties.status).toEqual({ type: 'string' })
+    expect(Object.keys(FULFILLMENT_FACT_SCHEMAS)).not.toContain('fct.fulfillment.shipment.v2')
   })
 })
