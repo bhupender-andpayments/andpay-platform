@@ -867,4 +867,35 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     expect(res.quarantined).toBe(1)
     expect(res.shptIds).toHaveLength(0)
   })
+
+  // Review fix (untested non-COURIER resolver predicate): an ACTIVE vendor of
+  // a DIFFERENT type (PRINT) sharing the code must still be ignored by the
+  // `type = 'COURIER'` clause. The SUSPENDED case above only exercises the
+  // status predicate; this exercises the type predicate, so a future edit
+  // that drops `type = 'COURIER'` from the resolver query would be caught
+  // here (it would otherwise wrongly bind this PRINT vendor as the courier).
+  it('ignores an ACTIVE non-COURIER (PRINT) vendor sharing the code', async () => {
+    const vndrUuid = toUuid(newId('vndr'))
+    await db.$executeRaw`
+      INSERT INTO vndr (id, type, display_name, status, courier_code, updated_at)
+      VALUES (${vndrUuid}::uuid, 'PRINT', 'Print Co', 'ACTIVE', 'PRINTCO', now())
+    `
+    const sheet = await buildValidSheet({ courierCode: 'PRINTCO' })
+    const claim = classSixClaim(sheet.vndrId, sheet.workQueue)
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-rs-nonCourier')
+    expect(res.rejected).toBeUndefined()
+    expect(res.quarantined).toBe(1)
+    expect(res.shptIds).toHaveLength(0)
+
+    const q = await db.$queryRaw<{ reason_code: string }[]>`
+      SELECT reason_code FROM intake_exception WHERE file_id = ${sheet.fileId}
+    `
+    expect(q.map((x) => x.reason_code)).toContain('unknown_courier')
+
+    // no auto-create (103d): still no COURIER-type vndr carrying this code.
+    const v = await db.$queryRaw<{ c: bigint }[]>`
+      SELECT count(*) AS c FROM vndr WHERE courier_code = 'PRINTCO' AND type = 'COURIER'
+    `
+    expect(Number(v[0]!.c)).toBe(0)
+  })
 })
