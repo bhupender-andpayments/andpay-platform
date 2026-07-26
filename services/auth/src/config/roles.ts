@@ -1,4 +1,4 @@
-import type { RoleConfig } from '@andpay/authz'
+import { humanRole, type RoleConfig } from '@andpay/authz'
 
 // Class-3 role to permission-set and scope-ceiling mapping (D2, 16.1, 4c),
 // config-as-code and CODEOWNERS-gated (S23), resolved LOCALLY at evaluation
@@ -11,24 +11,24 @@ import type { RoleConfig } from '@andpay/authz'
 // its login closed (the soundbox needs no all-tenant super-admin: no posture
 // rail, no M4, no multi-tenant portal). v1's top operating role is admin (AAL2).
 export const ROLES: RoleConfig['roles'] = {
-  support_readonly: {
+  support_readonly: humanRole({
     permissions: ['principal:read'],
     ceiling: 'own-program',
     requiredAcr: 'AAL2',
-  },
-  ops: {
+  }),
+  ops: humanRole({
     permissions: ['principal:read', 'vendor_credential:create', 'vendor_credential:revoke'],
     ceiling: 'own-program',
     requiredAcr: 'AAL2',
-  },
-  admin: {
+  }),
+  admin: humanRole({
     permissions: ['principal:read', 'vendor_credential:create', 'vendor_credential:revoke', 'mfa:enroll', 'mfa:reset'],
     ceiling: 'own-tenant',
     requiredAcr: 'AAL2',
-  },
-  super_admin: {
+  }),
+  super_admin: humanRole({
     permissions: ['*'],
     ceiling: 'all-programs',
     requiredAcr: 'AAL3',
-  },
+  }),
 }

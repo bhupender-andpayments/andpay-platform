@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { authorize, authorizeHuman, validateVendorSet, type RoleConfig, type LeanClaim } from '../src/index.js'
+import { authorize, authorizeHuman, humanRole, validateVendorSet, type RoleConfig, type LeanClaim } from '../src/index.js'
 
 const cfg: RoleConfig = {
   roles: {
-    ops: { permissions: ['vendor_credential:create'], ceiling: 'own-program', requiredAcr: 'AAL2' },
+    ops: humanRole({ permissions: ['vendor_credential:create'], ceiling: 'own-program', requiredAcr: 'AAL2' }),
   },
   vendorSets: {
     vendor_print: { permissions: ['batch:pull-artifacts', 'sheet:submit-return'] },

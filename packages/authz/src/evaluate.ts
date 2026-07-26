@@ -6,28 +6,46 @@ import { AuthzError } from './errors.js'
 // M4 (unrepresentable for an external principal, 5f), KYC attestation (K3),
 // posture/elevation controls, api_keys:manage, and any activation authority
 // (TMS) are STRUCTURALLY outside this universe, not merely ungranted.
-export type ClassSixPermission =
-  | 'batch:pull-artifacts'
-  | 'sheet:submit-intake'
-  | 'sheet:submit-return'
-  // spec 09: the courier submits carrier status for its own shipments. No
-  // artifact pull, so this set is strictly narrower than the print vendor's.
-  | 'shipment:submit-status'
-
-const CLASS_SIX_UNIVERSE: ReadonlySet<string> = new Set<ClassSixPermission>([
+// Single-sourced: the array is the one place the universe is enumerated;
+// the type and the runtime Set are both derived from it, so they cannot drift.
+export const CLASS_SIX_PERMISSIONS = [
   'batch:pull-artifacts',
   'sheet:submit-intake',
   'sheet:submit-return',
+  // spec 09: the courier submits carrier status for its own shipments. No
+  // artifact pull, so this set is strictly narrower than the print vendor's.
   'shipment:submit-status',
-])
+] as const
+
+export type ClassSixPermission = (typeof CLASS_SIX_PERMISSIONS)[number]
+
+const CLASS_SIX_UNIVERSE: ReadonlySet<string> = new Set<ClassSixPermission>(CLASS_SIX_PERMISSIONS)
 
 // The scope ceiling is a maximum reach resolved from the role (4c), never a
 // standing grant floor.
 export type ScopeCeiling = 'all-programs' | 'own-tenant' | 'own-program'
 
+// Phantom brand: never present at runtime (a `declare const`, never
+// assigned), so it costs nothing and JSON.stringify/property reads on a
+// HumanRole are unaffected. Its only job is to make a class-6 permission
+// structurally unrepresentable in RoleConfig.roles (5f/S14: "a type
+// separation, not a convention"): the brand can only be attached by
+// `humanRole()`, so a plain role literal (bypassing the builder) is rejected
+// by the type checker, not merely by the runtime guard in `authorizeHuman`.
+declare const HUMAN_ROLE_BRAND: unique symbol
+export interface HumanRole {
+  permissions: string[]
+  ceiling: ScopeCeiling
+  requiredAcr: Acr
+  readonly [HUMAN_ROLE_BRAND]: true
+}
+
 export interface RoleConfig {
-  // Class-3 human roles to their permission set, ceiling, and required AAL (6a).
-  roles: Record<string, { permissions: string[]; ceiling: ScopeCeiling; requiredAcr: Acr }>
+  // Class-3 human roles to their permission set, ceiling, and required AAL
+  // (6a). Only `humanRole()` can produce a HumanRole (branded), so a class-6
+  // permission is unrepresentable here except by going through the builder,
+  // which itself rejects class-6 literals at the call site (HumanRoleInput).
+  roles: Record<string, HumanRole>
   // Class-6 vendor sets; permissions validated against the universe at load.
   vendorSets: Record<string, { permissions: ClassSixPermission[] }>
 }
@@ -77,16 +95,12 @@ type HumanRoleInput<P extends readonly string[]> = {
   ? unknown
   : { permissions: ['a class-6 permission is not allowed in a human role'] })
 
-export function humanRole<const P extends readonly string[]>(role: HumanRoleInput<P>): {
-  permissions: string[]
-  ceiling: ScopeCeiling
-  requiredAcr: Acr
-} {
+export function humanRole<const P extends readonly string[]>(role: HumanRoleInput<P>): HumanRole {
   return {
     permissions: role.permissions as unknown as string[],
     ceiling: role.ceiling,
     requiredAcr: role.requiredAcr,
-  }
+  } as HumanRole
 }
 
 export function authorizeHuman(claim: LeanClaim, operation: string, resource: AuthzResource, cfg: RoleConfig): AuthzDecision {
