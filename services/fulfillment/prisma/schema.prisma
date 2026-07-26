@@ -268,9 +268,11 @@ model ComposedArtifact {
 }
 
 /// The Shipment aggregate (D106c). One AWB = one shpt_ (dedup on awb UNIQUE).
-/// courier_partner is the vndr_ of type COURIER, nullable until the step-8
-/// courier master binds it. status born DISPATCHED_BY_VENDOR; carrier states
-/// advanced ONLY by the step-8 courier channel. PROGRAM-SCOPED.
+/// courier_partner is the vndr_ of type COURIER, bound from the return
+/// sheet's courier_code on shpt BIRTH (spec 09); an omitted or unresolvable
+/// code leaves it NULL, never rebound on an AWB dedup hit. status born
+/// DISPATCHED_BY_VENDOR; carrier states advanced ONLY by the spec-09 courier
+/// channel. PROGRAM-SCOPED.
 model Shpt {
   id             String   @id @db.Uuid
   awb            String   @unique

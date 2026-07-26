@@ -23,7 +23,7 @@ export interface ReturnRow {
   deviceSerial: string
   asgnId: string
   awb: string
-  courier?: string // reserved for the step-8 courier master; unused in v1 (courier_partner stays NULL)
+  courierCode?: string // FR-05 Courier Partner: resolves to a vndr_ COURIER via vndr.courier_code (spec 09)
 }
 
 export interface ReturnSheet {
@@ -54,8 +54,10 @@ function emptyResult(rejected: 'unauthorized' | 'schema_invalid'): ReturnResult 
 // Whole-file schema validation: a row missing a required field fails the
 // WHOLE file (mirrors intake.ts's isStructurallyValid). This must NEVER throw
 // on untrusted input: a missing/null/non-string field is schema_invalid, not a
-// crash. `courier` is optional and, if present, checked only for shape (v1
-// defers per-courier AWB format validation to the step-8 courier master).
+// crash. `courierCode` is optional and, if present, checked only for shape
+// here. The vndr_ COURIER resolution happens per row inside the transaction
+// (it needs a db handle). Per-courier AWB FORMAT validation stays deferred to
+// step 9 (D3).
 function isStructurallyValid(row: ReturnRow): boolean {
   const r = row as unknown as Record<string, unknown>
   return (
@@ -65,7 +67,7 @@ function isStructurallyValid(row: ReturnRow): boolean {
     r.asgnId.length > 0 &&
     typeof r.awb === 'string' &&
     r.awb.length > 0 &&
-    (r.courier === undefined || typeof r.courier === 'string')
+    (r.courierCode === undefined || typeof r.courierCode === 'string')
   )
 }
 
@@ -261,19 +263,56 @@ export async function ingestReturnSheet(
         const batchUuid = entry.batch
         const merchantUuid = entry.merchant_id
 
+        // (2b) resolve the FR-05 courier partner, if the row names one. 103d:
+        // an unknown or inactive courier is QUARANTINED, never auto-created.
+        // vndr is permissive RLS, so no program context is needed for this
+        // read (and none has been set yet for this row).
+        let courierUuid: string | null = null
+        if (row.courierCode !== undefined) {
+          const courierRows = await tx.$queryRaw<{ id: string }[]>`
+            SELECT id::text AS id FROM vndr
+            WHERE courier_code = ${row.courierCode} AND type = 'COURIER' AND status = 'ACTIVE'
+          `
+          if (courierRows.length === 0) {
+            await tx.$executeRaw`
+              INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+              VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'unknown_courier'})
+            `
+            quarantined++
+            continue
+          }
+          // Already ::text out of a uuid column, so this is a native uuid
+          // string. Do NOT toUuid it.
+          courierUuid = courierRows[0]!.id
+        }
+
         // program-scoped writes below (shpt, pending_pool_entry): set fresh
         // per row, right before use (fold correction 1).
         await setProgramContext(tx, programUuid)
 
-        // (3) birth/dedup shpt on AWB (D106c: one AWB = one shpt_).
+        // (3) birth/dedup shpt on AWB (D106c: one AWB = one shpt_). Bound
+        // ONLY on birth (INSERT), never on a dedup hit: the dedup path below
+        // reads the existing row with no program_id predicate, so it may
+        // belong to a DIFFERENT Program, and an UPDATE against it could trip
+        // the program RLS WITH CHECK. Rebinding on dedup is a step-9 item.
+        // Prisma rejects a bound null param under an explicit ::uuid cast, so
+        // branch: the bound uuid path casts, the null path uses a literal.
         const shptUuid = toUuid(newId('shpt'))
         const dispatchDate = new Date()
-        const born = await tx.$queryRaw<{ id: string }[]>`
-          INSERT INTO shpt (id, awb, courier_partner, status, dispatch_date, tenant_id, program_id, updated_at)
-          VALUES (${shptUuid}::uuid, ${row.awb}, NULL, 'DISPATCHED_BY_VENDOR', ${dispatchDate}, ${tenantUuid}::uuid, ${programUuid}::uuid, now())
-          ON CONFLICT (awb) DO NOTHING
-          RETURNING id::text AS id
-        `
+        const born =
+          courierUuid !== null
+            ? await tx.$queryRaw<{ id: string }[]>`
+                INSERT INTO shpt (id, awb, courier_partner, status, dispatch_date, tenant_id, program_id, updated_at)
+                VALUES (${shptUuid}::uuid, ${row.awb}, ${courierUuid}::uuid, 'DISPATCHED_BY_VENDOR', ${dispatchDate}, ${tenantUuid}::uuid, ${programUuid}::uuid, now())
+                ON CONFLICT (awb) DO NOTHING
+                RETURNING id::text AS id
+              `
+            : await tx.$queryRaw<{ id: string }[]>`
+                INSERT INTO shpt (id, awb, courier_partner, status, dispatch_date, tenant_id, program_id, updated_at)
+                VALUES (${shptUuid}::uuid, ${row.awb}, NULL, 'DISPATCHED_BY_VENDOR', ${dispatchDate}, ${tenantUuid}::uuid, ${programUuid}::uuid, now())
+                ON CONFLICT (awb) DO NOTHING
+                RETURNING id::text AS id
+              `
         let finalShptUuid: string
         if (born.length > 0) {
           finalShptUuid = born[0]!.id

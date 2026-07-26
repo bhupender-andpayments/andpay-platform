@@ -115,6 +115,15 @@ async function seedPendingEntry(opts: SeedEntryOpts): Promise<void> {
   `
 }
 
+async function seedCourierVendor(code = 'BLUEDART'): Promise<string> {
+  const vndrUuid = toUuid(newId('vndr'))
+  await db.$executeRaw`
+    INSERT INTO vndr (id, type, display_name, status, courier_code, updated_at)
+    VALUES (${vndrUuid}::uuid, 'COURIER', 'Blue Dart', 'ACTIVE', ${code}, now())
+  `
+  return vndrUuid
+}
+
 interface Fixture {
   vndrId: string
   workQueue: string
@@ -144,6 +153,25 @@ async function fullFixture(deviceSerial: string, traceId: string, dispatchState?
   const batchUuid = toUuid(newId('btch'))
   await seedPendingEntry({ asgnUuid, tenantUuid, programUuid, merchantUuid, batchUuid, traceId, dispatchState })
   return { vndrId, workQueue, asgnWire, asgnUuid, tenantUuid, programUuid, merchantUuid, batchUuid, traceId }
+}
+
+// (courier binding, check 4) a minimal single-row ReturnSheet builder: a fresh
+// PRINT vendor, a fresh in-inventory unit, a SENT_TO_VENDOR pending_pool_entry,
+// and a fresh AWB, so each call is fully isolated from every other. Overrides
+// spread onto the row (e.g. { courierCode: 'BLUEDART' }), matching this file's
+// existing fixture style (fullFixture + seedPendingEntry).
+let buildValidSheetSeq = 0
+async function buildValidSheet(overrides: Partial<ReturnRow> = {}): Promise<ReturnSheet> {
+  buildValidSheetSeq++
+  const n = buildValidSheetSeq
+  const deviceSerial = `SER-BVS-${n}`
+  const fx = await fullFixture(deviceSerial, `trace-bvs-${n}`)
+  return {
+    fileId: `return-file-bvs-${n}`,
+    vndrId: fx.vndrId,
+    workQueue: fx.workQueue,
+    rows: [{ deviceSerial, asgnId: fx.asgnWire, awb: `AWB-BVS-${n}`, ...overrides }],
+  }
 }
 
 interface PrintForOutboxRow {
@@ -780,5 +808,63 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     `
     expect(dispatchRows).toHaveLength(1)
     expect(dispatchRows[0]!.payload.payload.asgnIds).toEqual([asgnSent])
+  })
+
+  // FR-05 courier partner binding (check 4, spec 09 D6 modification of this
+  // ratified spec-08 file). courierCode is OPTIONAL (R4): only a SUPPLIED but
+  // unresolvable code is quarantined; an absent code stays exactly as before
+  // (courier_partner NULL). Bound on shpt BIRTH only (scope choice 2).
+  it('resolves the courier code to a vndr_ COURIER and binds courier_partner on birth (check 4)', async () => {
+    const courierUuid = await seedCourierVendor()
+    const sheet = await buildValidSheet({ courierCode: 'BLUEDART' })
+    const claim = classSixClaim(sheet.vndrId, sheet.workQueue)
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-rs-courier')
+    expect(res.rejected).toBeUndefined()
+    expect(res.shptIds).toHaveLength(1)
+
+    const row = await db.$queryRaw<{ courier_partner: string | null }[]>`
+      SELECT courier_partner::text AS courier_partner FROM shpt WHERE awb = ${sheet.rows[0]!.awb}
+    `
+    expect(row[0]!.courier_partner).toBe(courierUuid)
+  })
+
+  it('quarantines a row whose courier code is unknown, and does NOT auto-create a vndr_ (103d)', async () => {
+    const sheet = await buildValidSheet({ courierCode: 'NOT-A-COURIER' })
+    const claim = classSixClaim(sheet.vndrId, sheet.workQueue)
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-rs-unknown')
+    expect(res.rejected).toBeUndefined() // per-row quarantine, NOT a whole-file reject
+    expect(res.quarantined).toBe(1)
+    expect(res.shptIds).toHaveLength(0)
+
+    const q = await db.$queryRaw<{ reason_code: string }[]>`
+      SELECT reason_code FROM intake_exception WHERE file_id = ${sheet.fileId}
+    `
+    expect(q.map((x) => x.reason_code)).toContain('unknown_courier')
+    const v = await db.$queryRaw<{ c: bigint }[]>`SELECT count(*) AS c FROM vndr WHERE courier_code = 'NOT-A-COURIER'`
+    expect(Number(v[0]!.c)).toBe(0)
+  })
+
+  it('a row omitting the courier code still births a shipment with courier_partner NULL (backward compatible)', async () => {
+    const sheet = await buildValidSheet({})
+    const claim = classSixClaim(sheet.vndrId, sheet.workQueue)
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-rs-nocourier')
+    expect(res.shptIds).toHaveLength(1)
+    const row = await db.$queryRaw<{ courier_partner: string | null }[]>`
+      SELECT courier_partner::text AS courier_partner FROM shpt WHERE awb = ${sheet.rows[0]!.awb}
+    `
+    expect(row[0]!.courier_partner).toBeNull()
+  })
+
+  it('ignores a SUSPENDED or non-COURIER vendor sharing the code', async () => {
+    const vndrUuid = toUuid(newId('vndr'))
+    await db.$executeRaw`
+      INSERT INTO vndr (id, type, display_name, status, courier_code, updated_at)
+      VALUES (${vndrUuid}::uuid, 'COURIER', 'Dormant', 'SUSPENDED', 'DORMANT', now())
+    `
+    const sheet = await buildValidSheet({ courierCode: 'DORMANT' })
+    const claim = classSixClaim(sheet.vndrId, sheet.workQueue)
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-rs-suspended')
+    expect(res.quarantined).toBe(1)
+    expect(res.shptIds).toHaveLength(0)
   })
 })
