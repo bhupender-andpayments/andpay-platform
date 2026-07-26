@@ -15,7 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express'
 import { authorizeAndAudit } from '@andpay/edge'
 import { ingestReturnSheet, loadFulfillmentConfig, emitVendorAuthzAudit, type ReturnSheet } from '@andpay/fulfillment-service'
 import { EdgeCredentialGuard } from './guard.js'
-import { EDGE_DEPS, type EdgeDeps } from './deps.js'
+import { EDGE_DEPS, MAX_SHEET_BYTES, type EdgeDeps } from './deps.js'
 import { parseReturnSheet, EdgeParseError } from './sheet-parse.js'
 import type { EdgeRequest } from './request.js'
 
@@ -47,7 +47,7 @@ export class ReturnController {
 
   @Post('return')
   @UseGuards(EdgeCredentialGuard)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_SHEET_BYTES } }))
   @HttpCode(200)
   async submit(@UploadedFile() file: UploadedJson | undefined, @Req() req: EdgeRequest): Promise<unknown> {
     const traceId = randomUUID()

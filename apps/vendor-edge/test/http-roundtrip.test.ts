@@ -11,7 +11,7 @@ import {
   ingestIntakeSheet,
   ingestReturnSheet,
 } from '@andpay/fulfillment-service'
-import { buildEdgeApp, type EdgeDeps } from '../src/index.js'
+import { buildEdgeApp, MAX_SHEET_BYTES, type EdgeDeps } from '../src/index.js'
 
 // The REAL app, real in-process HTTP via supertest against app.getHttpServer(),
 // no bound port (checks 1, 5, 6 of the spec 10a plan). The pepper here is a
@@ -263,6 +263,172 @@ describe('POST /vendor/return (multipart file edge fronting the unchanged ingest
     const pairing = await unitPairing(deviceSerial)
     expect(pairing.shipment).not.toBeNull()
     expect(pairing.batch).not.toBeNull()
+  })
+
+  it('dedups a re-POST of the same fileId via real HTTP: the domain effect (shpt row for the AWB) stays at 1', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const secret = 'apsk_test_print-p2-idemp-secret-ffffffffff'
+    await seedCredential({
+      apiId: newId('api'),
+      secret,
+      vndrId: vndrWire,
+      workQueue: 'wq-print',
+      permissionSetRef: 'vset:vendor_print',
+    })
+
+    const deviceSerial = 'SER-EDGE-RETURN-IDEMP-1'
+    await seedUnit(deviceSerial)
+    const asgnWire = newId('asgn')
+    await seedPendingEntry(asgnWire)
+
+    const sheet = {
+      fileId: 'file-edge-return-idemp-1',
+      vndrId: vndrWire,
+      workQueue: 'wq-print',
+      rows: [{ deviceSerial, asgnId: asgnWire, awb: 'AWB-EDGE-RETURN-IDEMP-1' }],
+    }
+
+    const first = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(secret))
+      .attach('file', Buffer.from(JSON.stringify(sheet), 'utf8'), 'sheet.json')
+    expect(first.status).toBe(200)
+    expect(first.body.pairedUnitIds).toHaveLength(1)
+    expect(first.body.deduped).toBe(false)
+
+    const shptCount = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM shpt`
+    expect(Number(shptCount[0]!.n)).toBe(1)
+
+    // the return handler dedups on `${sheet.vndrId}|${sheet.fileId}` (the
+    // same 06.A file-idempotency key as the intake test above): a re-POST of
+    // the identical fileId is a no-op at the DB, not just an HTTP 200.
+    const second = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(secret))
+      .attach('file', Buffer.from(JSON.stringify(sheet), 'utf8'), 'sheet.json')
+    expect(second.status).toBe(200)
+    expect(second.body.deduped).toBe(true)
+    expect(second.body.pairedUnitIds).toHaveLength(0)
+
+    const shptCountAfter = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM shpt`
+    expect(Number(shptCountAfter[0]!.n)).toBe(1)
+  })
+})
+
+describe('oversized multipart at the edge (authenticated-DoS guard on /vendor/intake)', () => {
+  it('rejects a file part larger than MAX_SHEET_BYTES with a 4xx and creates no Unit', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const secret = 'apsk_test_manufacturer-oversized-secret-iiii'
+    await seedCredential({
+      apiId: newId('api'),
+      secret,
+      vndrId: vndrWire,
+      workQueue: 'wq-manufacturer',
+      permissionSetRef: 'vset:vendor_manufacturer',
+    })
+
+    // One byte over the cap: multer aborts the upload mid-stream
+    // (MulterError LIMIT_FILE_SIZE), never buffering the whole thing, and
+    // NestJS's default FileInterceptor maps that to a 413 before the
+    // controller (and so ingestIntakeSheet) is ever reached.
+    const oversized = Buffer.alloc(MAX_SHEET_BYTES + 1, 'a')
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/intake')
+      .set('Authorization', bearer(secret))
+      .attach('file', oversized, 'oversized-sheet.json')
+
+    expect(res.status).toBeGreaterThanOrEqual(400)
+    expect(res.status).toBeLessThan(500)
+
+    const unitCount = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
+    expect(Number(unitCount[0]!.n)).toBe(0)
+    // no domain-authz-audit effect either: the oversized upload never reached
+    // authorizeAndAudit, so the outbox carries no authz.audit row for this call.
+    expect(await auditRows()).toHaveLength(0)
+  })
+})
+
+describe('cross-vendor scope-denied at the edge: /vendor/intake and /vendor/return', () => {
+  it('a cross-vendor intake sheet returns 403 with a scope-denied DENY audited, and no Unit is created', async () => {
+    const vndrAWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const vndrBWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const secretA = 'apsk_test_manufacturer-a-cross-secret-gggg'
+    await seedCredential({
+      apiId: newId('api'),
+      secret: secretA,
+      vndrId: vndrAWire,
+      workQueue: 'wq-manufacturer',
+      permissionSetRef: 'vset:vendor_manufacturer',
+    })
+
+    // vendor A's OWN real secret presented, but the sheet claims to be FOR vendor B.
+    const sheet = {
+      fileId: 'file-edge-intake-cross-1',
+      vndrId: vndrBWire,
+      workQueue: 'wq-manufacturer',
+      rows: [
+        { kind: 'SERIALIZED', deviceSerial: 'SER-EDGE-CROSS-1', productType: 'SOUNDBOX', deviceQr: { di: 'DI-EDGE-CROSS-1' } },
+      ],
+    }
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/intake')
+      .set('Authorization', bearer(secretA))
+      .attach('file', Buffer.from(JSON.stringify(sheet), 'utf8'), 'sheet.json')
+    expect(res.status).toBe(403)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.operation).toBe('sheet:submit-intake')
+    expect(rows[0]!.reasonCode).toBe('scope-denied')
+
+    // ingestIntakeSheet was never reached: no Unit exists.
+    const unitCount = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
+    expect(Number(unitCount[0]!.n)).toBe(0)
+  })
+
+  it('a cross-vendor return sheet returns 403 with a scope-denied DENY audited, and the Unit stays unpaired', async () => {
+    const vndrAWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const vndrBWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const secretA = 'apsk_test_print-a-cross-secret-hhhhhhhhhh'
+    await seedCredential({
+      apiId: newId('api'),
+      secret: secretA,
+      vndrId: vndrAWire,
+      workQueue: 'wq-print',
+      permissionSetRef: 'vset:vendor_print',
+    })
+
+    const deviceSerial = 'SER-EDGE-RETURN-CROSS-1'
+    await seedUnit(deviceSerial)
+    const asgnWire = newId('asgn')
+    await seedPendingEntry(asgnWire)
+
+    // vendor A's OWN real secret presented, but the sheet claims to be FOR vendor B.
+    const sheet = {
+      fileId: 'file-edge-return-cross-1',
+      vndrId: vndrBWire,
+      workQueue: 'wq-print',
+      rows: [{ deviceSerial, asgnId: asgnWire, awb: 'AWB-EDGE-RETURN-CROSS-1' }],
+    }
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(secretA))
+      .attach('file', Buffer.from(JSON.stringify(sheet), 'utf8'), 'sheet.json')
+    expect(res.status).toBe(403)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.operation).toBe('sheet:submit-return')
+    expect(rows[0]!.reasonCode).toBe('scope-denied')
+
+    // ingestReturnSheet was never reached: the Unit stayed unpaired.
+    const pairing = await unitPairing(deviceSerial)
+    expect(pairing.shipment).toBeNull()
   })
 })
 

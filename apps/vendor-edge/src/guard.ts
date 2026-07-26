@@ -26,6 +26,22 @@ export class EdgeCredentialGuard implements CanActivate {
     const authHeader = req.headers['authorization']
     const traceId = randomUUID()
 
+    // Fail-fast (Minor review fix): a missing or malformed Authorization
+    // header can never resolve to a claim regardless of what the
+    // credential_projection contains, so reject BEFORE paying for its
+    // full-table scan load. The reasonCode for each case exactly mirrors the
+    // EdgeAuthError code resolveClaimFromAuthHeader would itself have thrown
+    // ('missing-credential', 'malformed-authorization'), so the DENY audit
+    // and the 401 outcome are unchanged from before this fast path existed.
+    if (!authHeader) {
+      await this.denyUnauthenticated(traceId, 'missing-credential')
+      throw new UnauthorizedException()
+    }
+    if (!authHeader.startsWith('Bearer ')) {
+      await this.denyUnauthenticated(traceId, 'malformed-authorization')
+      throw new UnauthorizedException()
+    }
+
     try {
       // Pre-load the whole projection into a Map once per request (the
       // async -> sync bridge resolveClaimFromAuthHeader needs, since its own
@@ -41,17 +57,24 @@ export class EdgeCredentialGuard implements CanActivate {
       return true
     } catch (err) {
       const reasonCode = err instanceof EdgeAuthError || err instanceof AuthzError ? err.code : 'authn-error'
-      await emitVendorAuthzAudit(this.deps.fulfillmentDb, {
-        principalId: 'unknown',
-        cls: 6,
-        operation: 'authenticate',
-        decision: 'DENY',
-        outcome: 'denied',
-        reasonCode,
-        actorChannel: 'vendor-edge',
-        traceId,
-      })
+      await this.denyUnauthenticated(traceId, reasonCode)
       throw new UnauthorizedException()
     }
+  }
+
+  // The authn-DENY audit emission (IDs only, S4/5c: the presented secret is
+  // never read here, let alone logged). Shared by the fail-fast header check
+  // and the full resolve failure path so both emit an identical shape.
+  private async denyUnauthenticated(traceId: string, reasonCode: string): Promise<void> {
+    await emitVendorAuthzAudit(this.deps.fulfillmentDb, {
+      principalId: 'unknown',
+      cls: 6,
+      operation: 'authenticate',
+      decision: 'DENY',
+      outcome: 'denied',
+      reasonCode,
+      actorChannel: 'vendor-edge',
+      traceId,
+    })
   }
 }
