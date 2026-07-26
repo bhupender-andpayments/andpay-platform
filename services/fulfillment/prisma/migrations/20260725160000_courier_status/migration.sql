@@ -47,7 +47,7 @@ CREATE TABLE "courier_status_exception" (
 -- is platform/pre-resolution permissive. FORCE RLS on both.
 ALTER TABLE "shpt_status_event" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "shpt_status_event" FORCE ROW LEVEL SECURITY;
-CREATE POLICY "shpt_status_event_v1" ON "shpt_status_event"
+CREATE POLICY "shpt_status_event_scoped" ON "shpt_status_event"
   USING (true)
   WITH CHECK (program_id = current_setting('app.program_id', true)::uuid);
 

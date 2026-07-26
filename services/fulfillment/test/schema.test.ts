@@ -45,7 +45,7 @@ async function tables(): Promise<string[]> {
 }
 
 describe('fulfillment schema (spec 07 domain + saga + quarantine, spec 08 outbound)', () => {
-  it('all 12 domain/saga tables exist alongside outbox/inbox', async () => {
+  it('all 14 domain/saga tables exist alongside outbox/inbox', async () => {
     const all = await tables()
     for (const t of [...DOMAIN_AND_SAGA_TABLES, 'outbox', 'inbox']) {
       expect(all, `${t} missing`).toContain(t)
@@ -143,7 +143,7 @@ describe('fulfillment schema (spec 07 domain + saga + quarantine, spec 08 outbou
     }
   })
 
-  it('FORCE RLS is enabled and forced on every fulfillment table (14 tables: 12 domain/saga + outbox/inbox)', async () => {
+  it('FORCE RLS is enabled and forced on every fulfillment table (16 tables: 14 domain/saga + outbox/inbox)', async () => {
     const rows = await db.$queryRaw<{ relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }[]>`
       SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
