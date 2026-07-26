@@ -30,6 +30,7 @@ import {
   type UnitFactPayload,
   type BatchFactPayload,
   type PrintForFactPayload,
+  type ShipmentFactPayload,
 } from '@andpay/fulfillment-service'
 
 // Root-only integration seam (this file is under test/, not services/<ctx>, so
@@ -621,7 +622,7 @@ describe('root class-6 courier round trip: createVendor -> issueVendorCredential
       rows: [{ awb: 'AWB-D', status: 'DELIVERED', courierTimestamp: '2026-07-26T12:00:00.000Z' }],
     }, c.claim, 'trace-status-delivered')
 
-    const facts = await fulfillmentDb.$queryRaw<{ event_type: string; payload: any }[]>`
+    const facts = await fulfillmentDb.$queryRaw<{ event_type: string; payload: Envelope<ShipmentFactPayload> }[]>`
       SELECT event_type, payload FROM outbox
     `
     // the DELIVERED transition fact IS emitted

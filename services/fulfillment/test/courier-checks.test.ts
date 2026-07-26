@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import type { LeanClaim } from '@andpay/authz'
+import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { ingestStatusFile, type StatusFile } from '../src/status-file.js'
+import { type ShipmentFactPayload } from '../src/events.js'
 
 const url = process.env.FULFILLMENT_DATABASE_URL
   ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
@@ -74,7 +76,7 @@ describe('courier status trace chain (check 9)', () => {
 
     const trail = await db.$queryRaw<{ trace_id: string }[]>`SELECT trace_id FROM shpt_status_event WHERE status = 'PICKED_UP'`
     expect(trail[0]!.trace_id).toBe(TRACE)
-    const fact = await db.$queryRaw<{ payload: any }[]>`SELECT payload FROM outbox WHERE event_type = 'fct.fulfillment.shipment.v1'`
+    const fact = await db.$queryRaw<{ payload: Envelope<ShipmentFactPayload> }[]>`SELECT payload FROM outbox WHERE event_type = 'fct.fulfillment.shipment.v1'`
     expect(fact[0]!.payload.traceId).toBe(TRACE)
     // check 9 residency/PII: the fact carries no shipping PII, only ids/status/ts
     const keys = Object.keys(fact[0]!.payload.payload).sort()

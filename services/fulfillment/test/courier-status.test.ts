@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
+import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { advanceShipmentStatus, LADDER_RANK, isKnownStatus } from '../src/courier-status.js'
-import { setProgramContext, type Tx } from '../src/internal.js'
+import { type ShipmentFactPayload } from '../src/events.js'
+import { type Tx } from '../src/internal.js'
 
 const url = process.env.FULFILLMENT_DATABASE_URL
   ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
@@ -50,7 +52,7 @@ async function trail(shptUuid: string) {
 // top-level field of the E4 envelope, which is stored whole in outbox.payload.
 // So read `payload` and access payload.dedupKey and payload.payload.<factField>,
 // exactly as dispatch.test.ts and return-sheet.test.ts do.
-async function facts(): Promise<{ payload: any }[]> {
+async function facts(): Promise<{ payload: Envelope<ShipmentFactPayload> }[]> {
   return db.$queryRaw`
     SELECT payload FROM outbox WHERE event_type = 'fct.fulfillment.shipment.v1' ORDER BY created_at ASC
   `
