@@ -13,6 +13,7 @@ import type { AuthDb } from './db.js'
 import type { PepperPort } from './ports/pepper.js'
 import { mintSecret } from './secret.js'
 import { credentialFactEnvelope, AUTH_CREDENTIAL_TOPIC } from './events.js'
+import { enqueueCredentialConfig } from './credential-config.js'
 import { loadDenylist } from './denylist.js'
 import { emitAuthzAudit } from './audit.js'
 import { requireStepUp } from './stepup.js'
@@ -109,6 +110,20 @@ export async function issueVendorCredential(
       partitionKey: apiId,
       payload: env,
     })
+    await enqueueCredentialConfig(
+      tx,
+      {
+        apiId,
+        pepperedHash,
+        vndrId: input.vndrId,
+        workQueue: input.workQueue,
+        permissionSetRef: input.permissionSetRef,
+        mode: input.mode,
+        status: 'ACTIVE',
+        epoch: 1,
+      },
+      deps.traceId,
+    )
     await emitAuthzAudit(tx, {
       principalId: actor.operatorId,
       cls: actor.claim.cls,
@@ -153,6 +168,20 @@ export async function revokeVendorCredential(apiId: string, deps: RevokeDeps): P
       partitionKey: apiId,
       payload: env,
     })
+    await enqueueCredentialConfig(
+      tx,
+      {
+        apiId,
+        pepperedHash: cred.pepperedHash,
+        vndrId: fromUuid('vndr', cred.vndrId),
+        workQueue: cred.workQueue,
+        permissionSetRef: cred.permissionSetRef,
+        mode: cred.mode,
+        status: 'REVOKED',
+        epoch: cred.epoch,
+      },
+      deps.traceId,
+    )
   })
 }
 

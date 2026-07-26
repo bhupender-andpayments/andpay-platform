@@ -33,6 +33,10 @@ export const SOUNDBOX_TOPICS: TopicSpec[] = [
   { name: 'fct.fulfillment.unit.print_for.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.shipment.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'cmd.fulfillment.batch.v1', partitions: 3 },
+  // The auth-config channel (spec 10a, 5c): a keyed projection feed, not a
+  // lifecycle fact, so it is log-compacted (identity compacted-topic intent)
+  // rather than retention-bounded. The latest value per apiId is kept forever.
+  { name: 'cfg.auth.credential.v1', partitions: 3, config: { 'cleanup.policy': 'compact' } },
 ]
 
 /** Derive the per-consumer retry and DLQ topics for a base topic (E7). */
