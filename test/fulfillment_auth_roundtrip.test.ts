@@ -14,6 +14,7 @@ import {
   createVendor,
   ingestIntakeSheet,
   ingestReturnSheet,
+  ingestStatusFile,
   projectDemandFact,
   onDemandAccrued,
   triggerBatch,
@@ -546,6 +547,98 @@ describe('root class-6 binding round trip: createVendor -> issueVendorCredential
       SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
     `
     expect(entry[0]!.dispatch_state).toBe('SENT_TO_VENDOR') // untouched
+  })
+})
+
+describe('root class-6 courier round trip: createVendor -> issueVendorCredential(vset:vendor_courier) -> resolveVendorCredential -> ingestStatusFile (checks 3, 11, S14)', () => {
+  async function makeCourier(display: string, wq: string, idem: string): Promise<{ vndrId: string; claim: LeanClaim; workQueue: string }> {
+    const { vndrId } = await createVendor(fulfillmentDb, { type: 'COURIER', displayName: display }, { operatorId }, `trace-create-${idem}`)
+    const issued = await issueVendorCredential(
+      { vndrId, workQueue: wq, permissionSetRef: 'vset:vendor_courier', mode: 'test', idempotencyKey: idem },
+      opsActor,
+      { db: authDb, pepper: pepperPort, traceId: `trace-issue-${idem}`, now: 1000 },
+    )
+    const claim = await resolveVendorCredential(issued.secret, { db: authDb, pepper, expectedMode: 'test', now: 1000 })
+    return { vndrId, claim, workQueue: wq }
+  }
+
+  async function seedShptBound(awb: string, courierWire: string): Promise<void> {
+    await fulfillmentDb.$executeRaw`
+      INSERT INTO shpt (id, awb, courier_partner, status, dispatch_date, tenant_id, program_id, updated_at)
+      VALUES (${toUuid(newId('shpt'))}::uuid, ${awb}, ${toUuid(courierWire)}::uuid, 'DISPATCHED_BY_VENDOR', now(), ${toUuid(newId('tnnt'))}::uuid, ${toUuid(newId('prog'))}::uuid, now())
+    `
+  }
+
+  it('check 3: the REAL resolved courier claim (not a fixture) advances only its OWN shipments; a foreign shipment is quarantined wrong_courier; the vendor_courier set has no artifact-pull', async () => {
+    const c1 = await makeCourier('Blue Dart', 'wq-courier-1', 'root-courier-1')
+    expect(c1.claim.cls).toBe(6)
+    expect(c1.claim.psr).toBe('vset:vendor_courier')
+    expect(c1.claim.scope.vndr).toBe(c1.vndrId)
+
+    await seedShptBound('AWB-C1', c1.vndrId)
+    const ownRes = await ingestStatusFile(fulfillmentDb, {
+      fileId: 'sf-own', vndrId: c1.vndrId, workQueue: c1.workQueue,
+      rows: [{ awb: 'AWB-C1', status: 'PICKED_UP', courierTimestamp: '2026-07-26T10:00:00.000Z' }],
+    }, c1.claim, 'trace-status-own')
+    expect(ownRes.rejected).toBeUndefined()
+    expect(ownRes.advanced).toBe(1)
+
+    // (a) file-level 105c cross-vendor: a SECOND courier's real claim cannot submit a file LABELED as c1.
+    const c2 = await makeCourier('Delhivery', 'wq-courier-2', 'root-courier-2')
+    const impersonate = await ingestStatusFile(fulfillmentDb, {
+      fileId: 'sf-impersonate', vndrId: c1.vndrId, workQueue: c1.workQueue,
+      rows: [{ awb: 'AWB-C1', status: 'IN_TRANSIT', courierTimestamp: '2026-07-26T11:00:00.000Z' }],
+    }, c2.claim, 'trace-status-imp')
+    expect(impersonate.rejected).toBe('unauthorized')
+
+    // (b) per-row cross-courier: c2 submits its OWN valid file, but references c1's shipment -> wrong_courier quarantine.
+    const foreign = await ingestStatusFile(fulfillmentDb, {
+      fileId: 'sf-foreign', vndrId: c2.vndrId, workQueue: c2.workQueue,
+      rows: [{ awb: 'AWB-C1', status: 'IN_TRANSIT', courierTimestamp: '2026-07-26T11:00:00.000Z' }],
+    }, c2.claim, 'trace-status-foreign')
+    expect(foreign.rejected).toBeUndefined()
+    expect(foreign.advanced).toBe(0)
+    expect(foreign.quarantined).toBe(1)
+    const q = await fulfillmentDb.$queryRaw<{ reason_code: string; channel: string }[]>`
+      SELECT reason_code, channel FROM courier_status_exception
+    `
+    expect(q.some((x) => x.reason_code === 'wrong_courier' && x.channel === 'BATCH_FILE')).toBe(true)
+
+    // c1's shipment stayed at PICKED_UP: c2 never moved it.
+    const st = await fulfillmentDb.$queryRaw<{ status: string }[]>`SELECT status FROM shpt WHERE awb = 'AWB-C1'`
+    expect(st[0]!.status).toBe('PICKED_UP')
+
+    // structural exclusion (105d): the courier set cannot reach artifact-pull.
+    const artifact = authorize(c1.claim, 'batch:pull-artifacts', { vndrId: c1.vndrId, workQueue: c1.workQueue }, loadFulfillmentConfig())
+    expect(artifact.allowed).toBe(false)
+  })
+
+  it('check 11: DELIVERED is emitted and NOTHING downstream is triggered (no activation, no term_, no report projection)', async () => {
+    const c = await makeCourier('Blue Dart', 'wq-courier-d', 'root-courier-d')
+    await seedShptBound('AWB-D', c.vndrId)
+    await ingestStatusFile(fulfillmentDb, {
+      fileId: 'sf-delivered', vndrId: c.vndrId, workQueue: c.workQueue,
+      rows: [{ awb: 'AWB-D', status: 'DELIVERED', courierTimestamp: '2026-07-26T12:00:00.000Z' }],
+    }, c.claim, 'trace-status-delivered')
+
+    const facts = await fulfillmentDb.$queryRaw<{ event_type: string; payload: any }[]>`
+      SELECT event_type, payload FROM outbox
+    `
+    // the DELIVERED transition fact IS emitted
+    expect(facts.some((f) => f.event_type === 'fct.fulfillment.shipment.v1' && f.payload.payload.status === 'DELIVERED')).toBe(true)
+    // and NOTHING downstream: every fact this courier ingest produced is a shipment
+    // fact. No activation fact, no term_ binding fact, no report-projection fact.
+    expect(facts.every((f) => f.event_type === 'fct.fulfillment.shipment.v1')).toBe(true)
+
+    // structurally, no activation/term_/report table exists in the fulfillment
+    // schema for DELIVERED to have written to (they are deferred to later steps).
+    const tables = await fulfillmentDb.$queryRaw<{ table_name: string }[]>`
+      SELECT table_name FROM information_schema.tables WHERE table_schema = 'fulfillment' AND table_type = 'BASE TABLE'
+    `
+    const names = tables.map((t) => t.table_name)
+    for (const downstream of ['term', 'terminal', 'activation', 'activation_report']) {
+      expect(names).not.toContain(downstream)
+    }
   })
 })
 
