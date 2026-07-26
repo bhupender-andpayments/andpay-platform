@@ -43,3 +43,9 @@ export {
   type StatusSource,
   type AdvanceOutcome,
 } from './courier-status.js'
+export {
+  ingestStatusFile,
+  type StatusFile,
+  type StatusRow,
+  type StatusFileResult,
+} from './status-file.js'
