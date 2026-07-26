@@ -82,6 +82,15 @@ importers:
         specifier: ^7.0.0
         version: 7.2.2
 
+  packages/audit:
+    dependencies:
+      '@andpay/authz':
+        specifier: workspace:*
+        version: link:../authz
+      '@andpay/outbox':
+        specifier: workspace:*
+        version: link:../outbox
+
   packages/authz:
     dependencies:
       jose:

@@ -1,0 +1,24 @@
+{
+  "name": "@andpay/audit",
+  "version": "0.0.0",
+  "description": "Framework-free authz-audit primitives (6e, S15, D121): the AuthzAuditRecord shape, the pure buildAuthzAuditEvent outbox builder, and the tamper-evident hash-chain (GENESIS_PREV_HASH, canonicalChainPayload, computeEntryHash). Holds no store and does no I/O.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@andpay/authz": "workspace:*",
+    "@andpay/outbox": "workspace:*"
+  }
+}
