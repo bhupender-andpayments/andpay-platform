@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { authorize, validateVendorSet, type RoleConfig, type LeanClaim } from '../src/index.js'
+import { authorize, authorizeHuman, validateVendorSet, type RoleConfig, type LeanClaim } from '../src/index.js'
 
 const cfg: RoleConfig = {
   roles: {
@@ -36,6 +36,14 @@ describe('authorize (D2 two-gate: permission AND scope)', () => {
 
   it('class-6 vendor is denied an operation outside its vendor set', () => {
     expect(authorize(class6(), 'sheet:submit-intake', { vndrId: 'vndr_1', workQueue: 'wq-A' }, cfg).allowed).toBe(false)
+  })
+
+  it('a class-6 operation reaching the human branch is denied by the runtime guard, not evaluated', () => {
+    expect(authorize(class3('role:ops'), 'shipment:submit-status', {}, cfg).reason).toBe('class6-in-human-context')
+  })
+
+  it('authorizeHuman itself denies a class-6 operation before any role lookup', () => {
+    expect(authorizeHuman(class3('role:ops'), 'shipment:submit-status', {}, cfg).reason).toBe('class6-in-human-context')
   })
 })
 

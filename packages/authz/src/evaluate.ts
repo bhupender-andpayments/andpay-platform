@@ -59,11 +59,41 @@ export function validateVendorSet(perms: readonly string[]): asserts perms is Cl
 // missing permission denies the operation; a scope miss denies the resource.
 export function authorize(claim: LeanClaim, operation: string, resource: AuthzResource, cfg: RoleConfig): AuthzDecision {
   return claim.cls === 6
-    ? authorizeClassSix(claim, operation, resource, cfg)
+    ? authorizeVendor(claim, operation, resource, cfg)
     : authorizeHuman(claim, operation, resource, cfg)
 }
 
-function authorizeHuman(claim: LeanClaim, operation: string, resource: AuthzResource, cfg: RoleConfig): AuthzDecision {
+// A human role's permissions must not contain any class-6 vendor permission.
+// P is inferred naked (const) so it stays inferrable; the intersection adds an
+// incompatible constraint on `permissions` iff P contains a ClassSixPermission,
+// producing a compile error there. The corpus defines no closed human
+// permission set, so human strings stay open; only the class-6 literals are
+// rejected (unrepresentable, S14/S16).
+type HumanRoleInput<P extends readonly string[]> = {
+  permissions: P
+  ceiling: ScopeCeiling
+  requiredAcr: Acr
+} & (Extract<P[number], ClassSixPermission> extends never
+  ? unknown
+  : { permissions: ['a class-6 permission is not allowed in a human role'] })
+
+export function humanRole<const P extends readonly string[]>(role: HumanRoleInput<P>): {
+  permissions: string[]
+  ceiling: ScopeCeiling
+  requiredAcr: Acr
+} {
+  return {
+    permissions: role.permissions as unknown as string[],
+    ceiling: role.ceiling,
+    requiredAcr: role.requiredAcr,
+  }
+}
+
+export function authorizeHuman(claim: LeanClaim, operation: string, resource: AuthzResource, cfg: RoleConfig): AuthzDecision {
+  // Defense-in-depth (D6): a class-6 vendor permission must never be
+  // evaluated in the human branch, even if `operation` was widened to
+  // `string` or cast through `any` before reaching here.
+  if (CLASS_SIX_UNIVERSE.has(operation)) return { allowed: false, reason: 'class6-in-human-context' }
   const role = cfg.roles[stripPrefix(claim.psr, 'role:')]
   if (!role) return { allowed: false, reason: 'unknown-role' }
   if (!role.permissions.includes('*') && !role.permissions.includes(operation)) {
@@ -75,7 +105,7 @@ function authorizeHuman(claim: LeanClaim, operation: string, resource: AuthzReso
   return { allowed: true }
 }
 
-function authorizeClassSix(claim: LeanClaim, operation: string, resource: AuthzResource, cfg: RoleConfig): AuthzDecision {
+export function authorizeVendor(claim: LeanClaim, operation: string, resource: AuthzResource, cfg: RoleConfig): AuthzDecision {
   const set = cfg.vendorSets[stripPrefix(claim.psr, 'vset:')]
   if (!set) return { allowed: false, reason: 'unknown-vendor-set' }
   if (!set.permissions.includes(operation as ClassSixPermission)) {
