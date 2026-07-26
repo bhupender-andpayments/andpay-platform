@@ -56,3 +56,10 @@ export {
   type WebhookResult,
   type CourierPayloadMapper,
 } from './status-webhook.js'
+export {
+  type CredentialConfigPayload,
+  CREDENTIAL_CONFIG_CONSUMER,
+  projectCredentialConfig,
+  credentialLookup,
+} from './credential-projection.js'
+export { type CredentialProjectionRow } from '@andpay/authz'

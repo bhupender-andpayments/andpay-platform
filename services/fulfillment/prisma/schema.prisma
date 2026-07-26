@@ -345,3 +345,27 @@ model CourierStatusException {
 
   @@map("courier_status_exception")
 }
+
+/// The Fulfillment-side (5c verifier plane) LOCAL copy of the class-6
+/// credential projection, upserted from Auth's auth-config channel
+/// (cfg.auth.credential.v1, Task 4). This is the projection the HTTP edge
+/// (later tasks) resolves an apsk_ secret against with ZERO call to Auth (5c/
+/// 5e): one HMAC over the runtime-injected pepper, one lookup by
+/// peppered_hash. IDs, enums, and the peppered hash ONLY (S7/S4). PLATFORM-
+/// ONLY (no Program scope, a verifier-plane row is not merchant/Program-
+/// attributed), permissive FORCE RLS in v1 (matches vndr_v1/unit_v1). No
+/// expires_at column: Task 4's cfg payload carries none (D3 class-6
+/// credentials do not expire).
+model CredentialProjection {
+  apiId            String   @id @map("api_id") @db.Uuid
+  pepperedHash     String   @unique @map("peppered_hash")
+  vndrId           String   @map("vndr_id") @db.Uuid
+  workQueue        String   @map("work_queue")
+  permissionSetRef String   @map("permission_set_ref")
+  mode             String
+  status           String // ACTIVE | REVOKED
+  epoch            Int
+  updatedAt        DateTime @map("updated_at") @db.Timestamptz(6)
+
+  @@map("credential_projection")
+}
