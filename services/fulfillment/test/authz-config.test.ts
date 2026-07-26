@@ -23,4 +23,17 @@ describe('fulfillment class-6 authz config (local, C4: never imported from auth)
     const cfg = loadFulfillmentConfig()
     expect(cfg.roles).toEqual({})
   })
+
+  it('the courier vendor set has status submit and NO artifact pull (105d)', () => {
+    const sets = loadFulfillmentConfig().vendorSets
+    expect(sets.vendor_courier).toBeTruthy()
+    expect(sets.vendor_courier!.permissions).toEqual(['shipment:submit-status'])
+    expect(sets.vendor_courier!.permissions).not.toContain('batch:pull-artifacts')
+  })
+
+  it('the courier set structurally excludes money, KYC, posture, api_keys and activation (105d)', () => {
+    for (const p of ['ledger:post', 'kyc:read', 'posture:elevate', 'api_keys:manage', 'device:activate']) {
+      expect(() => validateVendorSet([p])).toThrow()
+    }
+  })
 })

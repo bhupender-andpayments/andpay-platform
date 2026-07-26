@@ -49,4 +49,20 @@ describe('validateVendorSet (105d structural class-6 exclusion)', () => {
       expect(() => validateVendorSet(['batch:pull-artifacts', excluded])).toThrow()
     }
   })
+
+  it('accepts the courier status permission in the class-6 universe', () => {
+    expect(() => validateVendorSet(['shipment:submit-status'])).not.toThrow()
+  })
+
+  it('allows a courier claim to submit status only for its own vendor and work queue', () => {
+    const cfg = { roles: {}, vendorSets: { vendor_courier: { permissions: ['shipment:submit-status' as const] } } }
+    const claim: LeanClaim = {
+      iss: 'andpay-auth', sub: 'api_2', aud: 'andpay:vendor', iat: 0, exp: 0, nbf: 0, jti: 'j',
+      cls: 6, mode: 'live', scope: { vndr: 'vndr_c1', wq: 'courier-status' }, psr: 'vset:vendor_courier', epoch: 1,
+    }
+    expect(authorize(claim, 'shipment:submit-status', { vndrId: 'vndr_c1', workQueue: 'courier-status' }, cfg).allowed).toBe(true)
+    expect(authorize(claim, 'shipment:submit-status', { vndrId: 'vndr_OTHER', workQueue: 'courier-status' }, cfg).reason).toBe('scope-denied')
+    expect(authorize(claim, 'shipment:submit-status', { vndrId: 'vndr_c1', workQueue: 'other-queue' }, cfg).reason).toBe('scope-denied')
+    expect(authorize(claim, 'batch:pull-artifacts', { vndrId: 'vndr_c1', workQueue: 'courier-status' }, cfg).reason).toBe('permission-denied')
+  })
 })

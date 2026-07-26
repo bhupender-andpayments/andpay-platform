@@ -6,12 +6,19 @@ import { AuthzError } from './errors.js'
 // M4 (unrepresentable for an external principal, 5f), KYC attestation (K3),
 // posture/elevation controls, api_keys:manage, and any activation authority
 // (TMS) are STRUCTURALLY outside this universe, not merely ungranted.
-export type ClassSixPermission = 'batch:pull-artifacts' | 'sheet:submit-intake' | 'sheet:submit-return'
+export type ClassSixPermission =
+  | 'batch:pull-artifacts'
+  | 'sheet:submit-intake'
+  | 'sheet:submit-return'
+  // spec 09: the courier submits carrier status for its own shipments. No
+  // artifact pull, so this set is strictly narrower than the print vendor's.
+  | 'shipment:submit-status'
 
 const CLASS_SIX_UNIVERSE: ReadonlySet<string> = new Set<ClassSixPermission>([
   'batch:pull-artifacts',
   'sheet:submit-intake',
   'sheet:submit-return',
+  'shipment:submit-status',
 ])
 
 // The scope ceiling is a maximum reach resolved from the role (4c), never a
