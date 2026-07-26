@@ -121,3 +121,34 @@ export function credentialLookup(
     }
   }
 }
+
+/**
+ * The async -> sync bridge the edge guard needs (5c/5e): `resolveClaimFromAuthHeader`
+ * takes a SYNCHRONOUS `lookup`, but Prisma reads are async. The edge guard
+ * calls this ONCE per request to pre-load the whole projection into an
+ * in-memory Map keyed by peppered_hash, then passes a sync `map.get` closure
+ * to the resolver. Zero network call to Auth either way (5e); this is a local
+ * read of Fulfillment's OWN verifier-plane table. Reconstructs apiId/vndrId to
+ * their typed wire form (api_/vndr_) via fromUuid, the SAME reconstruction
+ * `credentialLookup` uses, so a row read via either path is identical.
+ */
+export async function loadCredentialProjection(
+  db: FulfillmentDb,
+): Promise<Map<string, CredentialProjectionRow>> {
+  const rows = await db.credentialProjection.findMany()
+  const map = new Map<string, CredentialProjectionRow>()
+  for (const row of rows) {
+    map.set(row.pepperedHash, {
+      apiId: fromUuid('api', row.apiId),
+      vndrId: fromUuid('vndr', row.vndrId),
+      workQueue: row.workQueue,
+      permissionSetRef: row.permissionSetRef,
+      mode: row.mode as CredentialProjectionRow['mode'],
+      status: row.status as 'ACTIVE' | 'REVOKED',
+      epoch: row.epoch,
+      // No expires_at column (see the CredentialProjection model comment).
+      expiresAt: undefined,
+    })
+  }
+  return map
+}

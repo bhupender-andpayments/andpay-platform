@@ -173,6 +173,9 @@ importers:
 
   services/fulfillment:
     dependencies:
+      '@andpay/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
       '@andpay/authz':
         specifier: workspace:*
         version: link:../../packages/authz

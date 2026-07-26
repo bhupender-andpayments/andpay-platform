@@ -12,6 +12,7 @@
     "db:generate": "prisma generate --schema prisma/schema.prisma"
   },
   "dependencies": {
+    "@andpay/audit": "workspace:*",
     "@andpay/authz": "workspace:*",
     "@andpay/engine": "workspace:*",
     "@andpay/envelope": "workspace:*",

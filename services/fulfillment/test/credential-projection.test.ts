@@ -6,6 +6,7 @@ import { PrismaClient } from '../generated/client/index.js'
 import {
   projectCredentialConfig,
   credentialLookup,
+  loadCredentialProjection,
   CREDENTIAL_CONFIG_CONSUMER,
   type CredentialConfigPayload,
 } from '../src/credential-projection.js'
@@ -147,5 +148,47 @@ describe('credentialLookup (the resolve-side lookup closure, 5c/5e)', () => {
 
     const unknown = await lookup('phash-does-not-exist')
     expect(unknown).toBeUndefined()
+  })
+})
+
+describe('loadCredentialProjection (the async->sync bridge the edge guard pre-loads per request)', () => {
+  it('returns a Map keyed by peppered_hash, values reconstructed with the SAME typed wire ids as credentialLookup', async () => {
+    const a = fixturePayload({
+      apiId: newId('api'),
+      vndrId: newId('vndr'),
+      pepperedHash: 'phash-map-a',
+      workQueue: 'wq-map-a',
+      permissionSetRef: 'vset:vendor_courier',
+    })
+    const b = fixturePayload({
+      apiId: newId('api'),
+      vndrId: newId('vndr'),
+      pepperedHash: 'phash-map-b',
+      workQueue: 'wq-map-b',
+      permissionSetRef: 'vset:vendor_print',
+      mode: 'live',
+    })
+    await projectCredentialConfig(db, cfgEnv(a, stepKey(a.apiId, 'active', a.epoch), 'trace-map-a'))
+    await projectCredentialConfig(db, cfgEnv(b, stepKey(b.apiId, 'active', b.epoch), 'trace-map-b'))
+
+    const map = await loadCredentialProjection(db)
+    expect(map.size).toBe(2)
+
+    const rowA = map.get('phash-map-a')
+    expect(rowA).toBeDefined()
+    expect(rowA!.apiId).toBe(a.apiId)
+    expect(rowA!.vndrId).toBe(a.vndrId)
+    expect(rowA!.workQueue).toBe('wq-map-a')
+    expect(rowA!.permissionSetRef).toBe('vset:vendor_courier')
+    expect(rowA!.mode).toBe('test')
+    expect(rowA!.status).toBe('ACTIVE')
+    expect(rowA!.epoch).toBe(1)
+
+    const rowB = map.get('phash-map-b')
+    expect(rowB).toBeDefined()
+    expect(rowB!.vndrId).toBe(b.vndrId)
+    expect(rowB!.mode).toBe('live')
+
+    expect(map.get('phash-does-not-exist')).toBeUndefined()
   })
 })

@@ -61,5 +61,7 @@ export {
   CREDENTIAL_CONFIG_CONSUMER,
   projectCredentialConfig,
   credentialLookup,
+  loadCredentialProjection,
 } from './credential-projection.js'
 export { type CredentialProjectionRow } from '@andpay/authz'
+export { emitVendorAuthzAudit } from './vendor-audit.js'
