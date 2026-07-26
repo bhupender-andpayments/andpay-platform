@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { onceWithin, type OutboxTx } from '@andpay/outbox'
 import { computeEntryHash, GENESIS_PREV_HASH, type AuthzAuditRecord } from '@andpay/audit'
+import type { AuthDb } from './db.js'
 
 // The inbox consumer identity for the appender's E6 dedup (6e). Keyed on the
 // EVENT id (eventId), never the record content, so a redelivery of the same
@@ -91,4 +92,24 @@ export async function appendAuthzAudit(
     `
   })
   return appended ? { appended: true, seq } : { appended: false }
+}
+
+/**
+ * The Auth-side 6e consumer (task 8): consumes an authz.audit outbox payload
+ * and appends it to the tamper-evident hash-chain. Auth is the SOLE appender:
+ * it consumes authz.audit events from BOTH its own outbox (emitAuthzAudit,
+ * audit.ts) AND every context edge's outbox (e.g. fulfillment's
+ * emitVendorAuthzAudit, vendor-audit.ts) -- one dedicated channel, one
+ * appender, one chain. The dedup key is the DELIVERED payload.id, never
+ * re-minted here: a fresh id per delivery would defeat E6 and double-append
+ * on every redelivery. Opens its own transaction so a caller (a bus consumer
+ * loop) can call this once per delivered message with no transaction of its
+ * own to thread through.
+ */
+export async function consumeAuthzAudit(
+  db: AuthDb,
+  payload: { id: string } & AuthzAuditRecord,
+): Promise<{ appended: boolean; seq?: number }> {
+  const { id, ...record } = payload
+  return db.$transaction((tx) => appendAuthzAudit(tx, record as AuthzAuditRecord, id))
 }

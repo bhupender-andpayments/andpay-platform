@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { GENESIS_PREV_HASH, type AuthzAuditRecord } from '@andpay/audit'
 import { PrismaClient } from '../generated/client/index.js'
-import { appendAuthzAudit, AUTHZ_AUDIT_CONSUMER } from '../src/authz-chain.js'
+import { appendAuthzAudit, consumeAuthzAudit, AUTHZ_AUDIT_CONSUMER } from '../src/authz-chain.js'
 import { verifyAuthzChain } from '../src/authz-chain-verify.js'
 
 const url = process.env.AUTH_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=auth'
@@ -120,6 +120,34 @@ describe('6e authz_audit tamper-evident hash-chain (task 2)', () => {
     ])
     const seqs = results.map((r) => r.seq).sort((a, b) => (a ?? 0) - (b ?? 0))
     expect(seqs).toEqual([1, 2])
+    const check = await verifyAuthzChain(db)
+    expect(check.ok).toBe(true)
+    expect(check.length).toBe(2)
+  })
+})
+
+describe('consumeAuthzAudit (task 8: the 6e consumer wiring emit->append, dedup on the DELIVERED payload.id)', () => {
+  it('appends the record carried by the payload, dedupping on payload.id (not a freshly-minted id)', async () => {
+    const payload = { id: 'evt-consume-1', ...rec({ operation: 'consume-once' }) }
+    const first = await consumeAuthzAudit(db, payload)
+    expect(first.appended).toBe(true)
+    expect(first.seq).toBe(1)
+
+    const rows = await db.$queryRaw<{ operation: string }[]>`SELECT operation FROM authz_audit WHERE seq = 1`
+    expect(rows[0]!.operation).toBe('consume-once')
+
+    // A redelivery of the SAME payload (same id) must NOT double-append: this
+    // is the whole point of dedupping on the delivered id rather than minting
+    // a fresh one per call.
+    const redelivered = await consumeAuthzAudit(db, payload)
+    expect(redelivered.appended).toBe(false)
+    const count = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*)::bigint AS n FROM authz_audit`
+    expect(Number(count[0]!.n)).toBe(1)
+  })
+
+  it('two DIFFERENT payload ids both append, chaining correctly', async () => {
+    await consumeAuthzAudit(db, { id: 'evt-consume-a', ...rec({ operation: 'op-a' }) })
+    await consumeAuthzAudit(db, { id: 'evt-consume-b', ...rec({ operation: 'op-b' }) })
     const check = await verifyAuthzChain(db)
     expect(check.ok).toBe(true)
     expect(check.length).toBe(2)
