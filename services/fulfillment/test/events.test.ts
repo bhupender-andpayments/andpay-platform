@@ -18,7 +18,7 @@ import {
 } from '../src/events.js'
 import { FULFILLMENT_FACT_SCHEMAS } from '../src/fact-schemas.js'
 
-// Local schema-shape narrowing, mirrors services/tms/test/fact-schemas.test.ts.
+// Local schema-shape narrowing, mirrors the TMS fact-schemas test pattern.
 // FULFILLMENT_FACT_SCHEMAS is exported as Record<string, object> so the
 // schema-registry map can hold heterogeneous JSON Schemas; narrowing to the
 // flat shape it actually uses is confined to this test file.
