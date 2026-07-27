@@ -1,14 +1,8 @@
-import type { Acr } from '@andpay/authz'
+import type { StepUpEntry } from '@andpay/authz'
 
-export interface StepUpEntry {
-  // Minimum acr the fresh proof must reach (6a).
-  minAcr: Acr
-  // Freshness window in seconds against auth_time, NOT iat (6b).
-  freshnessSec: number
-  // Whether the operation escalates to a 6c dual-control ceremony (none in this
-  // slice; the full control matrix is deferred).
-  escalates6c: boolean
-}
+// StepUpEntry is single-sourced in @andpay/authz (T2, DD2); re-exported here so
+// any Auth module importing the type from this path keeps working unchanged.
+export type { StepUpEntry }
 
 // The soundbox step-up catalog subset (6b): only the entries this slice needs,
 // class-6 vendor-credential creation and MFA enrollment/reset. Versioned

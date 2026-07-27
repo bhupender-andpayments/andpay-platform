@@ -1,6 +1,9 @@
-import { AuthzError, type Acr, type Amr } from '@andpay/authz'
+import { AuthzError, meetsAcr, type Acr, type Amr } from '@andpay/authz'
 
-const RANK: Record<Acr, number> = { AAL1: 1, AAL2: 2, AAL3: 3 }
+// Single owner of the AAL rank comparison lives in @andpay/authz (T2); Auth
+// re-imports it and re-exports it here so callers importing from this module
+// keep working unchanged.
+export { meetsAcr }
 
 // Achieved assurance from the factors presented at authentication (6a): a
 // password alone is AAL1; a password plus a second factor (TOTP) is AAL2; a
@@ -13,10 +16,6 @@ export function computeAcr(amr: Amr[]): Acr {
   const hasSecond = amr.some((m) => m === 'otp' || m === 'sms' || m === 'swk')
   if (hasPwd && hasSecond) return 'AAL2'
   return 'AAL1'
-}
-
-export function meetsAcr(achieved: Acr, required: Acr): boolean {
-  return RANK[achieved] >= RANK[required]
 }
 
 // Enforce the role's required assurance floor (6a). A principal that cannot

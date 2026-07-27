@@ -1,18 +1,4 @@
-import { AuthzError, type LeanClaim } from '@andpay/authz'
-import { meetsAcr } from './assurance.js'
-import type { StepUpEntry } from './config/step-up-catalog.js'
-
-// Step-up gate (6b): a high-risk operation requires a minimum acr AND freshness
-// against auth_time (NOT iat, so a routine refresh does not falsely reset
-// freshness). Insufficient acr or a stale auth_time denies with a
-// step-up-required signal; the client re-authenticates with its enrolled MFA
-// factor to mint a fresh claim, then retries.
-export function requireStepUp(claim: LeanClaim, entry: StepUpEntry, now: number): void {
-  if (claim.acr === undefined || !meetsAcr(claim.acr, entry.minAcr)) {
-    throw new AuthzError('step-up-required', `needs ${entry.minAcr}`)
-  }
-  const authTime = claim.auth_time ?? 0
-  if (now - authTime > entry.freshnessSec) {
-    throw new AuthzError('step-up-required', 'stale-auth-time')
-  }
-}
+// Step-up gate (6b) single-sourced in @andpay/authz (T2, DD2): the ops edge
+// evaluates it locally without calling Auth (T4), so Auth re-imports the same
+// primitive here instead of holding its own copy.
+export { requireStepUp } from '@andpay/authz'
