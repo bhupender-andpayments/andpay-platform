@@ -64,11 +64,14 @@ describe('10c ops roles and additive columns', () => {
 
 // LOAD-BEARING (Task 4): proves the write-gate actually bites once a later
 // ops API runs a domain effect under fulfillment_write with a server-resolved
-// SET LOCAL app.program_id. Seeding is done as the owner (fdb's default
-// connection, andpay, bypasses RLS as the table owner); the UPDATE attempt
-// under fulfillment_write is a DIFFERENT connection scope entirely (SET LOCAL
-// ROLE is transaction-scoped), so it is subject to the shpt_scoped permissive
-// policy's WITH CHECK (program_id = current_setting('app.program_id')::uuid).
+// SET LOCAL app.program_id. Seeding is done as fdb's default connection,
+// andpay, which is the Postgres CLUSTER SUPERUSER (POSTGRES_USER in
+// infra/docker-compose.dev.yml): a superuser bypasses RLS even under FORCE
+// ROW LEVEL SECURITY (a mere table owner does NOT bypass FORCE RLS). The
+// UPDATE attempt under fulfillment_write is a DIFFERENT connection scope
+// entirely (SET LOCAL ROLE is transaction-scoped), so it is subject to the
+// shpt_scoped permissive policy's WITH CHECK (program_id =
+// current_setting('app.program_id')::uuid).
 describe('10c ops write bites under fulfillment_write with per-action scope', () => {
   const fdb = new FulfillmentClient({ datasourceUrl: F_URL })
 

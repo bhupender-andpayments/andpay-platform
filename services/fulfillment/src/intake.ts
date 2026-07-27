@@ -73,50 +73,21 @@ function isStructurallyValid(row: IntakeRow): boolean {
   return false // an unrecognized kind is structurally invalid, not a business case
 }
 
-// Ingest one manufacturer intake sheet (S8, 105c, D103b, D103d, E1). Returns
-// the outcome; NEVER throws on a rejection or a quarantined row (a thrown
-// error is reserved for a genuine infrastructure failure, which rolls the
-// whole file back per E1).
-//
-// Injected-tx variant (spec 10c Task 4): the current body verbatim minus the
-// db.$transaction wrapper, so a later ops API can run this effect, the E6
-// inbox dedup, and a server-resolved write scope together in ONE
-// caller-supplied transaction. ingestIntakeSheet (below) delegates to this.
-// STEP A/B below make no DB call either way (pure claim/schema checks), so
-// running them against an already-open caller-supplied tx changes nothing
-// observable: no state change happens until STEP C.
+// STEP C only (spec 10c Task 4, re-split in fix wave 1): the transactional DB
+// work for one manufacturer intake sheet (06.A file idempotency, per-row
+// duplicate-serial quarantine, Unit inserts, outbox enqueue). Takes an
+// ALREADY-authorized, ALREADY-schema-validated sheet: the caller MUST run
+// STEP A (authorize) and STEP B (schema validation) before opening the
+// transaction this runs in, so this alone never performs those checks and
+// takes no claim (STEP C makes no use of it). Exported so a later ops API
+// (T8) can run this effect, the E6 inbox dedup, and a server-resolved write
+// scope together in ONE caller-supplied transaction, after doing its own
+// ops-level authorize and STEP B.
 export async function ingestIntakeSheetWithinTx(
   tx: Tx,
-  claim: LeanClaim,
   sheet: IntakeSheet,
   traceId: string,
 ): Promise<IntakeResult> {
-  // STEP A: authorize BEFORE any state change (S8, 105c). The class-6
-  // gate requires claim.scope.vndr === sheet.vndrId AND claim.scope.wq ===
-  // sheet.workQueue (own-vendor-only); a non-class-6 claim hits the human gate
-  // and is denied on an unknown role. Either way: no state change.
-  const decision = authorize(
-    claim,
-    'sheet:submit-intake',
-    { vndrId: sheet.vndrId, workQueue: sheet.workQueue },
-    loadFulfillmentConfig(),
-  )
-  if (!decision.allowed) return emptyResult('unauthorized')
-
-  // STEP B: whole-file schema validation BEFORE any state change (D103b).
-  // One structurally invalid row rejects the WHOLE file: no Units, no
-  // intake_exception rows, no partial credit. This guard must NEVER throw on
-  // untrusted input (a genuine throw is reserved for infra failure, E1): a
-  // missing/null/non-array rows field, or a null/primitive row entry, is
-  // schema_invalid, not a crash.
-  if (
-    !Array.isArray(sheet.rows) ||
-    sheet.rows.some(
-      (row) => row === null || typeof row !== 'object' || !isStructurallyValid(row as IntakeRow),
-    )
-  )
-    return emptyResult('schema_invalid')
-
   const vndrUuid = toUuid(sheet.vndrId)
   const createdUnitIds: string[] = []
   let quarantined = 0
@@ -224,11 +195,41 @@ export async function ingestIntakeSheetWithinTx(
   return { createdUnitIds, quarantined, deduped: !ran }
 }
 
+// Ingest one manufacturer intake sheet (S8, 105c, D103b, D103d, E1). Returns
+// the outcome; NEVER throws on a rejection or a quarantined row (a thrown
+// error is reserved for a genuine infrastructure failure, which rolls the
+// whole file back per E1).
 export async function ingestIntakeSheet(
   db: FulfillmentDb,
   claim: LeanClaim,
   sheet: IntakeSheet,
   traceId: string,
 ): Promise<IntakeResult> {
-  return db.$transaction((tx: Tx) => ingestIntakeSheetWithinTx(tx, claim, sheet, traceId))
+  // STEP A: authorize BEFORE any transaction opens (S8, 105c). The class-6
+  // gate requires claim.scope.vndr === sheet.vndrId AND claim.scope.wq ===
+  // sheet.workQueue (own-vendor-only); a non-class-6 claim hits the human gate
+  // and is denied on an unknown role. Either way: no state change.
+  const decision = authorize(
+    claim,
+    'sheet:submit-intake',
+    { vndrId: sheet.vndrId, workQueue: sheet.workQueue },
+    loadFulfillmentConfig(),
+  )
+  if (!decision.allowed) return emptyResult('unauthorized')
+
+  // STEP B: whole-file schema validation BEFORE any transaction opens
+  // (D103b). One structurally invalid row rejects the WHOLE file: no Units,
+  // no intake_exception rows, no partial credit. This guard must NEVER throw
+  // on untrusted input (a genuine throw is reserved for infra failure, E1): a
+  // missing/null/non-array rows field, or a null/primitive row entry, is
+  // schema_invalid, not a crash.
+  if (
+    !Array.isArray(sheet.rows) ||
+    sheet.rows.some(
+      (row) => row === null || typeof row !== 'object' || !isStructurallyValid(row as IntakeRow),
+    )
+  )
+    return emptyResult('schema_invalid')
+
+  return db.$transaction((tx: Tx) => ingestIntakeSheetWithinTx(tx, sheet, traceId))
 }
