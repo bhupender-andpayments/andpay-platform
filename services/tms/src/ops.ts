@@ -61,14 +61,22 @@ export async function uploadDamageFile(
 // is the only mutation it ever receives). The corrected row is independent
 // of the quarantine row's own (file_id, row_no): it lands wherever its own
 // correlation id points, exactly like any other ingest.
+//
+// `deduped: true` means this call was a client-key replay (the E6 inbox
+// already ran the effect on the original call, so this call re-runs
+// nothing: no fresh ingest, no re-stamp of resolved_at/resolved_by_actor).
+// `outcome` is only meaningful when `deduped` is false; on a replay it is
+// `null`, which is unambiguous, unlike overloading the ingest-level
+// `'duplicate'` outcome (a row-level dedup on correlation_id or
+// (file_id, row_no)), which means something operationally different.
 export async function resolveQuarantineRow(
   db: TmsDb,
   args: { quarantineId: string; correctedRow: BankRequestRow; clientKey: string; actorId: string; traceId: string },
-): Promise<{ outcome: 'accepted' | 'quarantined' | 'duplicate' }> {
-  let outcome: 'accepted' | 'quarantined' | 'duplicate' = 'duplicate'
-  await db.$transaction(async (tx: Tx) => {
+): Promise<{ deduped: boolean; outcome: 'accepted' | 'quarantined' | 'duplicate' | null }> {
+  let outcome: 'accepted' | 'quarantined' | 'duplicate' | null = null
+  const ran = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
-    await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:resolve-quarantine'), async () => {
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:resolve-quarantine'), async () => {
       outcome = await ingestRequestRowWithinTx(tx, args.correctedRow, args.traceId)
       await tx.$executeRaw`
         UPDATE quarantine_row
@@ -77,5 +85,5 @@ export async function resolveQuarantineRow(
       `
     })
   })
-  return { outcome }
+  return { deduped: !ran, outcome }
 }

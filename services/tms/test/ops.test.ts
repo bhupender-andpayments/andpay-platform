@@ -129,6 +129,7 @@ describe('tms ops API (spec 10c Task 5): uploads under tms_write, quarantine res
       actorId,
       traceId: 't5',
     })
+    expect(res.deduped).toBe(false)
     expect(res.outcome).toBe('accepted')
 
     const pend = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM pending_row WHERE correlation_id = 'corrected-file|1'`
@@ -146,6 +147,58 @@ describe('tms ops API (spec 10c Task 5): uploads under tms_write, quarantine res
     `
     expect(untouched[0]!.resolved_at).toBeNull()
     expect(untouched[0]!.reason_code).toBe('invalid_qr_vpa_format')
+  })
+
+  it('resolveQuarantineRow replay (same clientKey) is unambiguous: deduped true, outcome null, no re-stamp', async () => {
+    const seeded = await db.$queryRaw<{ id: string }[]>`
+      INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+      VALUES ('seed-file-2', 1, ${'redacted:bank_request'}, 'missing_recipient_contact')
+      RETURNING id
+    `
+    const quarantineId = seeded[0]!.id
+    const actorId = randomUUID()
+    const clientKey = randomUUID()
+    const correctedRow = validRow({ fileId: 'corrected-file-2', rowNo: 1 })
+
+    const first = await resolveQuarantineRow(db, {
+      quarantineId,
+      correctedRow,
+      clientKey,
+      actorId,
+      traceId: 't6',
+    })
+    expect(first.deduped).toBe(false)
+    expect(first.outcome).toBe('accepted')
+
+    const stampedAfterFirst = await db.$queryRaw<{ resolved_at: Date | null; resolved_by_actor: string | null }[]>`
+      SELECT resolved_at, resolved_by_actor FROM quarantine_row WHERE id = ${quarantineId}::uuid
+    `
+    expect(stampedAfterFirst[0]!.resolved_at).not.toBeNull()
+    expect(stampedAfterFirst[0]!.resolved_by_actor).toBe(actorId)
+    const resolvedAtAfterFirst = stampedAfterFirst[0]!.resolved_at
+
+    // replay with the SAME clientKey: the E6 inbox skips the effect body
+    // entirely, so this must be an unambiguous no-op, not a fresh ingest
+    // outcome and not a re-stamp.
+    const replayActorId = randomUUID()
+    const replay = await resolveQuarantineRow(db, {
+      quarantineId,
+      correctedRow,
+      clientKey,
+      actorId: replayActorId,
+      traceId: 't6',
+    })
+    expect(replay.deduped).toBe(true)
+    expect(replay.outcome).toBeNull()
+
+    const pend = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM pending_row WHERE correlation_id = 'corrected-file-2|1'`
+    expect(Number(pend[0]!.n)).toBe(1)
+
+    const stampedAfterReplay = await db.$queryRaw<{ resolved_at: Date | null; resolved_by_actor: string | null }[]>`
+      SELECT resolved_at, resolved_by_actor FROM quarantine_row WHERE id = ${quarantineId}::uuid
+    `
+    expect(stampedAfterReplay[0]!.resolved_at).toEqual(resolvedAtAfterFirst)
+    expect(stampedAfterReplay[0]!.resolved_by_actor).toBe(actorId)
   })
 
   it('readQuarantineQueue returns open rows by default, and open+resolved with includeResolved', async () => {
