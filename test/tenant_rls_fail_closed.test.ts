@@ -155,39 +155,62 @@ describe('Task 2 tenant READ RLS: restrictive set-membership predicate + per-con
     }
   })
 
-  it('check 1 fail-closed (unset): under fulfillment_read with app.program_ids UNSET, shpt leaks NO rows (fresh session: current_setting NULL, row hidden; pooled session where the placeholder reverted to empty string: the query errors on the malformed array). Either manifestation is fail closed, and the error, when one is thrown, MUST be the expected malformed-array cast (Postgres SQLSTATE 22P02); any other error is a real failure, not a fail-closed pass.', async () => {
-    let leaked: { program_id: string }[]
-    try {
-      leaked = await readAs<{ program_id: string }>(fulfillment, 'fulfillment_read', null, 'SELECT program_id FROM shpt')
-    } catch (err) {
-      // An unusable app.program_ids (empty-string placeholder) errors the SELECT
-      // rather than returning rows. No data leaves the database, which is fail
-      // closed, BUT only if this is actually that error: a bare catch-all would
-      // also swallow an unrelated failure (a typo'd role, a dropped connection,
-      // a renamed role) and misreport it as a fail-closed pass. Assert the
-      // caught error is the malformed-array-literal cast error: Prisma surfaces
-      // the underlying Postgres SQLSTATE as err.meta.code, and the message
-      // always contains "malformed array literal" (case-insensitive fallback
-      // for whatever Prisma version/shape carries the code).
-      const meta = (err as { meta?: { code?: string; message?: string } }).meta
-      const sqlstate = meta?.code
-      const pgMessage = meta?.message ?? ''
-      const message = (err as Error).message ?? ''
-      const isMalformedArrayCast =
-        sqlstate === '22P02' || /malformed array literal/i.test(pgMessage) || /malformed array literal/i.test(message)
-      expect(
-        isMalformedArrayCast,
-        `expected the malformed-array cast error (SQLSTATE 22P02), got: ${sqlstate ?? 'no sqlstate'} / ${message || pgMessage}`,
-      ).toBe(true)
-      leaked = []
-    }
-    expect(leaked.length).toBe(0)
-  })
+  // Both fail-closed proofs below run over shpt AND shpt_status_event. shpt is
+  // the shared-predicate representative; shpt_status_event is the carrier-
+  // status trail, a program-scoped tenant read surface with its own
+  // RESTRICTIVE read policy (shpt_status_event_tenant_read) that the trail
+  // read (readShipmentStatusTrail) exercises under fulfillment_read, not
+  // owner. The cross-tenant zero-row backstop is already proven for
+  // shpt_status_event above (it is in the FULFILLMENT_READ_TABLES loop); this
+  // gives it the SAME fail-closed-on-unset and fail-closed-on-empty proof
+  // shpt has, rather than leaving shpt as the sole probed table.
+  const FAIL_CLOSED_TABLES = ['shpt', 'shpt_status_event'] as const
 
-  it('check 1 fail-closed (empty entitlement): under fulfillment_read with app.program_ids={} (entitled to no program), shpt deterministically returns zero rows (program_id = ANY({}) is false for every row)', async () => {
-    const rows = await readAs<{ program_id: string }>(fulfillment, 'fulfillment_read', set(), 'SELECT program_id FROM shpt')
-    expect(rows.length).toBe(0)
-  })
+  for (const table of FAIL_CLOSED_TABLES) {
+    it(`check 1 fail-closed (unset): under fulfillment_read with app.program_ids UNSET, ${table} leaks NO rows (fresh session: current_setting NULL, row hidden; pooled session where the placeholder reverted to empty string: the query errors on the malformed array). Either manifestation is fail closed, and the error, when one is thrown, MUST be the expected malformed-array cast (Postgres SQLSTATE 22P02); any other error is a real failure, not a fail-closed pass.`, async () => {
+      let leaked: { program_id: string }[]
+      try {
+        leaked = await readAs<{ program_id: string }>(
+          fulfillment,
+          'fulfillment_read',
+          null,
+          `SELECT program_id FROM ${table}`,
+        )
+      } catch (err) {
+        // An unusable app.program_ids (empty-string placeholder) errors the SELECT
+        // rather than returning rows. No data leaves the database, which is fail
+        // closed, BUT only if this is actually that error: a bare catch-all would
+        // also swallow an unrelated failure (a typo'd role, a dropped connection,
+        // a renamed role) and misreport it as a fail-closed pass. Assert the
+        // caught error is the malformed-array-literal cast error: Prisma surfaces
+        // the underlying Postgres SQLSTATE as err.meta.code, and the message
+        // always contains "malformed array literal" (case-insensitive fallback
+        // for whatever Prisma version/shape carries the code).
+        const meta = (err as { meta?: { code?: string; message?: string } }).meta
+        const sqlstate = meta?.code
+        const pgMessage = meta?.message ?? ''
+        const message = (err as Error).message ?? ''
+        const isMalformedArrayCast =
+          sqlstate === '22P02' || /malformed array literal/i.test(pgMessage) || /malformed array literal/i.test(message)
+        expect(
+          isMalformedArrayCast,
+          `expected the malformed-array cast error (SQLSTATE 22P02), got: ${sqlstate ?? 'no sqlstate'} / ${message || pgMessage}`,
+        ).toBe(true)
+        leaked = []
+      }
+      expect(leaked.length).toBe(0)
+    })
+
+    it(`check 1 fail-closed (empty entitlement): under fulfillment_read with app.program_ids={} (entitled to no program), ${table} deterministically returns zero rows (program_id = ANY({}) is false for every row)`, async () => {
+      const rows = await readAs<{ program_id: string }>(
+        fulfillment,
+        'fulfillment_read',
+        set(),
+        `SELECT program_id FROM ${table}`,
+      )
+      expect(rows.length).toBe(0)
+    })
+  }
 
   it('check 5 (set membership): under fulfillment_read with app.program_ids={A,C}, shpt returns A and C and excludes B', async () => {
     const rows = await readAs<{ program_id: string }>(
