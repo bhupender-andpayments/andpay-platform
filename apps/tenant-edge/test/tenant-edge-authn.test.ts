@@ -26,6 +26,12 @@ const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
 let app: INestApplication
 let jwks: JSONWebKeySet
 let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
+// Fix 4 regressions: a second ES256 keypair never added to the injected JWKS
+// (proves a correctly-shaped, correctly-signed-but-wrong-signer token is
+// rejected), and an RSA keypair (proves the verifier's algorithms:['ES256']
+// pin rejects an RS256-signed token regardless of key validity).
+let wrongSignerKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
+let rsPrivateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
 
 // Mint an ES256 at+jwt access token. Every field the LeanClaim carries is set
 // here; a caller overrides any of them to drive a specific rejection. `mode`
@@ -52,6 +58,40 @@ async function mint(claim: Record<string, unknown> = {}): Promise<string> {
     .setExpirationTime(now + 300)
     .setIssuer(EXPECTED_ISS)
     .sign(privateKey)
+}
+
+// A fully-parameterized mint (Fix 4): every crypto-posture knob (signing key,
+// alg, kid, issuer, iat/nbf/exp) is overridable, so each regression test mints
+// a token that is malformed in EXACTLY one dimension.
+async function mintWith(params: {
+  signingKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
+  alg?: string
+  kid?: string
+  iss?: string
+  iat?: number
+  nbf?: number
+  exp?: number
+  claim?: Record<string, unknown>
+}): Promise<string> {
+  const now = Math.floor(Date.now() / 1000)
+  const payload: Record<string, unknown> = {
+    sub: 'user_tenant_ops_1',
+    cls: 2,
+    mode: 'live',
+    aud: 'andpay:tenant-portal',
+    scope: { tid: 'tnnt_1' },
+    psr: 'pset:tenant_ops',
+    epoch: 1,
+    jti: randomUUID(),
+    ...params.claim,
+  }
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: params.alg ?? 'ES256', typ: 'at+jwt', kid: params.kid ?? KID })
+    .setIssuedAt(params.iat ?? now)
+    .setNotBefore(params.nbf ?? now)
+    .setExpirationTime(params.exp ?? now + 300)
+    .setIssuer(params.iss ?? EXPECTED_ISS)
+    .sign(params.signingKey)
 }
 
 interface AuditOutboxRow {
@@ -86,6 +126,15 @@ async function auditRows(): Promise<AuditOutboxRow[]> {
   }))
 }
 
+// Fix 5: the RAW row, undestructured, so a leak assertion checks the actual
+// persisted JSON rather than the helper's own (necessarily incomplete) view.
+async function rawAuditRows(): Promise<unknown[]> {
+  const rows = await fulfillmentDb.$queryRaw<
+    { payload: unknown }[]
+  >`SELECT payload FROM outbox WHERE event_type = 'authz.audit' ORDER BY created_at ASC`
+  return rows.map((r) => r.payload)
+}
+
 beforeAll(async () => {
   const kp = await generateKeyPair('ES256')
   privateKey = kp.privateKey
@@ -94,6 +143,16 @@ beforeAll(async () => {
   jwk.use = 'sig'
   jwk.kid = KID
   jwks = { keys: [jwk] }
+
+  // A second ES256 keypair, never added to jwks above (Fix 4: wrong signer).
+  const wrongKp = await generateKeyPair('ES256')
+  wrongSignerKey = wrongKp.privateKey
+
+  // An RSA keypair (Fix 4: alg-pin rejection). Never added to jwks; the
+  // verifier's algorithms:['ES256'] pin must reject an RS256 header before
+  // any key lookup even matters.
+  const rsKp = await generateKeyPair('RS256')
+  rsPrivateKey = rsKp.privateKey
 
   const deps: TenantEdgeDeps = {
     tmsDb,
@@ -165,6 +224,11 @@ describe('tenant-edge guard: the audience gate (check 4) rejects a wrong-plane t
     expect(rows).toHaveLength(1)
     expect(rows[0]!.decision).toBe('DENY')
     expect(rows[0]!.reasonCode).toBe('token-verify-failed')
+    // Fix 5: broaden the DENY-record invariant beyond decision/reasonCode.
+    expect(rows[0]!.cls).toBe(2)
+    expect(rows[0]!.principalId).toBe('unknown')
+    expect(rows[0]!.actorChannel).toBe('human-direct')
+    expect(rows[0]!.operation).toBe('authenticate')
   })
 })
 
@@ -179,6 +243,11 @@ describe('tenant-edge guard: an apsk_ credential (class 6) is rejected at the hu
     expect(rows).toHaveLength(1)
     expect(rows[0]!.decision).toBe('DENY')
     expect(rows[0]!.reasonCode).toBe('credential-unknown')
+    // Fix 5: broaden the DENY-record invariant beyond decision/reasonCode.
+    expect(rows[0]!.cls).toBe(2)
+    expect(rows[0]!.principalId).toBe('unknown')
+    expect(rows[0]!.actorChannel).toBe('human-direct')
+    expect(rows[0]!.operation).toBe('authenticate')
   })
 })
 
@@ -209,5 +278,109 @@ describe('tenant-edge guard: missing/garbage Authorization headers fail closed',
     const rows = await auditRows()
     expect(rows).toHaveLength(1)
     expect(rows[0]!.reasonCode).toBe('token-verify-failed')
+  })
+
+  it('an empty Bearer header (nothing after "Bearer ") -> 401 with exactly one authn-DENY row', async () => {
+    const res = await request(app.getHttpServer()).get('/probe').set('Authorization', 'Bearer ')
+    expect(res.status).toBe(401)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+  })
+})
+
+describe('tenant-edge guard: class-6 is never valid as a JWT, even with a correct signature (Fix 4)', () => {
+  it('a validly ES256-signed tenant-portal JWT with cls:6 -> 401 (class6-jwt-rejected)', async () => {
+    const token = await mint({ cls: 6 })
+    const res = await request(app.getHttpServer()).get('/probe').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(401)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.reasonCode).toBe('class6-jwt-rejected')
+  })
+})
+
+describe('tenant-edge guard: the explicit class-2 gate (Fix 3) rejects any non-2, non-6 class', () => {
+  it('a validly ES256-signed tenant-portal JWT with cls:3 -> 401 (class-not-tenant)', async () => {
+    const token = await mint({ cls: 3 })
+    const res = await request(app.getHttpServer()).get('/probe').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(401)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.reasonCode).toBe('class-not-tenant')
+  })
+})
+
+describe('tenant-edge guard: crypto-posture regressions (Fix 4), each malformed in exactly one dimension', () => {
+  it('an RS256-signed token is rejected (the verifier pins algorithms:[ES256])', async () => {
+    const token = await mintWith({ signingKey: rsPrivateKey, alg: 'RS256' })
+    const res = await request(app.getHttpServer()).get('/probe').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(401)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+  })
+
+  it('a token signed by a different ES256 key not in the injected JWKS -> reject (wrong signer)', async () => {
+    const token = await mintWith({ signingKey: wrongSignerKey })
+    const res = await request(app.getHttpServer()).get('/probe').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(401)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+  })
+
+  it('an expired token (exp in the past) is rejected', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const token = await mintWith({ signingKey: privateKey, iat: now - 600, nbf: now - 600, exp: now - 300 })
+    const res = await request(app.getHttpServer()).get('/probe').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(401)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.reasonCode).toBe('token-verify-failed')
+  })
+
+  it('a not-yet-valid token (nbf in the future) is rejected', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const token = await mintWith({ signingKey: privateKey, nbf: now + 300, exp: now + 600 })
+    const res = await request(app.getHttpServer()).get('/probe').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(401)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.reasonCode).toBe('token-verify-failed')
+  })
+
+  it('a wrong-issuer token (iss != expectedIss) is rejected', async () => {
+    const token = await mintWith({ signingKey: privateKey, iss: 'https://auth.andpay.test/OTHER' })
+    const res = await request(app.getHttpServer()).get('/probe').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(401)
+
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.reasonCode).toBe('token-verify-failed')
+  })
+})
+
+describe('tenant-edge guard: the authz-audit outbox row never carries the presented token (Fix 5)', () => {
+  it('the RAW outbox payload does not contain the rejected token bytes', async () => {
+    const token = await mint({ mode: 'test' })
+    const res = await request(app.getHttpServer()).get('/probe').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(401)
+
+    const raw = await rawAuditRows()
+    expect(raw).toHaveLength(1)
+    expect(JSON.stringify(raw[0])).not.toContain(token)
   })
 })

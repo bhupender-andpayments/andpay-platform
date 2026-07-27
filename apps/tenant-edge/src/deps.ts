@@ -45,7 +45,11 @@ export function buildTenantEdgeDepsFromEnv(): TenantEdgeDeps {
   if (!expectedIss) {
     throw new Error('TENANT_EDGE_ISS is required (the pinned issuer is never defaulted in code, D3/S10)')
   }
-  const expectedMode: Mode = process.env.TENANT_EDGE_MODE === 'live' ? 'live' : 'test'
+  // The tenant plane is LIVE-ONLY in v1 (S16/Fork D): a future test plane is a
+  // config flip, not a retrofit, so this is not read from an env toggle. An
+  // env-derived mode would fail closed toward 'test' on an unset/mistyped var,
+  // backwards from live-only (accepting a lower-assurance mode:test token).
+  const expectedMode: Mode = 'live'
   const fulfillmentUrl = process.env.FULFILLMENT_DATABASE_URL ?? DEFAULT_FULFILLMENT_DATABASE_URL
   const tmsUrl = process.env.TMS_DATABASE_URL ?? DEFAULT_TMS_DATABASE_URL
 

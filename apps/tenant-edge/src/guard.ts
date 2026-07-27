@@ -54,6 +54,11 @@ export class TenantEdgeGuard implements CanActivate {
         expectedPlane: 'andpay:tenant-portal',
         expectedMode: this.deps.expectedMode,
       })
+      // Defense-in-depth (this class-2-only edge): reject any claim whose
+      // class is not 2, even a validly-signed tenant-portal-aud token, in
+      // case of issuer-side plane/class drift. Class 6 is already rejected
+      // upstream (class6-jwt-rejected); this covers cls 1/3/4/5.
+      if (claim.cls !== 2) throw new EdgeAuthError('class-not-tenant')
       req.claim = claim
       return true
     } catch (err) {
@@ -61,7 +66,14 @@ export class TenantEdgeGuard implements CanActivate {
       // (missing-credential, malformed-authorization, token-verify-failed,
       // mode-mismatch, credential-unknown, ...). It carries no token bytes.
       const reasonCode = err instanceof EdgeAuthError || err instanceof AuthzError ? err.code : 'authn-error'
-      await emitTenantAuthnDeny(this.deps.fulfillmentDb, { traceId, reasonCode })
+      try {
+        // Best-effort audit: a transient outbox/DB failure here must never
+        // turn a 401 into a 500, and must never drop the fail-closed
+        // guarantee below. The error itself is not logged (redaction, S4/5c).
+        await emitTenantAuthnDeny(this.deps.fulfillmentDb, { traceId, reasonCode })
+      } catch {
+        // swallowed: see comment above.
+      }
       throw new UnauthorizedException()
     }
   }
