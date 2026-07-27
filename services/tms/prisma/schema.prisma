@@ -166,6 +166,9 @@ model QuarantineRow {
   rawRow     String   @map("raw_row")
   reasonCode String   @map("reason_code")
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Spec 10c: additive class-3 ops resolution stamp (nullable, expand-contract).
+  resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz(6)
+  resolvedByActor String?   @map("resolved_by_actor") @db.Uuid
 
   @@unique([fileId, rowNo])
   @@map("quarantine_row")

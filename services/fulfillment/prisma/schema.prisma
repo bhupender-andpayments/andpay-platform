@@ -153,6 +153,9 @@ model PendingPoolEntry {
   shipToMobile        String?  @map("ship_to_mobile")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  // Spec 10c: additive class-3 ops release stamp (nullable, expand-contract).
+  releasedByActor     String?  @map("released_by_actor") @db.Uuid
+  releasedAt          DateTime? @map("released_at") @db.Timestamptz(6)
 
   @@map("pending_pool_entry")
 }
@@ -199,6 +202,9 @@ model IntakeException {
   rowRef     String   @map("row_ref")
   reasonCode String   @map("reason_code")
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Spec 10c: additive class-3 ops resolution stamp (nullable, expand-contract).
+  resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz(6)
+  resolvedByActor String?   @map("resolved_by_actor") @db.Uuid
 
   @@map("intake_exception")
 }
@@ -263,6 +269,9 @@ model ComposedArtifact {
   labelQr          String   @map("label_qr") // the QR/VPA value, transmitted never minted (T2)
   bankConfigRef    String?  @map("bank_config_ref") @db.Uuid // reference to bank_composition_config.id, if present
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Spec 10c: additive class-3 ops supersede stamp (nullable, expand-contract).
+  supersededBy     String?  @map("superseded_by") @db.Uuid
+  supersededAt     DateTime? @map("superseded_at") @db.Timestamptz(6)
 
   @@map("composed_artifact")
 }
@@ -325,6 +334,8 @@ model ShptStatusEvent {
   receivedAt       DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
   traceId          String   @map("trace_id")
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Spec 10c: additive class-3 ops override reason (nullable, expand-contract).
+  overrideReason   String?  @map("override_reason")
 
   @@index([shptId])
   @@map("shpt_status_event")
@@ -342,6 +353,9 @@ model CourierStatusException {
   rowRef     String?  @map("row_ref")
   reasonCode String   @map("reason_code")
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Spec 10c: additive class-3 ops resolution stamp (nullable, expand-contract).
+  resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz(6)
+  resolvedByActor String?   @map("resolved_by_actor") @db.Uuid
 
   @@map("courier_status_exception")
 }
