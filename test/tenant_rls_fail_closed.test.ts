@@ -140,13 +140,30 @@ describe('Task 2 tenant READ RLS: restrictive set-membership predicate + per-con
     }
   })
 
-  it('check 1 fail-closed (unset): under fulfillment_read with app.program_ids UNSET, shpt leaks NO rows (fresh session: current_setting NULL, row hidden; pooled session where the placeholder reverted to empty string: the query errors on the malformed array). Either manifestation is fail closed.', async () => {
+  it('check 1 fail-closed (unset): under fulfillment_read with app.program_ids UNSET, shpt leaks NO rows (fresh session: current_setting NULL, row hidden; pooled session where the placeholder reverted to empty string: the query errors on the malformed array). Either manifestation is fail closed, and the error, when one is thrown, MUST be the expected malformed-array cast (Postgres SQLSTATE 22P02); any other error is a real failure, not a fail-closed pass.', async () => {
     let leaked: { program_id: string }[]
     try {
       leaked = await readAs<{ program_id: string }>(fulfillment, 'fulfillment_read', null, 'SELECT program_id FROM shpt')
-    } catch {
+    } catch (err) {
       // An unusable app.program_ids (empty-string placeholder) errors the SELECT
-      // rather than returning rows. No data leaves the database, which is fail closed.
+      // rather than returning rows. No data leaves the database, which is fail
+      // closed, BUT only if this is actually that error: a bare catch-all would
+      // also swallow an unrelated failure (a typo'd role, a dropped connection,
+      // a renamed role) and misreport it as a fail-closed pass. Assert the
+      // caught error is the malformed-array-literal cast error: Prisma surfaces
+      // the underlying Postgres SQLSTATE as err.meta.code, and the message
+      // always contains "malformed array literal" (case-insensitive fallback
+      // for whatever Prisma version/shape carries the code).
+      const meta = (err as { meta?: { code?: string; message?: string } }).meta
+      const sqlstate = meta?.code
+      const pgMessage = meta?.message ?? ''
+      const message = (err as Error).message ?? ''
+      const isMalformedArrayCast =
+        sqlstate === '22P02' || /malformed array literal/i.test(pgMessage) || /malformed array literal/i.test(message)
+      expect(
+        isMalformedArrayCast,
+        `expected the malformed-array cast error (SQLSTATE 22P02), got: ${sqlstate ?? 'no sqlstate'} / ${message || pgMessage}`,
+      ).toBe(true)
       leaked = []
     }
     expect(leaked.length).toBe(0)
@@ -187,6 +204,50 @@ describe('Task 2 tenant READ RLS: restrictive set-membership predicate + per-con
     ).rejects.toThrow(/permission denied/i)
   })
 
+  it('07.B (transaction-scope reset): after a transaction that SET LOCAL ROLE fulfillment_read + set_config app.program_ids COMMITS, a fresh transaction on the same client with NO SET sees the scope reset (current_setting NULL, role reset off fulfillment_read, and full cross-tenant visibility)', async () => {
+    // First transaction: scope down to program A only under fulfillment_read,
+    // confirm the scoping actually bites, then COMMIT (not rollback) so the
+    // property under test is specifically "reset on commit", not "reset on
+    // rollback" (which would be a weaker, less interesting guarantee).
+    await fulfillment.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE fulfillment_read`)
+      await tx.$executeRawUnsafe(`SELECT set_config('app.program_ids', '${set(A)}', true)`)
+      const rows = await tx.$queryRawUnsafe<{ program_id: string }[]>('SELECT program_id FROM shpt')
+      expect(rows.length).toBeGreaterThan(0)
+      expect(rows.every((r) => r.program_id === A)).toBe(true)
+    })
+
+    // Second, FRESH transaction on the same client, with NO SET LOCAL ROLE and
+    // NO set_config at all. SET LOCAL and set_config(..., true) are both
+    // transaction-local (07.B): committing the prior transaction resets both
+    // deterministically, rather than leaking into this one because of
+    // incidental test ordering or connection pooling.
+    await fulfillment.$transaction(async (tx) => {
+      const settingRows = await tx.$queryRawUnsafe<{ setting: string | null }[]>(
+        `SELECT current_setting('app.program_ids', true) AS setting`,
+      )
+      const setting = settingRows[0]!.setting
+      expect(setting === null || setting === '', `app.program_ids must have reset, got: ${String(setting)}`).toBe(
+        true,
+      )
+
+      const roleRows = await tx.$queryRawUnsafe<{ role: string }[]>(`SELECT current_user AS role`)
+      expect(roleRows[0]!.role, 'the role must have reset off fulfillment_read').not.toBe('fulfillment_read')
+
+      // A plain query, now running as the owning superuser (RLS bypassed
+      // entirely) with no read-role restriction in effect, sees ALL three
+      // seeded programs: full cross-tenant visibility, proving the prior
+      // scope-down did not leak into this transaction. Filtered to the three
+      // seeded program ids so unrelated rows left by other test files do not
+      // make this assertion depend on suite-wide isolation.
+      const rows = await tx.$queryRawUnsafe<{ program_id: string }[]>(
+        `SELECT DISTINCT program_id FROM shpt WHERE program_id IN ('${A}','${B}','${C}')`,
+      )
+      const seen = rows.map((r) => r.program_id).sort()
+      expect(seen).toEqual([A, B, C].sort())
+    })
+  })
+
   it('check 11 (least privilege): fulfillment_read has SELECT true and INSERT false on fulfillment.shpt', async () => {
     const rows = await fulfillment.$queryRawUnsafe<{ sel: boolean; ins: boolean }[]>(
       `SELECT has_table_privilege('fulfillment_read','fulfillment.shpt','SELECT') AS sel,
@@ -215,5 +276,63 @@ describe('Task 2 tenant READ RLS: restrictive set-membership predicate + per-con
       expect(rows[0]!.force, `${table} must FORCE row level security`).toBe(true)
       expect(rows[0]!.owner, `${table} owner must not be the read role`).not.toBe('fulfillment_read')
     }
+  })
+
+  // Fix 1 / Fix 4 regression (S13 least privilege): the read roles were
+  // originally granted SELECT ON ALL TABLES IN SCHEMA, which let them read
+  // cross-tenant RLS-ungated rows from tables with no restrictive read
+  // policy, including the peppered-hash credential_projection and the
+  // internal outbox/saga surfaces. A follow-up migration
+  // (20260727000200_tighten_read_grants for fulfillment,
+  // 20260727000010_tighten_read_grants for tms) revokes the broad grant and
+  // re-grants SELECT on ONLY the tenant-facing tables. These assertions prove
+  // that narrowing directly: they FAIL against the broad grant and PASS once
+  // the tightening migration is applied.
+  const FULFILLMENT_NON_TENANT_TABLES = ['credential_projection', 'outbox', 'saga_instance', 'unit', 'vndr'] as const
+
+  it('least privilege (fulfillment): fulfillment_read has NO SELECT on non-tenant-facing tables (credential_projection, outbox, saga_instance, unit, vndr)', async () => {
+    for (const table of FULFILLMENT_NON_TENANT_TABLES) {
+      const rows = await fulfillment.$queryRawUnsafe<{ sel: boolean }[]>(
+        `SELECT has_table_privilege('fulfillment_read', 'fulfillment.${table}', 'SELECT') AS sel`,
+      )
+      expect(rows[0]!.sel, `fulfillment_read must NOT have SELECT on ${table}`).toBe(false)
+    }
+  })
+
+  it('least privilege (fulfillment): fulfillment_read has SELECT on all five tenant-facing tables', async () => {
+    for (const table of FULFILLMENT_READ_TABLES) {
+      const rows = await fulfillment.$queryRawUnsafe<{ sel: boolean }[]>(
+        `SELECT has_table_privilege('fulfillment_read', 'fulfillment.${table}', 'SELECT') AS sel`,
+      )
+      expect(rows[0]!.sel, `fulfillment_read must have SELECT on ${table}`).toBe(true)
+    }
+  })
+
+  it('least privilege (tms symmetry): tms_read has SELECT on assignment and NO SELECT on merchant_projection', async () => {
+    const rows = await tms.$queryRawUnsafe<{ sel_assignment: boolean; sel_merchant: boolean }[]>(
+      `SELECT has_table_privilege('tms_read', 'tms.assignment', 'SELECT') AS sel_assignment,
+              has_table_privilege('tms_read', 'tms.merchant_projection', 'SELECT') AS sel_merchant`,
+    )
+    expect(rows[0]!.sel_assignment, 'tms_read must have SELECT on assignment').toBe(true)
+    expect(rows[0]!.sel_merchant, 'tms_read must NOT have SELECT on merchant_projection').toBe(false)
+  })
+
+  it('check 11 (least privilege, tms symmetry): tms_read has SELECT true and INSERT false on tms.assignment', async () => {
+    const rows = await tms.$queryRawUnsafe<{ sel: boolean; ins: boolean }[]>(
+      `SELECT has_table_privilege('tms_read','tms.assignment','SELECT') AS sel,
+              has_table_privilege('tms_read','tms.assignment','INSERT') AS ins`,
+    )
+    expect(rows[0]!.sel).toBe(true)
+    expect(rows[0]!.ins).toBe(false)
+  })
+
+  it('catalog (tms symmetry): tms.assignment FORCEs row level security and its owner is not the read role', async () => {
+    const rows = await tms.$queryRawUnsafe<{ force: boolean; owner: string }[]>(
+      `SELECT c.relforcerowsecurity AS force, pg_get_userbyid(c.relowner) AS owner
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'tms' AND c.relname = 'assignment'`,
+    )
+    expect(rows[0]!.force, 'assignment must FORCE row level security').toBe(true)
+    expect(rows[0]!.owner, 'assignment owner must not be the read role').not.toBe('tms_read')
   })
 })

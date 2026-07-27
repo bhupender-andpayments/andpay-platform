@@ -1,0 +1,21 @@
+-- Tighten the fulfillment_read grant to the tenant-facing tables only (S13
+-- least-privilege follow-up to 20260727000100_tenant_read_rls_roles).
+--
+-- That migration granted SELECT ON ALL TABLES IN SCHEMA fulfillment TO
+-- fulfillment_read, which lets fulfillment_read SELECT, cross-tenant and
+-- RLS-ungated, from tables that carry no restrictive tenant-read policy,
+-- including the peppered-hash credential_projection (secrets-adjacent) and
+-- the internal outbox/inbox and saga_instance/saga_step/saga_timer surfaces.
+-- A broad schema-wide grant leaves every one of those tables' rows fully
+-- visible to the read role regardless of RLS.
+--
+-- This migration REVOKEs the broad grant and re-GRANTs SELECT on ONLY the
+-- five tenant-facing tables that carry a _tenant_read restrictive policy:
+-- pending_pool_entry, batch, composed_artifact, shpt, shpt_status_event.
+-- Additive and reversible (S23): REVOKE/GRANT are not destructive DDL (no
+-- DROP, no data loss), and re-running this migration is idempotent (REVOKE
+-- and GRANT are both no-ops if already in the target state). The
+-- fulfillment_write role and its broad own-schema DML are UNCHANGED; the
+-- deferred write-workload role is out of scope here.
+REVOKE SELECT ON ALL TABLES IN SCHEMA fulfillment FROM fulfillment_read;
+GRANT SELECT ON fulfillment.pending_pool_entry, fulfillment.batch, fulfillment.composed_artifact, fulfillment.shpt, fulfillment.shpt_status_event TO fulfillment_read;
