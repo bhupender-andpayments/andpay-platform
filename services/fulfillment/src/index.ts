@@ -66,6 +66,8 @@ export {
 export { type CredentialProjectionRow } from '@andpay/authz'
 export { emitVendorAuthzAudit } from './vendor-audit.js'
 export { enterReadScope } from './read-context.js'
+export { enterWriteScope } from './write-context.js'
+export { OPS_ROLES, loadOpsConfig } from './ops-config.js'
 export {
   readShipments,
   readShipmentStatusTrail,

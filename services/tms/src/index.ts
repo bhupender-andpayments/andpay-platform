@@ -15,4 +15,5 @@ export {
 export { ingestDamageRow, type BankDamageRow } from './damage.js'
 export { UnwiredDevicePort, type DevicePort, type ActivationCommand, type ActivationResult } from './device-port.js'
 export { enterReadScope } from './read-context.js'
+export { enterWriteScope } from './write-context.js'
 export { readAssignments, readAssignmentById, type AssignmentReadRow } from './read.js'
