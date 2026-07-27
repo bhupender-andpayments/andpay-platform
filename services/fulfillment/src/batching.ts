@@ -174,8 +174,12 @@ export interface TriggerBatchOpts {
  * Returns null when the epoch was already processed (deduped) or nothing was
  * POOLED (no spurious/empty batch).
  */
-export async function triggerBatch(
-  db: FulfillmentDb,
+// Injected-tx variant (spec 10c Task 4): the current body verbatim minus the
+// db.$transaction wrapper, so a later ops API can run this effect, the E6
+// onceWithin dedup, and a server-resolved write scope together in ONE
+// caller-supplied transaction. triggerBatch (below) delegates to this.
+export async function triggerBatchWithinTx(
+  tx: Tx,
   tenantWire: string,
   programWire: string,
   reason: string,
@@ -185,12 +189,11 @@ export async function triggerBatch(
   const programUuid = toUuid(programWire)
   let result: { btchId: string; unitCount: number } | null = null
 
-  await db.$transaction(async (tx: Tx) => {
-    await onceWithin(
-      tx,
-      CONSUMER,
-      `batch|${tenantWire}|${programWire}|${reason}|${opts.epoch}`,
-      async () => {
+  await onceWithin(
+    tx,
+    CONSUMER,
+    `batch|${tenantWire}|${programWire}|${reason}|${opts.epoch}`,
+    async () => {
         // pending_pool_entry and batch are PROGRAM-SCOPED (07.A).
         await setProgramContext(tx, programUuid)
 
@@ -300,9 +303,18 @@ export async function triggerBatch(
         result = { btchId: btchWire, unitCount: claimed.length }
       },
     )
-  })
 
   return result
+}
+
+export async function triggerBatch(
+  db: FulfillmentDb,
+  tenantWire: string,
+  programWire: string,
+  reason: string,
+  opts: TriggerBatchOpts,
+): Promise<{ btchId: string; unitCount: number } | null> {
+  return db.$transaction((tx: Tx) => triggerBatchWithinTx(tx, tenantWire, programWire, reason, opts))
 }
 
 /**
@@ -498,21 +510,25 @@ export async function manualTrigger(
  * A no-op (nothing found for asgnId) resolves silently: there is nothing to
  * hold, which is not an error condition for this class-3 op.
  */
-export async function holdEntry(db: FulfillmentDb, asgnIdWire: string, actor: OpsActor): Promise<void> {
+// Injected-tx variant (spec 10c Task 4): the current body verbatim minus the
+// db.$transaction wrapper. holdEntry (below) delegates to this.
+export async function holdEntryWithinTx(tx: Tx, asgnIdWire: string, actor: OpsActor): Promise<void> {
   const asgnUuid = toUuid(asgnIdWire)
 
-  await db.$transaction(async (tx: Tx) => {
-    const rows = await tx.$queryRaw<{ program_id: string }[]>`
-      SELECT program_id::text AS program_id FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
-    `
-    if (rows.length === 0) return // nothing to hold
+  const rows = await tx.$queryRaw<{ program_id: string }[]>`
+    SELECT program_id::text AS program_id FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
+  `
+  if (rows.length === 0) return // nothing to hold
 
-    await setProgramContext(tx, rows[0]!.program_id)
+  await setProgramContext(tx, rows[0]!.program_id)
 
-    await tx.$executeRaw`
-      UPDATE pending_pool_entry
-      SET pool_status = 'HELD', held_by_actor = ${actor.operatorId}::uuid, held_at = now(), updated_at = now()
-      WHERE asgn_id = ${asgnUuid}::uuid AND pool_status = 'POOLED'
-    `
-  })
+  await tx.$executeRaw`
+    UPDATE pending_pool_entry
+    SET pool_status = 'HELD', held_by_actor = ${actor.operatorId}::uuid, held_at = now(), updated_at = now()
+    WHERE asgn_id = ${asgnUuid}::uuid AND pool_status = 'POOLED'
+  `
+}
+
+export async function holdEntry(db: FulfillmentDb, asgnIdWire: string, actor: OpsActor): Promise<void> {
+  await db.$transaction((tx: Tx) => holdEntryWithinTx(tx, asgnIdWire, actor))
 }

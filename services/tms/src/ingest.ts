@@ -31,8 +31,17 @@ export interface BankRequestRow {
 // (D117). On accept: stashes the TMS-owned slice in pending_row and emits
 // fct.tms.bank_file_row.v1 (identity slice + vpaHint only, S7/S5) in the same
 // transaction (E1). Idempotent on {file_id}|{row_no} via the pending_row UNIQUE.
-export async function ingestRequestRow(
-  db: TmsDb,
+//
+// Injected-tx variant (spec 10c Task 4): the original opened two SEPARATE
+// db.$transaction calls, one for the reject sub-path and one for the accept
+// sub-path. For a single input row only ONE of the two sub-paths ever executes
+// (the reject branch returns before the accept branch's code is reached), so
+// collapsing both into the ONE caller-supplied tx below is behavior-equivalent
+// per call: whichever sub-path runs, it runs alone, in one transaction, same as
+// before. This lets a later ops API run the effect plus the E6 inbox dedup and
+// a server-resolved write scope together in a single transaction.
+export async function ingestRequestRowWithinTx(
+  tx: Tx,
   row: BankRequestRow,
   traceId: string,
 ): Promise<'accepted' | 'duplicate' | 'quarantined'> {
@@ -49,64 +58,68 @@ export async function ingestRequestRow(
       : null
   if (rejectReason) {
     let quarantined = false
-    await db.$transaction(async (tx: Tx) => {
-      const won = await tx.$queryRaw<{ id: string }[]>`
-        INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
-        VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_request'}, ${rejectReason})
-        ON CONFLICT (file_id, row_no) DO NOTHING
-        RETURNING id
-      `
-      if (won.length === 0) return // already quarantined: no second counter bump (check 3)
-      quarantined = true
-      await tx.$executeRaw`
-        INSERT INTO ingest_file (file_id, source, tenant_reference, row_total, row_rejected, status)
-        VALUES (${row.fileId}, ${'bank_request'}, ${row.bankReferenceCode}, 1, 1, ${'received'})
-        ON CONFLICT (file_id) DO UPDATE SET row_total = ingest_file.row_total + 1, row_rejected = ingest_file.row_rejected + 1
-      `
-    })
+    const won = await tx.$queryRaw<{ id: string }[]>`
+      INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+      VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_request'}, ${rejectReason})
+      ON CONFLICT (file_id, row_no) DO NOTHING
+      RETURNING id
+    `
+    if (won.length === 0) return 'duplicate' // already quarantined: no second counter bump (check 3)
+    quarantined = true
+    await tx.$executeRaw`
+      INSERT INTO ingest_file (file_id, source, tenant_reference, row_total, row_rejected, status)
+      VALUES (${row.fileId}, ${'bank_request'}, ${row.bankReferenceCode}, 1, 1, ${'received'})
+      ON CONFLICT (file_id) DO UPDATE SET row_total = ingest_file.row_total + 1, row_rejected = ingest_file.row_rejected + 1
+    `
     return quarantined ? 'quarantined' : 'duplicate'
   }
 
   let outcome: 'accepted' | 'duplicate' = 'duplicate'
-  await db.$transaction(async (tx: Tx) => {
-    const won = await tx.$queryRaw<{ id: string }[]>`
-      INSERT INTO pending_row
-        (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, status)
-      VALUES
-        (${correlationId}, ${row.bankReferenceCode}, ${row.soundbox}, ${row.standeeCount}, ${row.stickerCount}, ${row.qrValue}, ${row.vpaValue}, ${row.shipToAddress}, ${row.contactName}, ${row.mobile}, ${'awaiting-identity'})
-      ON CONFLICT (correlation_id) DO NOTHING
-      RETURNING id
-    `
-    if (won.length === 0) return // already ingested: no second fact (check 3)
-    outcome = 'accepted'
+  const won = await tx.$queryRaw<{ id: string }[]>`
+    INSERT INTO pending_row
+      (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, status)
+    VALUES
+      (${correlationId}, ${row.bankReferenceCode}, ${row.soundbox}, ${row.standeeCount}, ${row.stickerCount}, ${row.qrValue}, ${row.vpaValue}, ${row.shipToAddress}, ${row.contactName}, ${row.mobile}, ${'awaiting-identity'})
+    ON CONFLICT (correlation_id) DO NOTHING
+    RETURNING id
+  `
+  if (won.length === 0) return outcome // already ingested: no second fact (check 3)
+  outcome = 'accepted'
 
-    await enqueue(tx, {
-      aggregateType: 'bank_file_row',
-      aggregateId: correlationId,
-      eventType: ROW_FACT_TYPE,
-      partitionKey: `${row.bankReferenceCode}|${row.bankMerchantReference}`,
-      payload: rowFactEnvelope({
-        payload: {
-          bankMerchantReference: row.bankMerchantReference,
-          displayName: row.displayName,
-          legalName: row.legalName,
-          mcc: row.mcc,
-          registeredAddress: row.registeredAddress,
-          bankReferenceCode: row.bankReferenceCode,
-          productType: row.productType,
-          vpaHint: row.vpaHint,
-        },
-        dedupKey: correlationId,
-        traceId,
-        subject: `${row.bankReferenceCode}|${row.bankMerchantReference}`,
-      }),
-    })
-
-    await tx.$executeRaw`
-      INSERT INTO ingest_file (file_id, source, tenant_reference, row_total, row_accepted, status)
-      VALUES (${row.fileId}, ${'bank_request'}, ${row.bankReferenceCode}, 1, 1, ${'received'})
-      ON CONFLICT (file_id) DO UPDATE SET row_total = ingest_file.row_total + 1, row_accepted = ingest_file.row_accepted + 1
-    `
+  await enqueue(tx, {
+    aggregateType: 'bank_file_row',
+    aggregateId: correlationId,
+    eventType: ROW_FACT_TYPE,
+    partitionKey: `${row.bankReferenceCode}|${row.bankMerchantReference}`,
+    payload: rowFactEnvelope({
+      payload: {
+        bankMerchantReference: row.bankMerchantReference,
+        displayName: row.displayName,
+        legalName: row.legalName,
+        mcc: row.mcc,
+        registeredAddress: row.registeredAddress,
+        bankReferenceCode: row.bankReferenceCode,
+        productType: row.productType,
+        vpaHint: row.vpaHint,
+      },
+      dedupKey: correlationId,
+      traceId,
+      subject: `${row.bankReferenceCode}|${row.bankMerchantReference}`,
+    }),
   })
+
+  await tx.$executeRaw`
+    INSERT INTO ingest_file (file_id, source, tenant_reference, row_total, row_accepted, status)
+    VALUES (${row.fileId}, ${'bank_request'}, ${row.bankReferenceCode}, 1, 1, ${'received'})
+    ON CONFLICT (file_id) DO UPDATE SET row_total = ingest_file.row_total + 1, row_accepted = ingest_file.row_accepted + 1
+  `
   return outcome
+}
+
+export async function ingestRequestRow(
+  db: TmsDb,
+  row: BankRequestRow,
+  traceId: string,
+): Promise<'accepted' | 'duplicate' | 'quarantined'> {
+  return db.$transaction((tx: Tx) => ingestRequestRowWithinTx(tx, row, traceId))
 }

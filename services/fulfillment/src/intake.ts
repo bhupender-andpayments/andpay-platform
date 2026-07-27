@@ -77,13 +77,21 @@ function isStructurallyValid(row: IntakeRow): boolean {
 // the outcome; NEVER throws on a rejection or a quarantined row (a thrown
 // error is reserved for a genuine infrastructure failure, which rolls the
 // whole file back per E1).
-export async function ingestIntakeSheet(
-  db: FulfillmentDb,
+//
+// Injected-tx variant (spec 10c Task 4): the current body verbatim minus the
+// db.$transaction wrapper, so a later ops API can run this effect, the E6
+// inbox dedup, and a server-resolved write scope together in ONE
+// caller-supplied transaction. ingestIntakeSheet (below) delegates to this.
+// STEP A/B below make no DB call either way (pure claim/schema checks), so
+// running them against an already-open caller-supplied tx changes nothing
+// observable: no state change happens until STEP C.
+export async function ingestIntakeSheetWithinTx(
+  tx: Tx,
   claim: LeanClaim,
   sheet: IntakeSheet,
   traceId: string,
 ): Promise<IntakeResult> {
-  // STEP A: authorize BEFORE any transaction opens (S8, 105c). The class-6
+  // STEP A: authorize BEFORE any state change (S8, 105c). The class-6
   // gate requires claim.scope.vndr === sheet.vndrId AND claim.scope.wq ===
   // sheet.workQueue (own-vendor-only); a non-class-6 claim hits the human gate
   // and is denied on an unknown role. Either way: no state change.
@@ -95,10 +103,10 @@ export async function ingestIntakeSheet(
   )
   if (!decision.allowed) return emptyResult('unauthorized')
 
-  // STEP B: whole-file schema validation BEFORE any transaction opens
-  // (D103b). One structurally invalid row rejects the WHOLE file: no Units,
-  // no intake_exception rows, no partial credit. This guard must NEVER throw
-  // on untrusted input (a genuine throw is reserved for infra failure, E1): a
+  // STEP B: whole-file schema validation BEFORE any state change (D103b).
+  // One structurally invalid row rejects the WHOLE file: no Units, no
+  // intake_exception rows, no partial credit. This guard must NEVER throw on
+  // untrusted input (a genuine throw is reserved for infra failure, E1): a
   // missing/null/non-array rows field, or a null/primitive row entry, is
   // schema_invalid, not a crash.
   if (
@@ -115,8 +123,7 @@ export async function ingestIntakeSheet(
 
   // STEP C: file idempotency (06.A) on {vendor}|{file_id} via the inbox. A
   // re-ingest of the whole file is a no-op: fn does not run a second time.
-  const ran = await db.$transaction(async (tx: Tx) => {
-    return onceWithin(tx, CONSUMER, `${sheet.vndrId}|${sheet.fileId}`, async () => {
+  const ran = await onceWithin(tx, CONSUMER, `${sheet.vndrId}|${sheet.fileId}`, async () => {
       // Business-malformed detection (D103d): a device_serial repeated WITHIN
       // this file is well formed but ambiguous (which row is the real
       // procurement record?). NEVER auto-guess: keep the first occurrence,
@@ -213,7 +220,15 @@ export async function ingestIntakeSheet(
         })
       }
     })
-  })
 
   return { createdUnitIds, quarantined, deduped: !ran }
+}
+
+export async function ingestIntakeSheet(
+  db: FulfillmentDb,
+  claim: LeanClaim,
+  sheet: IntakeSheet,
+  traceId: string,
+): Promise<IntakeResult> {
+  return db.$transaction((tx: Tx) => ingestIntakeSheetWithinTx(tx, claim, sheet, traceId))
 }

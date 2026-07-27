@@ -17,22 +17,35 @@ export interface OpsActor {
 // (C4: fulfillment cannot write Auth's 6e store); v1 records only the vendor
 // row. actor/traceId are accepted now so the call shape is stable once the
 // audited path lands.
-export async function createVendor(
-  db: FulfillmentDb,
+// Injected-tx variant (spec 10c Task 4): the current body verbatim minus the
+// db.$transaction wrapper, so a later ops API can run this effect under a
+// server-resolved write scope in a caller-supplied transaction. createVendor
+// (below) delegates to this. actor/traceId stay unused here too (see the
+// comment above): they are accepted so the call shape is stable once the
+// audited path lands.
+export async function createVendorWithinTx(
+  tx: Tx,
   input: CreateVendorInput,
   _actor: OpsActor,
   _traceId: string,
 ): Promise<{ vndrId: string }> {
   const uuid = toUuid(newId('vndr'))
-  await db.$transaction(async (tx: Tx) => {
-    // updated_at is @updatedAt in the Prisma schema, which is client-API
-    // middleware only (it does not run for $executeRaw) and the column has no
-    // DB-level DEFAULT, so it must be set explicitly here (same pattern as
-    // tms/src/damage.ts and tms/src/assignment.ts).
-    await tx.$executeRaw`
-      INSERT INTO vndr (id, type, display_name, status, updated_at)
-      VALUES (${uuid}::uuid, ${input.type}, ${input.displayName}, ${'ACTIVE'}, now())
-    `
-  })
+  // updated_at is @updatedAt in the Prisma schema, which is client-API
+  // middleware only (it does not run for $executeRaw) and the column has no
+  // DB-level DEFAULT, so it must be set explicitly here (same pattern as
+  // tms/src/damage.ts and tms/src/assignment.ts).
+  await tx.$executeRaw`
+    INSERT INTO vndr (id, type, display_name, status, updated_at)
+    VALUES (${uuid}::uuid, ${input.type}, ${input.displayName}, ${'ACTIVE'}, now())
+  `
   return { vndrId: fromUuid('vndr', uuid) }
+}
+
+export async function createVendor(
+  db: FulfillmentDb,
+  input: CreateVendorInput,
+  actor: OpsActor,
+  traceId: string,
+): Promise<{ vndrId: string }> {
+  return db.$transaction((tx: Tx) => createVendorWithinTx(tx, input, actor, traceId))
 }
