@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { PrismaClient as FulfillmentClient } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 
