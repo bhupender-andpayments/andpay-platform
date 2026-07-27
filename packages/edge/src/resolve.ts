@@ -69,6 +69,7 @@ export async function resolveClaimFromAuthHeader(
       leewaySec: deps.leewaySec,
       now: deps.now,
       denylist: deps.denylist,
+      expectedMode: deps.expectedMode,
     })
     // Class 6 is produced ONLY by local apsk_ resolution and is NEVER minted
     // as a JWT (105f/5f); a JWT claiming class 6 is a forged or corrupted

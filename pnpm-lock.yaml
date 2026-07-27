@@ -138,6 +138,10 @@ importers:
       '@andpay/authz':
         specifier: workspace:*
         version: link:../authz
+    devDependencies:
+      jose:
+        specifier: ^5.9.6
+        version: 5.10.0
 
   packages/engine:
     dependencies:

@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { createHmac } from 'node:crypto'
+import { SignJWT, exportJWK, generateKeyPair, type JSONWebKeySet, type KeyLike } from 'jose'
 import { resolveClaimFromAuthHeader, EdgeAuthError, type CredentialProjectionRow } from '../src/index.js'
 
 // The ONLY external interaction exercised anywhere in this file is the
@@ -114,5 +115,66 @@ describe('resolveClaimFromAuthHeader (edge local-verify, apsk_ branch)', () => {
       expect(JSON.stringify(err)).not.toContain(secret)
       expect(String((err as Error).message)).not.toContain(secret)
     }
+  })
+})
+
+describe('resolveClaimFromAuthHeader (edge local-verify, JWT branch mode gate, S16 carry-forward)', () => {
+  let jwtJwks: JSONWebKeySet
+  let jwtPriv: KeyLike
+  const jwtIss = 'andpay-auth'
+
+  async function mintJwt(mode: 'live' | 'test'): Promise<string> {
+    const now = Math.floor(Date.now() / 1000)
+    return await new SignJWT({
+      cls: 2,
+      mode,
+      scope: {},
+      psr: 'role:tenant-viewer',
+      epoch: 1,
+    })
+      .setProtectedHeader({ alg: 'ES256', kid: 'dev-1', typ: 'at+jwt' })
+      .setIssuer(jwtIss)
+      .setAudience('andpay:tenant-portal')
+      .setSubject('prn_tenant_1')
+      .setIssuedAt(now)
+      .setNotBefore(now)
+      .setExpirationTime(now + 600)
+      .setJti('jti_tenant_1')
+      .sign(jwtPriv)
+  }
+
+  beforeAll(async () => {
+    const kp = await generateKeyPair('ES256', { extractable: true })
+    jwtPriv = kp.privateKey
+    const pub = await exportJWK(kp.publicKey)
+    jwtJwks = { keys: [{ ...pub, kid: 'dev-1', alg: 'ES256', use: 'sig' }] }
+  })
+
+  it('rejects a mode:test JWT on an edge expecting live (S16 mode gate)', async () => {
+    const jwt = await mintJwt('test')
+    await expect(
+      resolveClaimFromAuthHeader('Bearer ' + jwt, {
+        pepper: 'x',
+        lookup: () => undefined,
+        jwks: jwtJwks,
+        expectedIss: jwtIss,
+        expectedPlane: 'andpay:tenant-portal',
+        expectedMode: 'live',
+      }),
+    ).rejects.toMatchObject({ code: 'mode-mismatch' })
+  })
+
+  it('resolves a mode:live JWT on an edge expecting live to a cls:2 claim', async () => {
+    const jwt = await mintJwt('live')
+    const claim = await resolveClaimFromAuthHeader('Bearer ' + jwt, {
+      pepper: 'x',
+      lookup: () => undefined,
+      jwks: jwtJwks,
+      expectedIss: jwtIss,
+      expectedPlane: 'andpay:tenant-portal',
+      expectedMode: 'live',
+    })
+    expect(claim.cls).toBe(2)
+    expect(claim.mode).toBe('live')
   })
 })

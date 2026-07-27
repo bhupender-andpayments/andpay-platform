@@ -20,5 +20,8 @@
   "dependencies": {
     "@andpay/authz": "workspace:*",
     "@andpay/audit": "workspace:*"
+  },
+  "devDependencies": {
+    "jose": "^5.9.6"
   }
 }

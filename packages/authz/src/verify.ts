@@ -1,5 +1,5 @@
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose'
-import type { LeanClaim, Plane } from './claims.js'
+import type { LeanClaim, Mode, Plane } from './claims.js'
 import { AuthzError } from './errors.js'
 import { isDenylisted } from './denylist.js'
 
@@ -16,6 +16,10 @@ export interface VerifyOptions {
   now?: number
   // D3 emergency revocation: any principal id or jti, checked on the hot path.
   denylist?: ReadonlySet<string>
+  // The live/test plane this verifier serves (S16). When set, a token whose
+  // mode claim does not match is rejected the same as the apsk_ path in
+  // resolve.ts, so a JWT cannot cross planes any more than an edge secret can.
+  expectedMode?: Mode
 }
 
 // Verify a Decision-3 access token LOCALLY against the JWKS (T4, never a call
@@ -45,6 +49,10 @@ export async function verifyAccessToken(jwt: string, opts: VerifyOptions): Promi
     (typeof payload.jti === 'string' && isDenylisted(payload.jti, opts.denylist))
   ) {
     throw new AuthzError('denylisted')
+  }
+
+  if (opts.expectedMode !== undefined && (payload as { mode?: Mode }).mode !== opts.expectedMode) {
+    throw new AuthzError('mode-mismatch')
   }
 
   return payload as unknown as LeanClaim

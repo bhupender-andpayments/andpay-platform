@@ -104,4 +104,30 @@ describe('verifyAccessToken (RFC 8725 hardening, S10)', () => {
     const t = await mint({}, { typ: 'JWT' })
     await expect(verifyAccessToken(t, { jwks, expectedIss: iss, expectedAud: aud })).rejects.toThrow()
   })
+
+  it('rejects a mode:test token when expectedMode is live (S16 human-plane mode gate)', async () => {
+    const t = await mint({ mode: 'test' })
+    await expect(
+      verifyAccessToken(t, { jwks, expectedIss: iss, expectedAud: aud, expectedMode: 'live' }),
+    ).rejects.toMatchObject({ code: 'mode-mismatch' })
+  })
+
+  it('rejects a token with mode omitted when expectedMode is live', async () => {
+    const t = await mint({ mode: undefined })
+    await expect(
+      verifyAccessToken(t, { jwks, expectedIss: iss, expectedAud: aud, expectedMode: 'live' }),
+    ).rejects.toMatchObject({ code: 'mode-mismatch' })
+  })
+
+  it('accepts a mode:live token when expectedMode is live', async () => {
+    const t = await mint({ mode: 'live' })
+    const claim = await verifyAccessToken(t, { jwks, expectedIss: iss, expectedAud: aud, expectedMode: 'live' })
+    expect(claim.mode).toBe('live')
+  })
+
+  it('regression: omitting expectedMode still succeeds regardless of the token mode', async () => {
+    const t = await mint({ mode: 'test' })
+    const claim = await verifyAccessToken(t, { jwks, expectedIss: iss, expectedAud: aud })
+    expect(claim.mode).toBe('test')
+  })
 })
