@@ -73,10 +73,10 @@ describe('tms schema (spec 06 sections 2, 5, 9)', () => {
   })
 
   it('only assignment has the program_id write-gate; ingest/projection tables are permissive (ratified)', async () => {
-    const pols = await db.$queryRaw<{ tablename: string; qual: string | null; with_check: string | null }[]>`
-      SELECT tablename, qual, with_check FROM pg_policies WHERE schemaname = 'tms'
+    const pols = await db.$queryRaw<{ tablename: string; policyname: string; qual: string | null; with_check: string | null }[]>`
+      SELECT tablename, policyname, qual, with_check FROM pg_policies WHERE schemaname = 'tms'
     `
-    const asgn = pols.find((p) => p.tablename === 'assignment')
+    const asgn = pols.find((p) => p.tablename === 'assignment' && p.policyname.endsWith('_scoped'))
     expect(asgn?.with_check ?? '').toContain("current_setting('app.program_id'")
     for (const t of ['pending_row', 'merchant_projection', 'tenant_projection', 'ingest_file', 'quarantine_row', 'outbox', 'inbox']) {
       const p = pols.find((x) => x.tablename === t)

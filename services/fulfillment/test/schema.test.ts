@@ -159,12 +159,12 @@ describe('fulfillment schema (spec 07 domain + saga + quarantine, spec 08 outbou
   })
 
   it('only pending_pool_entry/batch/batch_pool/composed_artifact/shpt/shpt_status_event have the program_id write-gate; the rest are permissive', async () => {
-    const pols = await db.$queryRaw<{ tablename: string; qual: string | null; with_check: string | null }[]>`
-      SELECT tablename, qual, with_check FROM pg_policies WHERE schemaname = 'fulfillment'
+    const pols = await db.$queryRaw<{ tablename: string; policyname: string; qual: string | null; with_check: string | null }[]>`
+      SELECT tablename, policyname, qual, with_check FROM pg_policies WHERE schemaname = 'fulfillment'
     `
     for (const t of ['pending_pool_entry', 'batch', 'batch_pool', 'composed_artifact', 'shpt', 'shpt_status_event']) {
-      const p = pols.find((x) => x.tablename === t)
-      expect(p, `${t} policy missing`).toBeTruthy()
+      const p = pols.find((x) => x.tablename === t && x.policyname.endsWith('_scoped'))
+      expect(p, `${t} write-gate policy missing`).toBeTruthy()
       expect(p!.with_check ?? '', `${t} must have the program_id write-gate`).toContain(
         "current_setting('app.program_id'",
       )
