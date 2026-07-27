@@ -9,5 +9,6 @@ export {
   DEFAULT_TMS_DATABASE_URL,
 } from './deps.js'
 export { TenantEdgeGuard } from './guard.js'
-export { emitTenantAuthnDeny } from './audit.js'
+export { ReadController } from './read.controller.js'
+export { emitTenantAuthnDeny, emitTenantReadAudit } from './audit.js'
 export type { EdgeRequest } from './request.js'

@@ -8,6 +8,7 @@ import { emitTenantAuthnDeny } from './audit.js'
 interface RequestWithClaim {
   headers: Record<string, string | undefined>
   claim?: LeanClaim
+  traceId?: string
 }
 
 // The pepper is required by resolveClaimFromAuthHeader's type but is only read
@@ -60,6 +61,9 @@ export class TenantEdgeGuard implements CanActivate {
       // upstream (class6-jwt-rejected); this covers cls 1/3/4/5.
       if (claim.cls !== 2) throw new EdgeAuthError('class-not-tenant')
       req.claim = claim
+      // Propagate the guard-minted traceId to the controller so its per-read
+      // 6e authz-audit record correlates with this same authenticated request.
+      req.traceId = traceId
       return true
     } catch (err) {
       // The reasonCode exactly mirrors the code the edge/authz layer threw
