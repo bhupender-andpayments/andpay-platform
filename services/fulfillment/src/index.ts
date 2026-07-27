@@ -65,3 +65,10 @@ export {
 } from './credential-projection.js'
 export { type CredentialProjectionRow } from '@andpay/authz'
 export { emitVendorAuthzAudit } from './vendor-audit.js'
+export { enterReadScope } from './read-context.js'
+export {
+  readShipments,
+  readShipmentStatusTrail,
+  type ShipmentReadRow,
+  type ShipmentStatusEventRow,
+} from './read.js'
