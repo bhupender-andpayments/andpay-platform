@@ -70,8 +70,17 @@ export { type CredentialProjectionRow } from '@andpay/authz'
 export { emitVendorAuthzAudit } from './vendor-audit.js'
 export { enterReadScope } from './read-context.js'
 export { enterWriteScope } from './write-context.js'
-export { correctStatus, overrideTerminal } from './ops.js'
+export {
+  correctStatus,
+  overrideTerminal,
+  recomposeArtifact,
+  holdRecord,
+  releaseRecord,
+  manualBatch,
+  suspendVendor,
+} from './ops.js'
 export { OPS_ROLES, loadOpsConfig } from './ops-config.js'
+export { listVendors, type VendorRow } from './ops-read.js'
 export {
   readShipments,
   readShipmentStatusTrail,
