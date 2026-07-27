@@ -17,3 +17,5 @@ export { UnwiredDevicePort, type DevicePort, type ActivationCommand, type Activa
 export { enterReadScope } from './read-context.js'
 export { enterWriteScope } from './write-context.js'
 export { readAssignments, readAssignmentById, type AssignmentReadRow } from './read.js'
+export { uploadBankFile, uploadDamageFile, resolveQuarantineRow } from './ops.js'
+export { readQuarantineQueue, type QuarantineRowView } from './ops-read.js'
