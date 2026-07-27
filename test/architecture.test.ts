@@ -252,3 +252,127 @@ describe('S20 no-money static guard: the two spec-10a migrations carry no money-
     }
   })
 })
+
+// The T4 no-central-PDP DO-NOT (spec 10b, checks 2/4), mirroring the
+// apps/vendor-edge guard above: apps/tenant-edge resolves the tenant's
+// principal LOCALLY (the human-JWT mode gate carried forward from spec 10a);
+// it NEVER calls Auth on the request path (there is no PDP round trip, the
+// edge IS the PDP, decentralized). A static net over its source, no database
+// or process needed: neither the auth-service package nor a raw services/auth
+// path may appear anywhere under apps/tenant-edge/src.
+//
+// Plant-and-remove recipe (to prove this guard actually bites): temporarily
+// add a line such as
+//   import { resolveTenantPrincipal } from '@andpay/auth-service'
+// (or simply a comment containing the literal string 'services/auth') to any
+// file under apps/tenant-edge/src, e.g. apps/tenant-edge/src/guard.ts. Run
+// `pnpm exec vitest run test/architecture.test.ts`: this describe block
+// fails. Remove the planted line: it passes again.
+describe('no-central-PDP DO-NOT: apps/tenant-edge never calls Auth on the request path (T4, spec 10b)', () => {
+  const tenantEdgeFiles = filesUnder(join('apps', 'tenant-edge', 'src'))
+    .filter((p) => p.endsWith('.ts'))
+    .map((file) => ({ file, text: readFileSync(join(root, file), 'utf8') }))
+
+  it('has files to check', () => {
+    expect(tenantEdgeFiles.length).toBeGreaterThan(0)
+  })
+
+  it('no file under apps/tenant-edge/src references @andpay/auth-service or services/auth', () => {
+    for (const { file, text } of tenantEdgeFiles) {
+      expect(text.includes('@andpay/auth-service'), `${file} must not import @andpay/auth-service`).toBe(false)
+      expect(text.includes('services/auth'), `${file} must not reference services/auth`).toBe(false)
+    }
+  })
+})
+
+// The no-cross-context-Identity-read DO-NOT (spec 10b, check 6): the tenant's
+// merchant view is the tms.assignment snapshot (merchant_display_name,
+// bank_display_name curated onto the assignment row by an earlier fact
+// projection), never a live Identity query. apps/tenant-edge must never read
+// or import services/identity or @andpay/identity; the merchant fields it
+// serves come from tms's own schema only (C4, T1, T7).
+//
+// Plant-and-remove recipe: temporarily add a comment containing the literal
+// string 'services/identity' to any file under apps/tenant-edge/src. Run
+// `pnpm exec vitest run test/architecture.test.ts`: this describe block
+// fails. Remove the planted line: it passes again.
+describe('no-cross-context-Identity-read DO-NOT: apps/tenant-edge never reads Identity (check 6, spec 10b)', () => {
+  const tenantEdgeFiles = filesUnder(join('apps', 'tenant-edge', 'src'))
+    .filter((p) => p.endsWith('.ts'))
+    .map((file) => ({ file, text: readFileSync(join(root, file), 'utf8') }))
+
+  it('has files to check', () => {
+    expect(tenantEdgeFiles.length).toBeGreaterThan(0)
+  })
+
+  it('no file under apps/tenant-edge/src references services/identity or @andpay/identity', () => {
+    for (const { file, text } of tenantEdgeFiles) {
+      expect(text.includes('services/identity'), `${file} must not reference services/identity`).toBe(false)
+      expect(text.includes('@andpay/identity'), `${file} must not reference @andpay/identity`).toBe(false)
+    }
+  })
+})
+
+// S20 no-money static guard (check 7), migration-source level, extended for
+// spec 10b: the four migrations this spec added (the tms and fulfillment
+// tenant-read RLS roles, and the follow-up grant-tightening for each) grepped
+// for a money-surface CREATE TABLE. These migrations only add roles, RLS
+// policies, and GRANTs; they create no table at all, but the check runs
+// regardless (defense in depth, same static net as spec 10a above).
+describe('S20 no-money static guard: the four spec-10b migrations carry no money-surface table (check 7)', () => {
+  const spec10bMigrations = [
+    join('services', 'tms', 'prisma', 'migrations', '20260727000000_tenant_read_rls_roles', 'migration.sql'),
+    join('services', 'fulfillment', 'prisma', 'migrations', '20260727000100_tenant_read_rls_roles', 'migration.sql'),
+    join('services', 'tms', 'prisma', 'migrations', '20260727000010_tighten_read_grants', 'migration.sql'),
+    join('services', 'fulfillment', 'prisma', 'migrations', '20260727000200_tighten_read_grants', 'migration.sql'),
+  ]
+
+  it('has migrations to check', () => {
+    for (const rel of spec10bMigrations) {
+      expect(existsSync(join(root, rel)), `${rel} missing`).toBe(true)
+    }
+  })
+
+  it('none of the four migrations creates a ledger, accounts, entries, or posting_keys table', () => {
+    for (const rel of spec10bMigrations) {
+      const text = readFileSync(join(root, rel), 'utf8')
+      for (const forbidden of ['ledger', 'accounts', 'entries', 'posting_keys']) {
+        const pattern = new RegExp(`CREATE TABLE\\s+"?${forbidden}"?\\b`, 'i')
+        expect(pattern.test(text), `${rel} must not create a ${forbidden} table`).toBe(false)
+      }
+    }
+  })
+})
+
+// No-aggregate DO-NOT (spec 10b, check 7, Fork E row-level only): the tenant
+// read API (services/tms/src/read.ts, services/fulfillment/src/read.ts) is
+// curated row-level SELECT only, no aggregation, dashboard, or analytics
+// surface (that is spec 11 / analytics S19, out of scope here). A static net
+// over the two read modules' source for a count(, group by, or sum( call.
+//
+// Plant-and-remove recipe: temporarily add a line such as
+//   // count(*) for a total
+// (any text matching /\b(count|group\s+by|sum)\s*\(/i) to
+// services/tms/src/read.ts. Run `pnpm exec vitest run test/architecture.test.ts`:
+// this describe block fails. Remove the planted line: it passes again.
+describe('no-aggregate DO-NOT: the tenant read API is row-level only, no count/group by/sum (check 7, spec 10b)', () => {
+  const readModules = [
+    join('services', 'tms', 'src', 'read.ts'),
+    join('services', 'fulfillment', 'src', 'read.ts'),
+  ]
+
+  it('has files to check', () => {
+    for (const rel of readModules) {
+      const text = readFileSync(join(root, rel), 'utf8')
+      expect(text.length, `${rel} must be non-empty`).toBeGreaterThan(0)
+    }
+  })
+
+  it('neither read module contains a count(, group by, or sum( aggregate call', () => {
+    const AGGREGATE = /\b(count|group\s+by|sum)\s*\(/i
+    for (const rel of readModules) {
+      const text = readFileSync(join(root, rel), 'utf8')
+      expect(AGGREGATE.test(text), `${rel} must not contain an aggregate call`).toBe(false)
+    }
+  })
+})

@@ -77,9 +77,6 @@ importers:
 
   apps/tenant-edge:
     dependencies:
-      '@andpay/audit':
-        specifier: workspace:*
-        version: link:../../packages/audit
       '@andpay/authz':
         specifier: workspace:*
         version: link:../../packages/authz
@@ -89,9 +86,6 @@ importers:
       '@andpay/fulfillment-service':
         specifier: workspace:*
         version: link:../../services/fulfillment
-      '@andpay/outbox':
-        specifier: workspace:*
-        version: link:../../packages/outbox
       '@andpay/tms-service':
         specifier: workspace:*
         version: link:../../services/tms
