@@ -42,6 +42,20 @@ function set(...ids: string[]): string {
   return `{${ids.join(',')}}`
 }
 
+// Structural shape shared by both generated Prisma clients (and their
+// in-transaction clients): enough to run raw SQL inside a transaction. The
+// two real client types are distinct generated classes, so a plain union
+// makes $transaction uncallable (TS2349); this narrow structural type is
+// what both satisfy, so readAs can stay generic over either context's client
+// without weakening the test or reaching for `any`.
+type RawTx = {
+  $executeRawUnsafe: (query: string, ...values: unknown[]) => Promise<number>
+  $queryRawUnsafe: <U = unknown>(query: string, ...values: unknown[]) => Promise<U>
+}
+type RawTxRunner = {
+  $transaction: <R>(fn: (tx: RawTx) => Promise<R>) => Promise<R>
+}
+
 // Run a read as a context role inside ONE transaction: SET LOCAL ROLE (tx
 // scoped, auto-reset on commit), set_config app.program_ids (is_local = true),
 // then the caller's raw SELECT. This is what makes RLS actually bite.
@@ -51,7 +65,8 @@ async function readAs<T = Record<string, unknown>>(
   programIds: string | null,
   sql: string,
 ): Promise<T[]> {
-  return db.$transaction(async (tx) => {
+  const runner = db as unknown as RawTxRunner
+  return runner.$transaction(async (tx) => {
     await tx.$executeRawUnsafe(`SET LOCAL ROLE ${role}`)
     if (programIds !== null) {
       await tx.$executeRawUnsafe(`SELECT set_config('app.program_ids', '${programIds}', true)`)
