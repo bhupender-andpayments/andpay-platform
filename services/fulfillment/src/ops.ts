@@ -7,6 +7,7 @@ import { enterWriteScope } from './write-context.js'
 import { advanceShipmentStatus, type AdvanceOutcome } from './courier-status.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
 import { holdEntryWithinTx, triggerBatchWithinTx } from './batching.js'
+import { ingestIntakeSheetWithinTx, isSheetStructurallyValid, type IntakeSheet, type IntakeResult } from './intake.js'
 
 // spec 10c ops writes on shpt_ (Task 6). Both handlers are class-3 human ops
 // actions (D-3); the ops HTTP edge (T9) calls these in-process and enforces
@@ -147,6 +148,116 @@ export async function overrideTerminal(
     })
   })
   return { deduped: !ran, overridden: true }
+}
+
+/**
+ * Resolve a `courier_status_exception` (spec 10c Task 8, check 9 sibling):
+ * the class-3 ops operator supplies the CORRECT courier/AWB status, which
+ * RE-DRIVES the very same C3-guarded `advanceShipmentStatus` the courier
+ * channel itself uses (OPS_MANUAL source), then stamps the exception row's
+ * resolved_at/resolved_by_actor. `courier_status_exception` is append-only
+ * (Fork F/A2): this is the ONLY write this function makes against it, and
+ * only when resolved_at was still NULL (a stale/replayed resolve is a no-op
+ * on the stamp; the client-key dedup below already prevents a second
+ * advance).
+ *
+ * The shpt's program is resolved SERVER-SIDE by shptId (never a request
+ * body, M7/S16/D99), reusing the SAME `resolveProgramAndAwb` helper T6
+ * already uses elsewhere in this file, which also yields the awb the
+ * StatusUpdate needs. A shptId that resolves to nothing THROWS (same
+ * throw-on-not-found policy `resolveProgramAndAwb`'s other callers apply;
+ * the ops HTTP edge, T9, maps this to a 4xx).
+ */
+export async function resolveStatusException(
+  db: FulfillmentDb,
+  args: {
+    exceptionId: string
+    shptId: string
+    status: string
+    courierTimestamp: Date
+    clientKey: string
+    actorId: string
+    traceId: string
+  },
+): Promise<{ deduped: boolean; outcome: AdvanceOutcome | null }> {
+  let outcome: AdvanceOutcome | null = null
+
+  const ran = await db.$transaction(async (tx: Tx) => {
+    const { programId, awb } = await resolveProgramAndAwb(tx, args.shptId)
+    await enterWriteScope(tx, 'fulfillment_write', programId)
+
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:resolve-status-exception'), async () => {
+      outcome = await advanceShipmentStatus(tx, {
+        awb,
+        status: args.status,
+        courierTimestamp: args.courierTimestamp,
+        source: 'OPS_MANUAL',
+        sourceRef: args.actorId,
+        traceId: args.traceId,
+      })
+
+      await tx.$executeRaw`
+        UPDATE courier_status_exception
+        SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid
+        WHERE id = ${args.exceptionId}::uuid AND resolved_at IS NULL
+      `
+    })
+  })
+
+  return { deduped: !ran, outcome: ran ? outcome : null }
+}
+
+/**
+ * Resolve an `intake_exception` (spec 10c Task 8, check 9 sibling): the
+ * class-3 ops operator is authorized at the HTTP edge (T9,
+ * `authorizeHuman 'ops:resolve-intake-exception'`), NOT via intake's own
+ * STEP A vendor-authorize (`ingestIntakeSheet`'s class-6 gate would reject a
+ * class-3 claim outright). So this function never calls the public
+ * `ingestIntakeSheet`; instead it runs STEP B itself, the SAME whole-sheet
+ * schema validation `ingestIntakeSheet` uses (`isSheetStructurallyValid`,
+ * exported from intake.ts for exactly this reuse), and THROWS on a
+ * structurally invalid corrected sheet BEFORE opening any transaction: no
+ * write of any kind happens on a rejected sheet, not even the resolved_at
+ * stamp.
+ *
+ * `intake_exception` and the `unit` table's intake writes are PLATFORM-ONLY
+ * (permissive FORCE RLS, `USING (true)`/`WITH CHECK (true)`, no program
+ * gate; verified against the migrations, unit_v1/intake_exception_v1), so
+ * this enters `fulfillment_write` bare, with no program to set (mirrors
+ * `suspendVendor`'s bare-role pattern elsewhere in this file).
+ *
+ * `intake_exception` is append-only (Fork F/A2): the ONLY write this makes
+ * against it is stamping resolved_at/resolved_by_actor, and only when
+ * resolved_at was still NULL. The re-drive itself goes through
+ * `ingestIntakeSheetWithinTx` (STEP C, Task 4), which carries its OWN
+ * {vendor}|{file_id} inbox key; a corrected sheet should use a fresh fileId
+ * so it is not itself deduped away as a replay of the ORIGINAL failed file.
+ */
+export async function resolveIntakeException(
+  db: FulfillmentDb,
+  args: { exceptionId: string; correctedSheet: IntakeSheet; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean; result: IntakeResult | null }> {
+  if (!isSheetStructurallyValid(args.correctedSheet)) {
+    throw new Error('corrected sheet is structurally invalid (STEP B)')
+  }
+
+  let result: IntakeResult | null = null
+
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:resolve-intake-exception'), async () => {
+      result = await ingestIntakeSheetWithinTx(tx, args.correctedSheet, args.traceId)
+
+      await tx.$executeRaw`
+        UPDATE intake_exception
+        SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid
+        WHERE id = ${args.exceptionId}::uuid AND resolved_at IS NULL
+      `
+    })
+  })
+
+  return { deduped: !ran, result: ran ? result : null }
 }
 
 interface PriorArtifact {

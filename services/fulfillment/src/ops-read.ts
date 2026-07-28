@@ -53,3 +53,140 @@ export async function listVendors(db: FulfillmentDb): Promise<VendorRow[]> {
   })
   return rows.map(toVendorDto)
 }
+
+// The two fulfillment exception surfaces (spec 10c Task 8, check 9): both
+// `intake_exception` and `courier_status_exception` are PLATFORM-ONLY
+// (permissive FORCE RLS, no program_id column), so these enter the ops read
+// role bare, exactly like `listVendors` above. Neither table is granted to
+// `fulfillment_read` (the tenant read role, tightened in
+// 20260727000200_tighten_read_grants to the five tenant-facing tables only),
+// so a read attempt under that role hits a Postgres permission-denied error,
+// not an empty result (check 9 exclusion, asserted in ops-exceptions.test.ts).
+//
+// NO aggregate here (a later guard scans this file): a plain row-list SELECT
+// only, `WHERE resolved_at IS NULL` unless the caller opts into resolved rows.
+export interface IntakeExceptionView {
+  id: string
+  vndrId: string
+  fileId: string
+  rowRef: string
+  reasonCode: string
+  createdAt: Date
+  resolvedAt: Date | null
+  resolvedByActor: string | null
+}
+
+interface IntakeExceptionDbRow {
+  id: string
+  vndr_id: string
+  file_id: string
+  row_ref: string
+  reason_code: string
+  created_at: Date
+  resolved_at: Date | null
+  resolved_by_actor: string | null
+}
+
+function toIntakeExceptionDto(r: IntakeExceptionDbRow): IntakeExceptionView {
+  return {
+    id: r.id,
+    vndrId: r.vndr_id,
+    fileId: r.file_id,
+    rowRef: r.row_ref,
+    reasonCode: r.reason_code,
+    createdAt: r.created_at,
+    resolvedAt: r.resolved_at,
+    resolvedByActor: r.resolved_by_actor,
+  }
+}
+
+export async function readIntakeExceptions(
+  db: FulfillmentDb,
+  { includeResolved }: { includeResolved: boolean },
+): Promise<IntakeExceptionView[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    if (includeResolved) {
+      return tx.$queryRaw<IntakeExceptionDbRow[]>`
+        SELECT id::text AS id, vndr_id::text AS vndr_id, file_id, row_ref, reason_code, created_at,
+               resolved_at, resolved_by_actor::text AS resolved_by_actor
+        FROM intake_exception
+        ORDER BY created_at
+      `
+    }
+    return tx.$queryRaw<IntakeExceptionDbRow[]>`
+      SELECT id::text AS id, vndr_id::text AS vndr_id, file_id, row_ref, reason_code, created_at,
+             resolved_at, resolved_by_actor::text AS resolved_by_actor
+      FROM intake_exception
+      WHERE resolved_at IS NULL
+      ORDER BY created_at
+    `
+  })
+  return rows.map(toIntakeExceptionDto)
+}
+
+export interface CourierStatusExceptionView {
+  id: string
+  vndrId: string
+  channel: string
+  subjectRef: string
+  fileId: string | null
+  rowRef: string | null
+  reasonCode: string
+  createdAt: Date
+  resolvedAt: Date | null
+  resolvedByActor: string | null
+}
+
+interface CourierStatusExceptionDbRow {
+  id: string
+  vndr_id: string
+  channel: string
+  subject_ref: string
+  file_id: string | null
+  row_ref: string | null
+  reason_code: string
+  created_at: Date
+  resolved_at: Date | null
+  resolved_by_actor: string | null
+}
+
+function toCourierStatusExceptionDto(r: CourierStatusExceptionDbRow): CourierStatusExceptionView {
+  return {
+    id: r.id,
+    vndrId: r.vndr_id,
+    channel: r.channel,
+    subjectRef: r.subject_ref,
+    fileId: r.file_id,
+    rowRef: r.row_ref,
+    reasonCode: r.reason_code,
+    createdAt: r.created_at,
+    resolvedAt: r.resolved_at,
+    resolvedByActor: r.resolved_by_actor,
+  }
+}
+
+export async function readCourierStatusExceptions(
+  db: FulfillmentDb,
+  { includeResolved }: { includeResolved: boolean },
+): Promise<CourierStatusExceptionView[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    if (includeResolved) {
+      return tx.$queryRaw<CourierStatusExceptionDbRow[]>`
+        SELECT id::text AS id, vndr_id::text AS vndr_id, channel, subject_ref, file_id, row_ref,
+               reason_code, created_at, resolved_at, resolved_by_actor::text AS resolved_by_actor
+        FROM courier_status_exception
+        ORDER BY created_at
+      `
+    }
+    return tx.$queryRaw<CourierStatusExceptionDbRow[]>`
+      SELECT id::text AS id, vndr_id::text AS vndr_id, channel, subject_ref, file_id, row_ref,
+             reason_code, created_at, resolved_at, resolved_by_actor::text AS resolved_by_actor
+      FROM courier_status_exception
+      WHERE resolved_at IS NULL
+      ORDER BY created_at
+    `
+  })
+  return rows.map(toCourierStatusExceptionDto)
+}

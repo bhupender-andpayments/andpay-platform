@@ -73,6 +73,19 @@ function isStructurallyValid(row: IntakeRow): boolean {
   return false // an unrecognized kind is structurally invalid, not a business case
 }
 
+// Whole-SHEET STEP B (D103b), exported so a caller that must NOT run STEP A
+// (spec 10c Task 8: resolveIntakeException in ops.ts, whose class-3 operator
+// is authorized at the HTTP edge, not via this file's own vendor-authorize)
+// can still run the SAME schema validation `ingestIntakeSheet` uses, on the
+// corrected sheet, BEFORE opening a transaction. A missing/null/non-array
+// rows field, or a null/primitive row entry, is invalid, never a crash.
+export function isSheetStructurallyValid(sheet: IntakeSheet): boolean {
+  return (
+    Array.isArray(sheet.rows) &&
+    sheet.rows.every((row) => row !== null && typeof row === 'object' && isStructurallyValid(row as IntakeRow))
+  )
+}
+
 // STEP C only (spec 10c Task 4, re-split in fix wave 1): the transactional DB
 // work for one manufacturer intake sheet (06.A file idempotency, per-row
 // duplicate-serial quarantine, Unit inserts, outbox enqueue). Takes an
@@ -223,13 +236,7 @@ export async function ingestIntakeSheet(
   // on untrusted input (a genuine throw is reserved for infra failure, E1): a
   // missing/null/non-array rows field, or a null/primitive row entry, is
   // schema_invalid, not a crash.
-  if (
-    !Array.isArray(sheet.rows) ||
-    sheet.rows.some(
-      (row) => row === null || typeof row !== 'object' || !isStructurallyValid(row as IntakeRow),
-    )
-  )
-    return emptyResult('schema_invalid')
+  if (!isSheetStructurallyValid(sheet)) return emptyResult('schema_invalid')
 
   return db.$transaction((tx: Tx) => ingestIntakeSheetWithinTx(tx, sheet, traceId))
 }

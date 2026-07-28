@@ -28,6 +28,7 @@ export {
   type IntakeResult,
   ingestIntakeSheet,
   ingestIntakeSheetWithinTx,
+  isSheetStructurallyValid,
 } from './intake.js'
 export { consumeBatchFact } from './dispatch.js'
 export { type AdapterFunction, type PackageLine, buildDispatchPackage } from './package.js'
@@ -78,9 +79,18 @@ export {
   releaseRecord,
   manualBatch,
   suspendVendor,
+  resolveIntakeException,
+  resolveStatusException,
 } from './ops.js'
 export { OPS_ROLES, loadOpsConfig } from './ops-config.js'
-export { listVendors, type VendorRow } from './ops-read.js'
+export {
+  listVendors,
+  type VendorRow,
+  readIntakeExceptions,
+  readCourierStatusExceptions,
+  type IntakeExceptionView,
+  type CourierStatusExceptionView,
+} from './ops-read.js'
 export {
   readShipments,
   readShipmentStatusTrail,
