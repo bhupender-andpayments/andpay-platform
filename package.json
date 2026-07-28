@@ -28,6 +28,7 @@
     "@andpay/fulfillment-service": "workspace:*",
     "@andpay/identity-service": "workspace:*",
     "@andpay/ids": "workspace:*",
+    "@andpay/ops-edge": "workspace:*",
     "@andpay/tenant-edge": "workspace:*",
     "@andpay/tms-service": "workspace:*",
     "@eslint/js": "^9.18.0",

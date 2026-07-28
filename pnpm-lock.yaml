@@ -32,6 +32,9 @@ importers:
       '@andpay/ids':
         specifier: workspace:*
         version: link:packages/ids
+      '@andpay/ops-edge':
+        specifier: workspace:*
+        version: link:apps/ops-edge
       '@andpay/tenant-edge':
         specifier: workspace:*
         version: link:apps/tenant-edge
