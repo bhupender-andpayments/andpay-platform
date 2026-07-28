@@ -20,6 +20,9 @@ importers:
       '@andpay/edge':
         specifier: workspace:*
         version: link:packages/edge
+      '@andpay/engine':
+        specifier: workspace:*
+        version: link:packages/engine
       '@andpay/envelope':
         specifier: workspace:*
         version: link:packages/envelope
@@ -35,6 +38,9 @@ importers:
       '@andpay/ops-edge':
         specifier: workspace:*
         version: link:apps/ops-edge
+      '@andpay/outbox':
+        specifier: workspace:*
+        version: link:packages/outbox
       '@andpay/tenant-edge':
         specifier: workspace:*
         version: link:apps/tenant-edge
