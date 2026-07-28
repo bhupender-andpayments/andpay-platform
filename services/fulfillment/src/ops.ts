@@ -8,6 +8,7 @@ import { advanceShipmentStatus, type AdvanceOutcome } from './courier-status.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
 import { holdEntryWithinTx, triggerBatchWithinTx } from './batching.js'
 import { ingestIntakeSheetWithinTx, isSheetStructurallyValid, type IntakeSheet, type IntakeResult } from './intake.js'
+import { createVendorWithinTx } from './vendor.js'
 
 // spec 10c ops writes on shpt_ (Task 6). Both handlers are class-3 human ops
 // actions (D-3); the ops HTTP edge (T9) calls these in-process and enforces
@@ -530,4 +531,42 @@ export async function suspendVendor(
   })
 
   return { deduped: !ran }
+}
+
+/**
+ * Vendor create as a class-3 ops action (Task 9 wrapper): the thin ops
+ * counterpart to `createVendor`, the one that carries the client-key
+ * idempotency the ops HTTP edge (T9) requires (Fork D). vndr is PLATFORM-ONLY
+ * (no program_id, permissive FORCE RLS), so this enters the write role bare,
+ * with no program to set, exactly like `suspendVendor` above, then runs the
+ * SAME `createVendorWithinTx` effect the non-ops `createVendor` uses, under a
+ * `onceWithin` keyed by the client-supplied action key, so a replay of the same
+ * clientKey does not create a second vendor. Step-up is not required for create
+ * (it is not in OPS_STEP_UP_CATALOG); the edge enforces authz there.
+ *
+ * `deduped: true` means this call was a client-key replay (the E6 inbox already
+ * created the vendor on the original call); `vndrId` is only meaningful when
+ * `deduped` is false and is `null` on a replay (the created id is not re-derived
+ * from a dedup, mirroring the other ops wrappers in this file).
+ */
+export async function createVendorOps(
+  db: FulfillmentDb,
+  args: { type: string; displayName: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean; vndrId: string | null }> {
+  let vndrId: string | null = null
+
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:vendor-create'), async () => {
+      const res = await createVendorWithinTx(
+        tx,
+        { type: args.type, displayName: args.displayName },
+        { operatorId: args.actorId },
+        args.traceId,
+      )
+      vndrId = res.vndrId
+    })
+  })
+
+  return { deduped: !ran, vndrId: ran ? vndrId : null }
 }

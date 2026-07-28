@@ -79,6 +79,7 @@ export {
   releaseRecord,
   manualBatch,
   suspendVendor,
+  createVendorOps,
   resolveIntakeException,
   resolveStatusException,
 } from './ops.js'

@@ -1,0 +1,50 @@
+import { Controller, Get, HttpCode, Inject, Query, UseGuards } from '@nestjs/common'
+import {
+  listVendors,
+  readIntakeExceptions,
+  readCourierStatusExceptions,
+  type VendorRow,
+  type IntakeExceptionView,
+  type CourierStatusExceptionView,
+} from '@andpay/fulfillment-service'
+import { readQuarantineQueue, type QuarantineRowView } from '@andpay/tms-service'
+import { OpsEdgeGuard } from './guard.js'
+import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
+
+// The class-3 ops READ edge (spec 10c, Task 9). Guard-only (an authenticated
+// class-3 operator): reads are NOT mutations (check 3), so there is NO per-op
+// D2 authorize and NO 6e emit here. The `fulfillment_ops_read` / `tms_ops_read`
+// DB roles the read APIs set internally scope the visible data; a read attempt
+// under the tenant read role hits a Postgres permission-denied, not an empty
+// result. @UseGuards is at the CLASS level so every route is authenticated by
+// construction. `?includeResolved=true` opts a queue into its resolved rows;
+// the default is the open (unresolved) queue.
+@Controller('ops')
+@UseGuards(OpsEdgeGuard)
+export class OpsReadController {
+  constructor(@Inject(EDGE_DEPS) private readonly deps: OpsEdgeDeps) {}
+
+  @Get('vendors')
+  @HttpCode(200)
+  async vendors(): Promise<VendorRow[]> {
+    return listVendors(this.deps.fulfillmentDb)
+  }
+
+  @Get('quarantine')
+  @HttpCode(200)
+  async quarantine(@Query('includeResolved') includeResolved?: string): Promise<QuarantineRowView[]> {
+    return readQuarantineQueue(this.deps.tmsDb, { includeResolved: includeResolved === 'true' })
+  }
+
+  @Get('exceptions/intake')
+  @HttpCode(200)
+  async intakeExceptions(@Query('includeResolved') includeResolved?: string): Promise<IntakeExceptionView[]> {
+    return readIntakeExceptions(this.deps.fulfillmentDb, { includeResolved: includeResolved === 'true' })
+  }
+
+  @Get('exceptions/status')
+  @HttpCode(200)
+  async statusExceptions(@Query('includeResolved') includeResolved?: string): Promise<CourierStatusExceptionView[]> {
+    return readCourierStatusExceptions(this.deps.fulfillmentDb, { includeResolved: includeResolved === 'true' })
+  }
+}
