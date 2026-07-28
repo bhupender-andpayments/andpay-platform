@@ -47,16 +47,25 @@ async function seedComposedArtifact(
   asgnUuid: string,
   tenantUuid: string,
   programUuid: string,
-  overrides: Partial<{ assetReference: string; labelDisplayName: string; labelQr: string; bankConfigRef: string | null }> = {},
+  overrides: Partial<{
+    artifactType: string
+    assetReference: string
+    labelDisplayName: string
+    labelQr: string
+    bankConfigRef: string | null
+    btchUuid: string
+    createdAt: Date
+  }> = {},
 ): Promise<{ id: string; btchUuid: string }> {
-  const btchUuid = toUuid(newId('btch'))
+  const btchUuid = overrides.btchUuid ?? toUuid(newId('btch'))
   const rows = await db.$queryRaw<{ id: string }[]>`
     INSERT INTO composed_artifact
-      (id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr, bank_config_ref)
+      (id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr, bank_config_ref, created_at)
     VALUES
       (gen_random_uuid(), ${asgnUuid}::uuid, ${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid,
-       'SOUNDBOX_IMG', ${overrides.assetReference ?? 'ref/soundbox-1'}, ${overrides.labelDisplayName ?? 'Acme'},
-       ${overrides.labelQr ?? 'upi://pay?pa=acme@hdfcbank'}, ${overrides.bankConfigRef ?? null}::uuid)
+       ${overrides.artifactType ?? 'SOUNDBOX_IMG'}, ${overrides.assetReference ?? 'ref/soundbox-1'}, ${overrides.labelDisplayName ?? 'Acme'},
+       ${overrides.labelQr ?? 'upi://pay?pa=acme@hdfcbank'}, ${overrides.bankConfigRef ?? null}::uuid,
+       ${overrides.createdAt ?? BASE})
     RETURNING id::text AS id
   `
   return { id: rows[0]!.id, btchUuid }
@@ -68,11 +77,12 @@ async function artifactRows(asgnUuid: string) {
       id: string; asgn_id: string; btch_id: string; tenant_id: string; program_id: string
       artifact_type: string; asset_reference: string; label_display_name: string; label_qr: string
       bank_config_ref: string | null; superseded_by: string | null; superseded_at: Date | null
+      created_at: Date
     }[]
   >`
     SELECT id::text AS id, asgn_id::text AS asgn_id, btch_id::text AS btch_id, tenant_id::text AS tenant_id,
            program_id::text AS program_id, artifact_type, asset_reference, label_display_name, label_qr,
-           bank_config_ref::text AS bank_config_ref, superseded_by::text AS superseded_by, superseded_at
+           bank_config_ref::text AS bank_config_ref, superseded_by::text AS superseded_by, superseded_at, created_at
     FROM composed_artifact WHERE asgn_id = ${asgnUuid}::uuid ORDER BY created_at
   `
 }
@@ -100,6 +110,7 @@ describe('recomposeArtifact (spec 10c Task 7, D116 same-ship-to path)', () => {
 
     const res = await recomposeArtifact(db, {
       asgnId: asgnWire,
+      artifactType: 'SOUNDBOX_IMG',
       requestedShipTo: 'Same Address',
       clientKey: randomUUID(),
       actorId: randomUUID(),
@@ -137,6 +148,7 @@ describe('recomposeArtifact (spec 10c Task 7, D116 same-ship-to path)', () => {
     await expect(
       recomposeArtifact(db, {
         asgnId: asgnWire,
+        artifactType: 'SOUNDBOX_IMG',
         requestedShipTo: 'Changed Address',
         clientKey: randomUUID(),
         actorId: randomUUID(),
@@ -159,12 +171,12 @@ describe('recomposeArtifact (spec 10c Task 7, D116 same-ship-to path)', () => {
 
     await expect(
       recomposeArtifact(db, {
-        asgnId: asgnWire, requestedShipTo: 'Changed Address', clientKey, actorId: randomUUID(), traceId: 't3',
+        asgnId: asgnWire, artifactType: 'SOUNDBOX_IMG', requestedShipTo: 'Changed Address', clientKey, actorId: randomUUID(), traceId: 't3',
       }),
     ).rejects.toThrow()
 
     const retry = await recomposeArtifact(db, {
-      asgnId: asgnWire, requestedShipTo: 'Original Address', clientKey, actorId: randomUUID(), traceId: 't3b',
+      asgnId: asgnWire, artifactType: 'SOUNDBOX_IMG', requestedShipTo: 'Original Address', clientKey, actorId: randomUUID(), traceId: 't3b',
     })
     expect(retry.deduped).toBe(false)
     expect(retry.artifactId).not.toBeNull()
@@ -176,7 +188,14 @@ describe('recomposeArtifact (spec 10c Task 7, D116 same-ship-to path)', () => {
     const { asgnWire, asgnUuid } = await seedPooled(tenantUuid, programUuid, 'Same Address')
     await seedComposedArtifact(asgnUuid, tenantUuid, programUuid)
     const clientKey = randomUUID()
-    const args = { asgnId: asgnWire, requestedShipTo: 'Same Address', clientKey, actorId: randomUUID(), traceId: 't4' }
+    const args = {
+      asgnId: asgnWire,
+      artifactType: 'SOUNDBOX_IMG',
+      requestedShipTo: 'Same Address',
+      clientKey,
+      actorId: randomUUID(),
+      traceId: 't4',
+    }
 
     const first = await recomposeArtifact(db, args)
     expect(first.deduped).toBe(false)
@@ -187,6 +206,67 @@ describe('recomposeArtifact (spec 10c Task 7, D116 same-ship-to path)', () => {
 
     const rows = await artifactRows(asgnUuid)
     expect(rows).toHaveLength(2) // still just prior + the one new row
+  })
+
+  it('with THREE sibling artifact_type rows sharing one created_at, targets ONLY the specified artifactType (Critical 1 fix)', async () => {
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    const { asgnWire, asgnUuid } = await seedPooled(tenantUuid, programUuid, 'Sibling Address')
+
+    // All three siblings share one btch_id AND one explicit created_at value
+    // (as they would for rows inserted within a single real transaction, where
+    // now() is stable for the whole transaction). This makes the old
+    // `ORDER BY created_at` selection genuinely ambiguous among the three, so
+    // this test actually exercises the tiebreak the artifactType filter fixes,
+    // rather than relying on incidental timing.
+    const btchUuid = toUuid(newId('btch'))
+    const siblingCreatedAt = new Date('2026-02-02T00:00:00.000Z')
+    const soundbox = await seedComposedArtifact(asgnUuid, tenantUuid, programUuid, {
+      artifactType: 'SOUNDBOX_IMG', assetReference: 'ref/soundbox-1', btchUuid, createdAt: siblingCreatedAt,
+    })
+    const standee = await seedComposedArtifact(asgnUuid, tenantUuid, programUuid, {
+      artifactType: 'STANDEE_IMG', assetReference: 'ref/standee-1', btchUuid, createdAt: siblingCreatedAt,
+    })
+    const sticker = await seedComposedArtifact(asgnUuid, tenantUuid, programUuid, {
+      artifactType: 'STICKER_IMG', assetReference: 'ref/sticker-1', btchUuid, createdAt: siblingCreatedAt,
+    })
+
+    const before = await artifactRows(asgnUuid)
+    expect(before).toHaveLength(3)
+    expect(before.every((r) => r.superseded_by === null)).toBe(true)
+    // Confirm the ties are genuine: an asgn_id-only `ORDER BY created_at` over
+    // these three rows has no tiebreaker.
+    expect(before.every((r) => r.created_at.getTime() === siblingCreatedAt.getTime())).toBe(true)
+
+    const res = await recomposeArtifact(db, {
+      asgnId: asgnWire,
+      artifactType: 'STANDEE_IMG',
+      requestedShipTo: 'Sibling Address',
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't4b',
+    })
+    expect(res.deduped).toBe(false)
+    expect(res.artifactId).not.toBeNull()
+
+    const rows = await artifactRows(asgnUuid)
+    expect(rows).toHaveLength(4) // 3 siblings + 1 new STANDEE_IMG row
+
+    const soundboxRow = rows.find((r) => r.id === soundbox.id)!
+    const standeeRow = rows.find((r) => r.id === standee.id)!
+    const stickerRow = rows.find((r) => r.id === sticker.id)!
+    const newRow = rows.find((r) => r.id === res.artifactId)!
+
+    // Only the STANDEE_IMG sibling was superseded.
+    expect(standeeRow.superseded_by).toBe(res.artifactId)
+    expect(standeeRow.superseded_at).not.toBeNull()
+    expect(soundboxRow.superseded_by).toBeNull()
+    expect(stickerRow.superseded_by).toBeNull()
+
+    // The new row keeps the STANDEE_IMG type and reuses the standee snapshot.
+    expect(newRow.artifact_type).toBe('STANDEE_IMG')
+    expect(newRow.asset_reference).toBe('ref/standee-1')
+    expect(newRow.superseded_by).toBeNull()
   })
 })
 

@@ -162,7 +162,15 @@ interface PriorArtifact {
   bankConfigRef: string | null
 }
 
-async function resolvePriorArtifact(tx: Tx, asgnUuid: string): Promise<PriorArtifact> {
+async function resolvePriorArtifact(tx: Tx, asgnUuid: string, artifactType: string): Promise<PriorArtifact> {
+  // Targeted by (asgn_id, artifact_type): an assignment normally carries
+  // several non-superseded composed_artifact rows at once (one per
+  // artifact_type: SOUNDBOX_IMG, STANDEE_IMG, STICKER_IMG), all inserted in
+  // ONE transaction with an identical created_at (= transaction start). An
+  // asgn_id-only ORDER BY created_at has no tiebreaker there and can select
+  // the wrong sibling. Filtering on artifact_type too narrows this to
+  // exactly one non-superseded row (the invariant each recompose preserves,
+  // by superseding only the row of the type it just regenerated).
   const rows = await tx.$queryRaw<
     {
       id: string; asgn_id: string; btch_id: string; tenant_id: string; program_id: string
@@ -174,11 +182,9 @@ async function resolvePriorArtifact(tx: Tx, asgnUuid: string): Promise<PriorArti
            program_id::text AS program_id, artifact_type, asset_reference, label_display_name, label_qr,
            bank_config_ref::text AS bank_config_ref
     FROM composed_artifact
-    WHERE asgn_id = ${asgnUuid}::uuid AND superseded_by IS NULL
-    ORDER BY created_at DESC
-    LIMIT 1
+    WHERE asgn_id = ${asgnUuid}::uuid AND artifact_type = ${artifactType} AND superseded_by IS NULL
   `
-  if (rows.length === 0) throw new Error('composed_artifact not found for asgnId')
+  if (rows.length === 0) throw new Error('composed_artifact not found for asgnId and artifactType')
   const r = rows[0]!
   return {
     id: r.id,
@@ -196,14 +202,32 @@ async function resolvePriorArtifact(tx: Tx, asgnUuid: string): Promise<PriorArti
 
 /**
  * Re-composition (Task 7, check 4/D116 same-ship-to path): regenerates a
- * composed_artifact row for the SAME ship-to only. The program is resolved
- * SERVER-SIDE from the prior (latest, non-superseded) composed_artifact for
- * this asgnId, never a request body (M7/S16/D99).
+ * SINGLE composed_artifact row (of the caller-specified `artifactType`) for
+ * the SAME ship-to only, per FR-08 ("regenerate a corrupted/failed/lost
+ * artifact"). The target is resolved SERVER-SIDE as the one non-superseded
+ * composed_artifact row for this (asgnId, artifactType); the program is read
+ * off that same row, never a request body (M7/S16/D99).
+ *
+ * TARGET SELECTION (Critical 1 fix): an assignment normally holds MULTIPLE
+ * non-superseded composed_artifact rows at once, one per artifact_type
+ * (SOUNDBOX_IMG, STANDEE_IMG, STICKER_IMG), all inserted in the SAME
+ * transaction and so sharing one created_at. Selecting by asgnId alone
+ * (formerly `ORDER BY created_at DESC LIMIT 1`) has no tiebreaker among
+ * siblings and can regenerate the wrong artifact_type. Requiring
+ * `artifactType` on the call and filtering by it makes the target row
+ * unique and deterministic; the regenerated row keeps that SAME
+ * artifact_type (this is a regeneration of a specific artifact, not a type
+ * change).
  *
  * SHIP-TO GUARD (Fork C): a `requestedShipTo` that differs from the CURRENT
  * `pending_pool_entry.ship_to_address` is rejected outright; the D116 reissue
  * path (a genuine address change) stays deferred. This function never reads
- * or writes `ship_to_superseded` / `superseded_ship_to`. The guard runs
+ * or writes `ship_to_superseded` / `superseded_ship_to`. A missing
+ * pending_pool_entry row while `requestedShipTo` was supplied is ALSO a
+ * throw (Minor 3 fix, fail-closed): there is no current ship-to to validate
+ * against, so silently proceeding could apply a re-composition the caller
+ * believed was ship-to-checked. When `requestedShipTo` is omitted there is
+ * nothing to compare, so a missing pool entry is tolerated. The guard runs
  * INSIDE the onceWithin effect, so a rejection throws and rolls back the
  * whole transaction, including the inbox insert (E6): the clientKey is never
  * burned by a rejected attempt, and a corrected retry with the same clientKey
@@ -217,13 +241,20 @@ async function resolvePriorArtifact(tx: Tx, asgnUuid: string): Promise<PriorArti
  */
 export async function recomposeArtifact(
   db: FulfillmentDb,
-  args: { asgnId: string; requestedShipTo?: string; clientKey: string; actorId: string; traceId: string },
+  args: {
+    asgnId: string
+    artifactType: string
+    requestedShipTo?: string
+    clientKey: string
+    actorId: string
+    traceId: string
+  },
 ): Promise<{ deduped: boolean; artifactId: string | null }> {
   const asgnUuid = toUuid(args.asgnId)
   let newArtifactId: string | null = null
 
   const ran = await db.$transaction(async (tx: Tx) => {
-    const prior = await resolvePriorArtifact(tx, asgnUuid)
+    const prior = await resolvePriorArtifact(tx, asgnUuid, args.artifactType)
     await enterWriteScope(tx, 'fulfillment_write', prior.programId)
 
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:recompose-artifact'), async () => {
@@ -232,7 +263,10 @@ export async function recomposeArtifact(
           SELECT ship_to_address FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
         `
         const currentShipTo = shipToRows[0]?.ship_to_address
-        if (currentShipTo !== undefined && args.requestedShipTo !== currentShipTo) {
+        if (currentShipTo === undefined) {
+          throw new Error('pending_pool_entry not found for asgnId; cannot verify requested ship-to')
+        }
+        if (args.requestedShipTo !== currentShipTo) {
           throw new Error(
             're-composition cannot change ship-to; a genuine ship-to change is a reissue (D116, deferred)',
           )
@@ -264,6 +298,17 @@ export async function recomposeArtifact(
  * target's program server-side from `pending_pool_entry` (never a request
  * body), enters the write scope, then delegates the effect itself to the
  * injected-tx `holdEntryWithinTx` (Task 4) under a client-key dedup.
+ *
+ * Important 2 (intentional divergence, documented not changed): a missing
+ * `pending_pool_entry` row THROWS here, even though `holdEntryWithinTx`
+ * itself documents a missing row as an intentional no-op. That no-op is
+ * correct for `holdEntryWithinTx`'s OTHER caller, an event-driven fact
+ * consumer, where "nothing to hold" is a benign race with no operator
+ * watching. This function is a human class-3 ops action against one
+ * specific asgnId chosen by an operator; a not-found target there is an
+ * operator-facing error, not a benign race, so it throws. The ops HTTP edge
+ * (T9) maps this throw to a 4xx. This mirrors the same throw-on-not-found
+ * policy `resolveProgramAndAwb` (T6) already uses elsewhere in this file.
  */
 export async function holdRecord(
   db: FulfillmentDb,
@@ -291,6 +336,14 @@ export async function holdRecord(
  * POOLED only (an already-POOLED or BATCHED row is left untouched, same
  * rowcount-gated pattern as holdEntryWithinTx). Stamps released_by_actor/
  * released_at. Step-up is enforced at the ops HTTP edge (Task 9), not here.
+ *
+ * Important 2 (intentional divergence, documented not changed): same
+ * rationale as `holdRecord` above, a missing `pending_pool_entry` row
+ * THROWS here (operator-facing error on a specific asgnId, mapped to a 4xx
+ * at the T9 edge), distinct from `holdEntryWithinTx`'s own no-op-on-missing
+ * behavior for its event-driven caller. This is not a bug to fix, it is the
+ * throw-on-not-found policy this file already applies via
+ * `resolveProgramAndAwb` (T6).
  */
 export async function releaseRecord(
   db: FulfillmentDb,
