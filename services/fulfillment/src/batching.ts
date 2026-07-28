@@ -84,19 +84,23 @@ export async function ensurePool(
 
   try {
     return await db.$transaction(async (tx: Tx) => {
+      // batch_pool is PROGRAM-SCOPED (07.B): the write-gate needs app.program_id
+      // set before the INSERT below (critique fix). Mechanical spec 10d Task 4
+      // swap (setProgramContext -> enterWriteScope): enters fulfillment_write
+      // and binds the program in one call, so the batch_pool WITH CHECK bites
+      // under the non-owner role.
+      //
+      // Fix wave (spec 10d consolidated defect): moved to the TOP of the
+      // transaction, before the saga_instance INSERT below (previously the
+      // FIRST statement in this transaction, running as the table owner).
+      await enterWriteScope(tx, 'fulfillment_write', programUuid)
+
       const sagaId = newId('sg')
       const pmInstanceId = toUuid(sagaId)
       await tx.$executeRaw`
         INSERT INTO saga_instance (id, flow_type, flow_version, status, updated_at)
         VALUES (${pmInstanceId}::uuid, 'batching_pool', 1, 'running', now())
       `
-
-      // batch_pool is PROGRAM-SCOPED (07.B): the write-gate needs app.program_id
-      // set before the INSERT below (critique fix). Mechanical spec 10d Task 4
-      // swap (setProgramContext -> enterWriteScope): enters fulfillment_write
-      // and binds the program in one call, so the batch_pool WITH CHECK bites
-      // under the non-owner role.
-      await enterWriteScope(tx, 'fulfillment_write', programUuid)
 
       const won = await tx.$queryRaw<{ id: string; pm_instance_id: string }[]>`
         INSERT INTO batch_pool (id, tenant_id, program_id, pm_instance_id, created_at)

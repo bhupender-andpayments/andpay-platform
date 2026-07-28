@@ -4,6 +4,7 @@ import { newEnvelope, type Envelope } from '@andpay/envelope'
 import type { LeanClaim } from '@andpay/authz'
 import { PrismaClient } from '../generated/client/index.js'
 import { projectDemandFact } from '../src/pool.js'
+import { projectShipToAmended } from '../src/ship-to.js'
 import { ensurePool, triggerBatch } from '../src/batching.js'
 import { consumeBatchFact } from '../src/dispatch.js'
 import { createVendor } from '../src/vendor.js'
@@ -557,5 +558,98 @@ describe('(5) LOAD-BEARING multi-program per-write-pinning: ingestReturnSheet (p
         )
       }),
     ).rejects.toThrow(RLS_VIOLATION)
+  })
+})
+
+// ===========================================================================
+// (6) FIX WAVE (spec 10d consolidated defect, five writers across tms +
+// fulfillment): projectDemandFact, projectShipToAmended, consumeBatchFact, and
+// ensurePool each used to run a leading write (onceWithin's inbox dedup
+// INSERT, and/or a leading `INSERT INTO saga_instance`) BEFORE
+// enterWriteScope, so that leading write ran as the table OWNER, bypassing
+// the M-role boundary entirely (inbox and saga_instance carry no
+// program-scoped WITH CHECK at all -- WITH CHECK(true) -- so the WITH-CHECK
+// proofs in block (2)/(4)/(5) above never caught this: they only guard the
+// LATER, already-correctly-scoped program-scoped write).
+//
+// Non-vacuous the same way installGuard is used in block (2): the andpay
+// connection is the cluster superuser, which bypasses RLS by superuser status
+// alone regardless of role, so only an independent current_user-asserting
+// trigger -- here installed on `inbox` and/or `saga_instance` themselves,
+// not just the program-scoped table -- can distinguish a correctly
+// role-scoped leading write from an owner-bypass write that commits fine
+// anyway. RED (before the fix, reverting the enterWriteScope hoist in
+// src/pool.ts, src/ship-to.ts, src/dispatch.ts, src/batching.ts back to its
+// original position after the leading write): each test below throws,
+// because the trigger RAISEs while current_user is still the owner. GREEN
+// (after the fix, as committed): every call succeeds silently.
+describe('(6) fix wave: the leading inbox/saga_instance write now runs under fulfillment_write, not owner', () => {
+  it('projectDemandFact inserts the onceWithin inbox dedup row as fulfillment_write, not owner', async () => {
+    const programWire = fromUuid('prog', toUuid(newId('prog')))
+    const tenantWire = fromUuid('tnnt', toUuid(newId('tnnt')))
+    const env = demandEnv(demandPayload(programWire, tenantWire), 'evt-wr|fixwave-pool')
+    await installGuard('inbox', 'BEFORE INSERT')
+    try {
+      const res = await projectDemandFact(db, env)
+      expect(res.deduped).toBe(false)
+    } finally {
+      await dropGuard('inbox')
+    }
+  })
+
+  it('projectShipToAmended inserts the onceWithin inbox dedup row as fulfillment_write, not owner', async () => {
+    const programWire = fromUuid('prog', toUuid(newId('prog')))
+    const tenantWire = fromUuid('tnnt', toUuid(newId('tnnt')))
+    await seedPooledEntry(toUuid(tenantWire), toUuid(programWire))
+    const asgnRow = await db.$queryRaw<{ asgn_id: string }[]>`SELECT asgn_id::text AS asgn_id FROM pending_pool_entry LIMIT 1`
+    const asgnWire = fromUuid('asgn', asgnRow[0]!.asgn_id)
+    const env = newEnvelope({
+      type: 'fct.tms.assignment.ship_to_amended.v1',
+      version: 1,
+      subject: asgnWire,
+      dedupKey: 'evt-wr|fixwave-shipto',
+      traceId: 'trace-wr',
+      payload: { asgnId: asgnWire, shipToAddress: 'New Fix-Wave Addr', amendmentSeq: 1 },
+    })
+    await installGuard('inbox', 'BEFORE INSERT')
+    try {
+      const res = await projectShipToAmended(db, env)
+      expect(res.applied).toBe('pre_composition')
+    } finally {
+      await dropGuard('inbox')
+    }
+  })
+
+  it('ensurePool inserts the saga_instance pool anchor as fulfillment_write, not owner (direct entry path)', async () => {
+    const tenantWire = fromUuid('tnnt', toUuid(newId('tnnt')))
+    const programWire = fromUuid('prog', toUuid(newId('prog')))
+    await installGuard('saga_instance', 'BEFORE INSERT')
+    try {
+      const anchor = await ensurePool(db, tenantWire, programWire)
+      expect(anchor.pmInstanceId).toBeTruthy()
+    } finally {
+      await dropGuard('saga_instance')
+    }
+  })
+
+  it('consumeBatchFact inserts BOTH the onceWithin inbox dedup row and the saga_instance dispatch-lifecycle anchor as fulfillment_write, not owner', async () => {
+    const tenantWire = fromUuid('tnnt', toUuid(newId('tnnt')))
+    const programWire = fromUuid('prog', toUuid(newId('prog')))
+    const btchWire = fromUuid('btch', toUuid(newId('btch')))
+    await seedBatchedEntry(toUuid(tenantWire), toUuid(programWire), toUuid(btchWire))
+    const env = batchFactEnvelope({
+      payload: { btchId: btchWire, tenantId: tenantWire, programId: programWire, triggerReason: 'MANUAL', unitCount: 1, asgnIds: [] },
+      dedupKey: `${btchWire}|fixwave-dispatch`,
+      traceId: 'trace-wr',
+    })
+    await installGuard('inbox', 'BEFORE INSERT')
+    await installGuard('saga_instance', 'BEFORE INSERT')
+    try {
+      const res = await consumeBatchFact(db, env)
+      expect(res.composed).toBeGreaterThan(0)
+    } finally {
+      await dropGuard('inbox')
+      await dropGuard('saga_instance')
+    }
   })
 })

@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { newEnvelope, type Envelope } from '@andpay/envelope'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { amendShipTo, activateAssignment } from '../src/assignment.js'
+import {
+  amendShipTo,
+  activateAssignment,
+  createAssignmentFromEnrollment,
+  type EnrollmentFactView,
+} from '../src/assignment.js'
 import type { DevicePort, ActivationCommand, ActivationResult } from '../src/device-port.js'
 
 // Spec 10d Task 3: proves the tms_write role plus the assignment_scoped WITH
@@ -104,6 +110,68 @@ async function installCurrentUserGuard(): Promise<void> {
 async function uninstallCurrentUserGuard(): Promise<void> {
   await db.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test10d_assert_tms_write_trg ON assignment`)
   await db.$executeRawUnsafe(`DROP FUNCTION IF EXISTS test10d_assert_tms_write()`)
+}
+
+// Fix wave (spec 10d consolidated defect, check: no-owner-invariant on the
+// leading write): the existing WITH-CHECK proofs above install their
+// current_user guard only on `assignment`, never on `inbox` -- the
+// onceWithin dedup INSERT that, before the fix, ran BEFORE the role was ever
+// entered (as the table owner). This is the SAME non-vacuous technique
+// (installCurrentUserGuard/uninstallCurrentUserGuard above) applied to
+// `inbox` instead, independent of the WITH CHECK proofs entirely (inbox has
+// no program-scoped WITH CHECK at all; it is WITH CHECK(true)).
+async function installInboxGuard(): Promise<void> {
+  await db.$executeRawUnsafe(`
+    CREATE OR REPLACE FUNCTION test10d_assert_tms_write_inbox() RETURNS trigger AS $BODY$
+    BEGIN
+      IF current_user <> 'tms_write' THEN
+        RAISE EXCEPTION 'spec 10d fix wave: expected current_user tms_write on inbox INSERT, got %', current_user;
+      END IF;
+      RETURN NEW;
+    END;
+    $BODY$ LANGUAGE plpgsql;
+  `)
+  await db.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test10d_assert_tms_write_inbox_trg ON inbox`)
+  await db.$executeRawUnsafe(`
+    CREATE TRIGGER test10d_assert_tms_write_inbox_trg BEFORE INSERT ON inbox
+    FOR EACH ROW EXECUTE FUNCTION test10d_assert_tms_write_inbox()
+  `)
+}
+
+async function uninstallInboxGuard(): Promise<void> {
+  await db.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test10d_assert_tms_write_inbox_trg ON inbox`)
+  await db.$executeRawUnsafe(`DROP FUNCTION IF EXISTS test10d_assert_tms_write_inbox()`)
+}
+
+// Fixture for createAssignmentFromEnrollment (mirrors test/assignment.test.ts's
+// own seed() helper, duplicated locally rather than imported so this test file
+// stays self-contained, matching the rest of this file's style).
+async function seedForCreate(correlationId: string): Promise<{ mrchId: string; progId: string; tnntId: string }> {
+  const mrchId = fromUuid('mrch', toUuid(newId('mrch')))
+  const progId = fromUuid('prog', toUuid(newId('prog')))
+  const tnntId = fromUuid('tnnt', toUuid(newId('tnnt')))
+  await db.$executeRaw`INSERT INTO pending_row (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, status)
+    VALUES (${correlationId}, 'HDFC', true, 1, 2, 'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', '221B Baker Street', 'Jane Doe', '+91-9000000000', 'awaiting-identity')`
+  await db.$executeRaw`INSERT INTO merchant_projection (id, display_name, legal_name, mcc, status, updated_at)
+    VALUES (${toUuid(mrchId)}::uuid, 'Acme', 'Acme Pvt Ltd', '5814', 'ACTIVE', now())`
+  await db.$executeRaw`INSERT INTO tenant_projection (id, display_name, bank_reference_code, updated_at)
+    VALUES (${toUuid(tnntId)}::uuid, 'HDFC Bank', 'HDFC', now())`
+  return { mrchId, progId, tnntId }
+}
+
+function enrollmentEnv(
+  ids: { mrchId: string; progId: string; tnntId: string },
+  correlationId: string,
+  dedupKey: string,
+): Envelope<EnrollmentFactView> {
+  return newEnvelope({
+    type: 'fct.identity.enrollment.v1',
+    version: 1,
+    subject: ids.mrchId,
+    dedupKey,
+    traceId: 'trace-wr-inbox',
+    payload: { enrollmentId: 'enr-wr-1', mrchId: ids.mrchId, progId: ids.progId, tnntId: ids.tnntId, status: 'ACTIVE', sourceEventId: correlationId },
+  })
 }
 
 describe('tms_write role and the assignment_scoped WITH CHECK gate (spec 10d Task 3)', () => {
@@ -354,6 +422,34 @@ describe('tms_write role and the assignment_scoped WITH CHECK gate (spec 10d Tas
         for (const priv of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
           expect(grants.some((g) => g.table_name === t && g.privilege_type === priv), `${t} missing ${priv} for tms_write`).toBe(true)
         }
+      }
+    })
+  })
+
+  // Fix wave (spec 10d consolidated defect): createAssignmentFromEnrollment
+  // used to run onceWithin's inbox dedup INSERT (its own first statement)
+  // BEFORE enterWriteScope, so that INSERT ran as the table OWNER, bypassing
+  // the M-role boundary. Fixed by resolving progUuid (a pure transform of the
+  // fact's own progId) and entering tms_write BEFORE onceWithin. This is
+  // non-vacuous the same way installCurrentUserGuard is above: the andpay
+  // connection is the cluster superuser, so only an independent
+  // current_user-asserting trigger on `inbox` -- installInboxGuard -- can
+  // distinguish a correctly role-scoped write from an owner-bypass write that
+  // happens to land on the right row anyway. RED (before the fix, reverting
+  // the enterWriteScope hoist in src/assignment.ts back to its original
+  // position after the projection reads): this test throws, because the
+  // trigger RAISEs on the inbox INSERT issued while current_user is still the
+  // owner. GREEN (after the fix, as committed): the call succeeds silently.
+  describe('(d) fix wave: createAssignmentFromEnrollment enters tms_write BEFORE the leading onceWithin inbox INSERT', () => {
+    it('the inbox dedup row is inserted as tms_write, not owner (non-vacuous, current_user trigger)', async () => {
+      const ids = await seedForCreate('wr-inbox|1')
+      await installInboxGuard()
+      try {
+        const res = await createAssignmentFromEnrollment(db, enrollmentEnv(ids, 'wr-inbox|1', 'evt-wr-inbox|1'))
+        expect(res.created).toBe(true)
+        expect(res.asgnId?.startsWith('asgn_')).toBe(true)
+      } finally {
+        await uninstallInboxGuard()
       }
     })
   })

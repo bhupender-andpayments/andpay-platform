@@ -55,6 +55,11 @@ export async function consumeBatchFact(
   let composed = 0
 
   const ran = await db.$transaction(async (tx: Tx) => {
+    // Fix wave (spec 10d consolidated defect): enter fulfillment_write FIRST,
+    // before onceWithin's inbox dedup INSERT AND the leading saga_instance
+    // INSERT below (both were, before this fix, run as the table owner).
+    // programUuid is already resolved above, outside the transaction.
+    await enterWriteScope(tx, 'fulfillment_write', programUuid)
     return onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       // durable lifecycle anchor (reuse saga_* tables; hand-inline per btch_,
       // start() cannot join this tx - see batching.ts:57-61).
@@ -63,7 +68,6 @@ export async function consumeBatchFact(
         VALUES (${btchUuid}::uuid, 'dispatch_lifecycle', 1, 'running', now())
         ON CONFLICT (id) DO NOTHING
       `
-      await enterWriteScope(tx, 'fulfillment_write', programUuid) // program-scoped writes below
 
       // COMPOSE step (idempotent per {btch_}|compose via the step row + onceWithin dedupKey).
       await onceWithin(tx, CONSUMER, `${p.btchId}|compose`, async () => {

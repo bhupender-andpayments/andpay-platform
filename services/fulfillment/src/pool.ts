@@ -10,9 +10,15 @@ export async function projectDemandFact(db: FulfillmentDb, env: Envelope<Assignm
   const p = env.payload
   let wrote = false
   await db.$transaction(async (tx: Tx) => {
+    // Fix wave (spec 10d consolidated defect): enter fulfillment_write FIRST,
+    // before onceWithin's inbox dedup INSERT (the leading write in this
+    // transaction), so no statement here ever runs as the table owner.
+    // progUuid is a pure transform of the fact's own progId (no DB lookup
+    // needed), so it is safe to resolve before the dedup guard without
+    // weakening the idempotency check itself.
+    const progUuid = toUuid(p.progId)
+    await enterWriteScope(tx, 'fulfillment_write', progUuid)
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
-      const progUuid = toUuid(p.progId)
-      await enterWriteScope(tx, 'fulfillment_write', progUuid)
       // RETURNING id, so we report a fresh write ONLY when the row was actually
       // won. A redelivered asgn_ under a FRESH dedupKey passes the inbox guard but
       // hits the asgn_id conflict; without RETURNING we would falsely report a

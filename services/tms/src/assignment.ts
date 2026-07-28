@@ -129,6 +129,14 @@ export async function createAssignmentFromEnrollment(
   let result: { created: boolean; asgnId?: string } = { created: false }
 
   await db.$transaction(async (tx: Tx) => {
+    // Fix wave (spec 10d consolidated defect): enter tms_write FIRST, before
+    // onceWithin's inbox dedup INSERT (the leading write in this
+    // transaction), so no statement here ever runs as the table owner.
+    // progUuid is a pure transform of the fact's own progId (no DB lookup
+    // needed), so it is safe to resolve before the dedup guard without
+    // weakening the idempotency check itself.
+    const progUuid = toUuid(p.progId)
+    await enterWriteScope(tx, 'tms_write', progUuid)
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       const pend = await tx.$queryRaw<PendingRowRow[]>`
         SELECT soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile
@@ -147,9 +155,6 @@ export async function createAssignmentFromEnrollment(
         SELECT display_name, bank_reference_code FROM tenant_projection WHERE id = ${tnntUuid}::uuid
       `
       if (ten.length === 0) throw new Error(`tenant projection not ready for ${p.tnntId}`)
-
-      const progUuid = toUuid(p.progId)
-      await enterWriteScope(tx, 'tms_write', progUuid)
 
       const pr = pend[0]!
       const m = merch[0]!

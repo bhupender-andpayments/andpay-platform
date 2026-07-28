@@ -65,9 +65,12 @@ export async function projectShipToAmended(
   let applied: 'pre_composition' | 'locked' | 'stale_seq' = 'stale_seq'
 
   const ran = await db.$transaction(async (tx: Tx) => {
+    // Fix wave (spec 10d consolidated defect): enter fulfillment_write FIRST,
+    // before onceWithin's inbox dedup INSERT (the leading write in this
+    // transaction), so no statement here ever runs as the table owner.
+    // programUuid is already resolved above, outside the transaction.
+    await enterWriteScope(tx, 'fulfillment_write', programUuid)
     return onceWithin(tx, CONSUMER, env.dedupKey, async () => {
-      await enterWriteScope(tx, 'fulfillment_write', programUuid)
-
       const shipToAddress = p.shipToAddress ?? null
       const contactName = p.contactName ?? null
       const mobile = p.mobile ?? null
