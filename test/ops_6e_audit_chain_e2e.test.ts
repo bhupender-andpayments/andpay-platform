@@ -4,6 +4,7 @@ import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
 import type { AuthzAuditRecord } from '@andpay/audit'
+import { newId } from '@andpay/ids'
 import {
   PrismaClient as AuthClient,
   consumeAuthzAudit,
@@ -14,6 +15,7 @@ import {
   PrismaClient as FulfillmentClient,
   loadOpsConfig,
   overrideTerminal,
+  ensurePool,
 } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient, uploadBankFile, type BankRequestRow } from '@andpay/tms-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '@andpay/ops-edge'
@@ -499,5 +501,94 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     expect(readRes.status).toBe(200)
     expect(await readFulfillmentAudit()).toHaveLength(1)
     expect(await readTmsAudit()).toHaveLength(0)
+  })
+
+  it('spec 10c CC-1b (S15/T2 ruling): a fresh-key TRAIL-ONLY correctStatus still co-commits exactly ONE ALLOW 6e, even though shpt.status did not change, and a same-client-key REPLAY emits NO second 6e', async () => {
+    const token = await mint({})
+    const idem = randomUUID()
+
+    // seeded.shptId is IN_TRANSIT (rank 2, beforeEach). A REGRESSIVE report to
+    // DISPATCHED_BY_VENDOR (rank 0) fails the C3 forward-rank guard in
+    // advanceShipmentStatus: the append-only trail row is written, but the
+    // rowcount-gated shpt.status UPDATE returns 0 rows, so the outcome is
+    // 'trail_only' and shpt.status is genuinely untouched.
+    const first = await request(app.getHttpServer())
+      .post(`/ops/shipments/${seeded.shptId}/correct`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', idem)
+      .send({ status: 'DISPATCHED_BY_VENDOR', courierTimestamp: '2026-07-27T09:00:00Z' })
+    expect(first.status).toBe(200)
+    expect(first.body.deduped).toBe(false)
+    expect(first.body.outcome).toBe('trail_only')
+    // The domain row did NOT change (the discriminator this test is built on).
+    expect(await shptStatus(seeded.shptId)).toBe('IN_TRANSIT')
+
+    // The ruled behavior (Option 1, uniform across all 13 ops): the ALLOW 6e
+    // is emitted whenever the co-committed onceWithin callback RUNS, not when
+    // the row actually changes. A trail-only correction is still an
+    // authorized, audited attempt (S15 owns the authz decision; T2 owns the
+    // state change), so exactly ONE ALLOW lands even with zero status change.
+    const afterFirst = await readFulfillmentAudit()
+    expect(afterFirst).toHaveLength(1)
+    expect(afterFirst[0]!.decision).toBe('ALLOW')
+    expect(afterFirst[0]!.operation).toBe('ops:status-correction')
+    expect(afterFirst[0]!.resourceIds).toContain(seeded.shptId)
+    expect(afterFirst[0]!.cls).toBe(3)
+
+    // A SAME-client-key REPLAY: the outer onceWithin's E6 inbox dedup
+    // suppresses BOTH the effect and the 6e (the callback never re-runs), so
+    // the outbox authz.audit row count for this action stays exactly 1.
+    const replay = await request(app.getHttpServer())
+      .post(`/ops/shipments/${seeded.shptId}/correct`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', idem)
+      .send({ status: 'DISPATCHED_BY_VENDOR', courierTimestamp: '2026-07-27T09:00:00Z' })
+    expect(replay.status).toBe(200)
+    expect(replay.body.deduped).toBe(true)
+    expect(replay.body.outcome).toBeNull()
+    expect(await shptStatus(seeded.shptId)).toBe('IN_TRANSIT')
+    expect(await readFulfillmentAudit()).toHaveLength(1)
+  })
+
+  it('spec 10c CC-1b regression: manualBatch co-commits exactly ONE ALLOW on a fresh key (even with an empty pool), and a same-client-key REPLAY emits NO second 6e via the new OUTER onceWithin', async () => {
+    const token = await mint({})
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    // The pool anchor must exist (triggerBatchWithinTx throws PoolNotFound on
+    // a missing batch_pool row); no pending_pool_entry is seeded, so the
+    // trigger claims nothing and mints no batch (an empty-pool attempt).
+    await ensurePool(fulfillmentDb, tenantWire, programWire)
+
+    const idem = randomUUID()
+    const first = await request(app.getHttpServer())
+      .post('/ops/batches/trigger')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', idem)
+      .send({ tenantWire, programWire })
+    expect(first.status).toBe(200)
+    // Nothing POOLED: no batch was born, yet the authorized attempt is still
+    // audited (S15/T2): the 6e does not gate on triggerBatchWithinTx's
+    // row-effect. A `null` controller return serializes as an EMPTY HTTP body
+    // (Nest's ExpressAdapter, unrelated to this change), so the response body
+    // is checked as empty rather than JSON `null`.
+    expect(first.text).toBe('')
+
+    const afterFirst = await readFulfillmentAudit()
+    expect(afterFirst).toHaveLength(1)
+    expect(afterFirst[0]!.decision).toBe('ALLOW')
+    expect(afterFirst[0]!.operation).toBe('ops:manual-batch-trigger')
+    expect(afterFirst[0]!.resourceIds).toEqual([tenantWire, programWire])
+
+    // A SAME-client-key REPLAY: the NEW outer onceWithin (keyed off clientKey)
+    // suppresses re-entry before triggerBatchWithinTx's own inner onceWithin
+    // is ever reached, so it emits NO second 6e.
+    const replay = await request(app.getHttpServer())
+      .post('/ops/batches/trigger')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', idem)
+      .send({ tenantWire, programWire })
+    expect(replay.status).toBe(200)
+    expect(replay.text).toBe('')
+    expect(await readFulfillmentAudit()).toHaveLength(1)
   })
 })

@@ -44,17 +44,23 @@ export class OpsClientError extends Error {
   }
 }
 
-// The co-committed ALLOW 6e record (S15, spec 10c CC-1). Every ops MUTATION
-// enqueues its ALLOW authz.audit INSIDE the same domain transaction as the
-// effect, via `enqueue(tx, buildAuthzAuditEvent(opsAllow(...)))` on the SAME
-// `tx`, in the SAME committing branch (inside the effect's `onceWithin`
-// callback, after the effect). So the 6e and the effect commit together
-// (co-commit): a rolled-back effect leaves NO 6e, and a deduped/no-op replay
-// (the callback never runs, or a no-effect branch) emits NO new 6e, giving
-// exactly ONE 6e per ACTUAL mutation, not per request. IDs and enums ONLY
-// (S7/S10.5): the free-text override reason NEVER rides this record (DD1); only
-// `overrideTerminal` carries reasonCode 'terminal-override' plus the step-up
-// assurance (acr, authTime) that authorized the C3 bypass, nothing more.
+// The co-committed ALLOW 6e record (S15/T2 ruling, spec 10c CC-1b). Every ops
+// MUTATION enqueues its ALLOW authz.audit INSIDE the same domain transaction
+// as the effect, via `enqueue(tx, buildAuthzAuditEvent(opsAllow(...)))` on the
+// SAME `tx`, in the SAME committing branch (inside the op's client-key
+// `onceWithin` callback). The 6e is an authorization-decision audit (S15): it
+// is emitted whenever the co-committed callback RUNS, i.e. once per AUTHORIZED
+// ATTEMPT, regardless of the effect's row-count or outcome (a trail-only
+// correction or an empty-pool batch trigger is still an authorized, audited
+// attempt). The domain row owns the state change (T2); the 6e owns the authz
+// decision, not the row effect. A rolled-back callback leaves NO 6e (co-commit
+// still holds), and a same-client-key REPLAY never re-enters the callback at
+// all (the E6 inbox dedup suppresses it), so a replay emits NO second 6e:
+// exactly one ALLOW per authorized attempt, not per row mutated. IDs and enums
+// ONLY (S7/S10.5): the free-text override reason NEVER rides this record
+// (DD1); only `overrideTerminal` carries reasonCode 'terminal-override' plus
+// the step-up assurance (acr, authTime) that authorized the C3 bypass, nothing
+// more.
 function opsAllow(args: {
   operation: string
   principalId: string
@@ -120,24 +126,26 @@ export async function correctStatus(
         sourceRef: args.actorId,
         traceId: args.traceId,
       })
-      // Co-commit the ALLOW 6e ONLY on the advance path (spec 10c CC-1): a
-      // non-advancing correction (a terminal-exit attempt, a stale or
-      // regressive report -> 'trail_only', or an inner per-transition
-      // 'deduped') changes no status and is not an ACTUAL mutation, so it
-      // emits no 6e. An advance and its 6e commit together in THIS tx.
-      if (outcome === 'advanced') {
-        await enqueue(
-          tx,
-          buildAuthzAuditEvent(
-            opsAllow({
-              operation: 'ops:status-correction',
-              principalId: args.actorId,
-              resourceIds: [args.shptId],
-              traceId: args.traceId,
-            }),
-          ),
-        )
-      }
+      // Co-commit the ALLOW 6e (spec 10c CC-1b / S15-T2 ruling): unconditional,
+      // regardless of advanceShipmentStatus's outcome. The 6e audits the
+      // AUTHORIZED ATTEMPT (this callback running), not the row effect: a
+      // trail-only correction (a terminal-exit attempt, a stale or regressive
+      // report -> 'trail_only', or even an inner per-transition 'deduped') is
+      // still an authorized, audited action, even though shpt.status did not
+      // change. A same-client-key REPLAY never reaches this callback at all
+      // (the OUTER onceWithin above dedups it via the E6 inbox), so it emits
+      // no second 6e.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:status-correction',
+            principalId: args.actorId,
+            resourceIds: [args.shptId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
   return { deduped: !ran, outcome: ran ? outcome : null }
@@ -658,43 +666,83 @@ export async function releaseRecord(
  * The MANUAL batch trigger as a class-3 ops action (check 3c/7 sibling): the
  * program is a caller-supplied programWire here (not resolved from a target
  * row, there is none), still converted server-side to its uuid form for the
- * write scope. Deliberately NO outer onceWithin: `triggerBatchWithinTx`'s own
- * onceWithin, keyed `batch|{tenant}|{program}|MANUAL|{epoch}` with
- * `epoch = clientKey`, already provides the client-key idempotency, so a
- * double-fire with the same clientKey collapses to exactly one batch.
+ * write scope.
+ *
+ * OUTER onceWithin (spec 10c CC-1b / S15-T2 ruling): wraps BOTH the
+ * `triggerBatchWithinTx` call and the ALLOW 6e emit, keyed by
+ * `instanceKey(clientKey, 'ops:manual-batch-trigger')` via the shared E6
+ * inbox. A same-client-key REPLAY is suppressed by THIS outer dedup: the
+ * callback never re-runs, so `triggerBatchWithinTx` is never re-invoked and no
+ * second 6e is emitted. `triggerBatchWithinTx`'s OWN inner onceWithin (keyed
+ * `batch|{tenant}|{program}|MANUAL|{epoch}` with `epoch = clientKey`) still
+ * exists and still runs on the FIRST call; it is harmlessly redundant here
+ * (it still matters for `triggerBatchWithinTx`'s other, non-ops callers) and
+ * is simply never reached on a replay because the outer callback does not
+ * re-enter.
+ *
+ * The ALLOW 6e is emitted UNCONDITIONALLY inside the outer callback,
+ * regardless of whether a batch was actually born: an empty-pool authorized
+ * trigger is still an authorized, audited attempt (S15/T2), so the 6e does
+ * not depend on `triggerBatchWithinTx`'s return value. `resourceIds` includes
+ * the minted btchId only when one exists (IDs only; there is nothing to add
+ * when no batch was born).
+ *
+ * Returns the `triggerBatchWithinTx` result on a first run, and `null` on a
+ * same-clientKey replay (the outer dedup form), matching the prior return
+ * contract the ops HTTP edge (T9, `apps/ops-edge/src/ops.controller.ts`)
+ * already expects (`{ btchId } | null`, returned directly with no `deduped`
+ * field).
  */
+type ManualBatchResult = { btchId: string; unitCount: number } | null
+
 export async function manualBatch(
   db: FulfillmentDb,
   args: { tenantWire: string; programWire: string; clientKey: string; actorId: string; traceId: string },
 ): Promise<{ btchId: string } | null> {
   const programUuid = toUuid(args.programWire)
 
-  return db.$transaction(async (tx: Tx) => {
-    await enterWriteScope(tx, 'fulfillment_write', programUuid)
-    const res = await triggerBatchWithinTx(tx, args.tenantWire, args.programWire, 'MANUAL', {
-      epoch: args.clientKey,
-      actorUuid: args.actorId,
-    })
-    // Co-commit the ALLOW 6e (spec 10c CC-1) ONLY when a batch was actually
-    // born. manualBatch has no OUTER onceWithin (triggerBatchWithinTx carries
-    // its own client-key dedup), so a replay or an empty-pool trigger returns
-    // null and is NOT an actual mutation: no batch, no 6e. When a batch is
-    // created, its id and this 6e commit together in THIS tx.
-    if (res !== null) {
-      await enqueue(
-        tx,
-        buildAuthzAuditEvent(
-          opsAllow({
-            operation: 'ops:manual-batch-trigger',
-            principalId: args.actorId,
-            resourceIds: [args.tenantWire, args.programWire, res.btchId],
-            traceId: args.traceId,
-          }),
-        ),
-      )
-    }
-    return res ? { btchId: res.btchId } : null
-  })
+  // The transaction callback is given an EXPLICIT return type annotation
+  // (`Promise<[boolean, ManualBatchResult]>`) so the tuple escapes with its
+  // declared type, not the narrowed-to-null flow type TS would otherwise infer
+  // for `batchResult` at its declaration (a variable only ever reassigned from
+  // within a nested onceWithin closure). Without the annotation, TS narrows
+  // the post-transaction `batchResult` reference to `never` on the
+  // `!== null` branch below, a known control-flow-analysis limitation for
+  // closure-captured variables, not a real type hazard.
+  const [ran, batchResult] = await db.$transaction(
+    async (tx: Tx): Promise<[boolean, ManualBatchResult]> => {
+      await enterWriteScope(tx, 'fulfillment_write', programUuid)
+      let batchResult: ManualBatchResult = null
+      const ran = await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:manual-batch-trigger'), async () => {
+        batchResult = await triggerBatchWithinTx(tx, args.tenantWire, args.programWire, 'MANUAL', {
+          epoch: args.clientKey,
+          actorUuid: args.actorId,
+        })
+        // Co-commit the ALLOW 6e (spec 10c CC-1b / S15-T2 ruling): unconditional,
+        // regardless of whether a batch was born. This callback only runs on a
+        // fresh clientKey (the OUTER onceWithin above dedups a replay before it
+        // ever reaches here), so exactly one ALLOW is emitted per authorized
+        // attempt, never per replay.
+        await enqueue(
+          tx,
+          buildAuthzAuditEvent(
+            opsAllow({
+              operation: 'ops:manual-batch-trigger',
+              principalId: args.actorId,
+              resourceIds:
+                batchResult !== null
+                  ? [args.tenantWire, args.programWire, batchResult.btchId]
+                  : [args.tenantWire, args.programWire],
+              traceId: args.traceId,
+            }),
+          ),
+        )
+      })
+      return [ran, batchResult]
+    },
+  )
+
+  return ran && batchResult !== null ? { btchId: batchResult.btchId } : null
 }
 
 /**

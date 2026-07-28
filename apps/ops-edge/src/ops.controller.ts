@@ -165,8 +165,9 @@ export class OpsController {
       // this branch is unreachable for any call site that compiles. It is kept
       // as a defensive RUNTIME guard (e.g. a future catalog entry deleted out
       // from under a still-referencing key): even then, a rejected mutation
-      // must never have zero audit trail, so a best-effort DENY 6e is emitted
-      // before the throw, exactly like every other DENY below.
+      // must never have zero audit trail, so a DURABLE DENY 6e (its own
+      // committed tx, never swallowed) is emitted before the throw, exactly
+      // like every other DENY below.
       if (entry === undefined) {
         await emitOpsAuthzAudit(this.deps.fulfillmentDb, {
           principalId: actorId,
