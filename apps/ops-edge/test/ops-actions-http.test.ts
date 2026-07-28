@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
+import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient as FulfillmentClient, loadOpsConfig } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '../src/index.js'
@@ -124,6 +125,45 @@ async function shptStatus(shptId: string): Promise<string> {
   return rows[0]!.status
 }
 
+// Seed one pending_pool_entry (mirrors services/fulfillment/test/ops-actions.test.ts's
+// seedPooled), for the recompose-with-changed-ship-to 4xx test below: it needs a
+// real current ship-to to diverge from.
+async function seedPendingPoolEntry(shipToAddress: string): Promise<{ asgnWire: string; asgnUuid: string; programId: string }> {
+  const asgnWire = newId('asgn')
+  const asgnUuid = toUuid(asgnWire)
+  const tenantId = randomUUID()
+  const programId = randomUUID()
+  await fulfillmentDb.$executeRaw`
+    INSERT INTO pending_pool_entry (
+      asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable,
+      merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+      ship_to_address, qr_value, vpa_value, pool_status, source_event_id, trace_id, created_at, updated_at
+    ) VALUES (
+      ${asgnUuid}::uuid, ${tenantId}::uuid, ${programId}::uuid, true, 1, 1, true,
+      'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', ${shipToAddress},
+      'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'POOLED', 'file-1|1', 'trace-1', now(), now()
+    )
+  `
+  return { asgnWire, asgnUuid, programId }
+}
+
+// Seed the one non-superseded composed_artifact row recomposeArtifact's target
+// resolution requires (mirrors services/fulfillment/test/ops-actions.test.ts's
+// seedComposedArtifact).
+async function seedComposedArtifact(asgnUuid: string, programId: string): Promise<{ id: string }> {
+  const tenantId = randomUUID()
+  const btchId = randomUUID()
+  const rows = await fulfillmentDb.$queryRaw<{ id: string }[]>`
+    INSERT INTO composed_artifact
+      (id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr, bank_config_ref, created_at)
+    VALUES
+      (gen_random_uuid(), ${asgnUuid}::uuid, ${btchId}::uuid, ${tenantId}::uuid, ${programId}::uuid,
+       'SOUNDBOX_IMG', 'ref/soundbox-1', 'Acme', 'upi://pay?pa=acme@hdfcbank', NULL::uuid, now())
+    RETURNING id::text AS id
+  `
+  return { id: rows[0]!.id }
+}
+
 beforeAll(async () => {
   const kp = await generateKeyPair('ES256')
   privateKey = kp.privateKey
@@ -153,7 +193,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await fulfillmentDb.$executeRawUnsafe(
-    'TRUNCATE shpt_status_event, courier_status_exception, shpt, outbox, inbox CASCADE',
+    'TRUNCATE shpt_status_event, courier_status_exception, shpt, pending_pool_entry, composed_artifact, outbox, inbox CASCADE',
   )
 })
 
@@ -349,5 +389,85 @@ describe('ops-edge actions: isKnownStatus rejects a garbage target status before
     expect(res.status).toBe(400)
     expect(await auditRows()).toHaveLength(0)
     expect(await shptStatus(shptId)).toBe('IN_TRANSIT')
+  })
+})
+
+// Fix wave 1 (Task 9 review, Important 1): the fulfillment ops domain throws
+// `OpsClientError` for an expected client condition (a missing target, a bad
+// request shape); the new app-wide `OpsErrorFilter` (registered via APP_FILTER
+// in app.module.ts) maps `kind: 'not-found'` to 404 and `kind: 'invalid'` to
+// 400. Before this filter, none of these reached the controller's own
+// try/catch (there is none), so Nest's default fell through to a 500 for each
+// of these. Every case here uses a FRESH AAL2 claim so the request clears the
+// step-up gate (where applicable) and the D2 authorize gate, and reaches the
+// domain op itself.
+describe('ops-edge actions: domain client-errors map to 4xx via the OpsErrorFilter (Fix wave 1, Important 1)', () => {
+  it('POST correct with a non-existent shptId -> 404, not 500', async () => {
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post(`/ops/shipments/${randomUUID()}/correct`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ status: 'IN_TRANSIT', courierTimestamp: '2026-07-27T10:00:00Z' })
+    expect(res.status).toBe(404)
+  })
+
+  it('POST override with a non-existent shptId (fresh AAL2, valid reason) -> 404, not 500', async () => {
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post(`/ops/shipments/${randomUUID()}/override`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        status: 'DELIVERED',
+        courierTimestamp: '2026-07-27T10:00:00Z',
+        overrideReason: 'lost in transit, reissued manually',
+      })
+    expect(res.status).toBe(404)
+  })
+
+  it('POST override with an EMPTY overrideReason (fresh AAL2, real shpt) -> 400, not 500', async () => {
+    const { shptId } = await seedShpt('IN_TRANSIT')
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post(`/ops/shipments/${shptId}/override`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ status: 'DELIVERED', courierTimestamp: '2026-07-27T10:00:00Z', overrideReason: '   ' })
+    expect(res.status).toBe(400)
+    // No domain effect: the reason check throws before the C3 bypass UPDATE.
+    expect(await shptStatus(shptId)).toBe('IN_TRANSIT')
+  })
+
+  it('POST recompose with a requestedShipTo that DIFFERS from the current ship-to -> 400, not 500', async () => {
+    const { asgnWire, asgnUuid, programId } = await seedPendingPoolEntry('Original Address')
+    await seedComposedArtifact(asgnUuid, programId)
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post('/ops/artifacts/recompose')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ asgnId: asgnWire, artifactType: 'SOUNDBOX_IMG', requestedShipTo: 'Changed Address' })
+    expect(res.status).toBe(400)
+  })
+
+  it('POST hold with a non-existent asgnId -> 404, not 500', async () => {
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post(`/ops/records/${newId('asgn')}/hold`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({})
+    expect(res.status).toBe(404)
+  })
+
+  it('POST release with a non-existent asgnId (fresh AAL2) -> 404, not 500', async () => {
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post(`/ops/records/${newId('asgn')}/release`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({})
+    expect(res.status).toBe(404)
   })
 })

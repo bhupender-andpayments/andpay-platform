@@ -119,12 +119,31 @@ export class OpsController {
   // gate (a step-up-required 6e DENY on failure); THEN the D2 two-gate authorize
   // (a decision.reason 6e DENY on failure). A DENY short-circuits before any
   // domain op runs, so a rejected action has ZERO domain effect.
+  // Fix wave 1 (Task 9 review, Important 2): a best-effort emit that swallows
+  // a transient audit-write failure, mirroring the guard's `emitOpsAuthnDeny`
+  // exactly. Rationale (shared by every call site below): audit-AFTER-success
+  // (or audit-after-decision, for a DENY) is the ruled semantics; a rare
+  // unaudited decision is the accepted tradeoff. For the ALLOW path, the
+  // mutation already committed by the time this runs, so turning a lost audit
+  // write into a 500 would drive a fresh-Idempotency-Key retry that duplicates
+  // the action, which is strictly worse than a missing audit row. For the DENY
+  // path, the rejection is already final; a lost DENY audit must not itself
+  // flip the response, so the real 403 still returns. The error body is never
+  // logged (S4): only the fact that an emit failed matters, not its content.
+  private async emitBestEffort(args: Parameters<typeof emitOpsAuthzAudit>[1]): Promise<void> {
+    try {
+      await emitOpsAuthzAudit(this.deps.fulfillmentDb, args)
+    } catch {
+      // swallowed: see rationale above.
+    }
+  }
+
   private async gate(
     req: EdgeRequest,
     operation: string,
     idempotencyKey: string | undefined,
     resourceIds: string[],
-    stepUpKey?: string,
+    stepUpKey?: keyof typeof OPS_STEP_UP_CATALOG,
   ): Promise<Gated> {
     const actorId = req.claim.sub
     const clientKey = idempotencyKey
@@ -134,13 +153,30 @@ export class OpsController {
 
     if (stepUpKey !== undefined) {
       const entry = OPS_STEP_UP_CATALOG[stepUpKey]
-      // Fail closed on a missing catalog entry (a server misconfiguration): a
-      // step-up-gated route must never fall through to an unstepped authorize.
-      if (entry === undefined) throw new ForbiddenException()
+      // Fail closed on a missing catalog entry (a server misconfiguration).
+      // With `stepUpKey` now typed `keyof typeof OPS_STEP_UP_CATALOG` (Fix wave
+      // 1, Minor 4), a typo'd key is a COMPILE error at every call site, so
+      // this branch is unreachable for any call site that compiles. It is kept
+      // as a defensive RUNTIME guard (e.g. a future catalog entry deleted out
+      // from under a still-referencing key): even then, a rejected mutation
+      // must never have zero audit trail, so a best-effort DENY 6e is emitted
+      // before the throw, exactly like every other DENY below.
+      if (entry === undefined) {
+        await this.emitBestEffort({
+          principalId: actorId,
+          operation,
+          decision: 'DENY',
+          outcome: 'denied',
+          reasonCode: 'step-up-misconfigured',
+          resourceIds,
+          traceId: req.traceId,
+        })
+        throw new ForbiddenException()
+      }
       try {
         requireStepUp(req.claim, entry, nowSec())
       } catch {
-        await emitOpsAuthzAudit(this.deps.fulfillmentDb, {
+        await this.emitBestEffort({
           principalId: actorId,
           operation,
           decision: 'DENY',
@@ -155,7 +191,7 @@ export class OpsController {
 
     const decision = authorize(req.claim, operation, {}, this.deps.roleConfig)
     if (!decision.allowed) {
-      await emitOpsAuthzAudit(this.deps.fulfillmentDb, {
+      await this.emitBestEffort({
         principalId: actorId,
         operation,
         decision: 'DENY',
@@ -179,7 +215,7 @@ export class OpsController {
     resourceIds: string[],
     extra?: { reasonCode?: string; acr?: EdgeRequest['claim']['acr']; authTime?: number },
   ): Promise<void> {
-    await emitOpsAuthzAudit(this.deps.fulfillmentDb, {
+    await this.emitBestEffort({
       principalId: g.actorId,
       operation,
       decision: 'ALLOW',

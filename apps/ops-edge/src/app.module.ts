@@ -1,22 +1,29 @@
 import { type DynamicModule, Module, type INestApplication } from '@nestjs/common'
-import { NestFactory } from '@nestjs/core'
+import { APP_FILTER, NestFactory } from '@nestjs/core'
 import { ProbeController } from './probe.controller.js'
 import { OpsController } from './ops.controller.js'
 import { OpsReadController } from './ops-read.controller.js'
 import { OpsEdgeGuard } from './guard.js'
+import { OpsErrorFilter } from './ops-error.filter.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 
 // Token-provided deps (NO type-reflection DI): the module is built fresh per
 // caller with `deps` bound to EDGE_DEPS via useValue, mirroring the tenant
 // edge exactly. The Part-B ops controllers register here alongside
-// ProbeController.
+// ProbeController. `OpsErrorFilter` is registered app-wide via the APP_FILTER
+// DI token (Fix wave 1, Important 1) so every route, present and future, maps
+// a domain client-error to a 4xx without each controller catching it by hand.
 @Module({})
 export class OpsEdgeModule {
   static register(deps: OpsEdgeDeps): DynamicModule {
     return {
       module: OpsEdgeModule,
       controllers: [ProbeController, OpsController, OpsReadController],
-      providers: [OpsEdgeGuard, { provide: EDGE_DEPS, useValue: deps }],
+      providers: [
+        OpsEdgeGuard,
+        { provide: EDGE_DEPS, useValue: deps },
+        { provide: APP_FILTER, useClass: OpsErrorFilter },
+      ],
     }
   }
 }

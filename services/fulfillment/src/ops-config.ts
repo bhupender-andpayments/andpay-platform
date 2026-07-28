@@ -6,6 +6,12 @@ import { humanRole, type RoleConfig } from '@andpay/authz'
 // the DB write-gate via SET LOCAL app.program_id (server-resolved), not by the
 // claim scope, and the destructive actions carry an additional step-up gate.
 // requiredAcr is the AAL2 human floor (S15); Auth mints only tokens that meet it.
+// Fix wave 1 (Task 9 review, Minor 5): this list carries only MUTATION
+// permissions. The read routes (`GET /ops/vendors`, `/quarantine`,
+// `/exceptions/*`) are guard-only at the edge (authenticated class-3, no D2
+// authorize call), so a read-side permission string here would be dead; none
+// is listed (a former `ops:vendor-list` entry was removed for exactly this
+// reason).
 export const OPS_ROLES: RoleConfig['roles'] = {
   ops_portal: humanRole({
     permissions: [
@@ -19,7 +25,6 @@ export const OPS_ROLES: RoleConfig['roles'] = {
       'ops:manual-batch-trigger',
       'ops:vendor-create',
       'ops:vendor-suspend',
-      'ops:vendor-list',
       'ops:resolve-quarantine',
       'ops:resolve-intake-exception',
       'ops:resolve-status-exception',

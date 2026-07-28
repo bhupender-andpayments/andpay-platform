@@ -27,6 +27,21 @@ import { createVendorWithinTx } from './vendor.js'
 // naturally non-advancing, and override_reason stays NULL (advanceShipmentStatus
 // never sets it).
 
+// Fix wave 1 (Task 9 review, Important 1): a discriminated client-error so the
+// ops HTTP edge (T9) can map an expected client condition (an unknown target,
+// a bad request shape) to a 4xx via `instanceof` / duck-typing on `kind`,
+// instead of Nest's default 500 for a plain `Error`. `kind` is intentionally
+// narrow (only the two shapes this domain throws): 'not-found' for a missing
+// target row, 'invalid' for a caller-supplied value that fails validation.
+export class OpsClientError extends Error {
+  constructor(
+    public readonly kind: 'not-found' | 'invalid',
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
 interface ShptProgramAwb { programId: string; awb: string; courierPartner: string | null }
 
 async function resolveProgramAndAwb(tx: Tx, shptId: string): Promise<ShptProgramAwb> {
@@ -34,7 +49,7 @@ async function resolveProgramAndAwb(tx: Tx, shptId: string): Promise<ShptProgram
     SELECT program_id::text AS program_id, awb, courier_partner::text AS courier_partner
     FROM shpt WHERE id = ${shptId}::uuid
   `
-  if (found.length === 0) throw new Error('shpt not found')
+  if (found.length === 0) throw new OpsClientError('not-found', 'shpt not found')
   return { programId: found[0]!.program_id, awb: found[0]!.awb, courierPartner: found[0]!.courier_partner }
 }
 
@@ -103,7 +118,7 @@ export async function overrideTerminal(
     traceId: string
   },
 ): Promise<{ deduped: boolean; overridden: boolean }> {
-  if (!args.overrideReason.trim()) throw new Error('override_reason required')
+  if (!args.overrideReason.trim()) throw new OpsClientError('invalid', 'override_reason required')
 
   const ran = await db.$transaction(async (tx: Tx) => {
     const { programId, awb, courierPartner } = await resolveProgramAndAwb(tx, args.shptId)
@@ -239,7 +254,7 @@ export async function resolveIntakeException(
   args: { exceptionId: string; correctedSheet: IntakeSheet; clientKey: string; actorId: string; traceId: string },
 ): Promise<{ deduped: boolean; result: IntakeResult | null }> {
   if (!isSheetStructurallyValid(args.correctedSheet)) {
-    throw new Error('corrected sheet is structurally invalid (STEP B)')
+    throw new OpsClientError('invalid', 'corrected sheet is structurally invalid (STEP B)')
   }
 
   let result: IntakeResult | null = null
@@ -296,7 +311,7 @@ async function resolvePriorArtifact(tx: Tx, asgnUuid: string, artifactType: stri
     FROM composed_artifact
     WHERE asgn_id = ${asgnUuid}::uuid AND artifact_type = ${artifactType} AND superseded_by IS NULL
   `
-  if (rows.length === 0) throw new Error('composed_artifact not found for asgnId and artifactType')
+  if (rows.length === 0) throw new OpsClientError('not-found', 'composed_artifact not found for asgnId and artifactType')
   const r = rows[0]!
   return {
     id: r.id,
@@ -376,10 +391,11 @@ export async function recomposeArtifact(
         `
         const currentShipTo = shipToRows[0]?.ship_to_address
         if (currentShipTo === undefined) {
-          throw new Error('pending_pool_entry not found for asgnId; cannot verify requested ship-to')
+          throw new OpsClientError('invalid', 'pending_pool_entry not found for asgnId; cannot verify requested ship-to')
         }
         if (args.requestedShipTo !== currentShipTo) {
-          throw new Error(
+          throw new OpsClientError(
+            'invalid',
             're-composition cannot change ship-to; a genuine ship-to change is a reissue (D116, deferred)',
           )
         }
@@ -432,7 +448,7 @@ export async function holdRecord(
     const rows = await tx.$queryRaw<{ program_id: string }[]>`
       SELECT program_id::text AS program_id FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
     `
-    if (rows.length === 0) throw new Error('pending_pool_entry not found for asgnId')
+    if (rows.length === 0) throw new OpsClientError('not-found', 'pending_pool_entry not found for asgnId')
     await enterWriteScope(tx, 'fulfillment_write', rows[0]!.program_id)
 
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:record-hold'), async () => {
@@ -468,7 +484,7 @@ export async function releaseRecord(
     const rows = await tx.$queryRaw<{ program_id: string }[]>`
       SELECT program_id::text AS program_id FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
     `
-    if (rows.length === 0) throw new Error('pending_pool_entry not found for asgnId')
+    if (rows.length === 0) throw new OpsClientError('not-found', 'pending_pool_entry not found for asgnId')
     await enterWriteScope(tx, 'fulfillment_write', rows[0]!.program_id)
 
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:record-release'), async () => {

@@ -9,6 +9,7 @@ export {
   DEFAULT_TMS_DATABASE_URL,
 } from './deps.js'
 export { OpsEdgeGuard } from './guard.js'
+export { OpsErrorFilter } from './ops-error.filter.js'
 export { OpsController } from './ops.controller.js'
 export { OpsReadController } from './ops-read.controller.js'
 export { emitOpsAuthnDeny, emitOpsAuthzAudit } from './audit.js'

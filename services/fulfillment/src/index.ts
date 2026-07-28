@@ -82,6 +82,7 @@ export {
   createVendorOps,
   resolveIntakeException,
   resolveStatusException,
+  OpsClientError,
 } from './ops.js'
 export { OPS_ROLES, loadOpsConfig } from './ops-config.js'
 export {
