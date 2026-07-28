@@ -1,9 +1,37 @@
-import { onceWithin } from '@andpay/outbox'
+import { onceWithin, enqueue } from '@andpay/outbox'
+import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
 import { instanceKey } from '@andpay/keys'
 import type { TmsDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { ingestRequestRowWithinTx, type BankRequestRow } from './ingest.js'
 import { ingestDamageRowWithinTx, type BankDamageRow } from './damage.js'
+
+// The co-committed ALLOW 6e record (S15, spec 10c CC-1). Each TMS ops MUTATION
+// enqueues its ALLOW authz.audit INSIDE the same domain transaction as the
+// effect, into TMS's OWN outbox (the tms `outbox` table; NO cross-schema write,
+// C4), so the 6e and the effect commit together (co-commit): a rolled-back
+// effect leaves no 6e, and a client-key replay (the `onceWithin` callback never
+// runs) emits no new 6e. This is the identical fulfillment shape (eventType
+// 'authz.audit'); Auth drains BOTH context outboxes into the one ordered chain.
+// IDs and enums ONLY (S7/S10.5): a TMS ops action carries no reasonCode and no
+// step-up assurance (none is a C3 bypass).
+function opsAllow(args: {
+  operation: string
+  principalId: string
+  resourceIds: string[]
+  traceId: string
+}): AuthzAuditRecord {
+  return {
+    principalId: args.principalId,
+    cls: 3,
+    actorChannel: 'human-direct',
+    operation: args.operation,
+    decision: 'ALLOW',
+    outcome: 'allowed',
+    resourceIds: args.resourceIds,
+    traceId: args.traceId,
+  }
+}
 
 // spec 10c ops writes (Task 5). These are the TMS-side handlers the ops HTTP
 // edge (T9) calls in-process; the ops principal is class-3 human (D-3), never
@@ -34,6 +62,20 @@ export async function uploadBankFile(
         const outcome = await ingestRequestRowWithinTx(tx, row, args.traceId)
         tally[outcome] += 1
       }
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the ingest.
+      // A bank-file upload has no single target row id (it is file-level), so
+      // resourceIds is empty.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:upload-bank-file',
+            principalId: args.actorId,
+            resourceIds: [],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
   return tally
@@ -51,6 +93,18 @@ export async function uploadDamageFile(
         const outcome = await ingestDamageRowWithinTx(tx, row, args.traceId)
         tally[outcome] += 1
       }
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the ingest.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:upload-damage-file',
+            principalId: args.actorId,
+            resourceIds: [],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
   return tally
@@ -83,6 +137,19 @@ export async function resolveQuarantineRow(
         SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid
         WHERE id = ${args.quarantineId}::uuid AND resolved_at IS NULL
       `
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the re-ingest
+      // and the resolved-at stamp. The quarantine row is the target resource.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:resolve-quarantine',
+            principalId: args.actorId,
+            resourceIds: [args.quarantineId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
   return { deduped: !ran, outcome }

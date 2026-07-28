@@ -98,16 +98,31 @@ interface Gated {
   traceId: string
 }
 
-// The class-3 ops MUTATION edge (spec 10c, Task 9). @UseGuards is declared at
-// the CLASS level so EVERY route is authenticated by construction (never rely on
-// a per-method guard a future route could forget). Every mutation runs the same
-// gate (Fork D client action key -> optional per-action STEP-UP -> D2 authorize),
-// emits a 6e DENY only on an edge-gate rejection (authz-deny or step-up-required;
-// a missing action key is a 400, not a 6e), then calls the in-process domain op
-// and, on domain SUCCESS, emits exactly ONE 6e ALLOW (audit-AFTER-success: a
-// write portal audits what actually happened; a domain no-op, a C3 non-advance
-// or a deduped replay, is still an authorized action and still an ALLOW). IDs
-// and enums only ride the 6e; PII and free text never leave the domain row.
+// The class-3 ops MUTATION edge (spec 10c, Task 9; CC-1 co-commit correction,
+// S15). @UseGuards is declared at the CLASS level so EVERY route is
+// authenticated by construction (never rely on a per-method guard a future
+// route could forget). Every mutation runs the same gate (Fork D client action
+// key -> optional per-action STEP-UP -> D2 authorize).
+//
+// The 6e split (S15 ruling):
+//  - The ALLOW 6e for every ops mutation is a sensitive operation (and the
+//    terminal override a privileged action), so it is enqueued INSIDE the
+//    domain transaction by the domain op itself, COMMITTED-WITH-THE-OPERATION
+//    (co-commit). The edge NO LONGER emits the ALLOW. Each mutation route just
+//    passes the domain op the audit inputs it needs (for overrideTerminal: the
+//    step-up assurance acr / auth_time read off the verified claim).
+//  - The DENY 6e (authz-deny, step-up-required, and the defensive
+//    step-up-misconfigured) has NO domain tx and stays edge-emitted, but is now
+//    emitted DURABLY (its own short committed tx) and is NEVER swallowed: a
+//    failed DENY enqueue propagates (a 500 is acceptable for a lost DENY audit;
+//    the rejection had no effect, so there is no duplicate risk).
+//
+// The guard's authn-DENY (emitOpsAuthnDeny in guard.ts) is deliberately LEFT
+// best-effort: it is the 401 authentication-layer event, matching the ratified
+// 10a/10b precedent; the S15 ruling names only the authz-deny / step-up-required
+// ACTION DENYs handled here, not the authentication-layer 401.
+//
+// IDs and enums only ride the 6e; PII and free text never leave the domain row.
 @Controller('ops')
 @UseGuards(OpsEdgeGuard)
 export class OpsController {
@@ -119,25 +134,16 @@ export class OpsController {
   // gate (a step-up-required 6e DENY on failure); THEN the D2 two-gate authorize
   // (a decision.reason 6e DENY on failure). A DENY short-circuits before any
   // domain op runs, so a rejected action has ZERO domain effect.
-  // Fix wave 1 (Task 9 review, Important 2): a best-effort emit that swallows
-  // a transient audit-write failure, mirroring the guard's `emitOpsAuthnDeny`
-  // exactly. Rationale (shared by every call site below): audit-AFTER-success
-  // (or audit-after-decision, for a DENY) is the ruled semantics; a rare
-  // unaudited decision is the accepted tradeoff. For the ALLOW path, the
-  // mutation already committed by the time this runs, so turning a lost audit
-  // write into a 500 would drive a fresh-Idempotency-Key retry that duplicates
-  // the action, which is strictly worse than a missing audit row. For the DENY
-  // path, the rejection is already final; a lost DENY audit must not itself
-  // flip the response, so the real 403 still returns. The error body is never
-  // logged (S4): only the fact that an emit failed matters, not its content.
-  private async emitBestEffort(args: Parameters<typeof emitOpsAuthzAudit>[1]): Promise<void> {
-    try {
-      await emitOpsAuthzAudit(this.deps.fulfillmentDb, args)
-    } catch {
-      // swallowed: see rationale above.
-    }
-  }
-
+  //
+  // CC-1 (S15): a DENY 6e is emitted DURABLY via a direct
+  // `emitOpsAuthzAudit` (its own short COMMITTED tx) and is NEVER swallowed. If
+  // that durable enqueue fails, the error propagates (a 500 for a lost DENY
+  // audit is acceptable: the rejection had no domain effect, so there is no
+  // duplicate risk, and a silently-dropped DENY audit is the worse outcome for
+  // a tamper-evident authz chain). This is the deliberate counterpart to the
+  // guard's authn-DENY, which stays best-effort (the 401 authentication-layer
+  // event, ratified 10a/10b precedent). The presented token / error body is
+  // never logged or placed in the record (S4/5c).
   private async gate(
     req: EdgeRequest,
     operation: string,
@@ -162,7 +168,7 @@ export class OpsController {
       // must never have zero audit trail, so a best-effort DENY 6e is emitted
       // before the throw, exactly like every other DENY below.
       if (entry === undefined) {
-        await this.emitBestEffort({
+        await emitOpsAuthzAudit(this.deps.fulfillmentDb, {
           principalId: actorId,
           operation,
           decision: 'DENY',
@@ -176,7 +182,7 @@ export class OpsController {
       try {
         requireStepUp(req.claim, entry, nowSec())
       } catch {
-        await this.emitBestEffort({
+        await emitOpsAuthzAudit(this.deps.fulfillmentDb, {
           principalId: actorId,
           operation,
           decision: 'DENY',
@@ -191,7 +197,7 @@ export class OpsController {
 
     const decision = authorize(req.claim, operation, {}, this.deps.roleConfig)
     if (!decision.allowed) {
-      await this.emitBestEffort({
+      await emitOpsAuthzAudit(this.deps.fulfillmentDb, {
         principalId: actorId,
         operation,
         decision: 'DENY',
@@ -204,28 +210,6 @@ export class OpsController {
     }
 
     return { clientKey, actorId, traceId: req.traceId }
-  }
-
-  // The single post-success ALLOW emit (template step g). `extra` carries the
-  // terminal-override enum reasonCode and the step-up assurance (acr, auth_time)
-  // for the one C3-bypass action; every other action passes none.
-  private async allow(
-    g: Gated,
-    operation: string,
-    resourceIds: string[],
-    extra?: { reasonCode?: string; acr?: EdgeRequest['claim']['acr']; authTime?: number },
-  ): Promise<void> {
-    await this.emitBestEffort({
-      principalId: g.actorId,
-      operation,
-      decision: 'ALLOW',
-      outcome: 'allowed',
-      reasonCode: extra?.reasonCode,
-      acr: extra?.acr,
-      authTime: extra?.authTime,
-      resourceIds,
-      traceId: g.traceId,
-    })
   }
 
   @Post('uploads/bank')
@@ -242,7 +226,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:upload-bank-file', [])
     return result
   }
 
@@ -260,7 +243,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:upload-damage-file', [])
     return result
   }
 
@@ -284,7 +266,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:status-correction', [id])
     return result
   }
 
@@ -300,6 +281,11 @@ export class OpsController {
     // Defense-in-depth: the override writes shpt.status raw (the sanctioned C3
     // bypass), so an unknown target status is rejected here too, before the op.
     if (!isKnownStatus(body.status)) throw new BadRequestException('unknown status')
+    // CC-1: the domain op co-commits the privileged-action ALLOW 6e INSIDE its
+    // own transaction. The edge passes the step-up assurance (acr, auth_time)
+    // read off the verified claim so the co-committed record can carry it; the
+    // free-text overrideReason lives ONLY on the domain row (DD1) and never
+    // rides the 6e.
     const result = await overrideTerminal(this.deps.fulfillmentDb, {
       shptId: id,
       status: body.status,
@@ -308,13 +294,8 @@ export class OpsController {
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
-    })
-    // The free-text overrideReason lives ONLY on the domain row (DD1); the 6e
-    // carries the enum reasonCode plus the step-up assurance that authorized it.
-    await this.allow(g, 'ops:terminal-override', [id], {
-      reasonCode: 'terminal-override',
-      acr: req.claim.acr,
-      authTime: req.claim.auth_time,
+      ...(req.claim.acr !== undefined ? { acr: req.claim.acr } : {}),
+      ...(req.claim.auth_time !== undefined ? { authTime: req.claim.auth_time } : {}),
     })
     return result
   }
@@ -335,7 +316,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:recompose-artifact', [body.asgnId])
     return result
   }
 
@@ -353,7 +333,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:record-hold', [asgnId])
     return result
   }
 
@@ -371,7 +350,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:record-release', [asgnId])
     return result
   }
 
@@ -390,7 +368,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:manual-batch-trigger', [body.tenantWire, body.programWire])
     return result
   }
 
@@ -409,8 +386,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    // The created vendor id is the only target id, and only on a fresh create.
-    await this.allow(g, 'ops:vendor-create', result.vndrId !== null ? [result.vndrId] : [])
     return result
   }
 
@@ -428,7 +403,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:vendor-suspend', [id])
     return result
   }
 
@@ -448,7 +422,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:resolve-quarantine', [id])
     return result
   }
 
@@ -468,7 +441,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:resolve-intake-exception', [id])
     return result
   }
 
@@ -493,7 +465,6 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    await this.allow(g, 'ops:resolve-status-exception', [id])
     return result
   }
 }

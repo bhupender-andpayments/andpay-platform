@@ -1,6 +1,8 @@
 import { fromUuid, toUuid } from '@andpay/ids'
 import { onceWithin, enqueue } from '@andpay/outbox'
+import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
 import { instanceKey } from '@andpay/keys'
+import type { Acr } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope } from './write-context.js'
@@ -39,6 +41,41 @@ export class OpsClientError extends Error {
     message: string,
   ) {
     super(message)
+  }
+}
+
+// The co-committed ALLOW 6e record (S15, spec 10c CC-1). Every ops MUTATION
+// enqueues its ALLOW authz.audit INSIDE the same domain transaction as the
+// effect, via `enqueue(tx, buildAuthzAuditEvent(opsAllow(...)))` on the SAME
+// `tx`, in the SAME committing branch (inside the effect's `onceWithin`
+// callback, after the effect). So the 6e and the effect commit together
+// (co-commit): a rolled-back effect leaves NO 6e, and a deduped/no-op replay
+// (the callback never runs, or a no-effect branch) emits NO new 6e, giving
+// exactly ONE 6e per ACTUAL mutation, not per request. IDs and enums ONLY
+// (S7/S10.5): the free-text override reason NEVER rides this record (DD1); only
+// `overrideTerminal` carries reasonCode 'terminal-override' plus the step-up
+// assurance (acr, authTime) that authorized the C3 bypass, nothing more.
+function opsAllow(args: {
+  operation: string
+  principalId: string
+  resourceIds: string[]
+  traceId: string
+  reasonCode?: string
+  acr?: Acr
+  authTime?: number
+}): AuthzAuditRecord {
+  return {
+    principalId: args.principalId,
+    cls: 3,
+    actorChannel: 'human-direct',
+    operation: args.operation,
+    decision: 'ALLOW',
+    outcome: 'allowed',
+    ...(args.reasonCode !== undefined ? { reasonCode: args.reasonCode } : {}),
+    ...(args.acr !== undefined ? { acr: args.acr } : {}),
+    ...(args.authTime !== undefined ? { authTime: args.authTime } : {}),
+    resourceIds: args.resourceIds,
+    traceId: args.traceId,
   }
 }
 
@@ -83,6 +120,24 @@ export async function correctStatus(
         sourceRef: args.actorId,
         traceId: args.traceId,
       })
+      // Co-commit the ALLOW 6e ONLY on the advance path (spec 10c CC-1): a
+      // non-advancing correction (a terminal-exit attempt, a stale or
+      // regressive report -> 'trail_only', or an inner per-transition
+      // 'deduped') changes no status and is not an ACTUAL mutation, so it
+      // emits no 6e. An advance and its 6e commit together in THIS tx.
+      if (outcome === 'advanced') {
+        await enqueue(
+          tx,
+          buildAuthzAuditEvent(
+            opsAllow({
+              operation: 'ops:status-correction',
+              principalId: args.actorId,
+              resourceIds: [args.shptId],
+              traceId: args.traceId,
+            }),
+          ),
+        )
+      }
     })
   })
   return { deduped: !ran, outcome: ran ? outcome : null }
@@ -116,6 +171,11 @@ export async function overrideTerminal(
     clientKey: string
     actorId: string
     traceId: string
+    // The step-up assurance (acr, auth_time) the edge read off the verified
+    // claim that authorized this C3 bypass. IDs-and-enums only: these ride the
+    // co-committed ALLOW 6e; the free-text overrideReason NEVER does (DD1).
+    acr?: Acr
+    authTime?: number
   },
 ): Promise<{ deduped: boolean; overridden: boolean }> {
   if (!args.overrideReason.trim()) throw new OpsClientError('invalid', 'override_reason required')
@@ -161,6 +221,27 @@ export async function overrideTerminal(
           traceId: args.traceId,
         }),
       })
+
+      // Co-commit the privileged-action ALLOW 6e (spec 10c CC-1): the override
+      // always mutates when this callback runs, so the ALLOW is unconditional
+      // here, committing in the SAME tx as the raw C3-bypass UPDATE and the
+      // status-event row. It carries the enum reasonCode plus the step-up
+      // assurance that authorized the bypass; the free-text overrideReason
+      // stays ONLY on shpt_status_event.override_reason (DD1).
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:terminal-override',
+            principalId: args.actorId,
+            resourceIds: [args.shptId],
+            traceId: args.traceId,
+            reasonCode: 'terminal-override',
+            ...(args.acr !== undefined ? { acr: args.acr } : {}),
+            ...(args.authTime !== undefined ? { authTime: args.authTime } : {}),
+          }),
+        ),
+      )
     })
   })
   return { deduped: !ran, overridden: true }
@@ -217,6 +298,22 @@ export async function resolveStatusException(
         SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid
         WHERE id = ${args.exceptionId}::uuid AND resolved_at IS NULL
       `
+
+      // Co-commit the ALLOW 6e (spec 10c CC-1): the resolve always stamps the
+      // exception when this callback runs (whether or not the underlying
+      // status advanced), so the ALLOW is unconditional here, committing in
+      // the SAME tx as the re-drive and the resolved-at stamp.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:resolve-status-exception',
+            principalId: args.actorId,
+            resourceIds: [args.exceptionId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
 
@@ -270,6 +367,20 @@ export async function resolveIntakeException(
         SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid
         WHERE id = ${args.exceptionId}::uuid AND resolved_at IS NULL
       `
+
+      // Co-commit the ALLOW 6e (spec 10c CC-1): committed in the SAME tx as
+      // the STEP-C re-ingest and the resolved-at stamp.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:resolve-intake-exception',
+            principalId: args.actorId,
+            resourceIds: [args.exceptionId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
 
@@ -409,12 +520,28 @@ export async function recomposeArtifact(
            ${prior.artifactType}, ${prior.assetReference}, ${prior.labelDisplayName}, ${prior.labelQr}, ${prior.bankConfigRef}::uuid)
         RETURNING id::text AS id
       `
-      newArtifactId = inserted[0]!.id
+      const mintedId = inserted[0]!.id
+      newArtifactId = mintedId
 
       await tx.$executeRaw`
-        UPDATE composed_artifact SET superseded_by = ${newArtifactId}::uuid, superseded_at = now()
+        UPDATE composed_artifact SET superseded_by = ${mintedId}::uuid, superseded_at = now()
         WHERE id = ${prior.id}::uuid
       `
+
+      // Co-commit the ALLOW 6e (spec 10c CC-1): committed in the SAME tx as
+      // the new-artifact INSERT and the supersede. resourceIds carry both the
+      // assignment target and the minted artifact id (IDs only).
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:recompose-artifact',
+            principalId: args.actorId,
+            resourceIds: [args.asgnId, mintedId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
 
@@ -453,6 +580,18 @@ export async function holdRecord(
 
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:record-hold'), async () => {
       await holdEntryWithinTx(tx, args.asgnId, { operatorId: args.actorId })
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the hold.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:record-hold',
+            principalId: args.actorId,
+            resourceIds: [args.asgnId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
 
@@ -494,6 +633,21 @@ export async function releaseRecord(
         WHERE asgn_id = ${asgnUuid}::uuid AND pool_status = 'HELD'
       `
       released = count > 0
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the release.
+      // The operator's privileged release action is audited whenever the
+      // client-key callback runs (once, never on a replay), independent of
+      // whether the row was in the HELD state to transition (`released`).
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:record-release',
+            principalId: args.actorId,
+            resourceIds: [args.asgnId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
 
@@ -521,6 +675,24 @@ export async function manualBatch(
       epoch: args.clientKey,
       actorUuid: args.actorId,
     })
+    // Co-commit the ALLOW 6e (spec 10c CC-1) ONLY when a batch was actually
+    // born. manualBatch has no OUTER onceWithin (triggerBatchWithinTx carries
+    // its own client-key dedup), so a replay or an empty-pool trigger returns
+    // null and is NOT an actual mutation: no batch, no 6e. When a batch is
+    // created, its id and this 6e commit together in THIS tx.
+    if (res !== null) {
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:manual-batch-trigger',
+            principalId: args.actorId,
+            resourceIds: [args.tenantWire, args.programWire, res.btchId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    }
     return res ? { btchId: res.btchId } : null
   })
 }
@@ -543,6 +715,18 @@ export async function suspendVendor(
       await tx.$executeRaw`
         UPDATE vndr SET status = 'SUSPENDED', updated_at = now() WHERE id = ${vndrUuid}::uuid
       `
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the suspend.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:vendor-suspend',
+            principalId: args.actorId,
+            resourceIds: [args.vndrId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
 
@@ -581,6 +765,19 @@ export async function createVendorOps(
         args.traceId,
       )
       vndrId = res.vndrId
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the create.
+      // The minted vendor id is the target resource (IDs only).
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:vendor-create',
+            principalId: args.actorId,
+            resourceIds: [res.vndrId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
     })
   })
 
