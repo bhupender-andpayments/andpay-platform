@@ -1,6 +1,7 @@
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import type { FulfillmentDb } from './db.js'
 import { type Tx } from './internal.js'
+import { enterWriteRole } from './write-context.js'
 
 export interface CreateVendorInput {
   type: string // MANUFACTURER | PRINT | COURIER
@@ -41,11 +42,19 @@ export async function createVendorWithinTx(
   return { vndrId: fromUuid('vndr', uuid) }
 }
 
+// Non-ops entry point (spec 10d Task 4, M-role only: vndr is PLATFORM-ONLY, no
+// program scope, WITH CHECK(true)). Enters fulfillment_write FIRST so the vndr
+// INSERT in the shared body runs under the non-owner role instead of the table
+// owner; no program is set (there is none). The ops entry (createVendorOps,
+// spec 10c) enters the role itself, so the shared body is left untouched.
 export async function createVendor(
   db: FulfillmentDb,
   input: CreateVendorInput,
   actor: OpsActor,
   traceId: string,
 ): Promise<{ vndrId: string }> {
-  return db.$transaction((tx: Tx) => createVendorWithinTx(tx, input, actor, traceId))
+  return db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return createVendorWithinTx(tx, input, actor, traceId)
+  })
 }

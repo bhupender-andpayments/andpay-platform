@@ -1,6 +1,6 @@
 import { fromUuid } from '@andpay/ids'
 import { onceWithin, enqueue } from '@andpay/outbox'
-import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { CONSUMER, type Tx } from './internal.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
 
 // The C3 forward ladder. FAILED and RETURNED are OFF-ladder: reachable from any
@@ -50,6 +50,18 @@ export type AdvanceOutcome = 'advanced' | 'trail_only' | 'deduped' | 'unknown_aw
  * history. Advances shpt.status only through ONE rowcount-gated atomic UPDATE,
  * so there is no read-then-branch TOCTOU window, and emits the transition fact
  * only when that UPDATE actually returns a row.
+ *
+ * PROGRAM-AGNOSTIC (spec 10d Task 4): this helper does NOT set app.program_id
+ * itself. Its CALLER establishes the write scope BEFORE calling it, pinned to
+ * THIS shipment's own server-resolved program (AWB -> shpt -> program_id):
+ * ingestStatusFile re-sets the GUC per shipment before delegating (a batch
+ * file spans many programs, so the set MUST be per shipment, not once per tx);
+ * ingestStatusWebhook resolves and sets it for its single AWB; the 10c ops
+ * correction paths (correctStatus, resolveStatusException) already entered the
+ * scope via enterWriteScope with the same shpt's program. Keeping this helper
+ * program-agnostic is what lets ONE role-scoped transaction pin each of its
+ * many per-shipment writes to a different program without a blanket
+ * multi-program UPDATE or an array-membership WITH CHECK.
  */
 export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<AdvanceOutcome> {
   const found = await tx.$queryRaw<{ id: string; program_id: string; courier_partner: string | null }[]>`
@@ -71,8 +83,9 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
   // Per-transition idempotency (06.A): a re-reported status is a no-op, so the
   // body does not run twice and no duplicate trail row or fact appears.
   const ran = await onceWithin(tx, CONSUMER, `${shptWire}|${u.status}|${tsIso}`, async () => {
-    await setProgramContext(tx, programUuid)
-
+    // NB: app.program_id is set by the CALLER (see the doc comment), pinned to
+    // this shpt's own program, so the shpt_status_event + shpt WITH CHECK bite
+    // correctly under the non-owner role.
     await tx.$executeRaw`
       INSERT INTO shpt_status_event
         (shpt_id, program_id, status, courier_timestamp, status_source, source_ref, trace_id)

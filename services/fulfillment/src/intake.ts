@@ -3,6 +3,7 @@ import { onceWithin, enqueue } from '@andpay/outbox'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
+import { enterWriteRole } from './write-context.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 import { unitFactEnvelope, UNIT_TOPIC } from './events.js'
 
@@ -238,5 +239,15 @@ export async function ingestIntakeSheet(
   // schema_invalid, not a crash.
   if (!isSheetStructurallyValid(sheet)) return emptyResult('schema_invalid')
 
-  return db.$transaction((tx: Tx) => ingestIntakeSheetWithinTx(tx, sheet, traceId))
+  // Non-ops entry point (spec 10d Task 4, M-role only: unit and
+  // intake_exception are PLATFORM-ONLY, WITH CHECK(true), no program scope).
+  // Enters fulfillment_write FIRST so every write in the shared
+  // ingestIntakeSheetWithinTx body runs under the non-owner role instead of
+  // the table owner; no program is set (there is none). The ops entry
+  // (resolveIntakeException, spec 10c) enters the role itself, so the shared
+  // body is left untouched.
+  return db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return ingestIntakeSheetWithinTx(tx, sheet, traceId)
+  })
 }

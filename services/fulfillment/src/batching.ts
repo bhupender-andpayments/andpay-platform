@@ -3,6 +3,7 @@ import { onceWithin, enqueue } from '@andpay/outbox'
 import { setTimer, claimAndFireDueTimers } from '@andpay/engine'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { enterWriteScope, enterWriteRole } from './write-context.js'
 import { poolConfig } from './config/pool-config.js'
 import { BATCH_TOPIC, batchFactEnvelope } from './events.js'
 import type { OpsActor } from './vendor.js'
@@ -91,8 +92,11 @@ export async function ensurePool(
       `
 
       // batch_pool is PROGRAM-SCOPED (07.B): the write-gate needs app.program_id
-      // set before the INSERT below (critique fix).
-      await setProgramContext(tx, programUuid)
+      // set before the INSERT below (critique fix). Mechanical spec 10d Task 4
+      // swap (setProgramContext -> enterWriteScope): enters fulfillment_write
+      // and binds the program in one call, so the batch_pool WITH CHECK bites
+      // under the non-owner role.
+      await enterWriteScope(tx, 'fulfillment_write', programUuid)
 
       const won = await tx.$queryRaw<{ id: string; pm_instance_id: string }[]>`
         INSERT INTO batch_pool (id, tenant_id, program_id, pm_instance_id, created_at)
@@ -307,6 +311,13 @@ export async function triggerBatchWithinTx(
   return result
 }
 
+// Non-ops entry point (spec 10d Task 4): enters fulfillment_write FIRST, so
+// the shared triggerBatchWithinTx body -- including the onceWithin inbox dedup
+// insert (M-role) that precedes its setProgramContext -- runs under the
+// non-owner role instead of the table owner. The body's own setProgramContext
+// then binds the (single) program for the program-scoped writes (batch,
+// pending_pool_entry). The ops entry (manualBatch, spec 10c) enters the scope
+// itself via enterWriteScope, so the shared body is left untouched.
 export async function triggerBatch(
   db: FulfillmentDb,
   tenantWire: string,
@@ -314,7 +325,10 @@ export async function triggerBatch(
   reason: string,
   opts: TriggerBatchOpts,
 ): Promise<{ btchId: string; unitCount: number } | null> {
-  return db.$transaction((tx: Tx) => triggerBatchWithinTx(tx, tenantWire, programWire, reason, opts))
+  return db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return triggerBatchWithinTx(tx, tenantWire, programWire, reason, opts)
+  })
 }
 
 /**
@@ -529,6 +543,14 @@ export async function holdEntryWithinTx(tx: Tx, asgnIdWire: string, actor: OpsAc
   `
 }
 
+// Non-ops entry point (spec 10d Task 4): enters fulfillment_write FIRST so the
+// shared holdEntryWithinTx body runs under the non-owner role; the body's own
+// setProgramContext (resolved server-side from the target's pending_pool_entry
+// row) then binds the program for the HELD UPDATE. The ops entry (holdRecord,
+// spec 10c) enters the scope itself, so the shared body is left untouched.
 export async function holdEntry(db: FulfillmentDb, asgnIdWire: string, actor: OpsActor): Promise<void> {
-  await db.$transaction((tx: Tx) => holdEntryWithinTx(tx, asgnIdWire, actor))
+  await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    await holdEntryWithinTx(tx, asgnIdWire, actor)
+  })
 }

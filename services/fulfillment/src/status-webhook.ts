@@ -2,7 +2,8 @@ import { toUuid, fromUuid } from '@andpay/ids'
 import { onceWithin } from '@andpay/outbox'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
-import { CONSUMER, type Tx } from './internal.js'
+import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { enterWriteRole } from './write-context.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 import { advanceShipmentStatus, isKnownStatus } from './courier-status.js'
 
@@ -64,6 +65,13 @@ export async function ingestStatusWebhook(
   // STEP C: event idempotency {vendor}|{eventId} via the inbox; a replay of the
   // same event does not run again (deduped).
   const ran = await db.$transaction(async (tx: Tx) => {
+    // Single-program caller of advanceShipmentStatus (one AWB -> one shpt).
+    // advanceShipmentStatus is program-agnostic (spec 10d Task 4), so this
+    // caller owns the write scope: enter fulfillment_write FIRST (so the
+    // quarantine courier_status_exception writes and the inbox dedup run under
+    // the non-owner role), then pin app.program_id to the resolved shpt's own
+    // program before delegating.
+    await enterWriteRole(tx, 'fulfillment_write')
     return onceWithin(tx, CONSUMER, `${ev.vndrId}|${ev.eventId}`, async () => {
       const quarantine = async (reason: string): Promise<void> => {
         await tx.$executeRaw`
@@ -78,9 +86,11 @@ export async function ingestStatusWebhook(
         return
       }
 
-      // shpt reads are open (USING true); no program context needed to resolve.
-      const found = await tx.$queryRaw<{ courier_partner: string | null }[]>`
-        SELECT courier_partner::text AS courier_partner FROM shpt WHERE awb = ${ev.awb}
+      // shpt reads are open (USING true); no program context needed to
+      // resolve. program_id is read here so the write scope can be pinned
+      // SERVER-SIDE to this shpt's own program before the scoped writes.
+      const found = await tx.$queryRaw<{ program_id: string; courier_partner: string | null }[]>`
+        SELECT program_id::text AS program_id, courier_partner::text AS courier_partner FROM shpt WHERE awb = ${ev.awb}
       `
       if (found.length === 0) {
         await quarantine('unknown_awb')
@@ -96,6 +106,10 @@ export async function ingestStatusWebhook(
         await quarantine('wrong_courier')
         return
       }
+
+      // Pin app.program_id to the resolved shpt's own program before the
+      // (program-agnostic) advanceShipmentStatus writes shpt_status_event + shpt.
+      await setProgramContext(tx, found[0]!.program_id)
 
       const adv = await advanceShipmentStatus(tx, {
         awb: ev.awb,

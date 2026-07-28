@@ -3,6 +3,7 @@ import { onceWithin, enqueue } from '@andpay/outbox'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { enterWriteRole } from './write-context.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 import {
   PRINT_FOR_TOPIC,
@@ -167,6 +168,21 @@ export async function ingestReturnSheet(
   // STEP C: file idempotency (06.A) on {vendor}|{file_id} via the inbox. A
   // re-ingest of the whole file is a no-op: fn does not run a second time.
   const ran = await db.$transaction(async (tx: Tx) => {
+    // NAMED multi-program Fork-E exception (spec 10d Task 4, check 9): a single
+    // print/ship return file can pair units for assignments belonging to
+    // DIFFERENT programs. Write-pinning is PER WRITE, not per tx: enter
+    // fulfillment_write ONCE here (SET LOCAL ROLE is transaction-scoped and
+    // survives the per-unit set_config calls), then re-set app.program_id per
+    // row before the shpt birth (setProgramContext below) and per
+    // (program,batch) group before its scoped dispatch UPDATE. Each per-unit
+    // program_id is resolved SERVER-SIDE from the target aggregate
+    // (pending_pool_entry.program_id), never a file column. This is
+    // deliberately NOT one enterWriteScope(role, oneProgram): a single blanket
+    // UPDATE across programs under one GUC would fail every non-last program's
+    // WITH CHECK (the fold-correction-1 landmine; proven by the (d) NEGATIVE
+    // assertion in test/write_role.test.ts). Unresolvable rows quarantine
+    // (intake_exception, M-role) and never roll back the file.
+    await enterWriteRole(tx, 'fulfillment_write')
     return onceWithin(tx, CONSUMER, `${sheet.vndrId}|${sheet.fileId}`, async () => {
       for (let i = 0; i < sheet.rows.length; i++) {
         const row = sheet.rows[i]!

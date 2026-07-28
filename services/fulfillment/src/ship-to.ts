@@ -3,7 +3,8 @@ import { toUuid } from '@andpay/ids'
 import type { Envelope } from '@andpay/envelope'
 import type { FulfillmentDb } from './db.js'
 import type { ShipToAmendedFactView } from './events.js'
-import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { CONSUMER, type Tx } from './internal.js'
+import { enterWriteScope } from './write-context.js'
 
 /**
  * Thrown when the ship-to amend fact (fct.tms.assignment.ship_to_amended.v1)
@@ -65,7 +66,7 @@ export async function projectShipToAmended(
 
   const ran = await db.$transaction(async (tx: Tx) => {
     return onceWithin(tx, CONSUMER, env.dedupKey, async () => {
-      await setProgramContext(tx, programUuid)
+      await enterWriteScope(tx, 'fulfillment_write', programUuid)
 
       const shipToAddress = p.shipToAddress ?? null
       const contactName = p.contactName ?? null

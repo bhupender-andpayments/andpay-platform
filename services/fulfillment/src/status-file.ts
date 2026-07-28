@@ -2,7 +2,8 @@ import { toUuid, fromUuid } from '@andpay/ids'
 import { onceWithin } from '@andpay/outbox'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
-import { CONSUMER, type Tx } from './internal.js'
+import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { enterWriteRole } from './write-context.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 import { advanceShipmentStatus, isKnownStatus } from './courier-status.js'
 
@@ -73,6 +74,19 @@ export async function ingestStatusFile(
   // STEP C: file idempotency {vendor}|{fileId} via the inbox; a whole-file replay
   // does not run again (deduped).
   const ran = await db.$transaction(async (tx: Tx) => {
+    // NAMED multi-program Fork-E exception (spec 10d Task 4, check 9): a batch
+    // status file can legitimately carry shpts of MANY programs. Write-pinning
+    // is PER WRITE, not per tx: enter fulfillment_write ONCE here (SET LOCAL
+    // ROLE is transaction-scoped and persists across the per-shipment
+    // set_config calls), then re-set app.program_id per shipment to THAT
+    // shipment's OWN server-resolved program (AWB -> shpt -> program_id, never
+    // a file column) right before delegating to advanceShipmentStatus. This is
+    // deliberately NOT one enterWriteScope(role, oneProgram): a single GUC for
+    // the whole tx would fail every non-last program's WITH CHECK (proven by
+    // the (d) NEGATIVE assertion in test/write_role.test.ts). Unresolvable
+    // rows quarantine (courier_status_exception, M-role) and never roll back
+    // the file.
+    await enterWriteRole(tx, 'fulfillment_write')
     return onceWithin(tx, CONSUMER, `${file.vndrId}|${file.fileId}`, async () => {
       for (let i = 0; i < file.rows.length; i++) {
         const row = file.rows[i]!
@@ -83,9 +97,11 @@ export async function ingestStatusFile(
           quarantined++; continue
         }
 
-        // shpt reads are open (USING true); no program context needed to resolve.
-        const found = await tx.$queryRaw<{ courier_partner: string | null }[]>`
-          SELECT courier_partner::text AS courier_partner FROM shpt WHERE awb = ${row.awb}
+        // shpt reads are open (USING true); no program context needed to
+        // resolve. program_id is read here so the per-shipment write scope can
+        // be pinned SERVER-SIDE to this shpt's OWN program (never a file column).
+        const found = await tx.$queryRaw<{ program_id: string; courier_partner: string | null }[]>`
+          SELECT program_id::text AS program_id, courier_partner::text AS courier_partner FROM shpt WHERE awb = ${row.awb}
         `
         if (found.length === 0) {
           await quarantine(tx, vndrUuid, row.awb, file.fileId, rowRef, 'unknown_awb')
@@ -101,6 +117,12 @@ export async function ingestStatusFile(
           await quarantine(tx, vndrUuid, row.awb, file.fileId, rowRef, 'wrong_courier')
           quarantined++; continue
         }
+
+        // Per-shipment re-set: pin app.program_id to THIS shpt's own program
+        // right before its scoped writes (advanceShipmentStatus writes the
+        // M-pred shpt_status_event + shpt). advanceShipmentStatus is
+        // program-agnostic; this caller owns the GUC.
+        await setProgramContext(tx, found[0]!.program_id)
 
         const outcome = await advanceShipmentStatus(tx, {
           awb: row.awb,

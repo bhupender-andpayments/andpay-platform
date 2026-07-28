@@ -4,6 +4,7 @@ import type { Envelope } from '@andpay/envelope'
 import type { CredentialProjectionRow } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import type { Tx } from './internal.js'
+import { enterWriteRole } from './write-context.js'
 
 // The 5c auth-config channel's payload, declared LOCALLY (C4): this consumer
 // never imports @andpay/auth-service or anything from services/auth. This is
@@ -55,6 +56,11 @@ export async function projectCredentialConfig(
   const apiUuid = toUuid(p.apiId)
   const vndrUuid = toUuid(p.vndrId)
   const upserted = await db.$transaction(async (tx: Tx) => {
+    // M-role only (spec 10d Task 4): credential_projection is PLATFORM-ONLY
+    // (WITH CHECK(true), no program scope). Enter the role FIRST so both the
+    // onceWithin inbox dedup and the credential_projection upsert run under
+    // fulfillment_write instead of the table owner.
+    await enterWriteRole(tx, 'fulfillment_write')
     return onceWithin(tx, CREDENTIAL_CONFIG_CONSUMER, env.dedupKey, async () => {
       await tx.$executeRaw`
         INSERT INTO credential_projection (

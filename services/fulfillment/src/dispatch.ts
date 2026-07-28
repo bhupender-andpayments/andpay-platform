@@ -3,7 +3,8 @@ import { onceWithin, enqueue } from '@andpay/outbox'
 import { stepKey } from '@andpay/keys'
 import type { Envelope } from '@andpay/envelope'
 import type { FulfillmentDb } from './db.js'
-import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { CONSUMER, type Tx } from './internal.js'
+import { enterWriteScope } from './write-context.js'
 import { DISPATCH_TOPIC, dispatchFactEnvelope, type BatchFactPayload } from './events.js'
 
 // which artifacts a snapshot entry gets (from the snapshot alone, C4-safe)
@@ -62,7 +63,7 @@ export async function consumeBatchFact(
         VALUES (${btchUuid}::uuid, 'dispatch_lifecycle', 1, 'running', now())
         ON CONFLICT (id) DO NOTHING
       `
-      await setProgramContext(tx, programUuid) // program-scoped writes below
+      await enterWriteScope(tx, 'fulfillment_write', programUuid) // program-scoped writes below
 
       // COMPOSE step (idempotent per {btch_}|compose via the step row + onceWithin dedupKey).
       await onceWithin(tx, CONSUMER, `${p.btchId}|compose`, async () => {

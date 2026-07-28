@@ -3,7 +3,8 @@ import { toUuid } from '@andpay/ids'
 import type { Envelope } from '@andpay/envelope'
 import type { FulfillmentDb } from './db.js'
 import type { AssignmentFactView } from './events.js'
-import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { CONSUMER, type Tx } from './internal.js'
+import { enterWriteScope } from './write-context.js'
 
 export async function projectDemandFact(db: FulfillmentDb, env: Envelope<AssignmentFactView>): Promise<{ deduped: boolean }> {
   const p = env.payload
@@ -11,7 +12,7 @@ export async function projectDemandFact(db: FulfillmentDb, env: Envelope<Assignm
   await db.$transaction(async (tx: Tx) => {
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       const progUuid = toUuid(p.progId)
-      await setProgramContext(tx, progUuid)
+      await enterWriteScope(tx, 'fulfillment_write', progUuid)
       // RETURNING id, so we report a fresh write ONLY when the row was actually
       // won. A redelivered asgn_ under a FRESH dedupKey passes the inbox guard but
       // hits the asgn_id conflict; without RETURNING we would falsely report a
