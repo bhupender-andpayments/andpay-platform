@@ -4,6 +4,7 @@ import { eventKey } from '@andpay/keys'
 import type { Prisma } from '../generated/client/index.js'
 import type { IdentityDb } from './db.js'
 import type { RowFactEnvelope } from './row-fact.js'
+import { enterWriteRole } from './write-context.js'
 import {
   merchantFactEnvelope,
   tenantFactEnvelope,
@@ -184,6 +185,17 @@ async function applyMerchantFields(
 // Consume one bank-file row fact, project the identity graph, and emit the
 // identity facts, all in one transaction (E1) guarded by the inbox (E6).
 //
+// Spec 10d Task 2 (the named Fork-E exception, check 6): this is the ONE
+// heterogeneous write tx in the platform, resolving/minting tenant, merchant,
+// merchant_bank_ref (all WITH CHECK true, no program known yet) BEFORE
+// program/enrollment (WITH CHECK id / program_id = the GUC) become relevant,
+// then enqueueing facts to outbox (also WITH CHECK true). The role is entered
+// ONCE at the top via enterWriteRole so every statement in the tx runs under
+// identity_write instead of the table owner; resolveProgram then sets
+// app.program_id itself, in-process, either to the existing program's id on a
+// resolve hit or to the freshly minted prog_ uuid BEFORE the program INSERT
+// (mint-then-set-GUC-before-INSERT), so the self-referential WITH CHECK passes.
+//
 // Fact hygiene: emit the tenant, program, and merchant fact ONLY on a state
 // change (a first mint, or MerchantUpdated on an actual field diff), never on a
 // pure no-change. ALWAYS emit the per-row fct.identity.enrollment.v1 carrying
@@ -195,6 +207,7 @@ export async function projectRowFact(db: IdentityDb, env: RowFactEnvelope): Prom
   let out: ProjectResult = { deduped: true }
 
   await db.$transaction(async (tx) => {
+    await enterWriteRole(tx, 'identity_write')
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       const tenant = await resolveTenant(tx, p.bankReferenceCode)
       const program = await resolveProgram(tx, tenant.tenantUuid, p.productType)
