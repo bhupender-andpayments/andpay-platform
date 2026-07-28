@@ -11,7 +11,8 @@ import {
   activatedFactEnvelope,
   TMS_ACTIVATED_TOPIC,
 } from './events.js'
-import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { CONSUMER, type Tx } from './internal.js'
+import { enterWriteScope } from './write-context.js'
 import type { DevicePort } from './device-port.js'
 
 // The consumer view of the identity enrollment fact (T7). Declared LOCALLY,
@@ -148,7 +149,7 @@ export async function createAssignmentFromEnrollment(
       if (ten.length === 0) throw new Error(`tenant projection not ready for ${p.tnntId}`)
 
       const progUuid = toUuid(p.progId)
-      await setProgramContext(tx, progUuid)
+      await enterWriteScope(tx, 'tms_write', progUuid)
 
       const pr = pend[0]!
       const m = merch[0]!
@@ -209,6 +210,20 @@ export async function amendShipTo(
   const mobile = recipient?.mobile ?? null
   let amended = false
   await db.$transaction(async (tx: Tx) => {
+    // Fork-E named exception (spec 10d Task 3, check 1/8): amendShipTo carries
+    // NO program on the wire at all (no param, no body field), so program_id
+    // is resolved SERVER-SIDE from the target assignment row itself (D99: it
+    // never comes from a caller), then the write scope is entered BEFORE the
+    // onceWithin dedup insert and the UPDATE, so every write in this
+    // transaction runs under tms_write with the row's OWN program bound to
+    // app.program_id; the assignment_scoped WITH CHECK then fail-closes on
+    // any mismatch or an unset value.
+    const target = await tx.$queryRaw<{ program_id: string }[]>`
+      SELECT program_id FROM assignment WHERE id = ${asgnUuid}::uuid
+    `
+    if (target.length === 0) throw new Error(`amendShipTo: assignment ${asgnId} not found`)
+    await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
+
     const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
       // Post-batch lock is fixture-deferred (gated on a Fulfillment batch fact, step 7).
       await tx.$executeRaw`
@@ -256,6 +271,17 @@ export async function activateAssignment(
   const dedupKey = `${asgnId}|activate`
   let activated = false
   await db.$transaction(async (tx: Tx) => {
+    // Fork-E named exception (spec 10d Task 3, check 1/8): activateAssignment
+    // carries NO program on the wire at all, so program_id is resolved
+    // SERVER-SIDE from the target assignment row itself (D99: never a caller
+    // param), then the write scope is entered BEFORE the onceWithin dedup
+    // insert and the UPDATE, exactly like amendShipTo above.
+    const target = await tx.$queryRaw<{ program_id: string }[]>`
+      SELECT program_id FROM assignment WHERE id = ${asgnUuid}::uuid
+    `
+    if (target.length === 0) throw new Error(`activateAssignment: assignment ${asgnId} not found`)
+    await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
+
     const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
       await tx.$executeRaw`UPDATE assignment SET activated_at = ${result.activatedAt}::timestamptz, demand_state = 'activated', updated_at = now() WHERE id = ${asgnUuid}::uuid`
       await enqueue(tx, {

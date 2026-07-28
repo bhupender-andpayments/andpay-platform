@@ -4,7 +4,8 @@ import { eventKey } from '@andpay/keys'
 import type { TmsDb } from './db.js'
 import { emitDemandFact } from './assignment.js'
 import { replacementRaisedFactEnvelope, TMS_REPLACEMENT_RAISED_TOPIC } from './events.js'
-import { setProgramContext, type Tx } from './internal.js'
+import { type Tx } from './internal.js'
+import { enterWriteScope, enterWriteRole } from './write-context.js'
 
 export interface BankDamageRow {
   fileId: string
@@ -65,7 +66,7 @@ export async function ingestDamageRowWithinTx(
     return outcome
   }
   const o = matches[0]!
-  await setProgramContext(tx, o.program_id)
+  await enterWriteScope(tx, 'tms_write', o.program_id)
 
   const replUuid = toUuid(newId('asgn'))
   // updated_at is @updatedAt in the Prisma schema, which is client-API
@@ -117,10 +118,22 @@ export async function ingestDamageRowWithinTx(
   return outcome
 }
 
+// Non-ops entry point (spec 10d Task 3): enters the role FIRST, before
+// delegating to the shared WithinTx body, so the quarantine (no-match) path
+// -- which writes quarantine_row (M-role) BEFORE any program is known, and
+// may return before ingestDamageRowWithinTx ever resolves a program_id at all
+// -- also runs under tms_write instead of the table owner. The matched
+// (replaced) path's own enterWriteScope call inside ingestDamageRowWithinTx
+// then re-enters the role together with the resolved program_id; re-setting
+// SET LOCAL ROLE to the same role mid-transaction is a harmless no-op (the
+// identical pattern already ratified for tms uploadDamageFile, spec 10c).
 export async function ingestDamageRow(
   db: TmsDb,
   row: BankDamageRow,
   traceId: string,
 ): Promise<'replaced' | 'duplicate' | 'quarantined'> {
-  return db.$transaction((tx: Tx) => ingestDamageRowWithinTx(tx, row, traceId))
+  return db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'tms_write')
+    return ingestDamageRowWithinTx(tx, row, traceId)
+  })
 }

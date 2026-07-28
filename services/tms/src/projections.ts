@@ -3,6 +3,7 @@ import { toUuid } from '@andpay/ids'
 import type { Envelope } from '@andpay/envelope'
 import type { TmsDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
+import { enterWriteRole } from './write-context.js'
 
 // The consumer views of the identity facts (T7). Declared locally, never
 // imported from the identity service (C4). Drift is caught by the wire schema
@@ -25,6 +26,8 @@ export async function projectMerchantFact(db: TmsDb, env: Envelope<MerchantFactV
   const p = env.payload
   const uuid = toUuid(p.mrchId)
   await db.$transaction(async (tx: Tx) => {
+    // M-role only (spec 10d Task 3): no program-scoped write in this body.
+    await enterWriteRole(tx, 'tms_write')
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       await tx.$executeRaw`
         INSERT INTO merchant_projection (id, display_name, legal_name, mcc, status, updated_at)
@@ -44,6 +47,8 @@ export async function projectTenantFact(db: TmsDb, env: Envelope<TenantFactView>
   const p = env.payload
   const uuid = toUuid(p.tnntId)
   await db.$transaction(async (tx: Tx) => {
+    // M-role only (spec 10d Task 3): no program-scoped write in this body.
+    await enterWriteRole(tx, 'tms_write')
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       await tx.$executeRaw`
         INSERT INTO tenant_projection (id, display_name, bank_reference_code, updated_at)

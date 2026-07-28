@@ -15,7 +15,7 @@ export {
 export { ingestDamageRow, ingestDamageRowWithinTx, type BankDamageRow } from './damage.js'
 export { UnwiredDevicePort, type DevicePort, type ActivationCommand, type ActivationResult } from './device-port.js'
 export { enterReadScope } from './read-context.js'
-export { enterWriteScope } from './write-context.js'
+export { enterWriteScope, enterWriteRole } from './write-context.js'
 export { readAssignments, readAssignmentById, type AssignmentReadRow } from './read.js'
 export { uploadBankFile, uploadDamageFile, resolveQuarantineRow } from './ops.js'
 export { readQuarantineQueue, type QuarantineRowView } from './ops-read.js'

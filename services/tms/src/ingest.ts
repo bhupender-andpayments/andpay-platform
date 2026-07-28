@@ -2,6 +2,7 @@ import { enqueue } from '@andpay/outbox'
 import type { TmsDb } from './db.js'
 import { rowFactEnvelope, ROW_FACT_TYPE } from './row-fact.js'
 import { validateQrVpaFormat, type Tx } from './internal.js'
+import { enterWriteRole } from './write-context.js'
 
 export interface BankRequestRow {
   fileId: string
@@ -116,10 +117,17 @@ export async function ingestRequestRowWithinTx(
   return outcome
 }
 
+// Non-ops entry point (spec 10d Task 3, M-role only: no program-scoped write
+// exists in this body). Enters the role FIRST so every write in the shared
+// WithinTx body -- whichever sub-path runs, quarantine_row or pending_row +
+// ingest_file -- runs under tms_write instead of the table owner.
 export async function ingestRequestRow(
   db: TmsDb,
   row: BankRequestRow,
   traceId: string,
 ): Promise<'accepted' | 'duplicate' | 'quarantined'> {
-  return db.$transaction((tx: Tx) => ingestRequestRowWithinTx(tx, row, traceId))
+  return db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'tms_write')
+    return ingestRequestRowWithinTx(tx, row, traceId)
+  })
 }

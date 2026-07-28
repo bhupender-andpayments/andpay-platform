@@ -13,3 +13,14 @@ export async function enterWriteScope(tx: Tx, role: string, programId: string): 
   await tx.$executeRawUnsafe(`SET LOCAL ROLE ${role}`)
   await tx.$queryRaw`SELECT set_config('app.program_id', ${programId}, true)`
 }
+
+// The role-only variant (spec 10d Task 3): enters the role with no program
+// context. Used by the non-ops M-role-only writers (projectMerchantFact,
+// projectTenantFact) and by the non-ops wrappers whose shared WithinTx body
+// resolves and sets app.program_id itself once the target aggregate is known
+// (ingestRequestRow, ingestDamageRow), so the earlier M-role writes in the
+// same transaction (inbox dedup, quarantine_row) also run under the role
+// instead of the table owner.
+export async function enterWriteRole(tx: Tx, role: string): Promise<void> {
+  await tx.$executeRawUnsafe(`SET LOCAL ROLE ${role}`)
+}
