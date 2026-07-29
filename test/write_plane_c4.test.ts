@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import {
   relayOnce,
   InMemoryPublisher,
@@ -26,7 +29,6 @@ describe('10d write-plane C4 (cross-cutting)', () => {
   it.todo('check 4: cross-schema write under a context role denied by Postgres [Task 8]')
   it.todo('check 10: planted new-table write fails closed until GRANT added; no ALTER DEFAULT PRIVILEGES [Task 8]')
   it.todo('check 8: server-side program resolution ignores a spoofed program value [Task 8]')
-  it.todo('check 7: dead orchestrator_write role, no handler, no src [Task 7]')
 })
 
 // -----------------------------------------------------------------------------
@@ -359,6 +361,48 @@ describe('check 3: Fork B infra roles harness-proven cross-program (Task 5, no p
       expect(usage[0]!.own_usage).toBe(true)
       expect(usage[0]!.other_usage).toBe(false)
     }
+  })
+})
+
+// -----------------------------------------------------------------------------
+// check 7 (Task 7, Fork D): orchestrator_write is a DEAD role. The orchestrator
+// context has a Prisma project but no services/orchestrator/src (D77 engine
+// internals deferred by design), so the role exists for symmetry only: no
+// handler runs under it and it holds no grants beyond its own schema USAGE.
+// -----------------------------------------------------------------------------
+describe('check 7: dead orchestrator_write role (Fork D, no handler, no src)', () => {
+  it('orchestrator_write is a dead non-owner role: USAGE on orchestrator only, no table grants, no owned tables, and services/orchestrator/src does not exist', async () => {
+    const attrs = await fulfillmentDb.$queryRawUnsafe<
+      { rolsuper: boolean; rolbypassrls: boolean; rolcanlogin: boolean }[]
+    >(`SELECT rolsuper, rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname = 'orchestrator_write'`)
+    expect(attrs).toHaveLength(1)
+    expect(attrs[0]!.rolsuper).toBe(false)
+    expect(attrs[0]!.rolbypassrls).toBe(false)
+    expect(attrs[0]!.rolcanlogin).toBe(false)
+
+    // USAGE on its own schema only; no other-schema USAGE (C4 backstop).
+    const usage = await fulfillmentDb.$queryRawUnsafe<
+      { own_usage: boolean; other_usage: boolean }[]
+    >(
+      `SELECT has_schema_privilege('orchestrator_write', 'orchestrator', 'USAGE') AS own_usage,
+              has_schema_privilege('orchestrator_write', 'fulfillment', 'USAGE') AS other_usage`,
+    )
+    expect(usage[0]!.own_usage).toBe(true)
+    expect(usage[0]!.other_usage).toBe(false)
+
+    // Dead: no table privileges anywhere, owns no tables.
+    const grants = await fulfillmentDb.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT count(*) AS n FROM information_schema.role_table_grants WHERE grantee = 'orchestrator_write'`,
+    )
+    expect(Number(grants[0]!.n)).toBe(0)
+    const owned = await fulfillmentDb.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT count(*) AS n FROM pg_class c JOIN pg_roles r ON c.relowner = r.oid WHERE r.rolname = 'orchestrator_write'`,
+    )
+    expect(Number(owned[0]!.n)).toBe(0)
+
+    // No handler: services/orchestrator/src does not exist (Fork D).
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+    expect(existsSync(path.join(repoRoot, 'services/orchestrator/src'))).toBe(false)
   })
 })
 
