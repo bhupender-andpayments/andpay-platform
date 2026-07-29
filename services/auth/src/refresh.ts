@@ -79,7 +79,17 @@ export async function rotateRefresh(
     // Reuse of a rotated token: revoke the ENTIRE family (6b anti-replay). This
     // MUST be a committed write, so it runs outside the throwing path (a throw
     // inside an interactive transaction would roll the revoke back).
-    await deps.db.refreshToken.updateMany({ where: { familyId: row.familyId }, data: { revoked: true } })
+    // Spec 10d Task 6 completion pass NAMED Fork-E EXCEPTION: the revoke is
+    // wrapped in its OWN committing transaction, with enterWriteRole as its
+    // first statement, and the throw happens AFTER that transaction has
+    // returned (i.e. committed). This runs the revoke under auth_write while
+    // preserving commit-before-throw: the tx commits the revoke, then control
+    // returns here and the throw happens outside the tx, so there is no
+    // rollback of the security-critical anti-replay revoke.
+    await deps.db.$transaction(async (tx) => {
+      await enterWriteRole(tx, 'auth_write')
+      await tx.refreshToken.updateMany({ where: { familyId: row.familyId }, data: { revoked: true } })
+    })
     throw new AuthzError('refresh-reuse-family-revoked')
   }
   const nowDate = new Date(now * 1000)
@@ -113,7 +123,15 @@ export async function rotateRefresh(
     return true
   })
   if (!claimed) {
-    await deps.db.refreshToken.updateMany({ where: { familyId: row.familyId }, data: { revoked: true } })
+    // Race-loss revoke: the guarded update lost the race (a concurrent rotate
+    // already claimed this token), treated as replay (6b). Same NAMED Fork-E
+    // exception as the reuse-revoke above: own committing transaction, then
+    // throw outside it, so the revoke runs under auth_write and still commits
+    // before the throw.
+    await deps.db.$transaction(async (tx) => {
+      await enterWriteRole(tx, 'auth_write')
+      await tx.refreshToken.updateMany({ where: { familyId: row.familyId }, data: { revoked: true } })
+    })
     throw new AuthzError('refresh-reuse-family-revoked')
   }
   return { refreshToken: token, principalId: row.principalId, familyId: row.familyId }

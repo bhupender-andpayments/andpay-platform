@@ -6,7 +6,8 @@ import { issueVendorCredential, revokeVendorCredential } from '../src/credential
 import { addToDenylist } from '../src/denylist.js'
 import { issueRefreshFamily, rotateRefresh } from '../src/refresh.js'
 import { LocalPepperAdapter } from '../src/ports/pepper.js'
-import type { LeanClaim } from '@andpay/authz'
+import { auditStandalone } from '../src/audit.js'
+import { AuthzError, type LeanClaim } from '@andpay/authz'
 
 // Spec 10d Task 6: proves the auth_write role for the Auth context. Auth has
 // ZERO program-scoped tables (spec 04 field 9): every auth table is
@@ -220,6 +221,28 @@ describe('live writers run under auth_write (non-vacuous, current_user trigger)'
       await dropGuard('refresh_token')
     }
   })
+
+  // Completion pass (full auth no-owner sweep): auditStandalone opens its OWN
+  // transaction (login.ts / authorize.ts call it with no already-scoped tx to
+  // inherit from) and enqueues to auth.outbox via emitAuthzAudit. Before this
+  // pass it ran with no role entry at all (owner write). Proven the same way
+  // as every other writer: a BEFORE INSERT trigger on auth.outbox asserts
+  // current_user at the moment of the real write.
+  it('auditStandalone writes auth.outbox as auth_write', async () => {
+    await installGuard('outbox', 'BEFORE INSERT')
+    try {
+      await auditStandalone(db, {
+        principalId: randomUUID(),
+        cls: 3,
+        operation: 'test.op',
+        decision: 'ALLOW',
+        outcome: 'ok',
+        traceId: randomUUID(),
+      })
+    } finally {
+      await dropGuard('outbox')
+    }
+  })
 })
 
 // issueRefreshFamily BEHAVIORAL: the tx-wrap must preserve refresh-family
@@ -261,5 +284,89 @@ describe('issueRefreshFamily tx-wrap behavioral proof: refresh-family semantics 
     const { refreshToken: r1 } = await rotateRefresh(r0, { db, idleSec: 1800, now: 2500 })
     const { refreshToken: r2 } = await rotateRefresh(r1, { db, idleSec: 1800, now: 4000 })
     await expect(rotateRefresh(r2, { db, idleSec: 1800, now: 4700 })).rejects.toThrow()
+  })
+})
+
+// Completion pass (full auth no-owner sweep), NAMED Fork-E EXCEPTION security
+// proof: rotateRefresh's reuse-of-a-rotated-token revoke (6b anti-replay) now
+// runs inside its OWN committing transaction under auth_write, with the throw
+// happening AFTER that transaction returns. This proves all three properties
+// together: (a) the function still throws refresh-reuse-family-revoked, (b)
+// the family-wide revoke PERSISTS past the throw (the own-committing-tx did
+// NOT roll back when the caller subsequently threw), and (c) the revoke write
+// itself ran under current_user = 'auth_write' (the BEFORE UPDATE trigger).
+describe('rotateRefresh reuse-revoke: security-critical own-committing-tx exception (spec 10d Task 6 completion)', () => {
+  it('reuse throws, the whole family is revoked, the revoke persists past the throw, and it ran as auth_write', async () => {
+    const principalId = randomUUID()
+    const { refreshToken: r0, familyId } = await issueRefreshFamily(principalId, 'client-B', { db, idleSec: 1800, absoluteSec: 28800, now: 5000 })
+    await rotateRefresh(r0, { db, idleSec: 1800, now: 5100 })
+
+    await installGuard('refresh_token', 'BEFORE UPDATE')
+    let threw: unknown
+    try {
+      // r0 was already rotated (used=true): presenting it again is reuse.
+      await rotateRefresh(r0, { db, idleSec: 1800, now: 5200 })
+    } catch (err) {
+      threw = err
+    } finally {
+      await dropGuard('refresh_token')
+    }
+
+    // (a) the function threw the expected anti-replay error.
+    expect(threw).toBeInstanceOf(AuthzError)
+    expect((threw as AuthzError).code).toBe('refresh-reuse-family-revoked')
+
+    // (b) the revoke PERSISTED after the throw: queried here, in a fresh
+    // statement, well after the throwing call returned control to this test.
+    // If the own-committing-tx had rolled back on the throw (defeating the
+    // whole point of the Fork-E exception), these rows would show
+    // revoked=false and this assertion would fail.
+    const rows = await db.refreshToken.findMany({ where: { familyId } })
+    expect(rows.length).toBeGreaterThanOrEqual(2)
+    expect(rows.every((x) => x.revoked)).toBe(true)
+
+    // (c) the write ran under current_user = 'auth_write': proven two ways.
+    // First, the guarded rotateRefresh call above threw AuthzError, not a
+    // Postgres RAISE EXCEPTION from the trigger -- if the revoke had run as
+    // owner instead of auth_write, the trigger would have fired and `threw`
+    // would be the trigger's Postgres error, not AuthzError, failing
+    // assertion (a) above. Second, confirming the guard itself is
+    // non-vacuous: a deliberately unscoped raw UPDATE against refresh_token
+    // on this same (cluster superuser) connection, with no SET LOCAL ROLE,
+    // DOES trip the trigger.
+    await installGuard('refresh_token', 'BEFORE UPDATE')
+    try {
+      await expect(
+        db.$executeRawUnsafe(`UPDATE refresh_token SET revoked = true WHERE family_id = '${familyId}'`),
+      ).rejects.toThrow(/expected current_user auth_write/)
+    } finally {
+      await dropGuard('refresh_token')
+    }
+  })
+
+  it('the race-loss revoke site also runs under auth_write and persists past the throw', async () => {
+    const principalId = randomUUID()
+    const { refreshToken: r0, familyId } = await issueRefreshFamily(principalId, 'client-C', { db, idleSec: 1800, absoluteSec: 28800, now: 6000 })
+
+    // Force the guarded update (used: false -> true) to lose its race by
+    // pre-claiming the token outside rotateRefresh, so `res.count === 0` and
+    // rotateRefresh takes the race-loss branch (the second Fork-E site).
+    await db.refreshToken.updateMany({ where: { familyId }, data: { used: true } })
+
+    await installGuard('refresh_token', 'BEFORE UPDATE')
+    let threw: unknown
+    try {
+      await rotateRefresh(r0, { db, idleSec: 1800, now: 6100 })
+    } catch (err) {
+      threw = err
+    } finally {
+      await dropGuard('refresh_token')
+    }
+
+    expect(threw).toBeInstanceOf(AuthzError)
+    expect((threw as AuthzError).code).toBe('refresh-reuse-family-revoked')
+
+    const rows = await db.refreshToken.findMany({ where: { familyId } })
+    expect(rows.every((x) => x.revoked)).toBe(true)
   })
 })

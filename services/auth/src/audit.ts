@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { enqueue, type OutboxTx } from '@andpay/outbox'
 import type { AuthzAuditRecord } from '@andpay/audit'
 import type { AuthDb } from './db.js'
+import { enterWriteRole } from './write-context.js'
 
 // The auth-INTERNAL audit event type (interpretive choice F): the 6e store is
 // compliance-grade and single-consumer, so it rides the outbox to the auth-owned
@@ -35,6 +36,12 @@ export async function emitAuthzAudit(tx: OutboxTx, record: AuthzAuditRecord): Pr
 // so the audit commits atomically with the operation.
 export async function auditStandalone(db: AuthDb, record: AuthzAuditRecord): Promise<void> {
   await db.$transaction(async (tx) => {
+    // Spec 10d Task 6 completion pass: this tx opens its own outbox write
+    // (emitAuthzAudit enqueues to auth.outbox) with no caller-supplied,
+    // already-scoped tx to inherit a role from, so it must enter auth_write
+    // itself, as the FIRST statement, mechanically identical to every other
+    // retrofitted site.
+    await enterWriteRole(tx, 'auth_write')
     await emitAuthzAudit(tx, record)
   })
 }
