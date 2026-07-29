@@ -588,6 +588,49 @@ describe('check 1/4: every service file that opens a domain write transaction en
     }
     expect(offenders, `files opening a write tx without entering a write role: ${offenders.join(', ')}`).toEqual([])
   })
+
+  // Registered principle (spec-10d flip gate): the writer inventory is not
+  // services/*-only. The edge/portal plane (apps/*) MUST NOT own a domain-write
+  // transaction: an edge DELEGATES its 6e authz-audit / any outbox emit to a
+  // services/* helper (emitVendorAuthzAudit et al.) that owns the tx and enters
+  // its context write role FIRST (see services/fulfillment/src/vendor-audit.ts).
+  // So an apps/*/src file that opens a .$transaction( is an owner-run edge write
+  // and an offender UNLESS it enters a role. Today NO apps/* file opens a
+  // .$transaction( at all (every emit delegates), so this is green now and
+  // trips the moment a future edit adds a direct edge outbox tx. A read-scope
+  // entry is accepted too so a legitimate future read-only edge tx (which would
+  // enterReadScope) is not a false positive.
+  it('no apps src file opens a $transaction domain write without entering a role (edges delegate to services helpers)', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+    // An apps file "enters a role" via a write-role helper, a read-scope helper,
+    // or a raw `SET LOCAL ROLE`. A bare (owner-run) edge tx enters none of these.
+    const appEntersRole = (src: string): boolean =>
+      /enter(Write|Read)(Scope|Role)\(/.test(src) || /SET LOCAL ROLE/.test(src)
+    const appsRoot = path.join(repoRoot, 'apps')
+    const offenders: string[] = []
+    let scannedDirs = 0
+    for (const app of readdirSync(appsRoot)) {
+      const dir = path.join(appsRoot, app, 'src')
+      // Portals ship no src yet (only a .gitkeep); skip the absent dir precisely
+      // rather than throwing or reporting a false offender.
+      if (!existsSync(dir)) continue
+      scannedDirs++
+      for (const entry of readdirSync(dir, { recursive: true })) {
+        const fp = String(entry)
+        if (!fp.endsWith('.ts') && !fp.endsWith('.tsx')) continue
+        const src = readFileSync(path.join(dir, fp), 'utf8')
+        if (/\.\$transaction\(/.test(src) && !appEntersRole(src)) {
+          offenders.push(`apps/${app}/src/${fp}`)
+        }
+      }
+    }
+    // Guard against a silently empty scan (e.g. layout change) masking the check.
+    expect(scannedDirs, 'at least one apps/*/src tree must be scanned').toBeGreaterThan(0)
+    expect(
+      offenders,
+      `apps files opening a domain-write tx without entering a role (edges must delegate to a services/* helper): ${offenders.join(', ')}`,
+    ).toEqual([])
+  })
 })
 
 describe('check 8: program is resolved server-side, never from a caller parameter (Task 8)', () => {
