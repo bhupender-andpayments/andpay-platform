@@ -2,6 +2,7 @@ import { enqueue } from '@andpay/outbox'
 import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
 import type { FulfillmentDb } from './db.js'
 import type { Tx } from './internal.js'
+import { enterWriteRole } from './write-context.js'
 
 // The vendor-edge's own 6e emission (check 6, D10 of the spec-10a plan): the
 // edge (apps/vendor-edge) resolves and authorizes a class-6 claim LOCALLY with
@@ -17,6 +18,10 @@ export async function emitVendorAuthzAudit(
   eventId?: string,
 ): Promise<void> {
   await db.$transaction(async (tx: Tx) => {
+    // 10d: run the standalone edge 6e emit under fulfillment_write (M-role, the
+    // outbox is WITH CHECK true) so no writer runs as the table owner. Entered
+    // FIRST so the enqueue never runs as owner. Mirrors auth.auditStandalone.
+    await enterWriteRole(tx, 'fulfillment_write')
     await enqueue(tx, buildAuthzAuditEvent(record, eventId))
   })
 }

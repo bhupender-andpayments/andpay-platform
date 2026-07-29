@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import {
@@ -19,17 +19,6 @@ import {
   AUTHZ_AUDIT_CONSUMER,
   type AuthDb,
 } from '@andpay/auth-service'
-
-// The Step-1 inventory drives these. Each todo names the file(s) it will guard.
-// Activated in Task 8 (no-owner guard + negatives), Task 5 (Fork B harness),
-// Task 7 (orchestrator). Kept as todos here so main stays green (Global Constraints).
-describe('10d write-plane C4 (cross-cutting)', () => {
-  it.todo('check 1/4: every program-scoped writer references enterWriteScope; no bare owner writer [Task 8]')
-  it.todo('check 4: no workload/infra role has BYPASSRLS or table ownership (pg_roles) [Task 8]')
-  it.todo('check 4: cross-schema write under a context role denied by Postgres [Task 8]')
-  it.todo('check 10: planted new-table write fails closed until GRANT added; no ALTER DEFAULT PRIVILEGES [Task 8]')
-  it.todo('check 8: server-side program resolution ignores a spoofed program value [Task 8]')
-})
 
 // -----------------------------------------------------------------------------
 // check 3 (Task 5, LOAD-BEARING): the Fork B infra roles, harness-proven cross
@@ -426,3 +415,232 @@ async function seedTwoProgramTimers(fireAt: Date): Promise<void> {
     )
   }
 }
+
+// -----------------------------------------------------------------------------
+// Task 8 (LOAD-BEARING, checks 4/8/10): cross-cutting catalog + negatives.
+// The authoritative no-owner PROOF is the per-context runtime current_user
+// tests (services/{identity,tms,fulfillment,auth}/test/write_role.test.ts) plus
+// the whole-branch audit; here we add the platform-wide catalog assertions and
+// the fail-closed negatives no single-context test covers. pg_roles / pg_class
+// are cluster-wide, so any connection may assert on every role.
+// -----------------------------------------------------------------------------
+
+const TENDD_ROLES = [
+  'identity_write', 'identity_read', 'identity_relay',
+  'tms_write', 'tms_read', 'tms_relay', 'tms_ops_read',
+  'fulfillment_write', 'fulfillment_read', 'fulfillment_relay', 'fulfillment_engine', 'fulfillment_ops_read',
+  'auth_write', 'auth_appender',
+  'orchestrator_write',
+]
+
+describe('check 4: no workload/infra role has SUPERUSER, BYPASSRLS, LOGIN, or table ownership (Task 8)', () => {
+  it('every 10d role is a non-owner, non-superuser, non-bypassrls, nologin role owning zero tables', async () => {
+    for (const role of TENDD_ROLES) {
+      const attrs = await fulfillmentDb.$queryRawUnsafe<
+        { rolsuper: boolean; rolbypassrls: boolean; rolcanlogin: boolean }[]
+      >(`SELECT rolsuper, rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname = '${role}'`)
+      expect(attrs, `role ${role} must exist`).toHaveLength(1)
+      expect(attrs[0]!.rolsuper, `${role} rolsuper`).toBe(false)
+      expect(attrs[0]!.rolbypassrls, `${role} rolbypassrls`).toBe(false)
+      expect(attrs[0]!.rolcanlogin, `${role} rolcanlogin`).toBe(false)
+      const owned = await fulfillmentDb.$queryRawUnsafe<{ n: bigint }[]>(
+        `SELECT count(*) AS n FROM pg_class c JOIN pg_roles r ON c.relowner = r.oid WHERE r.rolname = '${role}'`,
+      )
+      expect(Number(owned[0]!.n), `${role} owns tables`).toBe(0)
+    }
+  })
+})
+
+describe('check 4: a cross-schema write under a context role is denied by Postgres (M-role) (Task 8)', () => {
+  it('fulfillment_write cannot write a tms table (no USAGE on schema tms)', async () => {
+    await expect(
+      fulfillmentDb.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+        await tx.$executeRawUnsafe(`INSERT INTO tms.assignment (id) VALUES (gen_random_uuid())`)
+      }),
+    ).rejects.toThrow(/permission denied|denied for schema|does not exist/i)
+  })
+
+  // Relocated here from services/auth/test/write_role.test.ts: a per-context
+  // file must not name another context schema by qualified identifier (C4 guard
+  // check C), so the auth_write cross-schema negative + the write-role
+  // own-schema-only USAGE matrix (which must name every schema) live in root.
+  it('auth_write cannot write an identity table (no USAGE on schema identity)', async () => {
+    await expect(
+      authDb.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL ROLE auth_write')
+        await tx.$executeRawUnsafe(
+          `INSERT INTO identity.tenant (id, display_name, bank_reference_code, status)
+           VALUES (gen_random_uuid(), 'X', 'BREF-XS', 'ACTIVE')`,
+        )
+      }),
+    ).rejects.toThrow(/permission denied|denied for schema|does not exist/i)
+  })
+
+  it('each context WRITE role has USAGE on its own schema only (no other context schema)', async () => {
+    const WRITE_ROLES: Array<[string, string]> = [
+      ['identity_write', 'identity'],
+      ['tms_write', 'tms'],
+      ['fulfillment_write', 'fulfillment'],
+      ['auth_write', 'auth'],
+    ]
+    const ALL = ['identity', 'tms', 'fulfillment', 'auth', 'orchestrator']
+    for (const [role, own] of WRITE_ROLES) {
+      for (const schema of ALL) {
+        const r = await fulfillmentDb.$queryRawUnsafe<{ ok: boolean }[]>(
+          `SELECT has_schema_privilege('${role}', '${schema}', 'USAGE') AS ok`,
+        )
+        expect(r[0]!.ok, `${role} USAGE on ${schema}`).toBe(schema === own)
+      }
+    }
+  })
+})
+
+describe('check 10: the no-ALTER-DEFAULT-PRIVILEGES landmine is honored + a planted table fails closed (Task 8)', () => {
+  it('no context migration uses ALTER DEFAULT PRIVILEGES', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+    let scanned = 0
+    for (const svc of ['identity', 'tms', 'fulfillment', 'auth', 'orchestrator']) {
+      const migDir = path.join(repoRoot, `services/${svc}/prisma/migrations`)
+      if (!existsSync(migDir)) continue
+      for (const d of readdirSync(migDir)) {
+        const f = path.join(migDir, d, 'migration.sql')
+        if (!existsSync(f)) continue
+        scanned++
+        // Strip `--` comment lines so a comment DOCUMENTING the landmine
+        // ("no ALTER DEFAULT PRIVILEGES") is not mistaken for a real statement.
+        const sql = readFileSync(f, 'utf8')
+          .split('\n')
+          .filter((l) => !l.trim().startsWith('--'))
+          .join('\n')
+          .toUpperCase()
+        expect(sql, `${svc}/${d}`).not.toContain('ALTER DEFAULT PRIVILEGES')
+      }
+    }
+    expect(scanned).toBeGreaterThan(0)
+  })
+
+  it('a planted new table with no grant fails closed under fulfillment_write until an explicit GRANT is added', async () => {
+    try {
+      await fulfillmentDb.$executeRawUnsafe(
+        `CREATE TABLE IF NOT EXISTS fulfillment.planted_t8 (id uuid PRIMARY KEY DEFAULT gen_random_uuid())`,
+      )
+      // No GRANT yet: fulfillment_write cannot INSERT (fails closed).
+      await expect(
+        fulfillmentDb.$transaction(async (tx) => {
+          await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+          await tx.$executeRawUnsafe(`INSERT INTO fulfillment.planted_t8 DEFAULT VALUES`)
+        }),
+      ).rejects.toThrow(/permission denied/i)
+      // After an explicit GRANT the same insert succeeds (no ALTER DEFAULT PRIVILEGES relied on).
+      await fulfillmentDb.$executeRawUnsafe(
+        'GRANT INSERT ON fulfillment.planted_t8 TO fulfillment_write',
+      )
+      await fulfillmentDb.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+        await tx.$executeRawUnsafe(`INSERT INTO fulfillment.planted_t8 DEFAULT VALUES`)
+      })
+      const rows = await fulfillmentDb.$queryRawUnsafe<{ n: bigint }[]>(
+        `SELECT count(*) AS n FROM fulfillment.planted_t8`,
+      )
+      expect(Number(rows[0]!.n)).toBe(1)
+    } finally {
+      await fulfillmentDb.$executeRawUnsafe('DROP TABLE IF EXISTS fulfillment.planted_t8')
+    }
+  })
+})
+
+describe('check 1/4: every service file that opens a domain write transaction enters a write role (static tripwire, Task 8)', () => {
+  // The authoritative no-owner proof is the per-context runtime current_user
+  // tests; this is a source tripwire that fails if a future edit adds a bare
+  // (owner-run) domain writer or drops a role entry. Allowlisted files open a
+  // $transaction but legitimately enter no WRITE role: program-agnostic
+  // delegates whose callers set scope, and read paths (they enter a READ role).
+  it('no service src file opens a $transaction domain write without entering a write role', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+    const ALLOW = new Set([
+      'services/fulfillment/src/courier-status.ts', // program-agnostic; callers enter scope
+      'services/fulfillment/src/read.ts', // read path (enterReadScope)
+      'services/tms/src/read.ts', // read path (enterReadScope)
+      'services/fulfillment/src/ops-read.ts',
+      'services/tms/src/ops-read.ts',
+      'services/auth/src/authz-chain.ts', // the 6e appender path: runs under auth_appender (Task 5, C2)
+    ])
+    // A file "enters a write role" via the helper OR a raw `SET LOCAL ROLE`
+    // (the 10c ops paths use the raw form directly).
+    const entersRole = (src: string): boolean =>
+      /enterWrite(Scope|Role)\(/.test(src) || /SET LOCAL ROLE/.test(src)
+    const offenders: string[] = []
+    for (const svc of ['identity', 'tms', 'fulfillment', 'auth']) {
+      const dir = path.join(repoRoot, `services/${svc}/src`)
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith('.ts')) continue
+        const rel = `services/${svc}/src/${f}`
+        if (ALLOW.has(rel)) continue
+        const src = readFileSync(path.join(dir, f), 'utf8')
+        if (/\.\$transaction\(/.test(src) && !entersRole(src)) {
+          offenders.push(rel)
+        }
+      }
+    }
+    expect(offenders, `files opening a write tx without entering a write role: ${offenders.join(', ')}`).toEqual([])
+  })
+})
+
+describe('check 8: program is resolved server-side, never from a caller parameter (Task 8)', () => {
+  // Non-vacuous RUNTIME proof lives in services/tms/test/write_role.test.ts
+  // (amendShipTo/activateAssignment resolve program from the target assignment;
+  // a spoofed value is ignored). Here: a structural guard that the two D99
+  // exemplar writers resolve program via a SELECT from the target and accept no
+  // program parameter.
+  it('amendShipTo/activateAssignment resolve program_id from the target assignment, not a parameter', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(path.join(repoRoot, 'services/tms/src/assignment.ts'), 'utf8')
+    const selects = src.match(/SELECT program_id FROM assignment/gi) ?? []
+    expect(selects.length, 'amend + activate each resolve program from the target').toBeGreaterThanOrEqual(2)
+    expect(/function amendShipTo\([^)]*program/i.test(src), 'amendShipTo takes no program param').toBe(false)
+    expect(/function activateAssignment\([^)]*program/i.test(src), 'activateAssignment takes no program param').toBe(false)
+  })
+})
+
+describe('check 1/4: the standalone vendor-edge 6e emit runs under fulfillment_write, not owner (Task 8)', () => {
+  // emitVendorAuthzAudit commits its authz-audit outbox row in its OWN short tx
+  // (spec 10a edge 6e). 10d brings it under fulfillment_write (the fulfillment
+  // analog of auth.auditStandalone). Non-vacuous: a BEFORE-INSERT guard on
+  // outbox rejects any writer that is not fulfillment_write, so a bare owner
+  // insert trips it and the real emit only passes because it entered the role.
+  it('emitVendorAuthzAudit writes fulfillment.outbox as fulfillment_write; an owner insert trips the guard', async () => {
+    await fulfillmentDb.$executeRawUnsafe(
+      `CREATE OR REPLACE FUNCTION fulfillment._assert_fw() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF current_user <> ''fulfillment_write'' THEN RAISE EXCEPTION ''owner write on outbox: %'', current_user; END IF; RETURN NEW; END'`,
+    )
+    await fulfillmentDb.$executeRawUnsafe(
+      `CREATE TRIGGER _assert_fw_trg BEFORE INSERT ON fulfillment.outbox FOR EACH ROW EXECUTE FUNCTION fulfillment._assert_fw()`,
+    )
+    try {
+      // Non-vacuous: a bare owner insert trips the guard.
+      await expect(
+        fulfillmentDb.$executeRawUnsafe(
+          `INSERT INTO fulfillment.outbox (aggregate_type, aggregate_id, event_type, partition_key, payload)
+           VALUES ('x', 'x', 'x', 'x', '{}'::jsonb)`,
+        ),
+      ).rejects.toThrow(/owner write on outbox/i)
+      // The real emit entered fulfillment_write first -> guard passes, row lands.
+      await emitVendorAuthzAudit(
+        fulfillmentDb,
+        record({
+          principalId: 'api_courier_x',
+          cls: 6,
+          operation: 'shipment:submit-status',
+          decision: 'ALLOW',
+          outcome: 'authorized',
+          actorChannel: 'vendor-edge',
+        }),
+      )
+      const n = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox`
+      expect(Number(n[0]!.n)).toBe(1)
+    } finally {
+      await fulfillmentDb.$executeRawUnsafe('DROP TRIGGER IF EXISTS _assert_fw_trg ON fulfillment.outbox')
+      await fulfillmentDb.$executeRawUnsafe('DROP FUNCTION IF EXISTS fulfillment._assert_fw()')
+    }
+  })
+})

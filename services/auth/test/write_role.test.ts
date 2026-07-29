@@ -90,15 +90,12 @@ describe('auth_write role sanity (spec 10d Task 6)', () => {
     expect(r[0]!.rolcanlogin).toBe(false)
   })
 
-  it('auth_write has USAGE on schema auth only (no other schema)', async () => {
+  it('auth_write has USAGE on schema auth', async () => {
     const own = await db.$queryRaw<{ ok: boolean }[]>`SELECT has_schema_privilege('auth_write', 'auth', 'USAGE') AS ok`
     expect(own[0]!.ok).toBe(true)
-    for (const schema of ['identity', 'tms', 'fulfillment', 'orchestrator']) {
-      const r = await db.$queryRawUnsafe<{ ok: boolean }[]>(
-        `SELECT has_schema_privilege('auth_write', '${schema}', 'USAGE') AS ok`,
-      )
-      expect(r[0]!.ok, `auth_write must NOT have USAGE on ${schema}`).toBe(false)
-    }
+    // The negative (auth_write has NO USAGE on any OTHER context schema) is
+    // asserted in the root test/write_plane_c4.test.ts: a per-context file must
+    // not name another context schema by qualified identifier (C4 guard check C).
   })
 })
 
@@ -115,19 +112,9 @@ describe('NO program_id predicate anywhere in auth (spec 04 field 9): every WITH
   })
 })
 
-describe('a cross-schema write under auth_write is DENIED by Postgres (proves the M-role boundary)', () => {
-  it('an INSERT into identity.tenant under auth_write fails: no USAGE on schema identity', async () => {
-    await expect(
-      db.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL ROLE auth_write`)
-        await tx.$executeRawUnsafe(
-          `INSERT INTO identity.tenant (id, display_name, bank_reference_code, status)
-           VALUES ('${toUuid(newId('tnnt'))}'::uuid, 'X', 'BREF-WR-XSCHEMA', 'ACTIVE')`,
-        )
-      }),
-    ).rejects.toThrow(/permission denied/i)
-  })
-})
+// The cross-schema-write-denied proof for auth_write (the M-role boundary) lives
+// in the root test/write_plane_c4.test.ts: a per-context file must not name
+// another context schema by qualified identifier (C4 architecture guard, check C).
 
 describe('internal_principal under auth_write: SELECT ok, INSERT/UPDATE denied (login read-only, spec 04)', () => {
   it('SELECT succeeds', async () => {
