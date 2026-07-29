@@ -458,7 +458,7 @@ describe('check 4: a cross-schema write under a context role is denied by Postgr
         await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
         await tx.$executeRawUnsafe(`INSERT INTO tms.assignment (id) VALUES (gen_random_uuid())`)
       }),
-    ).rejects.toThrow(/permission denied|denied for schema|does not exist/i)
+    ).rejects.toThrow(/permission denied/i)
   })
 
   // Relocated here from services/auth/test/write_role.test.ts: a per-context
@@ -474,7 +474,7 @@ describe('check 4: a cross-schema write under a context role is denied by Postgr
            VALUES (gen_random_uuid(), 'X', 'BREF-XS', 'ACTIVE')`,
         )
       }),
-    ).rejects.toThrow(/permission denied|denied for schema|does not exist/i)
+    ).rejects.toThrow(/permission denied/i)
   })
 
   it('each context WRITE role has USAGE on its own schema only (no other context schema)', async () => {
@@ -573,11 +573,14 @@ describe('check 1/4: every service file that opens a domain write transaction en
     const offenders: string[] = []
     for (const svc of ['identity', 'tms', 'fulfillment', 'auth']) {
       const dir = path.join(repoRoot, `services/${svc}/src`)
-      for (const f of readdirSync(dir)) {
-        if (!f.endsWith('.ts')) continue
-        const rel = `services/${svc}/src/${f}`
+      // Recursive: a bare owner writer added under a src subdirectory
+      // (e.g. config/, ports/) must not be invisible to the tripwire.
+      for (const entry of readdirSync(dir, { recursive: true })) {
+        const fp = String(entry)
+        if (!fp.endsWith('.ts')) continue
+        const rel = `services/${svc}/src/${fp}`
         if (ALLOW.has(rel)) continue
-        const src = readFileSync(path.join(dir, f), 'utf8')
+        const src = readFileSync(path.join(dir, fp), 'utf8')
         if (/\.\$transaction\(/.test(src) && !entersRole(src)) {
           offenders.push(rel)
         }
