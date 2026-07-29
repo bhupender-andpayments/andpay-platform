@@ -20,6 +20,7 @@ import { requireStepUp } from './stepup.js'
 import { STEP_UP_CATALOG } from './config/step-up-catalog.js'
 import { VENDOR_SETS } from './config/vendor-sets.js'
 import { VENDOR_PLANE } from './config/audiences.js'
+import { enterWriteRole } from './write-context.js'
 
 const CREATE_FLOW = 'auth.vendor_credential.create'
 
@@ -83,6 +84,9 @@ export async function issueVendorCredential(
   const pepperedHash = deps.pepper.hmac(secret)
 
   await deps.db.$transaction(async (tx) => {
+    // Spec 10d Task 6: enter auth_write FIRST, before any write in this tx
+    // (the M-role boundary; auth has no program predicate, spec 04 field 9).
+    await enterWriteRole(tx, 'auth_write')
     await tx.vendorCredential.create({
       data: {
         apiId: toUuid(apiId),
@@ -152,6 +156,8 @@ export interface RevokeDeps {
 export async function revokeVendorCredential(apiId: string, deps: RevokeDeps): Promise<void> {
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   await deps.db.$transaction(async (tx) => {
+    // Spec 10d Task 6: enter auth_write FIRST, before any write in this tx.
+    await enterWriteRole(tx, 'auth_write')
     const cred = await tx.vendorCredential.update({
       where: { apiId: toUuid(apiId) },
       data: { status: 'REVOKED', rotatedAt: new Date(now * 1000) },

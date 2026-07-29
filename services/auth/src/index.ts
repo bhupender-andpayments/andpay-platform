@@ -13,6 +13,7 @@ export const AUTH_ISS = "andpay-auth";
 // does for every other context (this line was missing before Task 11, which is
 // the first root test to need it).
 export { type AuthDb, PrismaClient } from "./db.js";
+export * from "./write-context.js";
 
 export * from "./ports/kms-signing.js";
 export * from "./ports/pepper.js";

@@ -1,6 +1,7 @@
 import { randomBytes, createHash, randomUUID } from 'node:crypto'
 import { AuthzError } from '@andpay/authz'
 import type { AuthDb } from './db.js'
+import { enterWriteRole } from './write-context.js'
 
 // Refresh tokens are opaque (never a JWT), hashed at rest; only the hash is
 // stored and it is the lookup path.
@@ -28,17 +29,28 @@ export async function issueRefreshFamily(
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   const token = newOpaqueToken()
   const familyId = randomUUID()
-  await deps.db.refreshToken.create({
-    data: {
-      id: randomUUID(),
-      tokenHash: hashToken(token),
-      familyId,
-      principalId,
-      clientBind,
-      issuedAt: new Date(now * 1000),
-      idleExpires: new Date((now + deps.idleSec) * 1000),
-      absoluteExpires: new Date((now + deps.absoluteSec) * 1000),
-    },
+  // Spec 10d Task 6 NAMED Fork-E EXCEPTION: this was a single non-transactional
+  // `deps.db.refreshToken.create(...)` call (no db.$transaction). SET LOCAL
+  // ROLE only binds for the lifetime of one transaction, so entering
+  // auth_write requires a tx to enter it into; this wraps the same single
+  // create in deps.db.$transaction with enterWriteRole as its first
+  // statement. This is a shape-change (a bare call became a transaction), not
+  // a byte-identical wrap; the returned value and all refresh-family
+  // semantics (spec 04 check 3) are unchanged (proved in test/write_role.test.ts).
+  await deps.db.$transaction(async (tx) => {
+    await enterWriteRole(tx, 'auth_write')
+    await tx.refreshToken.create({
+      data: {
+        id: randomUUID(),
+        tokenHash: hashToken(token),
+        familyId,
+        principalId,
+        clientBind,
+        issuedAt: new Date(now * 1000),
+        idleExpires: new Date((now + deps.idleSec) * 1000),
+        absoluteExpires: new Date((now + deps.absoluteSec) * 1000),
+      },
+    })
   })
   return { refreshToken: token, familyId }
 }
@@ -79,6 +91,8 @@ export async function rotateRefresh(
   // (res.count === 0), which we then treat as replay.
   const token = newOpaqueToken()
   const claimed = await deps.db.$transaction(async (tx) => {
+    // Spec 10d Task 6: enter auth_write FIRST, before any write in this tx.
+    await enterWriteRole(tx, 'auth_write')
     const res = await tx.refreshToken.updateMany({
       where: { id: row.id, used: false, revoked: false },
       data: { used: true },
