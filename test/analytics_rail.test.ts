@@ -341,18 +341,26 @@ describe('read-only-consumed (check 10)', () => {
     expect(names).toEqual(['analytics_watermark', 'dispatch_row', 'inbox', 'outbox', 'raw_event'])
   })
 
-  it('analytics_read/analytics_write/analytics_relay have USAGE on schema analytics only, never on tms or fulfillment', async () => {
+  it('analytics_read/analytics_write/analytics_relay have USAGE on schema analytics only, never on any other context schema', async () => {
+    // Full matrix over every other context schema (identity, auth, tms,
+    // fulfillment, orchestrator), not just tms/fulfillment: a stray
+    // GRANT USAGE ON SCHEMA identity/auth/orchestrator TO analytics_* (without
+    // an accompanying table grant) would otherwise slip past this check.
     for (const role of ['analytics_read', 'analytics_write', 'analytics_relay']) {
-      const rows = await analyticsDb.$queryRawUnsafe<
-        { own_usage: boolean; tms_usage: boolean; fulfillment_usage: boolean }[]
-      >(
-        `SELECT has_schema_privilege('${role}', 'analytics', 'USAGE') AS own_usage,
-                has_schema_privilege('${role}', 'tms', 'USAGE') AS tms_usage,
-                has_schema_privilege('${role}', 'fulfillment', 'USAGE') AS fulfillment_usage`,
+      const ownUsage = await analyticsDb.$queryRawUnsafe<{ own_usage: boolean }[]>(
+        `SELECT has_schema_privilege('${role}', 'analytics', 'USAGE') AS own_usage`,
       )
-      expect(rows[0]!.own_usage, `${role} must have USAGE on analytics`).toBe(true)
-      expect(rows[0]!.tms_usage, `${role} must NOT have USAGE on tms`).toBe(false)
-      expect(rows[0]!.fulfillment_usage, `${role} must NOT have USAGE on fulfillment`).toBe(false)
+      // Non-vacuous proof-of-life: this assertion is TRUE, so the check below
+      // (which asserts FALSE for every other schema) is capable of catching a
+      // real grant rather than passing on a tautology.
+      expect(ownUsage[0]!.own_usage, `${role} must have USAGE on analytics`).toBe(true)
+
+      for (const other of OTHER_CONTEXTS) {
+        const rows = await analyticsDb.$queryRawUnsafe<{ other_usage: boolean }[]>(
+          `SELECT has_schema_privilege('${role}', '${other}', 'USAGE') AS other_usage`,
+        )
+        expect(rows[0]!.other_usage, `${role} must NOT have USAGE on ${other}`).toBe(false)
+      }
     }
   })
 
