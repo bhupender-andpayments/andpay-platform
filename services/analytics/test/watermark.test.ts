@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 import { newId, type ProgId } from '@andpay/ids'
 import { newEnvelope, type Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { ingestEnvelope } from '../src/ingest.js'
 import { readTiles, readReport } from '../src/mediation.js'
+import { readWatermark } from '../src/watermark.js'
 
 // check 4: every mediation result carries an as-of freshness watermark equal to
 // the newest fact reflected, and it moves as later facts are ingested. Proven
@@ -92,5 +93,60 @@ describe('freshness watermark rides every mediation result and moves on ingest (
     expect(new Date(r2.watermark.asOf!).getTime()).toBeGreaterThan(new Date(r1.watermark.asOf!).getTime()) // moved
     expect(r2.watermark.perTopic['fct.fulfillment.shipment.v1']).toBe('2026-07-05T00:00:00.000Z') // present on a list report too
     expect(r2.watermark.asOf).toBe('2026-07-05T00:00:00.000Z')
+  })
+
+  // H2 check 4 (freshness watermark direction): readFreshness must run BEFORE
+  // the scoped data read in readTiles/readReport/readTileDrilldown, so the
+  // watermark is a true floor (it can UNDERSTATE freshness under a concurrent
+  // ingest between the two reads, but must NEVER overstate it). This test
+  // forces exactly that race: an ingest is injected between the mediation
+  // layer's first internal transaction (the watermark read) and its second
+  // (the scoped data read), and asserts the returned watermark reflects only
+  // the pre-race state, strictly behind the true post-race watermark.
+  it('the watermark never overstates freshness: a concurrent ingest between the watermark read and the data read is NOT reflected in the returned watermark (floor property)', async () => {
+    const progP1 = newId('prog') as ProgId
+    await ingestEnvelope(
+      db,
+      assignmentEnvelope({ asgnId: newId('asgn'), progId: progP1, occurredAt: '2026-07-01T00:00:00Z' }),
+    )
+
+    const originalTransaction = db.$transaction.bind(db)
+    let transactionCalls = 0
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const spy = vi.spyOn(db, '$transaction').mockImplementation(async (arg: any) => {
+      transactionCalls += 1
+      const result = await originalTransaction(arg)
+      if (transactionCalls === 1) {
+        // Simulate an ingest landing strictly between T1 (the watermark read,
+        // this call) and T2 (the scoped data read, the mediation layer's next
+        // $transaction call).
+        await ingestEnvelope(
+          db,
+          shipmentEnvelope({
+            shptId: newId('shpt'),
+            status: 'DELIVERED',
+            courierTimestamp: '2026-07-05T00:00:00Z',
+            occurredAt: '2026-07-05T00:00:00Z',
+          }),
+        )
+      }
+      return result
+    })
+
+    const r = await readReport(db, { kind: 'crossTenant' }, 'soundbox-delivery', {})
+
+    // Ground truth: the watermark's TRUE state after the race (i.e. after the
+    // injected ingest has landed). Read via the original (unspied)
+    // $transaction so this observation is not itself counted as a mediation
+    // call.
+    const trueWatermarkAfterRace = await originalTransaction((tx: Parameters<typeof readWatermark>[0]) => readWatermark(tx))
+    spy.mockRestore()
+
+    // The read-first ordering means readReport's returned watermark was
+    // captured at T1, strictly before the injected ingest, so it must lag
+    // behind the true post-race watermark: it understates, never overstates.
+    expect(r.watermark.asOf).toBe('2026-07-01T00:00:00.000Z')
+    expect(trueWatermarkAfterRace.asOf).toBe('2026-07-05T00:00:00.000Z')
+    expect(new Date(r.watermark.asOf!).getTime()).toBeLessThan(new Date(trueWatermarkAfterRace.asOf!).getTime())
   })
 })

@@ -299,9 +299,14 @@ export async function readTiles(
   scope: ReadScope,
   filters: ReportFilters,
 ): Promise<{ tiles: TileSet; watermark: Watermark }> {
+  // Watermark read FIRST (check 4): captured at T1, before the scoped data
+  // read at T2 >= T1, so a concurrent ingest between T1 and T2 is reflected in
+  // the data but not yet in the watermark. That makes the watermark a true
+  // floor (asOf never overstates what the data actually contains), never the
+  // reverse.
+  const watermark = await readFreshness(db)
   const rows = await scopedDispatchRead(db, scope)
   const tiles = computeTiles(rows, filters)
-  const watermark = await readFreshness(db)
   return { tiles, watermark }
 }
 
@@ -318,6 +323,9 @@ export async function readTileDrilldown(
   tile: TileName,
   filters: ReportFilters,
 ): Promise<{ rows: ReportRow[]; watermark: Watermark }> {
+  // Watermark read FIRST (check 4): see readTiles for the floor-property
+  // rationale. The reorder applies identically here.
+  const watermark = await readFreshness(db)
   const dbRows = await scopedDispatchRead(db, scope)
   const narrowed = narrowByBankAndCourier(dbRows, filters)
   const filtered =
@@ -325,7 +333,6 @@ export async function readTileDrilldown(
       ? narrowed.filter((r) => withinWindow(r.received_at, filters))
       : narrowed.filter(tilePredicate(tile))
   const rows = filtered.map(toReportRow)
-  const watermark = await readFreshness(db)
   return { rows, watermark }
 }
 
@@ -532,6 +539,9 @@ export async function readReport(
   report: ReportName,
   filters: ReportFilters,
 ): Promise<{ rows: ReportRow[]; watermark: Watermark }> {
+  // Watermark read FIRST (check 4): see readTiles for the floor-property
+  // rationale. The reorder applies identically here.
+  const watermark = await readFreshness(db)
   const dbRows = await scopedDispatchRead(db, scope)
   // The batching report has NO courier dimension (it is built from
   // pipeline_state='RECEIVED' rows, whose courier_status is always null), so a
@@ -542,6 +552,5 @@ export async function readReport(
     report === 'batching' ? { ...filters, courierStatus: undefined } : filters
   const narrowed = narrowByBankAndCourier(dbRows, narrowFilters)
   const rows = computeReport(report, narrowed, filters)
-  const watermark = await readFreshness(db)
   return { rows, watermark }
 }
