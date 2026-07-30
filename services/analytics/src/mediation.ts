@@ -533,7 +533,14 @@ export async function readReport(
   filters: ReportFilters,
 ): Promise<{ rows: ReportRow[]; watermark: Watermark }> {
   const dbRows = await scopedDispatchRead(db, scope)
-  const narrowed = narrowByBankAndCourier(dbRows, filters)
+  // The batching report has NO courier dimension (it is built from
+  // pipeline_state='RECEIVED' rows, whose courier_status is always null), so a
+  // caller-supplied ?status= must not narrow it: doing so reachably zeroes the
+  // whole report. The bank filter still legitimately applies (batching groups
+  // per bank), so only courierStatus is stripped here, batching only.
+  const narrowFilters: ReportFilters =
+    report === 'batching' ? { ...filters, courierStatus: undefined } : filters
+  const narrowed = narrowByBankAndCourier(dbRows, narrowFilters)
   const rows = computeReport(report, narrowed, filters)
   const watermark = await readFreshness(db)
   return { rows, watermark }

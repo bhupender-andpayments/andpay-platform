@@ -180,6 +180,41 @@ describe('Q5 mediation scope guardrails: single analytics_read role, discriminat
     expect(distinct(crossTenantRows.map((r) => r.program_id)).sort()).toEqual([p1, p2].sort())
   })
 
+  it('G3/crossTenant-then-own on ONE pinned connection: app.cross_tenant does not leak into the next own-scope read', async () => {
+    // Fix 2 (spec-11 whole-branch audit, Minor, security-core test gap): the
+    // highest-stakes reuse direction is crossTenant -> own, since a leaked
+    // app.cross_tenant='true' would silently widen a class-2 own read to see
+    // every program, a tenant-isolation breach. The other direction (own ->
+    // crossTenant) cannot leak a wider result the same way, since own never
+    // sets app.cross_tenant at all (see G1/isolation above). Uses the same
+    // connection_limit=1 pinned client as the G2/reused-connection test above,
+    // so the two transactions are DETERMINISTICALLY the same physical
+    // connection, not a pool-dependent maybe.
+    const { p1, p2 } = await seed()
+
+    // Transaction 1 on the pinned connection: a crossTenant scoped read. This
+    // is the transaction that sets app.cross_tenant = 'true' via SET LOCAL,
+    // which Postgres reverts at commit, not clears; the revert behavior is
+    // exactly what this test proves held.
+    const crossRows = await pinnedDb.$transaction(async (tx) => {
+      await enterAnalyticsReadScope(tx, { kind: 'crossTenant' })
+      return tx.$queryRaw<{ program_id: string }[]>`
+        SELECT program_id::text AS program_id FROM dispatch_row`
+    })
+    expect(distinct(crossRows.map((r) => r.program_id)).sort()).toEqual([p1, p2].sort())
+
+    // Transaction 2, SAME pinned connection (connection_limit=1 guarantees
+    // reuse): an own-scope read for P1 only. If app.cross_tenant leaked
+    // across the SET LOCAL boundary, the RLS policy's cross_tenant = 'true'
+    // disjunct would authorize P2's row too. It must not: only P1 comes back.
+    const ownRows = await pinnedDb.$transaction(async (tx) => {
+      await enterAnalyticsReadScope(tx, { kind: 'own', programIds: [p1] })
+      return tx.$queryRaw<{ program_id: string }[]>`
+        SELECT program_id::text AS program_id FROM dispatch_row`
+    })
+    expect(distinct(ownRows.map((r) => r.program_id))).toEqual([p1]) // P2 hidden: no leak
+  })
+
   it('analytics_read is not the owner and cannot write: INSERT under the role is permission denied', async () => {
     const { p1 } = await seed()
     await expect(

@@ -21,18 +21,23 @@ import {
  * a read into another context's schema and never an import of another context's
  * source or generated client (C4, T7). The nine subscribed topics and the nine
  * fact payload shapes are declared LOCAL (own-copy) in services/analytics/src;
- * this is a STATIC net over that source asserting the boundary holds. It models
- * the precise patterns of test/architecture.test.ts checks C (schema-qualified)
+ * this is a STATIC net over that source AND test tree asserting the boundary
+ * holds (the registered arch-guard-scans-per-context-tests principle: a future
+ * test-file cross-context reference must not pass silently). It models the
+ * precise patterns of test/architecture.test.ts checks C (schema-qualified)
  * and D (source import): a bare context word inside a topic string like
  * 'fct.tms.assignment.v1' is NOT a cross-schema read, and a comment mentioning a
  * context by name (services/tms, no trailing slash) is NOT an import, so both
- * legitimately survive the guard while a real breach does not.
+ * legitimately survive the guard while a real breach does not. The import
+ * detection also flags a dynamic import('@andpay/<ctx>-service'), a
+ * double-quoted import, and any bare @andpay/<ctx>-service substring, so a
+ * breach cannot dodge the guard by changing quote style or import form.
  *
  * Plant-and-remove recipe (to prove this guard bites): add a line such as
  *   import { AssignmentFactPayload } from '@andpay/tms-service'
- * (or a raw read `FROM tms.raw_event`) to any file under services/analytics/src.
- * Run `pnpm exec vitest run test/analytics_rail.test.ts`: this block fails.
- * Remove the planted line: it passes again.
+ * (or a raw read `FROM tms.raw_event`) to any file under services/analytics/src
+ * or services/analytics/test. Run `pnpm exec vitest run test/analytics_rail.test.ts`:
+ * this block fails. Remove the planted line: it passes again.
  */
 
 const root = process.cwd()
@@ -61,24 +66,40 @@ function crossSchemaQualified(other: string): RegExp[] {
 }
 
 describe('analytics rail C4 fact-consumer isolation (spec 11, D98, check 2)', () => {
-  const files = walk(join('services', 'analytics', 'src'))
+  const files = [
+    ...walk(join('services', 'analytics', 'src')),
+    ...walk(join('services', 'analytics', 'test')),
+  ]
 
   it('has files to check', () => {
     expect(files.length).toBeGreaterThan(0)
   })
 
-  it('no analytics src file imports another context service or its source', () => {
+  it('no analytics src or test file imports another context service or its source', () => {
     for (const rel of files) {
       const src = readFileSync(join(root, rel), 'utf8')
       for (const ctx of OTHER_CONTEXTS) {
-        // A package import of another context's service.
+        // A static package import of another context's service, either quote
+        // style (from '@andpay/<ctx>-service' or from "@andpay/<ctx>-service").
         expect(
-          new RegExp(`from '@andpay/${ctx}-service'`).test(src),
+          new RegExp(`from\\s+['"]@andpay/${ctx}-service['"]`).test(src),
           `${rel} must not import @andpay/${ctx}-service (C4)`,
+        ).toBe(false)
+        // A dynamic import of another context's service, either quote style.
+        expect(
+          new RegExp(`import\\(\\s*['"]@andpay/${ctx}-service['"]\\s*\\)`).test(src),
+          `${rel} must not dynamically import @andpay/${ctx}-service (C4)`,
+        ).toBe(false)
+        // A catch-all: any bare @andpay/<ctx>-service substring, regardless of
+        // quote style or import form, so a breach cannot dodge the two checks
+        // above by reformatting the import.
+        expect(
+          src.includes(`@andpay/${ctx}-service`),
+          `${rel} must not reference @andpay/${ctx}-service (C4)`,
         ).toBe(false)
         // A relative import reaching up into another context's source.
         expect(
-          new RegExp(`import .* from '\\.\\./\\.\\./${ctx}`).test(src),
+          new RegExp(`import .* from ['"]\\.\\./\\.\\./${ctx}`).test(src),
           `${rel} must not relative-import services/${ctx} (C4)`,
         ).toBe(false)
         // An import path into another context's source tree (trailing slash, so a
@@ -92,7 +113,7 @@ describe('analytics rail C4 fact-consumer isolation (spec 11, D98, check 2)', ()
     }
   })
 
-  it('no analytics src file makes a schema-qualified read of another context', () => {
+  it('no analytics src or test file makes a schema-qualified read of another context', () => {
     for (const rel of files) {
       const src = readFileSync(join(root, rel), 'utf8')
       for (const ctx of OTHER_CONTEXTS) {

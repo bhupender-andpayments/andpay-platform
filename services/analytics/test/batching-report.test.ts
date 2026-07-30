@@ -114,4 +114,44 @@ describe('Task 6: the Batching report reconstruction (rule c)', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]!.bankCode).toBe('ICICI')
   })
+
+  // Fix 1 regression guard (spec-11 whole-branch audit, IMPORTANT): the
+  // batching report has NO courier dimension (its pools are built from
+  // pipeline_state='RECEIVED' rows, whose courier_status is always null).
+  // Before this fix, readReport applied filters.courierStatus to EVERY report
+  // including batching, so a caller-supplied ?status= dropped every RECEIVED
+  // row and returned an empty, misleading HTTP 200. This proves the pools
+  // survive a courierStatus filter, while a bankCode filter still narrows.
+  it('a courierStatus filter does NOT zero the batching report (RECEIVED rows have null courier_status)', async () => {
+    const p1 = toUuid(newId('prog'))
+    const now = new Date()
+    const oldest = new Date(now.getTime() - 2 * DAY_MS)
+
+    await insertRow({ dispatchId: newId('asgn'), programId: p1, bankCode: 'HDFC', pipelineState: 'RECEIVED', receivedAt: oldest })
+    await insertRow({ dispatchId: newId('asgn'), programId: p1, bankCode: 'HDFC', pipelineState: 'RECEIVED', receivedAt: now })
+    await insertRow({ dispatchId: newId('asgn'), programId: p1, bankCode: 'ICICI', pipelineState: 'RECEIVED', receivedAt: now })
+
+    const scope: ReadScope = { kind: 'own', programIds: [p1] }
+
+    // ?status=IN_TRANSIT alone: pools must still be counted, not zeroed.
+    const { rows: statusFiltered } = await readReport(db, scope, 'batching', {
+      courierStatus: 'IN_TRANSIT',
+    })
+    expect(statusFiltered).toHaveLength(2)
+    const hdfc = statusFiltered.find((r) => r.bankCode === 'HDFC')!
+    const icici = statusFiltered.find((r) => r.bankCode === 'ICICI')!
+    expect(hdfc.poolSize).toBe(2)
+    expect(icici.poolSize).toBe(1)
+
+    // ?status= combined with ?bank=: courierStatus is still ignored, but the
+    // bank filter is a legitimate narrow (batching groups by bank) and must
+    // still apply.
+    const { rows: combined } = await readReport(db, scope, 'batching', {
+      courierStatus: 'IN_TRANSIT',
+      bankCode: 'ICICI',
+    })
+    expect(combined).toHaveLength(1)
+    expect(combined[0]!.bankCode).toBe('ICICI')
+    expect(combined[0]!.poolSize).toBe(1)
+  })
 })

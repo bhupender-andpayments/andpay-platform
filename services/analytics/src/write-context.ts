@@ -11,6 +11,9 @@ type Tx = Prisma.TransactionClient
 // permissive FOR ALL write policy), so the role-only variant is all the ingest
 // needs. role is a compile-time constant (never user input), safe to inline into
 // $executeRawUnsafe.
-export async function enterWriteRole(tx: Tx, role: string): Promise<void> {
+export async function enterWriteRole(
+  tx: Tx,
+  role: 'analytics_write' | 'analytics_read' | 'analytics_relay',
+): Promise<void> {
   await tx.$executeRawUnsafe(`SET LOCAL ROLE ${role}`)
 }
