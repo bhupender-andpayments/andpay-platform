@@ -273,6 +273,24 @@ importers:
 
   packages/outbox: {}
 
+  services/analytics:
+    dependencies:
+      '@andpay/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
+      '@andpay/bus':
+        specifier: workspace:*
+        version: link:../../packages/bus
+      '@andpay/envelope':
+        specifier: workspace:*
+        version: link:../../packages/envelope
+      '@andpay/ids':
+        specifier: workspace:*
+        version: link:../../packages/ids
+      '@andpay/outbox':
+        specifier: workspace:*
+        version: link:../../packages/outbox
+
   services/auth:
     dependencies:
       '@andpay/audit':

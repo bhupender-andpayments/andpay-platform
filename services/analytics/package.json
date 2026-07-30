@@ -1,0 +1,21 @@
+{
+  "name": "@andpay/analytics-service",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The S19 analytics/reporting rail (spec 11), the first BUILT-V1 READ-ONLY platform service. Owns the analytics schema: a raw-then-modeled read model built from fct.* facts (raw_event ingest, dispatch_row modeled layer) served through a mediation layer, plus the shared outbox/inbox infra and a per-topic watermark. Holds no money (S20) and never reads another context's schema (C4).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "db:migrate": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:generate": "prisma generate --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@andpay/audit": "workspace:*",
+    "@andpay/bus": "workspace:*",
+    "@andpay/envelope": "workspace:*",
+    "@andpay/ids": "workspace:*",
+    "@andpay/outbox": "workspace:*"
+  }
+}

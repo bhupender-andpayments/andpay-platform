@@ -1,0 +1,126 @@
+// Analytics context persistence (handoff spec 11, the S19 analytics/reporting
+// rail). Pinned to the `analytics` schema of the shared instance via the
+// ?schema= parameter in ANALYTICS_DATABASE_URL; this client can never see
+// another context's schema (C4, T7). READ-ONLY platform service: it consumes
+// existing fct.* facts into a raw-then-modeled read model (raw_event ingest,
+// dispatch_row modeled layer) and serves dashboards/reports through a mediation
+// layer. Holds no money (S20). Domain tables: raw_event (append-only ingest),
+// dispatch_row (the program-scoped modeled read surface, the mediation layer's
+// sole read identity), analytics_watermark (per-topic ingest progress). Plus the
+// shared outbox (E1) and inbox (E6), copied verbatim from the fulfillment
+// context so @andpay/outbox resolves against the unqualified inbox/outbox tables.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("ANALYTICS_DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+/// The raw fact ingest layer (append-only, check 5). One row per consumed
+/// envelope keyed by its envelope_id, carrying the fact's identity headers and
+/// the full payload as JSONB for the deterministic rebuild. program_id is
+/// nullable because it is present only where the source fact carries it. NOT a
+/// consumer read surface (analytics_read has no SELECT here); RLS is a write-role
+/// backstop only.
+model RawEvent {
+  envelopeId    String   @id @map("envelope_id")
+  topic         String
+  type          String
+  schemaVersion Int      @map("schema_version")
+  aggregateId   String   @map("aggregate_id")
+  programId     String?  @map("program_id") @db.Uuid
+  occurredAt    DateTime @map("occurred_at") @db.Timestamptz(6)
+  receivedAt    DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+  payload       Json     @db.JsonB
+
+  @@map("raw_event")
+}
+
+/// The modeled read surface (the mediation layer's sole read identity). One row
+/// per dispatch, program-scoped by program_id (07.A class 1). The projection
+/// builder writes it cross-program under a permissive FOR ALL policy; the
+/// mediation read role sees only its entitled programs under the Q5 restrictive
+/// read policy. Every column mirrors the dispatch derivation map.
+model DispatchRow {
+  dispatchId              String    @id @map("dispatch_id")
+  programId               String    @map("program_id") @db.Uuid
+  bankCode                String    @map("bank_code")
+  bankDisplay             String    @map("bank_display")
+  branch                  String?
+  merchantDisplay         String    @map("merchant_display")
+  deviceIds               String[]  @map("device_ids")
+  awb                     String?
+  shptId                  String?   @map("shpt_id")
+  dispatchDate            DateTime? @map("dispatch_date") @db.Timestamptz(6)
+  courierStatus           String?   @map("courier_status")
+  deliveryDate            DateTime? @map("delivery_date") @db.Timestamptz(6)
+  activationStatus        String?   @map("activation_status")
+  simActivationStatus     String?   @map("sim_activation_status")
+  activationDate          DateTime? @map("activation_date") @db.Timestamptz(6)
+  activationFailureReason String?   @map("activation_failure_reason")
+  pipelineState           String    @map("pipeline_state")
+  isReplacement           Boolean   @default(false) @map("is_replacement")
+  originalDispatchId      String?   @map("original_dispatch_id")
+  damageReason            String?   @map("damage_reason")
+  replacementDispatchId   String?   @map("replacement_dispatch_id")
+  replacementStatus       String?   @map("replacement_status")
+  billableFlag            Boolean   @map("billable_flag")
+  receivedAt              DateTime  @map("received_at") @db.Timestamptz(6)
+  sentToVendorAt          DateTime? @map("sent_to_vendor_at") @db.Timestamptz(6)
+  dispatchedAt            DateTime? @map("dispatched_at") @db.Timestamptz(6)
+  updatedAt               DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([programId])
+  @@index([shptId])
+  @@map("dispatch_row")
+}
+
+/// Consumer inbox for effectively-once local effects (E6). Dedup on
+/// (consumer, dedup_key); the insert and the effect commit in one local
+/// transaction. Copied verbatim from the fulfillment context so @andpay/outbox
+/// onceWithin resolves against the unqualified inbox table. No money floor
+/// anywhere (S20).
+model Inbox {
+  consumer    String
+  dedupKey    String   @map("dedup_key")
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  @@id([consumer, dedupKey])
+  @@map("inbox")
+}
+
+/// Transactional outbox (E1). A state change and its emitted fact commit
+/// atomically in one local transaction. IDs-only payloads, no PII (S7), no
+/// secrets (S4). Copied verbatim from the fulfillment context so @andpay/outbox
+/// enqueue/relayOnce resolve against the unqualified outbox table.
+model Outbox {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id")
+  eventType     String    @map("event_type")
+  partitionKey  String    @map("partition_key")
+  payload       Json      @db.JsonB
+  headers       Json?     @db.JsonB
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
+  attempts      Int       @default(0)
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox")
+}
+
+/// Per-topic ingest watermark. Records how far the raw_event ingest has consumed
+/// each topic (as_of plus the last envelope_id) so a restart resumes without
+/// re-reading the whole log. One row per topic.
+model AnalyticsWatermark {
+  topic      String   @id
+  asOf       DateTime @map("as_of") @db.Timestamptz(6)
+  envelopeId String   @map("envelope_id")
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("analytics_watermark")
+}
