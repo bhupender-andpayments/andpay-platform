@@ -1,5 +1,6 @@
 import { emitVendorAuthzAudit } from '@andpay/fulfillment-service'
 import type { FulfillmentDb } from '@andpay/fulfillment-service'
+import { emitAnalyticsReadAudit, type AnalyticsDb } from '@andpay/analytics-service'
 
 // The tenant edge's authn-DENY 6e emission (this task: DENY only, the authz
 // ALLOW/DENY for domain operations arrives with the Task-6 controllers).
@@ -69,5 +70,44 @@ export async function emitTenantReadAudit(
     actorChannel: 'human-direct',
     resourceIds,
     traceId: args.traceId,
+  })
+}
+
+// The tenant edge's per-read-decision 6e for the ANALYTICS reporting routes
+// (spec 11 task 8, ADDITIVE). It delegates to the analytics context's own
+// emitAnalyticsReadAudit, which enqueues into the ANALYTICS outbox (analytics
+// enters analytics_write in its own short transaction), NOT the fulfillment
+// authz.audit outbox the tenant-read helper above uses. This keeps every
+// analytics read decision on the analytics rail (C4): the reporting plane never
+// writes a fact into another context's outbox.
+//
+// IDs-and-enums only (S7/S10.5), exactly as emitTenantReadAudit: principalId is
+// the claim subject, resourceIds is [tenantId, ...programIds] both re-derived
+// from the VERIFIED claim (D99), cls is 2. NO report row, NO ship-to PII, NO
+// token bytes ever ride this record (the report PII lives in the HTTP response
+// body ONLY). A falsy tenantId is dropped rather than emitted as an empty id.
+export async function emitTenantAnalyticsRead(
+  analyticsDb: AnalyticsDb,
+  args: {
+    principalId: string
+    operation: string
+    decision: 'ALLOW' | 'DENY'
+    tenantId: string | undefined
+    programIds: string[]
+    traceId: string
+    reasonCode?: string
+  },
+): Promise<void> {
+  const resourceIds = [args.tenantId, ...args.programIds].filter(
+    (id): id is string => typeof id === 'string' && id.length > 0,
+  )
+  await emitAnalyticsReadAudit(analyticsDb, {
+    principalId: args.principalId,
+    cls: 2,
+    operation: args.operation,
+    decision: args.decision,
+    resourceIds,
+    traceId: args.traceId,
+    reasonCode: args.reasonCode,
   })
 }

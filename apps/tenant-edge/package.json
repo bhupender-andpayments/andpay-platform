@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@andpay/analytics-service": "workspace:*",
     "@andpay/authz": "workspace:*",
     "@andpay/edge": "workspace:*",
     "@andpay/fulfillment-service": "workspace:*",

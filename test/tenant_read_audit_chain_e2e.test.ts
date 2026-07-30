@@ -12,6 +12,7 @@ import {
 } from '@andpay/auth-service'
 import { PrismaClient as FulfillmentClient } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
+import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { buildTenantEdgeApp, type TenantEdgeDeps } from '@andpay/tenant-edge'
 
 // Root-only integration seam (mirrors test/authz_audit_chain_e2e.test.ts's
@@ -32,10 +33,15 @@ const authUrl =
 const fulfillmentUrl =
   process.env.FULFILLMENT_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 const tmsUrl = process.env.TMS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'
+const analyticsUrl =
+  process.env.ANALYTICS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics'
 
 const authDb = new AuthClient({ datasourceUrl: authUrl })
 const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
+// ADDITIVE (spec 11 task 8): TenantEdgeDeps now requires an analyticsDb; wired
+// for construction only (this read-chain e2e never exercises the reporting routes).
+const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
 
 let app: INestApplication
 let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
@@ -124,6 +130,7 @@ beforeAll(async () => {
   const deps: TenantEdgeDeps = {
     tmsDb,
     fulfillmentDb,
+    analyticsDb,
     jwks,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',
@@ -137,6 +144,7 @@ afterAll(async () => {
   await authDb.$disconnect()
   await fulfillmentDb.$disconnect()
   await tmsDb.$disconnect()
+  await analyticsDb.$disconnect()
 })
 
 beforeEach(async () => {

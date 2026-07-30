@@ -3,6 +3,7 @@ import { APP_FILTER, NestFactory } from '@nestjs/core'
 import { ProbeController } from './probe.controller.js'
 import { OpsController } from './ops.controller.js'
 import { OpsReadController } from './ops-read.controller.js'
+import { ReportsController } from './reports.controller.js'
 import { OpsEdgeGuard } from './guard.js'
 import { OpsErrorFilter } from './ops-error.filter.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
@@ -18,7 +19,7 @@ export class OpsEdgeModule {
   static register(deps: OpsEdgeDeps): DynamicModule {
     return {
       module: OpsEdgeModule,
-      controllers: [ProbeController, OpsController, OpsReadController],
+      controllers: [ProbeController, OpsController, OpsReadController, ReportsController],
       providers: [
         OpsEdgeGuard,
         { provide: EDGE_DEPS, useValue: deps },

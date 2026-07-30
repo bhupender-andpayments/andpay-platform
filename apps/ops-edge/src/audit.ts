@@ -1,5 +1,10 @@
 import { emitVendorAuthzAudit } from '@andpay/fulfillment-service'
 import type { FulfillmentDb } from '@andpay/fulfillment-service'
+import {
+  emitAnalyticsReadAudit,
+  emitAnalyticsCrossTenantAccess,
+  type AnalyticsDb,
+} from '@andpay/analytics-service'
 import type { Acr } from '@andpay/authz'
 
 // The ops edge's authn-DENY 6e emission (Part A: DENY only, the per-action
@@ -71,6 +76,52 @@ export async function emitOpsAuthzAudit(
     authTime: args.authTime,
     actorChannel: 'human-direct',
     resourceIds: args.resourceIds,
+    traceId: args.traceId,
+  })
+}
+
+// The ops edge's per-read-decision 6e for the ANALYTICS reporting routes (spec
+// 11 task 8, ADDITIVE). It delegates to the analytics context's own
+// emitAnalyticsReadAudit, which enqueues into the ANALYTICS outbox (analytics
+// enters analytics_write in its own short transaction), NOT the fulfillment
+// authz.audit outbox the ops-action helper above uses. Every class-3 analytics
+// read decision stays on the analytics rail (C4). IDs-and-enums only
+// (S7/S10.5): principalId is the claim subject (D99), cls is 3, and NO report
+// row, PII, or token bytes ever ride the record.
+export async function emitOpsAnalyticsRead(
+  analyticsDb: AnalyticsDb,
+  args: {
+    principalId: string
+    operation: string
+    decision: 'ALLOW' | 'DENY'
+    resourceIds: string[]
+    traceId: string
+    reasonCode?: string
+  },
+): Promise<void> {
+  await emitAnalyticsReadAudit(analyticsDb, {
+    principalId: args.principalId,
+    cls: 3,
+    operation: args.operation,
+    decision: args.decision,
+    resourceIds: args.resourceIds,
+    traceId: args.traceId,
+    reasonCode: args.reasonCode,
+  })
+}
+
+// The D99 cross-tenant-access entry (guardrail G3, Q5): a SECOND, DISTINCT 6e
+// record logged IN ADDITION to the per-read 6e above whenever the class-3 ops
+// reporting plane reads across tenant boundaries (which, by construction, it
+// always does: it builds a { kind: 'crossTenant' } ReadScope). Delegates to the
+// analytics context's emitAnalyticsCrossTenantAccess, on the analytics outbox.
+export async function emitOpsAnalyticsCrossTenant(
+  analyticsDb: AnalyticsDb,
+  args: { principalId: string; operation: string; traceId: string },
+): Promise<void> {
+  await emitAnalyticsCrossTenantAccess(analyticsDb, {
+    principalId: args.principalId,
+    operation: args.operation,
     traceId: args.traceId,
   })
 }

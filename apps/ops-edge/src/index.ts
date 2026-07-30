@@ -7,10 +7,12 @@ export {
   buildOpsEdgeDepsFromEnv,
   DEFAULT_FULFILLMENT_DATABASE_URL,
   DEFAULT_TMS_DATABASE_URL,
+  DEFAULT_ANALYTICS_DATABASE_URL,
 } from './deps.js'
 export { OpsEdgeGuard } from './guard.js'
 export { OpsErrorFilter } from './ops-error.filter.js'
 export { OpsController } from './ops.controller.js'
 export { OpsReadController } from './ops-read.controller.js'
-export { emitOpsAuthnDeny, emitOpsAuthzAudit } from './audit.js'
+export { ReportsController } from './reports.controller.js'
+export { emitOpsAuthnDeny, emitOpsAuthzAudit, emitOpsAnalyticsRead, emitOpsAnalyticsCrossTenant } from './audit.js'
 export type { EdgeRequest } from './request.js'

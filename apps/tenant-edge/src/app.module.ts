@@ -2,6 +2,7 @@ import { type DynamicModule, Module, type INestApplication } from '@nestjs/commo
 import { NestFactory } from '@nestjs/core'
 import { ProbeController } from './probe.controller.js'
 import { ReadController } from './read.controller.js'
+import { ReportsController } from './reports.controller.js'
 import { TenantEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type TenantEdgeDeps } from './deps.js'
 
@@ -13,7 +14,7 @@ export class TenantEdgeModule {
   static register(deps: TenantEdgeDeps): DynamicModule {
     return {
       module: TenantEdgeModule,
-      controllers: [ProbeController, ReadController],
+      controllers: [ProbeController, ReadController, ReportsController],
       providers: [TenantEdgeGuard, { provide: EDGE_DEPS, useValue: deps }],
     }
   }

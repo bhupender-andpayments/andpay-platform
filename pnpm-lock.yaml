@@ -89,6 +89,9 @@ importers:
 
   apps/ops-edge:
     dependencies:
+      '@andpay/analytics-service':
+        specifier: workspace:*
+        version: link:../../services/analytics
       '@andpay/authz':
         specifier: workspace:*
         version: link:../../packages/authz
@@ -132,6 +135,9 @@ importers:
 
   apps/tenant-edge:
     dependencies:
+      '@andpay/analytics-service':
+        specifier: workspace:*
+        version: link:../../services/analytics
       '@andpay/authz':
         specifier: workspace:*
         version: link:../../packages/authz

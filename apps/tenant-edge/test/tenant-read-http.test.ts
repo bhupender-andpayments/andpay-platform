@@ -6,6 +6,7 @@ import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
 import { PrismaClient as FulfillmentClient } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
+import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { buildTenantEdgeApp, type TenantEdgeDeps } from '../src/index.js'
 
 // The REAL app, real in-process HTTP via supertest, no bound port. This suite
@@ -19,8 +20,13 @@ const KID = 'tenant-edge-read-test-key-1'
 const fulfillmentUrl =
   process.env.FULFILLMENT_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 const tmsUrl = process.env.TMS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'
+const analyticsUrl =
+  process.env.ANALYTICS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics'
 const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
+// ADDITIVE (spec 11 task 8): TenantEdgeDeps now requires an analyticsDb; wired
+// for construction only (this Task-6 read suite never exercises the reporting routes).
+const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
 
 let app: INestApplication
 let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
@@ -198,6 +204,7 @@ beforeAll(async () => {
   const deps: TenantEdgeDeps = {
     tmsDb,
     fulfillmentDb,
+    analyticsDb,
     jwks,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',
@@ -210,6 +217,7 @@ afterAll(async () => {
   await app.close()
   await fulfillmentDb.$disconnect()
   await tmsDb.$disconnect()
+  await analyticsDb.$disconnect()
 })
 
 beforeEach(async () => {

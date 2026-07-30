@@ -7,8 +7,10 @@ export {
   buildTenantEdgeDepsFromEnv,
   DEFAULT_FULFILLMENT_DATABASE_URL,
   DEFAULT_TMS_DATABASE_URL,
+  DEFAULT_ANALYTICS_DATABASE_URL,
 } from './deps.js'
 export { TenantEdgeGuard } from './guard.js'
 export { ReadController } from './read.controller.js'
-export { emitTenantAuthnDeny, emitTenantReadAudit } from './audit.js'
+export { ReportsController } from './reports.controller.js'
+export { emitTenantAuthnDeny, emitTenantReadAudit, emitTenantAnalyticsRead } from './audit.js'
 export type { EdgeRequest } from './request.js'

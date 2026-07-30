@@ -1,5 +1,6 @@
 import { PrismaClient as FulfillmentClient, type FulfillmentDb, loadOpsConfig } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient, type TmsDb } from '@andpay/tms-service'
+import { PrismaClient as AnalyticsClient, type AnalyticsDb } from '@andpay/analytics-service'
 import type { Mode, RoleConfig } from '@andpay/authz'
 import type { JSONWebKeySet } from 'jose'
 
@@ -15,6 +16,13 @@ export interface OpsEdgeDeps {
   // authn-DENY fact commits into fulfillment's own outbox so the existing
   // consumer drains it, ZERO new consumer wiring); Part-B ops actions use it too.
   fulfillmentDb: FulfillmentDb
+  // The analytics context DB (spec 11 task 8, ADDITIVE). Used by the class-3
+  // reporting routes to fan in-process to the analytics mediation API and to
+  // emit BOTH the per-read analytics 6e AND the D99 cross-tenant-access entry
+  // (guardrail G3) into the ANALYTICS outbox (never the fulfillment outbox).
+  // Injected once at process start, never opened per request. The ops reporting
+  // plane always constructs a { kind: 'crossTenant' } ReadScope by construction.
+  analyticsDb: AnalyticsDb
   // The LOCAL public JWKS for the human plane (D3). The verifier holds only
   // public keys, never the signing key, and is injected once at process start,
   // never fetched per request (T4/S14/5e: zero call to Auth on the hot path).
@@ -34,6 +42,8 @@ export const EDGE_DEPS = 'OPS_EDGE_DEPS'
 export const DEFAULT_FULFILLMENT_DATABASE_URL =
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 export const DEFAULT_TMS_DATABASE_URL = 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'
+export const DEFAULT_ANALYTICS_DATABASE_URL =
+  'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics'
 
 // The real bootstrap's deps (main.ts only; never exercised by a test, which
 // builds its own OpsEdgeDeps with a jose-generated JWKS and test-scoped
@@ -56,11 +66,13 @@ export function buildOpsEdgeDepsFromEnv(): OpsEdgeDeps {
   const expectedMode: Mode = 'live'
   const fulfillmentUrl = process.env.FULFILLMENT_DATABASE_URL ?? DEFAULT_FULFILLMENT_DATABASE_URL
   const tmsUrl = process.env.TMS_DATABASE_URL ?? DEFAULT_TMS_DATABASE_URL
+  const analyticsUrl = process.env.ANALYTICS_DATABASE_URL ?? DEFAULT_ANALYTICS_DATABASE_URL
 
   const jwks = JSON.parse(rawJwks) as JSONWebKeySet
   return {
     tmsDb: new TmsClient({ datasourceUrl: tmsUrl }),
     fulfillmentDb: new FulfillmentClient({ datasourceUrl: fulfillmentUrl }),
+    analyticsDb: new AnalyticsClient({ datasourceUrl: analyticsUrl }),
     jwks,
     expectedIss,
     expectedMode,
