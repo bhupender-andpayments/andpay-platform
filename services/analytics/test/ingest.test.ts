@@ -139,6 +139,17 @@ describe('analytics fact ingest: append-only raw_event, inbox dedup, raw-before-
     // NON-VACUOUS: an owner-run write (role NOT entered first) trips the RAISE;
     // only a correctly role-scoped ingest passes silently. Modeled on the
     // fulfillment write_role.test.ts installGuard technique.
+    //
+    // raw_event is NOT the leading write of the ingest transaction though: in
+    // ingestEnvelope, enterWriteRole(tx, 'analytics_write') runs FIRST, then
+    // onceWithin(tx, ANALYTICS_CONSUMER, env.id, ...) does the LEADING insert
+    // into analytics.inbox, and only then does the raw_event insert happen. A
+    // trigger placed only on raw_event would stay green even if a regression
+    // moved enterWriteRole to AFTER the onceWithin call, because by the time
+    // raw_event is written the role would already be entered again, while the
+    // inbox row itself was inserted as owner. The next test below puts the
+    // same current_user assertion on analytics.inbox, the leading write, so a
+    // late-entered (or removed) enterWriteRole is actually caught.
     await db.$executeRawUnsafe(`
       CREATE OR REPLACE FUNCTION analytics_assert_aw() RETURNS trigger AS $BODY$
       BEGIN
@@ -158,6 +169,60 @@ describe('analytics fact ingest: append-only raw_event, inbox dedup, raw-before-
       expect(res.deduped).toBe(false)
     } finally {
       await db.$executeRawUnsafe('DROP TRIGGER IF EXISTS analytics_aw_trg_raw_event ON analytics.raw_event')
+    }
+  })
+
+  it('the ingest runs under analytics_write on the LEADING write too (current_user BEFORE INSERT trigger on inbox)', async () => {
+    // The 10d landmine bites the FIRST write in the transaction. ingestEnvelope
+    // calls enterWriteRole(tx, 'analytics_write') then onceWithin(...), whose
+    // own leading write is the INSERT into analytics.inbox (its primary key is
+    // (consumer, dedup_key)); the raw_event insert happens only after that. So
+    // the non-vacuous proof for "enterWriteRole runs FIRST" has to sit on
+    // inbox, not raw_event: a regression that entered the role AFTER the
+    // onceWithin call would let this trigger fire as the cluster superuser
+    // (owner), since the role would not yet be SET LOCAL at the moment inbox
+    // is written, even though the later raw_event write might already be
+    // correctly role-scoped.
+    //
+    // A BEFORE INSERT trigger fires ahead of the ON CONFLICT DO NOTHING
+    // resolution, so it still sees and can inspect every attempted insert,
+    // which is all this assertion needs (it only checks current_user, not
+    // whether the row lands).
+    await db.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION analytics_assert_aw() RETURNS trigger AS $BODY$
+      BEGIN
+        IF current_user <> 'analytics_write' THEN
+          RAISE EXCEPTION 'spec 11 task 2: expected current_user analytics_write on %, got %', TG_TABLE_NAME, current_user;
+        END IF;
+        RETURN NEW;
+      END;
+      $BODY$ LANGUAGE plpgsql;
+    `)
+    await db.$executeRawUnsafe('DROP TRIGGER IF EXISTS analytics_aw_trg_inbox ON analytics.inbox')
+    await db.$executeRawUnsafe(
+      'CREATE TRIGGER analytics_aw_trg_inbox BEFORE INSERT ON analytics.inbox FOR EACH ROW EXECUTE FUNCTION analytics_assert_aw()',
+    )
+    try {
+      // Positive case: the real ingestEnvelope enters the role first, so the
+      // leading inbox insert runs under analytics_write and the trigger does
+      // not trip.
+      const res = await ingestEnvelope(db, assignmentEnvelope())
+      expect(res.deduped).toBe(false)
+
+      // Negative case, proving non-vacuity directly: an inbox insert made
+      // WITHOUT entering the role first (modeling a regression where
+      // enterWriteRole is removed or moved after the leading write) must trip
+      // the very same trigger, in its own transaction (SET LOCAL ROLE is
+      // transaction-scoped, and the andpay connection is the cluster
+      // superuser, so with no role entered this insert would otherwise run as
+      // owner and silently succeed if the trigger were not there).
+      await expect(
+        db.$transaction(async (tx) => {
+          await tx.$executeRaw`INSERT INTO analytics.inbox (consumer, dedup_key) VALUES ('analytics-rail', 'no-role-entered')`
+        }),
+      ).rejects.toThrow(/spec 11 task 2/)
+    } finally {
+      await db.$executeRawUnsafe('DROP TRIGGER IF EXISTS analytics_aw_trg_inbox ON analytics.inbox')
     }
   })
 })

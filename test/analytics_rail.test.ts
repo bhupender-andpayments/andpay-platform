@@ -6,7 +6,7 @@ import { join } from 'node:path'
  * C4 fact-consumer isolation guard for the S19 analytics rail (spec 11, D98,
  * check 2). Runs with no database.
  *
- * The analytics rail integrates with the TMS/Fulfillment/Identity/Auth contexts
+ * The analytics rail integrates with the TMS/Fulfillment/Identity/Auth/Orchestrator contexts
  * ONLY through consumed fct.* facts and the facts' OWN carried snapshots, never
  * a read into another context's schema and never an import of another context's
  * source or generated client (C4, T7). The nine subscribed topics and the nine
@@ -26,7 +26,7 @@ import { join } from 'node:path'
  */
 
 const root = process.cwd()
-const OTHER_CONTEXTS = ['tms', 'fulfillment', 'identity', 'auth'] as const
+const OTHER_CONTEXTS = ['tms', 'fulfillment', 'identity', 'auth', 'orchestrator'] as const
 
 function walk(rel: string): string[] {
   const base = join(root, rel)
