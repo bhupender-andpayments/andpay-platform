@@ -267,3 +267,120 @@ describe('Task 7: analytics_relay Fork-B harness (checks 9/10, no production dae
     expect(usage[0]!.other_usage).toBe(false)
   })
 })
+
+// -----------------------------------------------------------------------------
+// Task 9 (check 10): read-only-consumed catalog negatives. The rail emits NO
+// fct.*/cmd.* event, holds NO money/ledger/saga table, writes only its own
+// analytics schema, and no other context grants the analytics roles write on
+// a foreign schema. NOT load-bearing security; catalog/grep assertions that
+// mirror the existing C4 guard above and the cross-schema-denied technique in
+// the Task 7 block and test/write_plane_c4.test.ts.
+// -----------------------------------------------------------------------------
+
+describe('read-only-consumed (check 10)', () => {
+  const analyticsFiles = walk(join('services', 'analytics', 'src'))
+  const auditPath = join('services', 'analytics', 'src', 'audit.ts')
+
+  it('has files to check', () => {
+    expect(analyticsFiles.length).toBeGreaterThan(0)
+  })
+
+  it('the only enqueue() call sites in services/analytics/src are the authz.audit 6e in audit.ts; none enqueues a fct.*/cmd.* event', () => {
+    const enqueueSites: { rel: string; line: string }[] = []
+    for (const rel of analyticsFiles) {
+      const src = readFileSync(join(root, rel), 'utf8')
+      src.split('\n').forEach((line) => {
+        const trimmed = line.trim()
+        // A real call site, not a comment mentioning "enqueue" (e.g. audit.ts's
+        // own landmine note above the call), mirroring the C4 guard's care to
+        // distinguish a comment mention from an actual breach.
+        if (/\benqueue\s*\(/.test(line) && !trimmed.startsWith('//') && !trimmed.startsWith('*')) {
+          enqueueSites.push({ rel, line })
+        }
+      })
+    }
+    // Non-vacuous: there ARE enqueue call sites (the 6e emit), just none is a
+    // fact/command producer. A vacuous "zero sites" pass would not prove this.
+    expect(enqueueSites.length).toBeGreaterThan(0)
+    for (const { rel, line } of enqueueSites) {
+      expect(rel, `enqueue() call outside audit.ts: ${rel}: ${line}`).toBe(auditPath)
+      expect(
+        /buildAuthzAuditEvent/.test(line),
+        `enqueue() call in ${rel} does not build the authz.audit event: ${line}`,
+      ).toBe(true)
+      expect(
+        /['"`]fct\./.test(line),
+        `enqueue() call in ${rel} appears to emit a fct.* event: ${line}`,
+      ).toBe(false)
+      expect(
+        /['"`]cmd\./.test(line),
+        `enqueue() call in ${rel} appears to emit a cmd.* event: ${line}`,
+      ).toBe(false)
+    }
+  })
+
+  it('no fct.*/cmd.* producer helper (FactEnvelope/buildFactEvent/emitFact*) exists anywhere in analytics src', () => {
+    for (const rel of analyticsFiles) {
+      const src = readFileSync(join(root, rel), 'utf8')
+      expect(/FactEnvelope/.test(src), `${rel} must not define/import a FactEnvelope helper`).toBe(false)
+      expect(
+        /\bbuild(Fact|Cmd)\w*Event\b/.test(src),
+        `${rel} must not define a fact/cmd producer helper`,
+      ).toBe(false)
+      expect(/\bemitFact\w*\(/.test(src), `${rel} must not define/call an emitFact* producer`).toBe(false)
+    }
+  })
+
+  it('the analytics schema holds exactly the 5 rail tables (raw_event, dispatch_row, inbox, outbox, analytics_watermark); no ledger/posting/saga table', async () => {
+    const rows = await analyticsDb.$queryRawUnsafe<{ table_name: string }[]>(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = 'analytics' AND table_type = 'BASE TABLE' AND table_name != '_prisma_migrations'
+       ORDER BY table_name`,
+    )
+    const names = rows.map((r) => r.table_name).sort()
+    expect(names).toEqual(['analytics_watermark', 'dispatch_row', 'inbox', 'outbox', 'raw_event'])
+  })
+
+  it('analytics_read/analytics_write/analytics_relay have USAGE on schema analytics only, never on tms or fulfillment', async () => {
+    for (const role of ['analytics_read', 'analytics_write', 'analytics_relay']) {
+      const rows = await analyticsDb.$queryRawUnsafe<
+        { own_usage: boolean; tms_usage: boolean; fulfillment_usage: boolean }[]
+      >(
+        `SELECT has_schema_privilege('${role}', 'analytics', 'USAGE') AS own_usage,
+                has_schema_privilege('${role}', 'tms', 'USAGE') AS tms_usage,
+                has_schema_privilege('${role}', 'fulfillment', 'USAGE') AS fulfillment_usage`,
+      )
+      expect(rows[0]!.own_usage, `${role} must have USAGE on analytics`).toBe(true)
+      expect(rows[0]!.tms_usage, `${role} must NOT have USAGE on tms`).toBe(false)
+      expect(rows[0]!.fulfillment_usage, `${role} must NOT have USAGE on fulfillment`).toBe(false)
+    }
+  })
+
+  it('a cross-schema SELECT into tms is denied under both analytics_read and analytics_write (permission denied for schema tms)', async () => {
+    for (const role of ['analytics_read', 'analytics_write']) {
+      await expect(
+        analyticsDb.$transaction(async (tx) => {
+          await tx.$executeRawUnsafe(`SET LOCAL ROLE ${role}`)
+          await tx.$executeRawUnsafe(`SELECT * FROM tms.assignment LIMIT 1`)
+        }),
+        `${role} must be denied a cross-schema read of tms.assignment`,
+      ).rejects.toThrow(/permission denied for schema tms/i)
+    }
+  })
+
+  it('no analytics role (analytics_read/analytics_write/analytics_relay) is granted on any table outside the analytics schema', async () => {
+    const rows = await analyticsDb.$queryRawUnsafe<{ table_schema: string; grantee: string; table_name: string }[]>(
+      `SELECT DISTINCT table_schema, grantee, table_name FROM information_schema.role_table_grants
+       WHERE grantee IN ('analytics_read', 'analytics_write', 'analytics_relay')`,
+    )
+    // Non-vacuous: the roles DO have grants (on their own schema); the check is
+    // that every one of those grants is schema = analytics.
+    expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) {
+      expect(
+        row.table_schema,
+        `${row.grantee} must not be granted on ${row.table_schema}.${row.table_name}`,
+      ).toBe('analytics')
+    }
+  })
+})
