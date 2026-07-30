@@ -1,6 +1,16 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { relayOnce, InMemoryPublisher, type OutboxClient } from '@andpay/outbox'
+import type { AuthzAuditRecord } from '@andpay/audit'
+import { PrismaClient as AnalyticsClient, emitAnalyticsReadAudit } from '@andpay/analytics-service'
+import {
+  PrismaClient as AuthClient,
+  consumeAuthzAudit,
+  verifyAuthzChain,
+  AUTHZ_AUDIT_CONSUMER,
+  type AuthDb,
+} from '@andpay/auth-service'
 
 /**
  * C4 fact-consumer isolation guard for the S19 analytics rail (spec 11, D98,
@@ -91,5 +101,169 @@ describe('analytics rail C4 fact-consumer isolation (spec 11, D98, check 2)', ()
         }
       }
     }
+  })
+})
+
+// -----------------------------------------------------------------------------
+// Task 7 (Fork B, checks 9/10): the analytics_relay harness, proven against the
+// EXISTING library functions exactly like check 3 in test/write_plane_c4.test.ts
+// (relayOnce / consumeAuthzAudit). NO production daemon is built (ruling C2):
+// relayOnce owns its own transaction, so the role is proven by a thin
+// $transaction wrapper that runs `SET LOCAL ROLE analytics_relay` BEFORE the
+// library's claim query and captures current_user inside that same
+// transaction. Auth is UNMODIFIED: this only relays to the EXISTING authz.audit
+// topic Auth already consumes via consumeAuthzAudit; the analytics rail is a
+// second SOURCE onto that one channel, same as fulfillment/tms in check 3.
+// -----------------------------------------------------------------------------
+
+const analyticsUrl =
+  process.env.ANALYTICS_DATABASE_URL ??
+  'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics'
+const authRailUrl =
+  process.env.AUTH_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=auth'
+
+const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
+const authRailDb = new AuthClient({ datasourceUrl: authRailUrl })
+
+interface RailCaptured {
+  user?: string
+}
+
+// Byte-identical technique to test/write_plane_c4.test.ts's roleClient: wraps a
+// client so the library's OWN internal transaction runs under
+// SET LOCAL ROLE <role>, with current_user captured inside that same tx.
+function railRoleClient<C extends { $transaction: unknown }>(
+  db: C,
+  role: string,
+  captured: RailCaptured,
+): C {
+  const base = db as unknown as {
+    $transaction: <T>(fn: (tx: RailTxLike) => Promise<T>) => Promise<T>
+  }
+  return {
+    $transaction: <T>(fn: (tx: RailTxLike) => Promise<T>): Promise<T> =>
+      base.$transaction(async (tx: RailTxLike) => {
+        await tx.$executeRawUnsafe(`SET LOCAL ROLE ${role}`)
+        const who = await tx.$queryRawUnsafe<{ u: string }[]>(`SELECT current_user AS u`)
+        captured.user = who[0]!.u
+        return fn(tx)
+      }),
+  } as unknown as C
+}
+
+interface RailTxLike {
+  $executeRawUnsafe(query: string, ...values: unknown[]): Promise<number>
+  $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>
+}
+
+beforeEach(async () => {
+  await analyticsDb.$executeRawUnsafe('TRUNCATE analytics.outbox CASCADE')
+  await authRailDb.$executeRaw`DELETE FROM authz_audit`
+  await authRailDb.$executeRawUnsafe(`DELETE FROM inbox WHERE consumer = '${AUTHZ_AUDIT_CONSUMER}'`)
+})
+
+afterAll(async () => {
+  await analyticsDb.$disconnect()
+  await authRailDb.$disconnect()
+})
+
+describe('Task 7: analytics_relay Fork-B harness (checks 9/10, no production daemon)', () => {
+  it('relayOnce under analytics_relay drains analytics.outbox and publishes the 6e; current_user = analytics_relay', async () => {
+    await emitAnalyticsReadAudit(analyticsDb, {
+      principalId: 'prn_relay_1',
+      cls: 3,
+      operation: 'analytics:tile-read',
+      decision: 'ALLOW',
+      resourceIds: ['tile_x'],
+      traceId: 'trace-relay-1',
+    })
+
+    const captured: RailCaptured = {}
+    const publisher = new InMemoryPublisher()
+    const published = await relayOnce(
+      railRoleClient(analyticsDb, 'analytics_relay', captured) as unknown as OutboxClient,
+      publisher,
+    )
+
+    expect(published).toBe(1)
+    expect(publisher.published).toHaveLength(1)
+    expect(publisher.published[0]!.eventType).toBe('authz.audit')
+    expect(captured.user).toBe('analytics_relay')
+
+    const unpub = await analyticsDb.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM analytics.outbox WHERE published_at IS NULL
+    `
+    expect(Number(unpub[0]!.n)).toBe(0)
+  })
+
+  it('the relayed 6e payload appends to the authz.audit chain via consumeAuthzAudit (Auth unmodified, sole appender); a redelivery of the same payload.id is a no-op (E6/D121)', async () => {
+    await emitAnalyticsReadAudit(analyticsDb, {
+      principalId: 'prn_relay_2',
+      cls: 3,
+      operation: 'analytics:report-read',
+      decision: 'DENY',
+      resourceIds: [],
+      traceId: 'trace-relay-2',
+      reasonCode: 'cls_not_authorized',
+    })
+
+    const publisher = new InMemoryPublisher()
+    await relayOnce(
+      railRoleClient(analyticsDb, 'analytics_relay', {}) as unknown as OutboxClient,
+      publisher,
+    )
+    const payload = publisher.published.find((m) => m.eventType === 'authz.audit')!.payload as {
+      id: string
+    } & AuthzAuditRecord
+
+    const captured: RailCaptured = {}
+    const r1 = await consumeAuthzAudit(
+      railRoleClient(authRailDb, 'auth_appender', captured) as unknown as AuthDb,
+      payload,
+    )
+    expect(r1.appended).toBe(true)
+    expect(r1.seq).toBe(1)
+    expect(captured.user).toBe('auth_appender')
+
+    // Redelivery of the SAME payload.id: a no-op, dedup on payload.id (D121).
+    const r2 = await consumeAuthzAudit(
+      railRoleClient(authRailDb, 'auth_appender', {}) as unknown as AuthDb,
+      payload,
+    )
+    expect(r2.appended).toBe(false)
+
+    const count = await authRailDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM authz_audit`
+    expect(Number(count[0]!.n)).toBe(1)
+    const verified = await verifyAuthzChain(authRailDb)
+    expect(verified.ok).toBe(true)
+    expect(verified.length).toBe(1)
+  })
+
+  it('analytics_relay is least-privilege: SELECT+UPDATE on analytics.outbox only, a cross-schema query fails (permission denied)', async () => {
+    await expect(
+      analyticsDb.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL ROLE analytics_relay')
+        await tx.$executeRawUnsafe(`SELECT * FROM auth.authz_audit LIMIT 1`)
+      }),
+    ).rejects.toThrow(/permission denied/i)
+
+    // Within its own schema it may SELECT + UPDATE the outbox (relayOnce's own
+    // shape) but not INSERT (that is analytics_write's grant, not the relay's).
+    await expect(
+      analyticsDb.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL ROLE analytics_relay')
+        await tx.$executeRawUnsafe(
+          `INSERT INTO analytics.outbox (aggregate_type, aggregate_id, event_type, partition_key, payload)
+           VALUES ('x', 'x', 'x', 'x', '{}'::jsonb)`,
+        )
+      }),
+    ).rejects.toThrow(/permission denied/i)
+
+    const usage = await analyticsDb.$queryRawUnsafe<{ own_usage: boolean; other_usage: boolean }[]>(
+      `SELECT has_schema_privilege('analytics_relay', 'analytics', 'USAGE') AS own_usage,
+              has_schema_privilege('analytics_relay', 'auth', 'USAGE') AS other_usage`,
+    )
+    expect(usage[0]!.own_usage).toBe(true)
+    expect(usage[0]!.other_usage).toBe(false)
   })
 })

@@ -1,6 +1,7 @@
 export { type AnalyticsDb, PrismaClient } from './db.js'
 export { ANALYTICS_CONSUMER, ANALYTICS_TOPICS } from './topics.js'
 export { enterWriteRole } from './write-context.js'
+export { emitAnalyticsReadAudit, emitAnalyticsCrossTenantAccess } from './audit.js'
 export { bumpWatermark, readWatermark, type Watermark } from './watermark.js'
 export { ingestEnvelope, programIdOf, runAnalyticsConsumer } from './ingest.js'
 export { applyFact, applyOnline, rebuildDispatchRows, type DispatchRowState } from './project.js'

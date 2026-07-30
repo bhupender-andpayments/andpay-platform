@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@andpay/analytics-service':
+        specifier: workspace:*
+        version: link:services/analytics
       '@andpay/audit':
         specifier: workspace:*
         version: link:packages/audit

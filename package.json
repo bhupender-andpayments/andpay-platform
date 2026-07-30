@@ -20,6 +20,7 @@
     "db:migrate:dev": "./infra/db.sh dev init"
   },
   "devDependencies": {
+    "@andpay/analytics-service": "workspace:*",
     "@andpay/audit": "workspace:*",
     "@andpay/auth-service": "workspace:*",
     "@andpay/authz": "workspace:*",
