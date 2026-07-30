@@ -191,28 +191,142 @@ async function readFreshness(db: AnalyticsDb): Promise<Watermark> {
 // ---------------------------------------------------------------------------
 
 /**
- * SKELETON (Task 4). Reads the scoped modeled layer and attaches the watermark.
- * Task 5 replaces the tile body with the seven per-scope aggregates; only
- * requestsReceived is wired here, to a real scoped count, so the skeleton
- * genuinely carries the scope and the watermark rides an aggregate result.
+ * Apply the presentation-level bank/courier narrowing shared by every tile.
+ * The date window (from/to) is NOT applied here: it belongs to
+ * requestsReceived alone (a period count), while the other six tiles are
+ * current-state snapshots computed over the full scoped row set (a pending
+ * item does not stop being pending because it was received outside the
+ * selected period).
+ */
+function narrowByBankAndCourier(rows: DispatchDbRow[], filters: ReportFilters): DispatchDbRow[] {
+  return rows.filter((r) => {
+    if (filters.bankCode !== undefined && r.bank_code !== filters.bankCode) return false
+    if (filters.courierStatus !== undefined && r.courier_status !== filters.courierStatus) return false
+    return true
+  })
+}
+
+function withinWindow(d: Date | null, filters: ReportFilters): boolean {
+  if (d === null) return false
+  if (filters.from !== undefined && d.getTime() < new Date(filters.from).getTime()) return false
+  if (filters.to !== undefined && d.getTime() > new Date(filters.to).getTime()) return false
+  return true
+}
+
+/**
+ * Compute the seven FR-09 tiles from an already scope-narrowed row set. Each
+ * tile is a pure aggregate over `rows` (the caller has already run the
+ * mediated, RLS-scoped read), so there is NO global pre-aggregated counter:
+ * every value here decomposes per Program by construction (D97).
+ */
+function computeTiles(rows: DispatchDbRow[], filters: ReportFilters): TileSet {
+  const narrowed = narrowByBankAndCourier(rows, filters)
+
+  const requestsReceived = narrowed.filter((r) => withinWindow(r.received_at, filters)).length
+
+  const pendingQr = narrowed.filter(
+    (r) => r.pipeline_state === 'RECEIVED' || r.pipeline_state === 'POOLED',
+  )
+  let oldestAgeDays: number | null = null
+  if (pendingQr.length > 0) {
+    const oldest = pendingQr.reduce((min, r) => {
+      if (r.received_at === null) return min
+      return min === null || r.received_at.getTime() < min.getTime() ? r.received_at : min
+    }, null as Date | null)
+    oldestAgeDays = oldest === null ? null : (Date.now() - oldest.getTime()) / (24 * 60 * 60 * 1000)
+  }
+
+  const pendingPrintVendorPickup = narrowed.filter((r) => r.pipeline_state === 'SENT_TO_VENDOR').length
+
+  const dispatchedNotDelivered = narrowed.filter(
+    (r) => r.dispatched_at !== null && r.delivery_date === null,
+  ).length
+
+  // ACTIVATION-EMPTY (build decision 3): activation_status is null everywhere
+  // in live v1 data (no activation write path exists), so this counts
+  // everything delivered.
+  const deliveredNotActivated = narrowed.filter(
+    (r) => r.delivery_date !== null && r.activation_status === null,
+  ).length
+
+  const damagedReplacementOpen = narrowed.filter((r) => r.replacement_status === 'RAISED').length
+
+  // ACTIVATION-EMPTY: reads 0 under live v1 data; the predicate itself is the
+  // real, general aggregate (correct once an activation write path exists).
+  const activatedSuccessfully = narrowed.filter((r) => r.activation_status === 'ACTIVATED').length
+
+  return {
+    requestsReceived,
+    pendingQrAwaitingBatch: { count: pendingQr.length, oldestAgeDays },
+    pendingPrintVendorPickup,
+    dispatchedNotDelivered,
+    deliveredNotActivated,
+    damagedReplacementOpen,
+    activatedSuccessfully,
+  }
+}
+
+/** The tile predicate reused by both readTiles and readTileDrilldown. */
+function tilePredicate(tile: TileName): (r: DispatchDbRow) => boolean {
+  switch (tile) {
+    case 'requestsReceived':
+      return () => true // windowing applied separately, see readTileDrilldown
+    case 'pendingQrAwaitingBatch':
+      return (r) => r.pipeline_state === 'RECEIVED' || r.pipeline_state === 'POOLED'
+    case 'pendingPrintVendorPickup':
+      return (r) => r.pipeline_state === 'SENT_TO_VENDOR'
+    case 'dispatchedNotDelivered':
+      return (r) => r.dispatched_at !== null && r.delivery_date === null
+    case 'deliveredNotActivated':
+      return (r) => r.delivery_date !== null && r.activation_status === null
+    case 'damagedReplacementOpen':
+      return (r) => r.replacement_status === 'RAISED'
+    case 'activatedSuccessfully':
+      return (r) => r.activation_status === 'ACTIVATED'
+  }
+}
+
+/** The seven FR-09 dashboard tile names, keyed identically to TileSet. */
+export type TileName = keyof TileSet
+
+/**
+ * Reads the scoped modeled layer, computes the seven FR-09 dashboard tiles as
+ * per-scope aggregates (D97: no global pre-aggregated counter, so every tile
+ * decomposes per Program), and attaches the freshness watermark.
  */
 export async function readTiles(
   db: AnalyticsDb,
   scope: ReadScope,
-  _filters: ReportFilters,
+  filters: ReportFilters,
 ): Promise<{ tiles: TileSet; watermark: Watermark }> {
   const rows = await scopedDispatchRead(db, scope)
-  const tiles: TileSet = {
-    requestsReceived: rows.length,
-    pendingQrAwaitingBatch: { count: 0, oldestAgeDays: null },
-    pendingPrintVendorPickup: 0,
-    dispatchedNotDelivered: 0,
-    deliveredNotActivated: 0,
-    damagedReplacementOpen: 0,
-    activatedSuccessfully: 0,
-  }
+  const tiles = computeTiles(rows, filters)
   const watermark = await readFreshness(db)
   return { tiles, watermark }
+}
+
+/**
+ * Read the filtered dispatch_row list behind a single tile (the drill-down),
+ * scoped through the same mediated read as readTiles and carrying the same
+ * watermark. requestsReceived is the one tile whose predicate is the from/to
+ * window itself (mirroring computeTiles); every other tile reuses its
+ * computeTiles predicate verbatim via tilePredicate.
+ */
+export async function readTileDrilldown(
+  db: AnalyticsDb,
+  scope: ReadScope,
+  tile: TileName,
+  filters: ReportFilters,
+): Promise<{ rows: ReportRow[]; watermark: Watermark }> {
+  const dbRows = await scopedDispatchRead(db, scope)
+  const narrowed = narrowByBankAndCourier(dbRows, filters)
+  const filtered =
+    tile === 'requestsReceived'
+      ? narrowed.filter((r) => withinWindow(r.received_at, filters))
+      : narrowed.filter(tilePredicate(tile))
+  const rows = filtered.map(toReportRow)
+  const watermark = await readFreshness(db)
+  return { rows, watermark }
 }
 
 /**

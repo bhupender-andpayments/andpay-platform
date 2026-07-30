@@ -7,8 +7,10 @@ export { applyFact, applyOnline, rebuildDispatchRows, type DispatchRowState } fr
 export { enterAnalyticsReadScope, type ReadScope } from './read-context.js'
 export {
   readTiles,
+  readTileDrilldown,
   readReport,
   type TileSet,
+  type TileName,
   type ReportName,
   type ReportRow,
   type ReportCell,
