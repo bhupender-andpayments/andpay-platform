@@ -8,10 +8,15 @@ type Tx = Prisma.TransactionClient
 // dashboard/report can carry a freshness position (no silent staleness).
 
 export interface Watermark {
-  /** The newest as_of reflected across all tracked topics, or null when none. */
-  asOf: Date | null
-  /** Per-topic ingest position. */
-  perTopic: Record<string, { asOf: Date; envelopeId: string }>
+  /**
+   * The newest as_of reflected across all tracked topics as an ISO 8601 string,
+   * or null when nothing has been ingested. This is the freshness position that
+   * rides every mediation result (readTiles/readReport), so no served surface
+   * can silently go stale.
+   */
+  asOf: string | null
+  /** Per-topic ingest position, each an ISO 8601 as_of string. */
+  perTopic: Record<string, string>
 }
 
 /**
@@ -32,18 +37,30 @@ export async function bumpWatermark(tx: Tx, topic: string, occurredAt: Date, env
 
 /**
  * Read the full watermark: the per-topic map plus the overall newest position
- * (the max as_of across tracked topics). Served alongside every dashboard/report
- * result as the freshness floor.
+ * (the max as_of across tracked topics), each as an ISO 8601 string. Served
+ * alongside every dashboard/report result as the freshness floor.
+ *
+ * NOTE: analytics_watermark is freshness METADATA, not a program-scoped read
+ * surface, and analytics_read has NO grant on it (it holds SELECT on
+ * dispatch_row only, the least-privilege matrix). So the mediation layer reads
+ * the watermark on its base identity, OUTSIDE the SET LOCAL ROLE analytics_read
+ * scope, never through analytics_read.
  */
 export async function readWatermark(tx: Tx): Promise<Watermark> {
-  const rows = await tx.$queryRaw<{ topic: string; as_of: Date; envelope_id: string }[]>`
-    SELECT topic, as_of, envelope_id FROM analytics_watermark
+  const rows = await tx.$queryRaw<{ topic: string; as_of: Date }[]>`
+    SELECT topic, as_of FROM analytics_watermark
   `
-  const perTopic: Record<string, { asOf: Date; envelopeId: string }> = {}
-  let asOf: Date | null = null
+  const perTopic: Record<string, string> = {}
+  let asOf: string | null = null
+  let maxMs = -Infinity
   for (const r of rows) {
-    perTopic[r.topic] = { asOf: r.as_of, envelopeId: r.envelope_id }
-    if (asOf === null || r.as_of > asOf) asOf = r.as_of
+    const iso = r.as_of.toISOString()
+    perTopic[r.topic] = iso
+    const ms = r.as_of.getTime()
+    if (ms > maxMs) {
+      maxMs = ms
+      asOf = iso
+    }
   }
   return { asOf, perTopic }
 }

@@ -4,6 +4,16 @@ export { enterWriteRole } from './write-context.js'
 export { bumpWatermark, readWatermark, type Watermark } from './watermark.js'
 export { ingestEnvelope, programIdOf, runAnalyticsConsumer } from './ingest.js'
 export { applyFact, applyOnline, rebuildDispatchRows, type DispatchRowState } from './project.js'
+export { enterAnalyticsReadScope, type ReadScope } from './read-context.js'
+export {
+  readTiles,
+  readReport,
+  type TileSet,
+  type ReportName,
+  type ReportRow,
+  type ReportCell,
+  type ReportFilters,
+} from './mediation.js'
 export type {
   AssignmentFactView,
   ShipToAmendedFactView,
