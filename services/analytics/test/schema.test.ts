@@ -22,8 +22,9 @@ describe('analytics role matrix + RLS (check 1 policy, check 19)', () => {
     const t = await db.$queryRaw<{ relforcerowsecurity: boolean; relrowsecurity: boolean }[]>`
       SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'dispatch_row'`
     expect(t[0]).toMatchObject({ relrowsecurity: true, relforcerowsecurity: true })
-    const p = await db.$queryRaw<{ polname: string; qual: string }[]>`
-      SELECT polname, pg_get_expr(polqual, polrelid) AS qual FROM pg_policy pol
+    const p = await db.$queryRaw<{ polname: string; qual: string; polpermissive: boolean; polcmd: string; roles: string[] }[]>`
+      SELECT polname, pg_get_expr(polqual, polrelid) AS qual, polpermissive, polcmd, polroles::regrole[]::text[] AS roles
+      FROM pg_policy pol
       JOIN pg_class c ON c.oid = pol.polrelid WHERE c.relname = 'dispatch_row' AND polname = 'dispatch_row_analytics_read'`
     // pg_get_expr normalizes the stored expression and inserts ::text casts, so
     // match the two Q5 branches by their stable tokens rather than a verbatim
@@ -33,5 +34,15 @@ describe('analytics role matrix + RLS (check 1 policy, check 19)', () => {
     // Set-membership branch: program_id = ANY(current_setting('app.program_ids')::uuid[]).
     expect(p[0]?.qual).toContain("program_id = ANY (")
     expect(p[0]?.qual).toContain("current_setting('app.program_ids'")
+    // The policy must be RESTRICTIVE, not PERMISSIVE. A permissive read policy
+    // coexists on this table with the permissive dispatch_row_all (FOR ALL
+    // USING(true)) policy, so if this one were ever flipped to PERMISSIVE the
+    // analytics_read role would match dispatch_row_all instead and see every
+    // program's rows, a full cross-tenant leak that the branch-token
+    // assertions above would not catch.
+    expect(p[0]?.polpermissive).toBe(false)
+    // 'r' is SELECT in pg_policy.polcmd, '*' is ALL.
+    expect(p[0]?.polcmd).toBe('r')
+    expect(p[0]?.roles).toContain('analytics_read')
   })
 })
