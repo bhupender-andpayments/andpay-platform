@@ -20,8 +20,19 @@ const url =
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics'
 const db = new PrismaClient({ datasourceUrl: url })
 
+// A SECOND client whose datasource URL forces a single pooled connection
+// (connection_limit=1). This is the ONLY way to deterministically reproduce
+// the reused-connection reverted-'' path the NULLIF hardening guards: with a
+// connection pool the "which physical connection served this query" is
+// non-deterministic, so a test against the shared `db` client could pass
+// vacuously (a fresh connection sees NULL, not '', and never exercises the
+// bug). Dedicated to the G2/deterministic-reused-connection test below only.
+const pinnedUrl = url.includes('?') ? `${url}&connection_limit=1` : `${url}?connection_limit=1`
+const pinnedDb = new PrismaClient({ datasourceUrl: pinnedUrl })
+
 afterAll(async () => {
   await db.$disconnect()
+  await pinnedDb.$disconnect()
 })
 
 interface Seeded {
@@ -120,6 +131,53 @@ describe('Q5 mediation scope guardrails: single analytics_read role, discriminat
     // own scope has no code path that sets app.cross_tenant: it stays unset.
     expect(ct === null || ct === '').toBe(true)
     expect(ct).not.toBe('true')
+  })
+
+  it('G2/reused-connection: NULLIF hardening fail-closes (not throws) a GUC-less read on a connection that reverted app.program_ids to the empty string', async () => {
+    // This is the DETERMINISTIC regression guard for the NULLIF hardening
+    // (20260730130000_analytics_q5_nullif_harden). The G2/fail-closed test
+    // above sets no GUC on a connection that may be fresh, where
+    // current_setting('app.program_ids', true) returns NULL (not '') and
+    // passes even WITHOUT the NULLIF. That makes it pool-dependent: a
+    // reverted-NULLIF migration could ship undetected. Here we pin a SINGLE
+    // physical connection (connection_limit=1) and force the exact reverted
+    // '' state a REUSED connection leaves behind, so this test fails closed
+    // (0 rows, no throw) only if the NULLIF is present; without it, Postgres
+    // raises 22P02 malformed array literal because ''::uuid[] is invalid and
+    // the RLS policy OR does not short-circuit.
+    const { p1, p2 } = await seed()
+
+    // Transaction 1: own-scope read on the pinned connection. This is the
+    // read that leaves app.program_ids reverted to '' (not NULL) on the
+    // connection once the transaction commits: a Postgres custom-GUC quirk,
+    // not an application choice.
+    await pinnedDb.$transaction(async (tx) => {
+      await enterAnalyticsReadScope(tx, { kind: 'own', programIds: [p1] })
+      await tx.$queryRaw<{ program_id: string }[]>`
+        SELECT program_id::text AS program_id FROM dispatch_row`
+    })
+
+    // Transaction 2: SAME pinned connection (connection_limit=1 guarantees
+    // reuse), role only, NEITHER GUC set explicitly. app.program_ids is now
+    // the reverted '' from tx1, not NULL. With the NULLIF this fails closed
+    // to 0 rows; without it, ''::uuid[] throws 22P02 inside the policy qual.
+    const reusedRows = await pinnedDb.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE analytics_read')
+      return tx.$queryRaw<{ dispatch_id: string }[]>`SELECT dispatch_id FROM dispatch_row`
+    })
+    expect(reusedRows).toHaveLength(0) // fail-closed, not a thrown 22P02
+
+    // Transaction 3: SAME pinned connection, still post-tx1 so
+    // app.program_ids is still the reverted ''. This is the OTHER symptom
+    // the ruling documents: a crossTenant read on a stale-'' connection threw
+    // pre-NULLIF (the OR does not short-circuit in a policy qual), even
+    // though cross_tenant = 'true' alone should authorize every row.
+    const crossTenantRows = await pinnedDb.$transaction(async (tx) => {
+      await enterAnalyticsReadScope(tx, { kind: 'crossTenant' })
+      return tx.$queryRaw<{ program_id: string }[]>`
+        SELECT program_id::text AS program_id FROM dispatch_row`
+    })
+    expect(distinct(crossTenantRows.map((r) => r.program_id)).sort()).toEqual([p1, p2].sort())
   })
 
   it('analytics_read is not the owner and cannot write: INSERT under the role is permission denied', async () => {
