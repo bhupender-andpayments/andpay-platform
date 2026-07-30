@@ -3,6 +3,7 @@ export { ANALYTICS_CONSUMER, ANALYTICS_TOPICS } from './topics.js'
 export { enterWriteRole } from './write-context.js'
 export { bumpWatermark, readWatermark, type Watermark } from './watermark.js'
 export { ingestEnvelope, programIdOf, runAnalyticsConsumer } from './ingest.js'
+export { applyFact, applyOnline, rebuildDispatchRows, type DispatchRowState } from './project.js'
 export type {
   AssignmentFactView,
   ShipToAmendedFactView,

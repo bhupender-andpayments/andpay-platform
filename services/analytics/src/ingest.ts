@@ -4,12 +4,10 @@ import { toUuid } from '@andpay/ids'
 import { runFactConsumer, type ConsumerHandle } from '@andpay/bus'
 import type { Envelope } from '@andpay/envelope'
 import type { AnalyticsDb } from './db.js'
-import type { Prisma } from '../generated/client/index.js'
 import { enterWriteRole } from './write-context.js'
 import { bumpWatermark } from './watermark.js'
+import { applyOnline } from './project.js'
 import { ANALYTICS_CONSUMER, ANALYTICS_TOPICS } from './topics.js'
-
-type Tx = Prisma.TransactionClient
 
 /**
  * Resolve the typed program id a fact carries to its native uuid, or null when
@@ -26,17 +24,6 @@ export function programIdOf(env: Envelope): string | null {
   const payload = env.payload as Record<string, unknown>
   const typedId = payload.progId ?? payload.programId
   return typeof typedId === 'string' ? toUuid(typedId) : null
-}
-
-/**
- * Task 3 fills this with the modeled dispatch_row projection reducer. In THIS
- * task (Task 2) it is a deliberate THIN STUB (a no-op): the raw persist +
- * inbox dedup + watermark bump are the two-layer raw-then-modeled seam this task
- * proves (check 5). The raw_event write above always happens BEFORE this modeled
- * touch, and both commit in the one role-scoped tx.
- */
-async function applyOnline(_tx: Tx, _env: Envelope): Promise<void> {
-  // no-op: the modeled dispatch_row upsert lands in Task 3.
 }
 
 /**
