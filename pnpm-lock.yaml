@@ -290,6 +290,9 @@ importers:
       '@andpay/outbox':
         specifier: workspace:*
         version: link:../../packages/outbox
+      kafkajs:
+        specifier: ^2.2.4
+        version: 2.2.4
 
   services/auth:
     dependencies:

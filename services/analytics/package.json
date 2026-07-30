@@ -16,6 +16,7 @@
     "@andpay/bus": "workspace:*",
     "@andpay/envelope": "workspace:*",
     "@andpay/ids": "workspace:*",
-    "@andpay/outbox": "workspace:*"
+    "@andpay/outbox": "workspace:*",
+    "kafkajs": "^2.2.4"
   }
 }
