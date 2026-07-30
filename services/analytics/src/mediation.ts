@@ -329,21 +329,212 @@ export async function readTileDrilldown(
   return { rows, watermark }
 }
 
+const REPORT_DAY_MS = 24 * 60 * 60 * 1000
+
+/** Age in days between now and a timestamp (fractional; not rounded). */
+function ageDays(d: Date): number {
+  return (Date.now() - d.getTime()) / REPORT_DAY_MS
+}
+
 /**
- * SKELETON (Task 4). Reads the scoped modeled layer as a list result and
- * attaches the watermark. Task 6 replaces the body with the six report
- * projections (filters, ageing, and the batching reconstruction) keyed off
- * `report`; the skeleton returns the scoped dispatch rows so the watermark rides
- * a list result too.
+ * Ageing bucket labels for the two pendency reports, computed at query time
+ * from the relevant timestamp (sent_to_vendor_at / dispatched_at). Buckets are
+ * a presentation choice, not a spec-mandated boundary; kept simple and stable.
+ */
+function ageingBucket(d: Date): string {
+  const days = ageDays(d)
+  if (days < 1) return '0-1d'
+  if (days < 3) return '1-3d'
+  if (days < 7) return '3-7d'
+  return '7d+'
+}
+
+/**
+ * Report-level date-window filter. Unlike the tile-level withinWindow (which
+ * always excludes a null timestamp), an absent from/to filter must not exclude
+ * rows whose relevant date column happens to be null: the window only bites
+ * when the caller actually narrows by date.
+ */
+function withinReportWindow(d: Date | null, filters: ReportFilters): boolean {
+  if (filters.from === undefined && filters.to === undefined) return true
+  if (d === null) return false
+  if (filters.from !== undefined && d.getTime() < new Date(filters.from).getTime()) return false
+  if (filters.to !== undefined && d.getTime() > new Date(filters.to).getTime()) return false
+  return true
+}
+
+// ---------------------------------------------------------------------------
+// Per-report row shapes (FR-10). Each report projects only the columns the
+// brief names for it; the batching report has an entirely different (per-bank
+// aggregate) shape with NO dispatchId at all.
+// ---------------------------------------------------------------------------
+
+function soundboxDeliveryRow(r: DispatchDbRow): ReportRow {
+  return {
+    dispatchId: r.dispatch_id,
+    programId: r.program_id,
+    bankCode: r.bank_code,
+    merchantDisplay: r.merchant_display,
+    awb: r.awb,
+    dispatchDate: iso(r.dispatch_date),
+    courierStatus: r.courier_status,
+    deliveryDate: iso(r.delivery_date),
+  }
+}
+
+// The FR-07 Phase-1 delivered-not-activated worklist. Activation columns
+// render null under ACTIVATION-EMPTY (no activation write path exists yet in
+// live v1 data); the predicate itself is the real, general worklist
+// definition (correct once an activation write path exists).
+function activationRow(r: DispatchDbRow): ReportRow {
+  return {
+    dispatchId: r.dispatch_id,
+    programId: r.program_id,
+    bankCode: r.bank_code,
+    merchantDisplay: r.merchant_display,
+    deliveryDate: iso(r.delivery_date),
+    activationStatus: r.activation_status,
+    simActivationStatus: r.sim_activation_status,
+    activationDate: iso(r.activation_date),
+    activationFailureReason: r.activation_failure_reason,
+  }
+}
+
+function damagedReplacementRow(r: DispatchDbRow): ReportRow {
+  return {
+    dispatchId: r.dispatch_id,
+    programId: r.program_id,
+    bankCode: r.bank_code,
+    isReplacement: r.is_replacement,
+    originalDispatchId: r.original_dispatch_id,
+    damageReason: r.damage_reason,
+    replacementDispatchId: r.replacement_dispatch_id,
+    replacementStatus: r.replacement_status,
+  }
+}
+
+function printVendorPendencyRow(r: DispatchDbRow): ReportRow {
+  return {
+    dispatchId: r.dispatch_id,
+    programId: r.program_id,
+    bankCode: r.bank_code,
+    merchantDisplay: r.merchant_display,
+    sentToVendorAt: iso(r.sent_to_vendor_at),
+    ageingDays: r.sent_to_vendor_at === null ? null : ageDays(r.sent_to_vendor_at),
+    ageingBucket: r.sent_to_vendor_at === null ? null : ageingBucket(r.sent_to_vendor_at),
+  }
+}
+
+function courierPendencyRow(r: DispatchDbRow): ReportRow {
+  return {
+    dispatchId: r.dispatch_id,
+    programId: r.program_id,
+    bankCode: r.bank_code,
+    awb: r.awb,
+    courierStatus: r.courier_status,
+    dispatchedAt: iso(r.dispatched_at),
+    ageingDays: r.dispatched_at === null ? null : ageDays(r.dispatched_at),
+    ageingBucket: r.dispatched_at === null ? null : ageingBucket(r.dispatched_at),
+  }
+}
+
+/**
+ * The Batching report (rule c, ratified): v1 ships pool-size-per-bank and
+ * oldest-record-age ONLY; the projected-trigger-date column is DEFERRED (a
+ * follow-up once Fulfillment emits its batching parameters as a fact under
+ * FR-11), so this row shape has NO projectedTriggerDate field.
+ *
+ * Reconstructed from dispatch_row alone (NOT raw_event: analytics_read has no
+ * grant there, and reading raw_event under this role would fail closed with
+ * permission denied). The received-not-batched set is exactly the dispatch_row
+ * rows whose pipeline_state is 'RECEIVED' (received, not yet advanced to
+ * POOLED/BATCHED/etc). Grouped per bank_code: pool-size = row count,
+ * oldest-record-age = now() - min(received_at).
+ */
+function computeBatchingReport(rows: DispatchDbRow[], filters: ReportFilters): ReportRow[] {
+  const received = rows.filter(
+    (r) => r.pipeline_state === 'RECEIVED' && withinReportWindow(r.received_at, filters),
+  )
+  const byBank = new Map<string, DispatchDbRow[]>()
+  for (const r of received) {
+    const list = byBank.get(r.bank_code)
+    if (list) {
+      list.push(r)
+    } else {
+      byBank.set(r.bank_code, [r])
+    }
+  }
+  const out: ReportRow[] = []
+  for (const [bankCode, list] of byBank) {
+    const oldest = list.reduce<Date | null>(
+      (min, r) => (r.received_at !== null && (min === null || r.received_at.getTime() < min.getTime()) ? r.received_at : min),
+      null,
+    )
+    out.push({
+      bankCode,
+      poolSize: list.length,
+      oldestRecordAgeDays: oldest === null ? null : ageDays(oldest),
+    })
+  }
+  return out
+}
+
+function computeReport(report: ReportName, rows: DispatchDbRow[], filters: ReportFilters): ReportRow[] {
+  switch (report) {
+    case 'soundbox-delivery':
+      return rows
+        .filter((r) => r.dispatched_at !== null && withinReportWindow(r.dispatch_date, filters))
+        .map(soundboxDeliveryRow)
+    case 'activation':
+      return rows
+        .filter(
+          (r) => r.delivery_date !== null && r.activation_status === null && withinReportWindow(r.delivery_date, filters),
+        )
+        .map(activationRow)
+    case 'damaged-replacement':
+      return rows
+        .filter(
+          (r) => (r.is_replacement || r.replacement_status !== null) && withinReportWindow(r.received_at, filters),
+        )
+        .map(damagedReplacementRow)
+    case 'print-vendor-pendency':
+      return rows
+        .filter(
+          (r) =>
+            r.pipeline_state === 'SENT_TO_VENDOR' &&
+            r.dispatched_at === null &&
+            withinReportWindow(r.sent_to_vendor_at, filters),
+        )
+        .map(printVendorPendencyRow)
+    case 'courier-pendency':
+      return rows
+        .filter(
+          (r) => r.dispatched_at !== null && r.delivery_date === null && withinReportWindow(r.dispatched_at, filters),
+        )
+        .map(courierPendencyRow)
+    case 'batching':
+      return computeBatchingReport(rows, filters)
+  }
+}
+
+/**
+ * Reads the scoped modeled layer, applies the shared bank/courier narrowing
+ * plus the per-report date window and predicate (FR-10), and attaches the
+ * freshness watermark. All six reports run under the same mediated scope
+ * (`enterAnalyticsReadScope` via `scopedDispatchRead`) and the same frozen
+ * ReportRow/ReportFilters types as the tiles; none diverges to a SQL
+ * aggregate (that optimization is a recorded service-wide decision for the
+ * final review).
  */
 export async function readReport(
   db: AnalyticsDb,
   scope: ReadScope,
-  _report: ReportName,
-  _filters: ReportFilters,
+  report: ReportName,
+  filters: ReportFilters,
 ): Promise<{ rows: ReportRow[]; watermark: Watermark }> {
   const dbRows = await scopedDispatchRead(db, scope)
-  const rows = dbRows.map(toReportRow)
+  const narrowed = narrowByBankAndCourier(dbRows, filters)
+  const rows = computeReport(report, narrowed, filters)
   const watermark = await readFreshness(db)
   return { rows, watermark }
 }

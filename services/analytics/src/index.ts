@@ -5,6 +5,7 @@ export { bumpWatermark, readWatermark, type Watermark } from './watermark.js'
 export { ingestEnvelope, programIdOf, runAnalyticsConsumer } from './ingest.js'
 export { applyFact, applyOnline, rebuildDispatchRows, type DispatchRowState } from './project.js'
 export { enterAnalyticsReadScope, type ReadScope } from './read-context.js'
+export { toCsv, MAX_CSV_BYTES } from './export.js'
 export {
   readTiles,
   readTileDrilldown,
