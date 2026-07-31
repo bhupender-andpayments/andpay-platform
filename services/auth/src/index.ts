@@ -35,3 +35,4 @@ export * from "./authz-chain-verify.js";
 export * from "./authorize.js";
 export * from "./redact.js";
 export * from "./identity-seam.js";
+export * from "./logout.js";
