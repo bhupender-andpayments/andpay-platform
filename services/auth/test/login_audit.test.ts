@@ -49,6 +49,21 @@ describe('login 6e audit (spec 12 task 4)', () => {
     expect(rows[0]!.payload.decision).toBe('DENY')
     expect(rows[0]!.payload.operation).toBe('login')
   })
+  it('a wrong TOTP DENIES with a mfa-failed DENY audit before throwing', async () => {
+    await expect(login(handle, 'correct-horse', '000000', baseDeps())).rejects.toThrow('mfa-failed')
+    const rows = await auditRows(principalId)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.payload.decision).toBe('DENY')
+    expect(rows[0]!.payload.reasonCode).toBe('mfa-failed')
+  })
+  it('an unknown handle DENIES authn-failed and audits one DENY under principalId unknown', async () => {
+    await db.$executeRawUnsafe(`DELETE FROM outbox WHERE aggregate_id = 'unknown'`)
+    await expect(login(`no-such-${randomUUID()}`, 'whatever', undefined, baseDeps())).rejects.toThrow('authn-failed')
+    const rows = await auditRows('unknown')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.payload.decision).toBe('DENY')
+    await db.$executeRawUnsafe(`DELETE FROM outbox WHERE aggregate_id = 'unknown'`)
+  })
   it('password-only DENIES against the AAL2 floor with an assurance-insufficient DENY audit', async () => {
     await expect(login(handle, 'correct-horse', undefined, baseDeps())).rejects.toThrow('assurance-insufficient')
     const rows = await auditRows(principalId)

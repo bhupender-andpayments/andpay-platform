@@ -89,7 +89,11 @@ export async function login(
 
   const acr = computeAcr(amr)
   const role = ROLES[principal.role]
-  if (!role) throw new AuthzError('unknown-role')
+  // Spec 12 Task 4 (review Minor 1): route the post-auth role-config-miss DENY
+  // through denyThrow too, so it emits its synchronous durable 6e DENY before the
+  // throw. This closes the check-4 "every login DENY audits" invariant with no
+  // known holes. The thrown error type + code ('unknown-role') are unchanged.
+  if (!role) return denyThrow('unknown-role', new AuthzError('unknown-role'))
   // Spec 12 Task 4: the AAL-floor DENY audits before it throws. enforceRoleAssurance
   // still performs the exact floor check (single source of truth); on failure we
   // audit the assurance-insufficient DENY and throw the same AuthzError code the
