@@ -1,4 +1,15 @@
+import type { LeanClaim } from '@andpay/authz'
 import { REFRESH_COOKIE_NAME } from './cookies.js'
+
+// The shape AuthEdgeAdminGuard attaches to the request object for the guarded
+// enroll route: `req.claim`, the verified class-3 LeanClaim, and `req.traceId`,
+// the guard-minted correlation id propagated into the enroll op's co-committed
+// 6e audit. The controller re-derives the actor (`sub`) from the claim ONLY,
+// never a request body (D99, M7/S16). Mirrors ops-edge's EdgeRequest.
+export interface EdgeRequest {
+  claim: LeanClaim
+  traceId: string
+}
 
 // Request-side helpers shared by the login/refresh/logout controllers. Kept
 // dependency-free (no cookie-parser): the ONE cookie this edge reads is the

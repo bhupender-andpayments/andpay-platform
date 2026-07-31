@@ -4,6 +4,8 @@ import { applyPortalCors } from '@andpay/edge'
 import { ProbeController } from './probe.controller.js'
 import { LoginController } from './login.controller.js'
 import { SessionController } from './session.controller.js'
+import { EnrollController } from './enroll.controller.js'
+import { AuthEdgeAdminGuard } from './admin.guard.js'
 import { AuthErrorFilter } from './auth-error.filter.js'
 import { EDGE_DEPS, type AuthEdgeDeps } from './deps.js'
 
@@ -20,10 +22,11 @@ export class AuthEdgeModule {
   static register(deps: AuthEdgeDeps): DynamicModule {
     return {
       module: AuthEdgeModule,
-      controllers: [ProbeController, LoginController, SessionController],
+      controllers: [ProbeController, LoginController, SessionController, EnrollController],
       providers: [
         { provide: EDGE_DEPS, useValue: deps },
         { provide: APP_FILTER, useClass: AuthErrorFilter },
+        AuthEdgeAdminGuard,
       ],
     }
   }
