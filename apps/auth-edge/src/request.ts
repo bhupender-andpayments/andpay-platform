@@ -31,6 +31,19 @@ export function readRefreshCookie(cookieHeader: string | undefined): string | un
   return undefined
 }
 
+// The two-arg Bearer split for an access token presented in the Authorization
+// header. Returns undefined for a missing or malformed header (any non-Bearer
+// scheme, an empty credential), so the caller maps it to a uniform 401. This is
+// a shared additive copy of session.controller's own local readBearer: that
+// local copy is left byte-identical and untouched (D6 byte-identity floor); new
+// controllers (stepup) import this one.
+export function readBearer(authorization: string | undefined): string | undefined {
+  if (!authorization) return undefined
+  const [scheme, token] = authorization.split(' ')
+  if (scheme?.toLowerCase() !== 'bearer' || !token) return undefined
+  return token
+}
+
 // The minimal request shape sourceKey reads. Kept structural (not the full
 // express Request) so this helper stays testable and framework-light.
 interface ThrottleSourceRequest {
