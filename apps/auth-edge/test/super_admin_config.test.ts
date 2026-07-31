@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { resolveSuperAdminAcr, SUPER_ADMIN_ACR_DEFAULT, SUPER_ADMIN_ACR_PILOT } from '@andpay/auth-service/dist/config/assurance-config.js'
 import { enforceRoleAssurance, computeAcr } from '@andpay/auth-service/dist/assurance.js'
+import { ROLES } from '@andpay/auth-service'
 import { AuthzError } from '@andpay/authz'
 
 // Check 9 (spec 12 task 2 config lever, re-proven at the auth-edge acceptance
@@ -41,6 +42,18 @@ describe('super_admin pilot-config lever proven by composition (spec 12 task 13 
       expect(err).toBeInstanceOf(AuthzError)
       expect((err as AuthzError).code).toBe('assurance-insufficient')
     }
+  })
+
+  // Fix 3 (spec 12 task 14 whole-branch audit, check 9): pins that
+  // ROLES.super_admin.requiredAcr (services/auth/src/config/roles.ts) is
+  // actually WIRED to resolveSuperAdminAcr(), not a hardcoded literal that
+  // happens to match today's default. A silent revert of roles.ts to
+  // `requiredAcr: 'AAL3'` (or any other literal) would decouple it from the
+  // config lever this suite exercises above.
+  it('ROLES.super_admin.requiredAcr is wired to resolveSuperAdminAcr(), not a hardcoded literal', () => {
+    const superAdmin = ROLES['super_admin']
+    expect(superAdmin).toBeDefined()
+    expect(superAdmin?.requiredAcr).toBe(resolveSuperAdminAcr())
   })
 
   it('assurance.ts is unchanged: the hwk-gated AAL3 guard line is intact (only the config lever moved)', () => {

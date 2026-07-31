@@ -43,12 +43,39 @@ function sharedSigner(): Promise<LocalEs256Adapter> {
 }
 
 // The public verify keyset for the shared signer. Exported standalone so a
-// test can mint its OWN raw JWT (a wrong-signer/wrong-alg/expired regression,
-// mirroring the ops-edge/tenant-edge authn suites) while still verifying
-// against the exact keyset the app under test holds.
+// test can mint its OWN raw JWT (a wrong-signer/wrong-alg/wrong-issuer/expired
+// regression, see refresh-verify.test.ts, which mirrors the ops-edge/
+// tenant-edge authn suites' mintWith pattern) while still verifying against
+// the exact keyset the app under test holds.
 export async function testJwks(): Promise<JSONWebKeySet> {
   const signer = await sharedSigner()
   return signer.jwks()
+}
+
+// Mints a raw access token with the SHARED SIGNER (the same key the app under
+// test verifies against), for a regression that must isolate a SINGLE
+// malformed dimension (e.g. expiry, issuer) while everything else about the
+// token, including its signer and alg, stays correct. A wrong-signer or
+// wrong-alg regression instead mints with its OWN separate keypair via jose's
+// SignJWT directly (see refresh-verify.test.ts), exactly like ops-edge's
+// mintWith.
+export async function mintRawAccessToken(input: {
+  claims: Record<string, unknown>
+  iss?: string
+  sub?: string
+  aud?: string
+  ttlSec: number
+  now?: number
+}): Promise<string> {
+  const signer = await sharedSigner()
+  return signer.sign({
+    claims: input.claims,
+    iss: input.iss ?? EXPECTED_ISS,
+    sub: input.sub ?? randomUUID(),
+    aud: input.aud ?? 'andpay:internal-admin',
+    ttlSec: input.ttlSec,
+    now: input.now,
+  })
 }
 
 // The shared in-memory custody vault: BOTH `storeSecret` (the enroll-side

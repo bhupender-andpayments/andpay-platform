@@ -70,6 +70,20 @@ describe('auth-edge session lifecycle (spec 12 task 10)', () => {
     expect(res.status).toBe(401)
   })
 
+  // Fix 2 (spec 12 task 14 whole-branch audit, check 5): the "cross-site
+  // refresh without the cookie fails" clause, proven directly at the HTTP
+  // layer. A valid bearer with NO andpay_rt cookie at all must 401 at the
+  // server's primary-control guard (session.controller.ts's `if (!presented)
+  // throw new UnauthorizedException()`), before the CSRF-binding verify is
+  // even reached.
+  it('refresh WITHOUT the andpay_rt cookie (but with a valid bearer) is 401', async () => {
+    const { accessToken } = await loginAndGetCookie()
+    const res = await request(app.getHttpServer())
+      .post('/session/refresh')
+      .set('Authorization', `Bearer ${accessToken}`)
+    expect(res.status).toBe(401)
+  })
+
   it('replaying the ORIGINAL refresh cookie after a rotate revokes the family (401)', async () => {
     const { cookie, accessToken } = await loginAndGetCookie()
     await request(app.getHttpServer())
