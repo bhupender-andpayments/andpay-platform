@@ -32,6 +32,10 @@ export interface TenantEdgeDeps {
   // The live/test plane this edge serves (S16), ANDed with the audience at
   // verification. A token whose mode claim differs is rejected (check 4).
   expectedMode: Mode
+  // The single allow-listed browser origin for the tenant portal (spec 12
+  // task 7, D6 additive). Never a wildcard; fails the process start closed if
+  // absent.
+  portalOrigin: string
 }
 
 export const EDGE_DEPS = 'TENANT_EDGE_DEPS'
@@ -55,6 +59,10 @@ export function buildTenantEdgeDepsFromEnv(): TenantEdgeDeps {
   if (!expectedIss) {
     throw new Error('TENANT_EDGE_ISS is required (the pinned issuer is never defaulted in code, D3/S10)')
   }
+  const portalOrigin = process.env.TENANT_PORTAL_ORIGIN
+  if (!portalOrigin) {
+    throw new Error('TENANT_PORTAL_ORIGIN is required (the CORS allow-listed origin is never defaulted in code, spec 12 task 7)')
+  }
   // The tenant plane is LIVE-ONLY in v1 (S16/Fork D): a future test plane is a
   // config flip, not a retrofit, so this is not read from an env toggle. An
   // env-derived mode would fail closed toward 'test' on an unset/mistyped var,
@@ -72,5 +80,6 @@ export function buildTenantEdgeDepsFromEnv(): TenantEdgeDeps {
     jwks,
     expectedIss,
     expectedMode,
+    portalOrigin,
   }
 }

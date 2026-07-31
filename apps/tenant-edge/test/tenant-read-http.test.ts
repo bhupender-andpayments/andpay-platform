@@ -208,6 +208,7 @@ beforeAll(async () => {
     jwks,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',
+    portalOrigin: 'https://tenant.andpay.test',
   }
   app = await buildTenantEdgeApp(deps)
   await app.init()

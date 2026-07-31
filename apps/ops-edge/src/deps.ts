@@ -35,6 +35,9 @@ export interface OpsEdgeDeps {
   // The class-3 ops role config (S15, D2, 4c), resolved LOCALLY at the edge
   // (T4). Part A wires it into deps only; Part B's authorize() calls consume it.
   roleConfig: RoleConfig
+  // The single allow-listed browser origin for the ops portal (spec 12 task 7,
+  // D6 additive). Never a wildcard; fails the process start closed if absent.
+  portalOrigin: string
 }
 
 export const EDGE_DEPS = 'OPS_EDGE_DEPS'
@@ -58,6 +61,10 @@ export function buildOpsEdgeDepsFromEnv(): OpsEdgeDeps {
   if (!expectedIss) {
     throw new Error('OPS_EDGE_ISS is required (the pinned issuer is never defaulted in code, D3/S10)')
   }
+  const portalOrigin = process.env.OPS_PORTAL_ORIGIN
+  if (!portalOrigin) {
+    throw new Error('OPS_PORTAL_ORIGIN is required (the CORS allow-listed origin is never defaulted in code, spec 12 task 7)')
+  }
   // The ops plane is LIVE-ONLY in v1 (S16/Fork D, mirrors the tenant edge): a
   // future test plane is a config flip, not a retrofit, so this is not read
   // from an env toggle. An env-derived mode would fail closed toward 'test' on
@@ -77,5 +84,6 @@ export function buildOpsEdgeDepsFromEnv(): OpsEdgeDeps {
     expectedIss,
     expectedMode,
     roleConfig: loadOpsConfig(),
+    portalOrigin,
   }
 }

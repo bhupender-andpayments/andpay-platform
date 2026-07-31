@@ -1,5 +1,6 @@
 import { type DynamicModule, Module, type INestApplication } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
+import { applyPortalCors } from '@andpay/edge'
 import { ProbeController } from './probe.controller.js'
 import { ReadController } from './read.controller.js'
 import { ReportsController } from './reports.controller.js'
@@ -26,6 +27,11 @@ export class TenantEdgeModule {
 // identically by main.ts (the real bootstrap) and by the test (which calls
 // `.init()` itself, then drives the app via supertest against
 // `app.getHttpServer()`, real in-process HTTP, no bound port).
-export function buildTenantEdgeApp(deps: TenantEdgeDeps): Promise<INestApplication> {
-  return NestFactory.create(TenantEdgeModule.register(deps), { logger: false })
+export async function buildTenantEdgeApp(deps: TenantEdgeDeps): Promise<INestApplication> {
+  const app = await NestFactory.create(TenantEdgeModule.register(deps), { logger: false })
+  // Additive browser CORS for the tenant portal (spec 12 task 7, D6). Applied
+  // before the app is init'd/returned, so no handler behavior changes, only
+  // the preflight/response headers.
+  applyPortalCors(app, deps.portalOrigin)
+  return app
 }

@@ -141,6 +141,7 @@ beforeAll(async () => {
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',
     roleConfig: loadOpsConfig(),
+    portalOrigin: 'https://ops.andpay.test',
   }
   app = await buildOpsEdgeApp(deps)
   await app.init()
