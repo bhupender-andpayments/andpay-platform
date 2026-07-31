@@ -1,6 +1,6 @@
 import { Body, Controller, ForbiddenException, HttpCode, Inject, Post, Req, UseGuards } from '@nestjs/common'
 import { authorize, requireStepUp } from '@andpay/authz'
-import { enrollTotp, STEP_UP_CATALOG } from '@andpay/auth-service'
+import { enrollTotp, STEP_UP_CATALOG, auditStandalone } from '@andpay/auth-service'
 import { EDGE_DEPS, type AuthEdgeDeps } from './deps.js'
 import { AuthEdgeAdminGuard } from './admin.guard.js'
 import type { EdgeRequest } from './request.js'
@@ -43,6 +43,28 @@ interface EnrollBody {
 export class EnrollController {
   constructor(@Inject(EDGE_DEPS) private readonly deps: AuthEdgeDeps) {}
 
+  // Spec 12 architecture RULING: the authz/step-up DENY 6e. MIRRORS login-DENY
+  // (services/auth/src/login.ts): auditStandalone AWAITS the durable commit of
+  // one authz.audit DENY row BEFORE the 403 is observable, then throws. The
+  // token is verified here (the actor is req.claim.sub, a known principal),
+  // so the DENY records under that actor. Exactly one DENY per rejected request:
+  // requireStepUp runs first and throws through here, so the authorize gate is
+  // never reached once step-up has already denied. No swallow: a commit failure
+  // propagates (fail-closed). The reasonCode NEVER reaches the HTTP body.
+  private async denyThrow(reasonCode: string, req: EdgeRequest): Promise<never> {
+    await auditStandalone(this.deps.authDb, {
+      principalId: req.claim.sub,
+      cls: 3,
+      operation: 'mfa-enroll',
+      decision: 'DENY',
+      resourceIds: [],
+      outcome: 'denied',
+      reasonCode,
+      traceId: req.traceId,
+    })
+    throw new ForbiddenException()
+  }
+
   @Post('enroll')
   @HttpCode(200)
   async enroll(@Req() req: EdgeRequest, @Body() body: EnrollBody): Promise<{ otpauthUri: string }> {
@@ -56,10 +78,15 @@ export class EnrollController {
     try {
       requireStepUp(req.claim, entry, nowSec())
     } catch {
-      throw new ForbiddenException()
+      // Step-up freshness failed (e.g. a silently-refreshed token with no
+      // auth_time). Audit the DENY, then 403. This runs BEFORE authorize, so
+      // exactly one DENY is emitted per rejected request.
+      await this.denyThrow('step-up-required', req)
     }
     const decision = authorize(req.claim, 'mfa:enroll', {}, this.deps.roleConfig)
-    if (!decision.allowed) throw new ForbiddenException()
+    // A valid admin-plane token that lacks mfa:enroll (ops/support): audit the
+    // DENY, then 403.
+    if (!decision.allowed) await this.denyThrow('permission-denied', req)
 
     // The actor is the VERIFIED claim subject, NEVER the request body (D99,
     // M7/S16). The target params are the only values taken from the body.

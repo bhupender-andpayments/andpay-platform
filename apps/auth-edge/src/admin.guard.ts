@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { type CanActivate, type ExecutionContext, Injectable, Inject, UnauthorizedException } from '@nestjs/common'
 import { resolveClaimFromAuthHeader, EdgeAuthError } from '@andpay/edge'
-import { type LeanClaim } from '@andpay/authz'
+import { AuthzError, type LeanClaim } from '@andpay/authz'
+import { auditStandalone } from '@andpay/auth-service'
 import { EDGE_DEPS, type AuthEdgeDeps } from './deps.js'
 
 interface RequestWithClaim {
@@ -38,11 +39,16 @@ const UNUSED_PEPPER = 'auth-edge-jwt-path-pepper-unused'
 // placed in the thrown response (S4/5c). The app is built logger:false, so no
 // request line, header, or token can reach a log sink.
 //
-// Unlike the ops edge, this guard emits NO authn-DENY 6e: auth-edge wires no
-// authz-audit outbox on the request path (it is the token producer, not a
-// fulfillment/analytics consumer), and the enroll ALLOW 6e is co-committed
-// inside enrollTotp's own transaction (check 4). D3 denylist is deferred here
-// exactly as at the ops/tenant edges (no denylist option is wired below).
+// Spec 12 architecture RULING: this guard now emits a synchronous authn-DENY
+// 6e on every rejection, closing the detection asymmetry (previously only the
+// enroll ALLOW co-committed). It MIRRORS login-DENY (services/auth/src/login.ts):
+// auditStandalone opens its OWN auth_write tx and AWAITS the durable commit of
+// one authz.audit DENY row BEFORE the 401 is observable to the caller, then the
+// 401 throws. This is NOT the ops-edge best-effort-swallow: if the audit commit
+// fails it PROPAGATES (fail-closed; the DENY must be durable before the outcome
+// is observable). The presented token is NEVER read into the record or logged
+// (S4/5c); principalId is 'unknown' (no credential resolved). D3 denylist is
+// deferred here exactly as at the ops/tenant edges (no denylist option below).
 @Injectable()
 export class AuthEdgeAdminGuard implements CanActivate {
   constructor(@Inject(EDGE_DEPS) private readonly deps: AuthEdgeDeps) {}
@@ -70,7 +76,23 @@ export class AuthEdgeAdminGuard implements CanActivate {
       // audit correlates with this same authenticated request.
       req.traceId = traceId
       return true
-    } catch {
+    } catch (err) {
+      // The reasonCode exactly mirrors the code the edge/authz layer threw
+      // (missing-credential, malformed-authorization, token-verify-failed,
+      // class6-jwt-rejected, class-not-admin, ...). It carries no token bytes.
+      const reasonCode = err instanceof EdgeAuthError || err instanceof AuthzError ? err.code : 'authn-error'
+      // Mirror login-DENY: await the synchronous standalone durable 6e commit,
+      // THEN throw. No try/catch swallow (a commit failure fails closed, S15).
+      await auditStandalone(this.deps.authDb, {
+        principalId: 'unknown',
+        cls: 3,
+        operation: 'authenticate',
+        decision: 'DENY',
+        resourceIds: [],
+        outcome: 'denied',
+        reasonCode,
+        traceId,
+      })
       throw new UnauthorizedException()
     }
   }
