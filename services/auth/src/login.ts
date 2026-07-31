@@ -49,23 +49,56 @@ export async function login(
   const now = deps.now ?? Math.floor(Date.now() / 1000)
 
   const principal = await deps.db.internalPrincipal.findUnique({ where: { loginHandle: handle } })
+
+  // Spec 12 Task 4: a pure login-DENY has no auth write to ride, so its 6e is a
+  // SYNCHRONOUS STANDALONE durable commit BEFORE the DENY is observable to the
+  // caller (the Q1 verdict invariant). auditStandalone opens its own auth_write
+  // tx and awaits the commit; only after it returns do we throw. Declared AFTER
+  // the principal lookup so the unknown-handle DENY records 'unknown' and every
+  // later DENY records the resolved principal.id. The thrown error (type + code)
+  // that the caller/edge maps by (err.code) and the uniform-failure behavior are
+  // unchanged; only an internal audit is added ahead of the throw.
+  const denyThrow = async (reasonCode: string, err: AuthzError): Promise<never> => {
+    await auditStandalone(deps.db, {
+      principalId: principal?.id ?? 'unknown',
+      cls: 3,
+      operation: 'login',
+      decision: 'DENY',
+      resourceIds: [],
+      outcome: 'denied',
+      reasonCode,
+      traceId: deps.traceId,
+    })
+    throw err
+  }
+
   // Uniform failure: never reveal whether the handle exists or the password was
   // the wrong part (and never log the presented password, S4).
-  if (!principal || principal.status !== 'ACTIVE') throw new AuthzError('authn-failed')
-  if (!(await argonVerify(principal.passwordHash, password))) throw new AuthzError('authn-failed')
+  // Spec 12 Task 4: route each DENY through denyThrow so the 6e commits first.
+  if (!principal || principal.status !== 'ACTIVE') return denyThrow('authn-failed', new AuthzError('authn-failed'))
+  if (!(await argonVerify(principal.passwordHash, password))) return denyThrow('authn-failed', new AuthzError('authn-failed'))
 
   const amr: Amr[] = ['pwd']
   if (totp !== undefined) {
     const secret = await deps.mfaSecretResolver(principal.id)
     const good = secret !== undefined && (await deps.mfa.verify({ secret, token: totp }))
-    if (!good) throw new AuthzError('mfa-failed')
+    // Spec 12 Task 4: audit the mfa DENY before throwing (same uniform failure).
+    if (!good) return denyThrow('mfa-failed', new AuthzError('mfa-failed'))
     amr.push('otp')
   }
 
   const acr = computeAcr(amr)
   const role = ROLES[principal.role]
   if (!role) throw new AuthzError('unknown-role')
-  enforceRoleAssurance(role.requiredAcr, acr)
+  // Spec 12 Task 4: the AAL-floor DENY audits before it throws. enforceRoleAssurance
+  // still performs the exact floor check (single source of truth); on failure we
+  // audit the assurance-insufficient DENY and throw the same AuthzError code the
+  // caller/edge maps by (err.code), so the HTTP-facing outcome is unchanged.
+  try {
+    enforceRoleAssurance(role.requiredAcr, acr)
+  } catch {
+    return denyThrow('assurance-insufficient', new AuthzError('assurance-insufficient'))
+  }
 
   const accessToken = await issueAccessToken(
     {
@@ -82,22 +115,29 @@ export async function login(
     },
     { signer: deps.signer, iss: deps.iss, ttlSec: deps.accessTtlSec, now },
   )
+  // Spec 12 Task 4: pass the ALLOW 6e record into issueRefreshFamily so it
+  // CO-COMMITS INSIDE the family-create tx (Task 3 wired the optional audit
+  // param). The prior best-effort trailing auditStandalone ALLOW block is removed:
+  // 10c overruled best-effort-after-write as an S15 violation, so the ALLOW audit
+  // now co-commits with the auth write (an aborted family-create leaves 0 refresh
+  // rows AND 0 authz.audit rows, check 4). The minted token and refresh-family
+  // semantics are unchanged.
   const { refreshToken } = await issueRefreshFamily(principal.id, deps.clientBind, {
     db: deps.db,
     idleSec: deps.idleSec,
     absoluteSec: deps.absoluteSec,
     now,
-  })
-
-  await auditStandalone(deps.db, {
-    principalId: principal.id,
-    cls: 3,
-    operation: 'login',
-    decision: 'ALLOW',
-    outcome: 'authenticated',
-    acr,
-    authTime: now,
-    traceId: deps.traceId,
+    audit: {
+      principalId: principal.id,
+      cls: 3,
+      operation: 'login',
+      decision: 'ALLOW',
+      resourceIds: [],
+      outcome: 'authenticated',
+      acr,
+      authTime: now,
+      traceId: deps.traceId,
+    },
   })
 
   return { accessToken, refreshToken, principalId: principal.id, acr }
