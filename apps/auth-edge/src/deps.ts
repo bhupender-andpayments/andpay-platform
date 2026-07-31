@@ -9,7 +9,7 @@ import {
 } from '@andpay/auth-service'
 import type { Mode, RoleConfig } from '@andpay/authz'
 import type { JSONWebKeySet } from 'jose'
-import { type ThrottlePort, NoThrottle } from './throttle.js'
+import { type ThrottlePort, InMemoryTokenBucket } from './throttle.js'
 
 // Token-provided deps (NO type-reflection DI: esbuild drops
 // emitDecoratorMetadata under vitest, so every injectable here reads its deps
@@ -83,6 +83,25 @@ const ACCESS_TTL_SEC = 600
 const IDLE_SEC = 1800
 const ABSOLUTE_SEC = 28800
 
+// 6d source-throttle defaults (spec 12 task 12). A per-source token bucket:
+// ~10 tokens absorbs a legitimate retype/refresh burst from one IP, while
+// ~0.5 tokens/sec (one every two seconds) sustains a real user yet starves an
+// automated password-spray. Plain numeric config (no secret), env-overridable
+// per deploy. The key is the SOURCE IP, never the credential, so this never
+// locks out a principal.
+const THROTTLE_CAPACITY = 10
+const THROTTLE_REFILL_PER_SEC = 0.5
+
+function readPositiveNumber(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined) return fallback
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative number when set (6d throttle config, spec 12 task 12)`)
+  }
+  return parsed
+}
+
 // The real bootstrap's deps (main.ts only; never exercised by a test, which
 // builds its own AuthEdgeDeps via test/helpers.ts with a jose-generated
 // signer and test-scoped clients). The issuer, portal origin, and signer
@@ -147,6 +166,13 @@ export async function buildAuthEdgeDepsFromEnv(): Promise<AuthEdgeDeps> {
     absoluteSec: ABSOLUTE_SEC,
     totpIssuer,
     portalOrigin,
-    throttle: NoThrottle,
+    // The deployed edge is throttled by default (6d): a per-source token
+    // bucket, in-process (scaffold-only, like the vault above; a shared store
+    // is a deploy-time swap behind the same ThrottlePort). It fails OPEN in the
+    // login controller on its own failure, so auth still serves.
+    throttle: new InMemoryTokenBucket({
+      capacity: readPositiveNumber('AUTH_THROTTLE_CAPACITY', THROTTLE_CAPACITY),
+      refillPerSec: readPositiveNumber('AUTH_THROTTLE_REFILL_PER_SEC', THROTTLE_REFILL_PER_SEC),
+    }),
   }
 }
