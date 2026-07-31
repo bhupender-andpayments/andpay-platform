@@ -1,4 +1,5 @@
 import { humanRole, type RoleConfig } from '@andpay/authz'
+import { resolveSuperAdminAcr } from './assurance-config.js'
 
 // Class-3 role to permission-set and scope-ceiling mapping (D2, 16.1, 4c),
 // config-as-code and CODEOWNERS-gated (S23), resolved LOCALLY at evaluation
@@ -29,6 +30,6 @@ export const ROLES: RoleConfig['roles'] = {
   super_admin: humanRole({
     permissions: ['*'],
     ceiling: 'all-programs',
-    requiredAcr: 'AAL3',
+    requiredAcr: resolveSuperAdminAcr(),
   }),
 }
