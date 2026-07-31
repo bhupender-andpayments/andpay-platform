@@ -49,6 +49,7 @@ model MfaEnrollment {
   secretRef   String?           @map("secret_ref")
   status      String
   enrolledAt  DateTime          @default(now()) @map("enrolled_at") @db.Timestamptz(6)
+  enrolledByActor String        @map("enrolled_by_actor") @db.Uuid
   principal   InternalPrincipal @relation(fields: [principalId], references: [id])
 
   @@index([principalId])
