@@ -1,7 +1,9 @@
 import { randomBytes, createHash, randomUUID } from 'node:crypto'
 import { AuthzError } from '@andpay/authz'
+import type { AuthzAuditRecord } from '@andpay/audit'
 import type { AuthDb } from './db.js'
 import { enterWriteRole } from './write-context.js'
+import { emitAuthzAudit } from './audit.js'
 
 // Refresh tokens are opaque (never a JWT), hashed at rest; only the hash is
 // stored and it is the lookup path.
@@ -17,6 +19,7 @@ export interface IssueFamilyDeps {
   idleSec: number
   absoluteSec: number
   now?: number
+  audit?: AuthzAuditRecord
 }
 
 // Start a new D3 refresh-token family (6b): opaque, hashed at rest, client-bound,
@@ -51,6 +54,13 @@ export async function issueRefreshFamily(
         absoluteExpires: new Date((now + deps.absoluteSec) * 1000),
       },
     })
+    // Spec 12 Task 3 NAMED shape-change exception: fold the login-ALLOW 6e
+    // enqueue INTO the family-create tx (the tx boundary 10d already
+    // established for SET LOCAL ROLE). The audit now co-commits with the auth
+    // write, so an aborted family-create leaves 0 refresh rows AND 0 authz.audit
+    // rows (check 4). The refresh-family semantics (spec 04 check 3) are
+    // unchanged; only an in-tx enqueue is added when deps.audit is present.
+    if (deps.audit) await emitAuthzAudit(tx, deps.audit)
   })
   return { refreshToken: token, familyId }
 }
@@ -59,6 +69,8 @@ export interface RotateDeps {
   db: AuthDb
   idleSec: number
   now?: number
+  audit?: AuthzAuditRecord
+  revokeAudit?: AuthzAuditRecord
 }
 
 // One-time-use rotation with family-wide revocation on reuse (6b). A presented
@@ -89,6 +101,13 @@ export async function rotateRefresh(
     await deps.db.$transaction(async (tx) => {
       await enterWriteRole(tx, 'auth_write')
       await tx.refreshToken.updateMany({ where: { familyId: row.familyId }, data: { revoked: true } })
+      // Spec 12 Task 3 NAMED shape-change exception: fold the DENY reuse-revoke
+      // 6e enqueue INTO the revoke tx so the audit co-commits with the
+      // family-wide revoke (check 4). The throw stays AFTER the tx returns, so
+      // both the revoke and its audit commit even though the call throws
+      // (commit-before-throw preserved). Fires only when deps.revokeAudit is
+      // present; the revoke semantics are unchanged.
+      if (deps.revokeAudit) await emitAuthzAudit(tx, deps.revokeAudit)
     })
     throw new AuthzError('refresh-reuse-family-revoked')
   }
@@ -120,6 +139,12 @@ export async function rotateRefresh(
         absoluteExpires: row.absoluteExpires,
       },
     })
+    // Spec 12 Task 3 NAMED shape-change exception: fold the refresh-ALLOW 6e
+    // enqueue INTO the successful-claim tx (only on the res.count !== 0 path,
+    // i.e. a real rotation), so the audit co-commits with the successor mint
+    // (check 4). Fires only when deps.audit is present; the rotation semantics
+    // are unchanged.
+    if (deps.audit) await emitAuthzAudit(tx, deps.audit)
     return true
   })
   if (!claimed) {
@@ -131,6 +156,13 @@ export async function rotateRefresh(
     await deps.db.$transaction(async (tx) => {
       await enterWriteRole(tx, 'auth_write')
       await tx.refreshToken.updateMany({ where: { familyId: row.familyId }, data: { revoked: true } })
+      // Spec 12 Task 3 NAMED shape-change exception: fold the DENY race-loss
+      // revoke 6e enqueue INTO the revoke tx so the audit co-commits with the
+      // family-wide revoke (check 4). The throw stays AFTER the tx returns, so
+      // both the revoke and its audit commit even though the call throws
+      // (commit-before-throw preserved). Fires only when deps.revokeAudit is
+      // present; the revoke semantics are unchanged.
+      if (deps.revokeAudit) await emitAuthzAudit(tx, deps.revokeAudit)
     })
     throw new AuthzError('refresh-reuse-family-revoked')
   }
