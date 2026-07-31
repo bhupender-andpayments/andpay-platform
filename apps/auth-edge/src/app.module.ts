@@ -3,6 +3,7 @@ import { APP_FILTER, NestFactory } from '@nestjs/core'
 import { applyPortalCors } from '@andpay/edge'
 import { ProbeController } from './probe.controller.js'
 import { LoginController } from './login.controller.js'
+import { SessionController } from './session.controller.js'
 import { AuthErrorFilter } from './auth-error.filter.js'
 import { EDGE_DEPS, type AuthEdgeDeps } from './deps.js'
 
@@ -19,7 +20,7 @@ export class AuthEdgeModule {
   static register(deps: AuthEdgeDeps): DynamicModule {
     return {
       module: AuthEdgeModule,
-      controllers: [ProbeController, LoginController],
+      controllers: [ProbeController, LoginController, SessionController],
       providers: [
         { provide: EDGE_DEPS, useValue: deps },
         { provide: APP_FILTER, useClass: AuthErrorFilter },

@@ -10,7 +10,12 @@ import { emitAuthzAudit } from './audit.js'
 function newOpaqueToken(): string {
   return randomBytes(32).toString('base64url')
 }
-function hashToken(token: string): string {
+// Exported so the token-to-family resolver in logout.ts hashes a presented
+// refresh token with the SAME primitive the family lookup here uses. Keeping ONE
+// owner of the hash (T2) means the logout lookup and the rotation lookup can
+// never drift into two different sha256 encodings (a drift would make logout
+// silently miss the row and no-op).
+export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 

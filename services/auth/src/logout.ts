@@ -1,6 +1,7 @@
 import type { AuthDb } from './db.js'
 import { enterWriteRole } from './write-context.js'
 import { emitAuthzAudit } from './audit.js'
+import { hashToken } from './refresh.js'
 
 export interface LogoutInput { principalId: string; familyId: string; traceId: string }
 
@@ -23,4 +24,19 @@ export async function logoutFamily(db: AuthDb, input: LogoutInput): Promise<void
       traceId: input.traceId,
     })
   })
+}
+
+// The token-to-family resolver the auth-edge logout controller calls: the edge
+// holds ONLY the opaque refresh token from the cookie, never a principalId or
+// familyId, and it must NOT hash the token or read refresh_token itself (token
+// hashing and the D121 store are internal to this service, C4). This entrypoint
+// hashes the presented token with the SAME primitive the rotation path uses
+// (hashToken, single owner), looks up the family by the hash, and delegates to
+// logoutFamily. Idempotent by design: an unknown, cleared, or already-revoked
+// cookie resolves to no row and is a clean no-op, so the caller can always
+// return 204. logoutFamily itself is idempotent for the already-revoked family.
+export async function logoutByRefreshToken(db: AuthDb, presented: string, traceId: string): Promise<void> {
+  const row = await db.refreshToken.findUnique({ where: { tokenHash: hashToken(presented) } })
+  if (!row) return
+  await logoutFamily(db, { principalId: row.principalId, familyId: row.familyId, traceId })
 }
