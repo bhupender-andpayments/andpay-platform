@@ -66,6 +66,22 @@ describe('auth login', () => {
     expect(screen.queryByText(/user:u-1/)).toBeNull()
   })
 
+  it('a malformed token on a 200 response fails safely (no token, no principal, no crash)', async () => {
+    // decodeTokenClaims throws BEFORE setAccessToken/setPrincipal (AuthContext.login):
+    // a 200 with a garbage accessToken must still land the user on the failed-login
+    // path, exactly like a 401, never with a token in memory or a principal set.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ accessToken: 'not-a-valid-jwt' }), { status: 200, headers: { 'content-type': 'application/json' } })))
+    render(<AuthProvider><LoginHarness /></AuthProvider>)
+    await userEvent.type(screen.getByLabelText(/username/i), 'alice')
+    await userEvent.type(screen.getByLabelText(/password/i), 'pw')
+    await userEvent.type(screen.getByLabelText(/totp/i), '123456')
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(getAccessToken()).toBeNull()
+    expect(screen.queryByText(/user:/)).toBeNull()
+    expect(screen.getByLabelText(/username/i)).toBeTruthy()
+  })
+
   it('logout clears the token and principal', async () => {
     const fakeToken = makeFakeJwt({ sub: 'u-1', role: 'ops' })
     const fetchMock = vi.fn(async (url: string) => {
