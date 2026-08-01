@@ -1,6 +1,7 @@
 import type { LeanClaim, Acr } from './claims.js'
 import { AuthzError } from './errors.js'
 import { meetsAcr } from './assurance.js'
+import { type OpsStepUpKey } from './stepup-operations.js'
 
 export interface StepUpEntry {
   minAcr: Acr
@@ -30,7 +31,7 @@ export function requireStepUp(claim: LeanClaim, entry: StepUpEntry, now: number)
 // call site), while indexing still yields `StepUpEntry | undefined` (so the
 // caller's defensive `entry === undefined` runtime guard still type-checks,
 // for a future catalog entry removed out from under a still-referencing key).
-type OpsStepUpKey = 'terminal-override' | 'hold-release' | 'vendor-suspend'
+// The union itself is derived from stepup-operations.ts (single source, no drift).
 
 // Soundbox ops step-up catalog (S15/6b), config-as-code, CODEOWNERS-gated (S23).
 // Tier 1 single-actor step-up to AAL2-freshness for the three destructive ops

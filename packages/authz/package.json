@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./stepup-operations": {
+      "types": "./dist/stepup-operations.d.ts",
+      "import": "./dist/stepup-operations.js"
     }
   },
   "files": [
