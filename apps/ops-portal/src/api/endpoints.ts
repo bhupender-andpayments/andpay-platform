@@ -325,3 +325,43 @@ export interface VendorRow {
 export function getVendors(c: Client) {
   return c.request<VendorRow[]>({ method: 'GET', path: '/ops/vendors' })
 }
+
+// -----------------------------------------------------------------------
+// Bank and damage uploads (Task 13). The confirmed ops-edge contract
+// (apps/ops-edge/src/ops.controller.ts's uploadBank/uploadDamage, grounded
+// against services/tms/src/ingest.ts and services/tms/src/damage.ts): a
+// gated write (Idempotency-Key header required, D2 authorize), NOT
+// step-up-gated (`ops:upload-bank-file` / `ops:upload-damage-file` are
+// absent from OPS_STEP_UP_GATED_OPERATIONS). The body is plain JSON, never
+// multipart: the SPA parses a file to typed rows client-side
+// (features/uploads/parseSheet.ts) and posts the parsed rows.
+// -----------------------------------------------------------------------
+
+/** services/tms/src/damage.ts BankDamageRow. */
+export interface BankDamageRow {
+  fileId: string
+  rowNo: number
+  tenantReference: string
+  vpaValue: string
+  damageReason: string
+  bankRemarks: string
+  shipToAddress: string
+}
+
+export function uploadBank(c: Client, rows: BankRequestRow[], idempotencyKey: string) {
+  return c.request<{ accepted: number; quarantined: number; duplicate: number }>({
+    method: 'POST',
+    path: '/ops/uploads/bank',
+    body: { rows },
+    idempotencyKey,
+  })
+}
+
+export function uploadDamage(c: Client, rows: BankDamageRow[], idempotencyKey: string) {
+  return c.request<{ replaced: number; quarantined: number; duplicate: number }>({
+    method: 'POST',
+    path: '/ops/uploads/damage',
+    body: { rows },
+    idempotencyKey,
+  })
+}
