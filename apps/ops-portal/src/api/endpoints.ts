@@ -427,3 +427,50 @@ export function holdRecord(c: Client, asgnId: string, idempotencyKey: string) {
     idempotencyKey,
   })
 }
+
+// -----------------------------------------------------------------------
+// Destructive actions (Task 15). The confirmed ops-edge contract (task 15
+// brief, grounded against apps/ops-edge/src/ops.controller.ts): three gated
+// writes (Idempotency-Key header required, D2 authorize) that are ALSO
+// step-up-gated ('terminal-override', 'hold-release', 'vendor-suspend', the
+// exact three entries of OPS_STEP_UP_GATED_OPERATIONS, imported by
+// ../api/client.ts). Each `stepUpKey` below is what makes the client's 403
+// interceptor drive the TOTP dialog and retry once with the same
+// Idempotency-Key; nothing here evaluates authorization itself (S24/T14).
+// -----------------------------------------------------------------------
+
+export interface TerminalOverrideBody {
+  status: string
+  courierTimestamp: string
+  overrideReason: string
+}
+
+export function overrideTerminal(c: Client, id: string, body: TerminalOverrideBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; overridden: boolean }>({
+    method: 'POST',
+    path: `/ops/shipments/${id}/override`,
+    body,
+    idempotencyKey,
+    stepUpKey: 'terminal-override',
+  })
+}
+
+// NO body: only the `:asgnId` path param, mirroring holdRecord's shape.
+export function releaseHold(c: Client, asgnId: string, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; released: boolean }>({
+    method: 'POST',
+    path: `/ops/records/${asgnId}/release`,
+    idempotencyKey,
+    stepUpKey: 'hold-release',
+  })
+}
+
+// NO body: only the `:id` path param.
+export function suspendVendor(c: Client, id: string, idempotencyKey: string) {
+  return c.request<{ deduped: boolean }>({
+    method: 'POST',
+    path: `/ops/vendors/${id}/suspend`,
+    idempotencyKey,
+    stepUpKey: 'vendor-suspend',
+  })
+}
