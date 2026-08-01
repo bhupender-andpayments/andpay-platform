@@ -293,3 +293,35 @@ export function resolveStatusException(
     idempotencyKey,
   })
 }
+
+// -----------------------------------------------------------------------
+// Master data: vendor registry and courier master (Task 12). The confirmed
+// ops-edge contract (apps/ops-edge/src/ops-read.controller.ts's `vendors()`,
+// grounded against services/fulfillment/src/ops-read.ts's listVendors /
+// VendorRow): a class-3 guard-only read (no per-op authorize, check 3),
+// platform-only (no program scope) list of ALL vendors regardless of type.
+// The courier master is NOT a separate route: CourierMasterPage renders this
+// same list filtered client-side to type === 'COURIER'. Read-only here;
+// vendor create and suspend are Tasks 14/15.
+// -----------------------------------------------------------------------
+
+/**
+ * services/fulfillment/src/ops-read.ts VendorRow. `type` is one of
+ * MANUFACTURER | PRINT | COURIER. `createdAt`/`updatedAt` are typed `Date` on
+ * the server but arrive as JSON strings over the wire (JSON has no Date
+ * type), so the SPA DTO types them as `string`, matching every other wire
+ * timestamp in this file (e.g. QuarantineRowView.createdAt).
+ */
+export interface VendorRow {
+  id: string
+  type: string
+  displayName: string
+  status: string
+  courierCode: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export function getVendors(c: Client) {
+  return c.request<VendorRow[]>({ method: 'GET', path: '/ops/vendors' })
+}
