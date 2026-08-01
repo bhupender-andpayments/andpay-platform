@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 import { createApiClient } from '../api/client.js'
 import { setAccessToken, clearAccessToken } from '../api/tokenStore.js'
 import { login as loginEndpoint, logout as logoutEndpoint } from '../api/endpoints.js'
+import { promptStepUpTotp } from './stepUpController.js'
+import { StepUpDialog } from './StepUpDialog.js'
 
 // The display-only identity shown in the UI (e.g. "signed in as ..."). It is
 // NOT the authorization principal: every request still carries the Bearer
@@ -45,13 +47,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // display principal so the app falls back to the login page.
   const onSessionLost = useCallback(() => { setPrincipal(null) }, [])
 
-  // TEMPORARY stub. Task 8 replaces this with the real step-up TOTP dialog
-  // (a modal that prompts for the current code and resolves it, or resolves
-  // null on cancel). Until then no ops-portal action is step-up gated in a
-  // way that reaches this path, so returning null (treated as "cancelled") is
-  // safe.
-  const promptStepUpTotp = useCallback(async (): Promise<string | null> => null, [])
-
   const client = useMemo(() => createApiClient({
     opsBase: (import.meta.env.VITE_OPS_BASE as string | undefined) ?? 'http://localhost:3001',
     authBase: (import.meta.env.VITE_AUTH_BASE as string | undefined) ?? 'http://localhost:3000',
@@ -80,7 +75,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AuthContextValue>(() => ({ principal, login, logout }), [principal, login, logout])
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+      <StepUpDialog />
+    </AuthContext.Provider>
+  )
 }
 
 export function useAuth(): AuthContextValue {
