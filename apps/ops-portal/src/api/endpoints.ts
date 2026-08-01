@@ -365,3 +365,65 @@ export function uploadDamage(c: Client, rows: BankDamageRow[], idempotencyKey: s
     idempotencyKey,
   })
 }
+
+// -----------------------------------------------------------------------
+// Operational actions (Task 14). The confirmed ops-edge contract
+// (apps/ops-edge/src/ops.controller.ts): four gated writes (Idempotency-Key
+// header required, D2 authorize), NONE step-up-gated (`ops:manual-batch-trigger`,
+// `ops:status-correction`, `ops:recompose-artifact`, `ops:record-hold` are all
+// absent from OPS_STEP_UP_GATED_OPERATIONS; the step-up-gated
+// terminal-override/hold-release/vendor-suspend counterparts are Task 15).
+// -----------------------------------------------------------------------
+
+export interface BatchTriggerBody {
+  tenantWire: string
+  programWire: string
+}
+
+export function triggerBatch(c: Client, body: BatchTriggerBody, idempotencyKey: string) {
+  return c.request<{ btchId: string } | null>({
+    method: 'POST',
+    path: '/ops/batches/trigger',
+    body,
+    idempotencyKey,
+  })
+}
+
+export interface StatusCorrectionBody {
+  status: string
+  courierTimestamp: string
+}
+
+export function correctStatus(c: Client, id: string, body: StatusCorrectionBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; outcome: string | null }>({
+    method: 'POST',
+    path: `/ops/shipments/${id}/correct`,
+    body,
+    idempotencyKey,
+  })
+}
+
+export interface RecomposeBody {
+  asgnId: string
+  artifactType: string
+  requestedShipTo?: string
+}
+
+export function recompose(c: Client, body: RecomposeBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; artifactId: string | null }>({
+    method: 'POST',
+    path: '/ops/artifacts/recompose',
+    body,
+    idempotencyKey,
+  })
+}
+
+// NO body: the edge route (apps/ops-edge/src/ops.controller.ts's `hold`)
+// takes only the `:asgnId` path param.
+export function holdRecord(c: Client, asgnId: string, idempotencyKey: string) {
+  return c.request<{ deduped: boolean }>({
+    method: 'POST',
+    path: `/ops/records/${asgnId}/hold`,
+    idempotencyKey,
+  })
+}
