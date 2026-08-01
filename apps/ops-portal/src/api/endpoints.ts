@@ -132,3 +132,164 @@ export function getReportCsv(c: Client, name: ReportName, filters: ReportFilters
     responseType: 'text',
   })
 }
+
+// -----------------------------------------------------------------------
+// Exception and quarantine queues (Task 11). The confirmed ops-edge contract
+// (apps/ops-edge/src/ops-read.controller.ts for the three reads,
+// apps/ops-edge/src/ops.controller.ts for the three resolves): a class-3
+// guard-only read (no per-op authorize, check 3) and a gated write (the
+// shared `gate()` template: Idempotency-Key required, D2 authorize; NONE of
+// the three resolves are in OPS_STEP_UP_GATED_OPERATIONS, so no step-up key
+// is passed here). `?includeResolved=true` opts a queue into its resolved
+// rows; the default query omits the param entirely (the read side treats a
+// missing param as `false`, apps/ops-edge/src/ops-read.controller.ts).
+// -----------------------------------------------------------------------
+
+/** services/tms/src/ops-read.ts QuarantineRowView. */
+export interface QuarantineRowView {
+  id: string
+  fileId: string
+  rowNo: number
+  reasonCode: string
+  createdAt: string
+  resolvedAt: string | null
+  resolvedByActor: string | null
+}
+
+/** services/fulfillment/src/ops-read.ts IntakeExceptionView. */
+export interface IntakeExceptionView {
+  id: string
+  vndrId: string
+  fileId: string
+  rowRef: string
+  reasonCode: string
+  createdAt: string
+  resolvedAt: string | null
+  resolvedByActor: string | null
+}
+
+// services/fulfillment/src/ops-read.ts CourierStatusExceptionView: fileId and
+// rowRef are nullable on the wire (a status exception is not always tied to a
+// specific ingest file/row), unlike the brief's flattened summary.
+export interface CourierStatusExceptionView {
+  id: string
+  vndrId: string
+  channel: string
+  subjectRef: string
+  fileId: string | null
+  rowRef: string | null
+  reasonCode: string
+  createdAt: string
+  resolvedAt: string | null
+  resolvedByActor: string | null
+}
+
+// services/tms/src/ingest.ts BankRequestRow: the full field list, including
+// the spec 06a mandatory recipient contact columns (contactName, mobile) and
+// the optional vpaHint the brief's flattened list omitted.
+export interface BankRequestRow {
+  fileId: string
+  rowNo: number
+  bankMerchantReference: string
+  displayName: string
+  legalName: string
+  mcc: string
+  registeredAddress: string
+  bankReferenceCode: string
+  productType: string
+  vpaValue: string
+  qrValue: string
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  shipToAddress: string
+  contactName: string
+  mobile: string
+  vpaHint?: string
+}
+
+// services/fulfillment/src/intake.ts IntakeRow (discriminated union) and
+// IntakeSheet.
+export interface SerializedIntakeRow {
+  kind: 'SERIALIZED'
+  deviceSerial: string
+  productType: string
+  deviceQr: object
+}
+export interface QuantityLineIntakeRow {
+  kind: 'QUANTITY_LINE'
+  productType: string
+  count: number
+  qrString: string
+}
+export type IntakeRow = SerializedIntakeRow | QuantityLineIntakeRow
+
+export interface IntakeSheet {
+  fileId: string
+  vndrId: string
+  workQueue: string
+  rows: IntakeRow[]
+}
+
+function includeResolvedQuery(includeResolved: boolean): string {
+  return includeResolved ? '?includeResolved=true' : ''
+}
+
+export function getQuarantine(c: Client, includeResolved = false) {
+  return c.request<QuarantineRowView[]>({
+    method: 'GET',
+    path: `/ops/quarantine${includeResolvedQuery(includeResolved)}`,
+  })
+}
+
+export function getIntakeExceptions(c: Client, includeResolved = false) {
+  return c.request<IntakeExceptionView[]>({
+    method: 'GET',
+    path: `/ops/exceptions/intake${includeResolvedQuery(includeResolved)}`,
+  })
+}
+
+export function getStatusExceptions(c: Client, includeResolved = false) {
+  return c.request<CourierStatusExceptionView[]>({
+    method: 'GET',
+    path: `/ops/exceptions/status${includeResolvedQuery(includeResolved)}`,
+  })
+}
+
+export function resolveQuarantine(c: Client, id: string, correctedRow: BankRequestRow, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; outcome: string | null }>({
+    method: 'POST',
+    path: `/ops/quarantine/${id}/resolve`,
+    body: { correctedRow },
+    idempotencyKey,
+  })
+}
+
+export function resolveIntakeException(c: Client, id: string, correctedSheet: IntakeSheet, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; result: unknown }>({
+    method: 'POST',
+    path: `/ops/intake-exceptions/${id}/resolve`,
+    body: { correctedSheet },
+    idempotencyKey,
+  })
+}
+
+export interface StatusExceptionResolveBody {
+  shptId: string
+  status: string
+  courierTimestamp: string
+}
+
+export function resolveStatusException(
+  c: Client,
+  id: string,
+  body: StatusExceptionResolveBody,
+  idempotencyKey: string,
+) {
+  return c.request<{ deduped: boolean; outcome: string | null }>({
+    method: 'POST',
+    path: `/ops/status-exceptions/${id}/resolve`,
+    body,
+    idempotencyKey,
+  })
+}
