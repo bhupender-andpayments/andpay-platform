@@ -1,4 +1,4 @@
-import { getAccessToken } from './tokenStore.js'
+import { getAccessToken, setAccessToken } from './tokenStore.js'
 import { ApiError } from './errors.js'
 import type { OpsStepUpKey } from '@andpay/authz/stepup-operations'
 
@@ -54,10 +54,28 @@ export async function sendOnce(deps: ApiClientDeps, req: ApiRequest): Promise<Ap
 }
 
 export function createApiClient(deps: ApiClientDeps) {
-  async function request<T>(req: ApiRequest): Promise<T> {
+  // Refresh once on a 401. `alreadyRefreshed` bounds it to a single attempt per
+  // logical request so a persistently-401 backend cannot loop.
+  async function attempt<T>(req: ApiRequest, alreadyRefreshed: boolean): Promise<T> {
     const r = await sendOnce(deps, req)
     if (r.status >= 200 && r.status < 300) return r.data as T
+
+    if (r.status === 401 && req.base !== 'auth') {
+      if (!alreadyRefreshed) {
+        const refreshed = await sendOnce(deps, { method: 'POST', path: '/session/refresh', base: 'auth', withCookie: true })
+        if (refreshed.status >= 200 && refreshed.status < 300) {
+          const tok = (refreshed.data as { accessToken?: string }).accessToken
+          if (typeof tok === 'string') { setAccessToken(tok); return attempt<T>(req, true) }
+        }
+      }
+      // Either the refresh itself failed, or this is a retry that still got a
+      // 401 (post-refresh 401): one refresh attempt is all we get either way.
+      setAccessToken(null)
+      deps.onSessionLost()
+      throw new ApiError(401, r.data)
+    }
+
     throw new ApiError(r.status, r.data)
   }
-  return { request }
+  return { request: <T>(req: ApiRequest) => attempt<T>(req, false) }
 }
