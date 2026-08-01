@@ -41,7 +41,10 @@ describe('ops-portal routing', () => {
 
   it('an unauthenticated visit to a feature route redirects to /login', () => {
     render(
-      <MemoryRouter initialEntries={['/queues']}>
+      <MemoryRouter
+        initialEntries={['/queues']}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <AuthProvider>
           <AppRoutes />
         </AuthProvider>
@@ -58,7 +61,10 @@ describe('ops-portal routing', () => {
       { status: 200, headers: { 'content-type': 'application/json' } },
     )))
     render(
-      <MemoryRouter initialEntries={['/queues']}>
+      <MemoryRouter
+        initialEntries={['/queues']}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <AuthProvider>
           <AuthedAppRoutes onError={(e) => { throw e }} />
         </AuthProvider>

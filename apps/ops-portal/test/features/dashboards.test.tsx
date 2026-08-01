@@ -41,7 +41,7 @@ describe('TilesPage', () => {
     )
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <TilesPage />
         </AuthProvider>
@@ -90,7 +90,7 @@ describe('ReportPage', () => {
     )
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <ReportPage />
         </AuthProvider>
@@ -134,7 +134,7 @@ describe('ReportPage', () => {
     }) as typeof document.createElement)
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <ReportPage />
         </AuthProvider>

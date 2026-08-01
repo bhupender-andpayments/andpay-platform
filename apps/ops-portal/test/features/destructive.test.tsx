@@ -40,7 +40,7 @@ function headerValue(call: Call, name: string): string | null {
 
 function withProviders(children: React.ReactNode) {
   return (
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>{children}</AuthProvider>
     </MemoryRouter>
   )

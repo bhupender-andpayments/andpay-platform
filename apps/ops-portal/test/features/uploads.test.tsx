@@ -84,7 +84,7 @@ describe('uploads', () => {
     )
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <BankUploadPage />
         </AuthProvider>
@@ -139,7 +139,7 @@ describe('uploads', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <BankUploadPage />
         </AuthProvider>
@@ -168,7 +168,7 @@ describe('uploads', () => {
     )
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <DamageUploadPage />
         </AuthProvider>
@@ -205,7 +205,7 @@ describe('uploads', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <DamageUploadPage />
         </AuthProvider>

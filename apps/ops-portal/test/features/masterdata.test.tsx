@@ -67,7 +67,7 @@ describe('master data views', () => {
     )
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <VendorRegistryPage />
         </AuthProvider>
@@ -97,7 +97,7 @@ describe('master data views', () => {
     )
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <CourierMasterPage />
         </AuthProvider>

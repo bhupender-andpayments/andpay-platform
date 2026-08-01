@@ -10,7 +10,7 @@ import { AppRoutes } from './routes.js'
 export function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <div className="flex min-h-screen flex-col bg-white">
           <header className="border-b border-slate-200 px-4 py-3">
             <h1 className="text-lg font-semibold text-slate-900">AndPayments Ops</h1>
