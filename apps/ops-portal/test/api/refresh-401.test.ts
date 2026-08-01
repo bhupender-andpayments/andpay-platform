@@ -9,6 +9,7 @@ function seqFetch(seq: Array<{ status: number; body?: unknown }>) {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
     calls.push({ url, init })
     const r = seq[i++]
+    if (!r) throw new Error(`seqFetch: no scripted response for call ${i}`)
     return new Response(r.body === undefined ? null : JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json' } })
   }))
   return { calls }
@@ -28,8 +29,8 @@ describe('401 interceptor', () => {
     const c = createApiClient({ opsBase: 'http://ops', authBase: 'http://auth', onSessionLost, promptStepUpTotp: vi.fn() })
     const out = await c.request<{ rows: unknown[] }>({ method: 'GET', path: '/ops/quarantine' })
     expect(out).toEqual({ rows: [] })
-    expect(calls[1].url).toBe('http://auth/session/refresh')
-    expect(calls[1].init.credentials).toBe('include')
+    expect(calls[1]!.url).toBe('http://auth/session/refresh')
+    expect(calls[1]!.init.credentials).toBe('include')
     expect(getAccessToken()).toBe('fresh')
     expect(onSessionLost).not.toHaveBeenCalled()
   })

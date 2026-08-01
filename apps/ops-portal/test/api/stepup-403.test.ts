@@ -8,6 +8,7 @@ function seqFetch(seq: Array<{ status: number; body?: unknown }>) {
   let i = 0
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
     calls.push({ url, init }); const r = seq[i++]
+    if (!r) throw new Error(`seqFetch: no scripted response for call ${i}`)
     return new Response(r.body === undefined ? null : JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json' } })
   }))
   return { calls }
@@ -29,10 +30,10 @@ describe('403 step-up interceptor', () => {
     const out = await c.request({ method: 'POST', path: '/ops/shipments/s1/override', idempotencyKey: key, stepUpKey: 'terminal-override', body: { status: 'DELIVERED', courierTimestamp: 't', overrideReason: 'r' } })
     expect(out).toMatchObject({ overridden: true })
     expect(promptStepUpTotp).toHaveBeenCalledOnce()
-    expect(calls[1].url).toBe('http://auth/session/stepup')
+    expect(calls[1]!.url).toBe('http://auth/session/stepup')
     // same idempotency key on the retry as the original
-    expect((calls[0].init.headers as Record<string,string>)['Idempotency-Key']).toBe(key)
-    expect((calls[2].init.headers as Record<string,string>)['Idempotency-Key']).toBe(key)
+    expect((calls[0]!.init.headers as Record<string,string>)['Idempotency-Key']).toBe(key)
+    expect((calls[2]!.init.headers as Record<string,string>)['Idempotency-Key']).toBe(key)
   })
 
   it('a cancelled TOTP prompt surfaces the 403 and does not call stepup', async () => {
