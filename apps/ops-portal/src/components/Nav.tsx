@@ -39,6 +39,9 @@ export function Nav() {
       </ul>
       <div className="border-t border-slate-200 pt-4">
         <p className="truncate text-sm text-slate-500">{principal?.sub ?? ''}</p>
+        {principal?.roleLabel !== undefined && (
+          <p className="truncate text-xs text-slate-400">{principal.roleLabel}</p>
+        )}
         <button
           type="button"
           onClick={() => { void logout() }}
