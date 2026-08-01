@@ -30,4 +30,15 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // ops-portal is the first React app in the workspace: scope JSX parsing to
+    // its .tsx/.ts sources only, so the rest of the (node-only) workspace is
+    // unaffected.
+    files: ['apps/ops-portal/**/*.{ts,tsx}'],
+    languageOptions: {
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+    },
+  },
 )
