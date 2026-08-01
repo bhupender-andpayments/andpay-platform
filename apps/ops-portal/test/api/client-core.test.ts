@@ -56,4 +56,18 @@ describe('api client core', () => {
     const c = createApiClient(deps)
     await expect(c.request({ method: 'GET', path: '/ops/vendors' })).rejects.toMatchObject({ status: 400 })
   })
+
+  // The CSV export path (Task 10): a text/csv body would throw on the default
+  // JSON.parse, so responseType:'text' skips it and returns the raw string,
+  // additively, with the JSON default path (the tests above) unchanged.
+  it('responseType:"text" returns the raw response body without JSON.parse', async () => {
+    setAccessToken('tok-1')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('a,b\r\n1,2', { status: 200, headers: { 'content-type': 'text/csv' } })),
+    )
+    const c = createApiClient(deps)
+    const out = await c.request<string>({ method: 'GET', path: '/ops/reports/batching', responseType: 'text' })
+    expect(out).toBe('a,b\r\n1,2')
+  })
 })

@@ -17,6 +17,11 @@ export interface ApiRequest {
   idempotencyKey?: string
   stepUpKey?: OpsStepUpKey
   withCookie?: boolean
+  // Additive (Task 10, the CSV export path): default 'json' parses the body
+  // with JSON.parse exactly as before. 'text' skips JSON.parse and returns the
+  // raw response text, for a text/csv body that is not valid JSON. Nothing
+  // else in sendOnce, attempt, or the 401/403 interceptors branches on this.
+  responseType?: 'json' | 'text'
 }
 
 export interface ApiResult {
@@ -49,7 +54,7 @@ export async function sendOnce(deps: ApiClientDeps, req: ApiRequest): Promise<Ap
   }
   const res = await fetch(`${base}${req.path}`, init)
   const text = await res.text()
-  const data = text === '' ? null : JSON.parse(text)
+  const data = req.responseType === 'text' ? text : text === '' ? null : JSON.parse(text)
   return { status: res.status, headers: res.headers, data }
 }
 

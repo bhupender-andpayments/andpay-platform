@@ -34,6 +34,11 @@ export function decodeTokenClaims(token: string): { sub: string; role?: string }
 
 export interface AuthContextValue {
   principal: Principal | null
+  // Exposed so feature pages (Task 10's dashboards, and the tasks after it)
+  // can call the typed endpoint functions under the same interceptor pipeline
+  // (401 refresh, 403 step-up) the login/logout calls already use, rather
+  // than each page constructing its own client with divergent deps.
+  client: ReturnType<typeof createApiClient>
   login(body: { handle: string; password: string; totp: string }): Promise<void>
   logout(): Promise<void>
 }
@@ -73,7 +78,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [client])
 
-  const value = useMemo<AuthContextValue>(() => ({ principal, login, logout }), [principal, login, logout])
+  const value = useMemo<AuthContextValue>(
+    () => ({ principal, client, login, logout }),
+    [principal, client, login, logout],
+  )
 
   return (
     <AuthContext.Provider value={value}>
