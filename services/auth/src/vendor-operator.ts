@@ -197,11 +197,7 @@ export async function changeVendorPassword(
 
   await db.$transaction(async (tx) => {
     await enterWriteRole(tx, 'auth_write')
-    await updateVendorOperatorPasswordHash(tx, { id: input.operatorId, newHash })
-    await tx.refreshToken.updateMany({
-      where: { principalId: input.operatorId, principalType: 'vendor_operator', revoked: false },
-      data: { revoked: true },
-    })
+    await applyPasswordUpdate(tx, input.operatorId, newHash)
     await emitAuthzAudit(tx, {
       principalId: input.operatorId,
       cls: 7,
@@ -238,11 +234,7 @@ export async function adminResetVendorPassword(
 
   await db.$transaction(async (tx) => {
     await enterWriteRole(tx, 'auth_write')
-    await updateVendorOperatorPasswordHash(tx, { id: input.operatorId, newHash })
-    await tx.refreshToken.updateMany({
-      where: { principalId: input.operatorId, principalType: 'vendor_operator', revoked: false },
-      data: { revoked: true },
-    })
+    await applyPasswordUpdate(tx, input.operatorId, newHash)
     await emitAuthzAudit(tx, {
       principalId: input.actor,
       cls: 3,
@@ -252,6 +244,20 @@ export async function adminResetVendorPassword(
       resourceIds: [input.operatorId],
       traceId: input.traceId,
     })
+  })
+}
+
+// Spec 14a Task 7 code-review finding: the hash-update + refresh-family-revoke
+// hygiene step is IDENTICAL across changeVendorPassword and
+// adminResetVendorPassword. Extracted here to remove the duplication; behavior
+// is byte-identical to the two inline blocks it replaces. Callers still run
+// enterWriteRole FIRST and still co-commit their own (differing) emitAuthzAudit
+// inline; neither moves into this helper.
+async function applyPasswordUpdate(tx: Tx, operatorId: string, newHash: string): Promise<void> {
+  await updateVendorOperatorPasswordHash(tx, { id: operatorId, newHash })
+  await tx.refreshToken.updateMany({
+    where: { principalId: operatorId, principalType: 'vendor_operator', revoked: false },
+    data: { revoked: true },
   })
 }
 
