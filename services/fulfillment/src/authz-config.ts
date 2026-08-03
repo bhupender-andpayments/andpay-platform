@@ -7,12 +7,21 @@ const PRINT: ClassSixPermission[] = ['batch:pull-artifacts', 'sheet:submit-retur
 // Courier submits carrier status only. NO artifact pull (105d), narrower than
 // the print vendor.
 const COURIER: ClassSixPermission[] = ['shipment:submit-status']
+// Spec 14a (D122) task 13: class 7 is a SINGLE external human role, "vendor
+// operator", authenticated via a verified JWT (never apsk_). Local to this
+// context (C4, same reasoning as MANUFACTURER/PRINT/COURIER above: never
+// imported from services/auth's own vendor-sets.ts, which mints the matching
+// `vset:vendor_operator` psr literal). Batch pull plus both sheet
+// submissions, but NOT shipment:submit-status (that carrier-status path stays
+// class-6/COURIER-only, 105d).
+const VENDOR_OPERATOR: ClassSixPermission[] = ['batch:pull-artifacts', 'sheet:submit-intake', 'sheet:submit-return']
 
 // Validated at module load: naming an excluded permission throws here, not
 // silently ungranted (105d). This is the config-load enforcement point.
 validateVendorSet(MANUFACTURER)
 validateVendorSet(PRINT)
 validateVendorSet(COURIER)
+validateVendorSet(VENDOR_OPERATOR)
 
 export function loadFulfillmentConfig(): RoleConfig {
   return {
@@ -21,6 +30,10 @@ export function loadFulfillmentConfig(): RoleConfig {
       vendor_manufacturer: { permissions: MANUFACTURER },
       vendor_print: { permissions: PRINT },
       vendor_courier: { permissions: COURIER },
+      // The literal key MUST match the `vset:vendor_operator` psr minted by
+      // services/auth/src/vendor-login.ts's VENDOR_OPERATOR_SET_NAME
+      // ('vendor_operator'); duplicated here rather than imported, per C4.
+      vendor_operator: { permissions: VENDOR_OPERATOR },
     },
   }
 }

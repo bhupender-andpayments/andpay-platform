@@ -52,6 +52,14 @@ export class EdgeCredentialGuard implements CanActivate {
         lookup: (pepperedHashHex: string) => map.get(pepperedHashHex),
         expectedPlane: 'andpay:vendor',
         expectedMode: this.deps.expectedMode,
+        // Spec 14a task 13: wired only when the edge is configured for the
+        // class-7 vendor-operator plane (both optional, mirrored from
+        // ResolveDeps). Undefined on an edge that wires neither, so a
+        // JWT-shaped credential fails closed exactly as before this task
+        // (jwt-not-supported-on-this-edge); the apsk_ bearer branch never
+        // reads either field (D6, class-6 byte-unchanged).
+        jwks: this.deps.jwks,
+        expectedIss: this.deps.expectedIss,
       })
       req.claim = claim
       return true

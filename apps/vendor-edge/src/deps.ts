@@ -1,5 +1,6 @@
 import { PrismaClient as FulfillmentClient, type FulfillmentDb } from '@andpay/fulfillment-service'
 import type { Mode } from '@andpay/authz'
+import type { JSONWebKeySet } from 'jose'
 
 // Token-provided deps (NO type-reflection DI: esbuild drops emitDecoratorMetadata
 // under vitest, so every injectable here reads its deps off one explicit
@@ -13,6 +14,16 @@ export interface EdgeDeps {
   // start closed, it is not defaulted to a baked-in value.
   pepper: Buffer | string
   expectedMode: Mode
+  // Spec 14a task 13: the LOCAL public JWKS for the class-7 vendor-operator
+  // plane (D3). The verifier holds only public keys, never the signing key,
+  // injected once at process start (T4/S14/5e: zero call to Auth on the
+  // request path). OPTIONAL, mirroring resolve.ts's own ResolveDeps: an edge
+  // that wires neither jwks nor expectedIss serves class-6 apsk_ only, and any
+  // JWT-shaped credential fails closed with 'jwt-not-supported-on-this-edge'
+  // (byte-identical to the pre-task-13 behavior, D6). Both fields are wired
+  // together in buildVendorEdgeDepsFromEnv's fail-closed real bootstrap.
+  jwks?: JSONWebKeySet
+  expectedIss?: string
 }
 
 export const EDGE_DEPS = 'EDGE_DEPS'
@@ -36,11 +47,22 @@ export function buildEdgeDepsFromEnv(): EdgeDeps {
   if (!pepper) {
     throw new Error('VENDOR_EDGE_PEPPER is required (the 5c pepper is never defaulted in code, S4)')
   }
+  const rawJwks = process.env.VENDOR_EDGE_JWKS
+  if (!rawJwks) {
+    throw new Error('VENDOR_EDGE_JWKS is required (the class-7 vendor-operator public JWKS is never defaulted in code, S4)')
+  }
+  const expectedIss = process.env.VENDOR_EDGE_ISS
+  if (!expectedIss) {
+    throw new Error('VENDOR_EDGE_ISS is required (the pinned issuer is never defaulted in code, D3/S10)')
+  }
   const datasourceUrl = process.env.FULFILLMENT_DATABASE_URL ?? DEFAULT_FULFILLMENT_DATABASE_URL
   const expectedMode: Mode = process.env.VENDOR_EDGE_MODE === 'live' ? 'live' : 'test'
+  const jwks = JSON.parse(rawJwks) as JSONWebKeySet
   return {
     fulfillmentDb: new FulfillmentClient({ datasourceUrl }),
     pepper,
     expectedMode,
+    jwks,
+    expectedIss,
   }
 }
