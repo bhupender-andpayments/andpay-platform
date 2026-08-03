@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core'
 import { applyBearerCors } from '@andpay/edge'
 import { CourierStatusController } from './courier-status.controller.js'
 import { IntakeController } from './intake.controller.js'
+import { PullController } from './pull.controller.js'
 import { ReturnController } from './return.controller.js'
 import { VendorReadsController } from './vendor-reads.controller.js'
 import { EdgeCredentialGuard } from './guard.js'
@@ -16,7 +17,7 @@ export class VendorEdgeModule {
   static register(deps: EdgeDeps): DynamicModule {
     return {
       module: VendorEdgeModule,
-      controllers: [CourierStatusController, IntakeController, ReturnController, VendorReadsController],
+      controllers: [CourierStatusController, IntakeController, PullController, ReturnController, VendorReadsController],
       providers: [EdgeCredentialGuard, { provide: EDGE_DEPS, useValue: deps }],
     }
   }
