@@ -21,7 +21,7 @@ export default defineConfig({
         test: {
           name: 'node',
           include: ['packages/**/test/**/*.test.ts', 'services/**/test/**/*.test.ts', 'apps/**/test/**/*.test.ts', 'test/**/*.test.ts'],
-          exclude: [...configDefaults.exclude, 'apps/ops-portal/**'],
+          exclude: [...configDefaults.exclude, 'apps/ops-portal/**', 'apps/vendor-portal/**'],
           environment: 'node',
           typecheck: {
             // Under `projects`, the root's CLI-forwarded options are filtered
@@ -38,6 +38,7 @@ export default defineConfig({
         },
       },
       'apps/ops-portal/vitest.config.ts',
+      'apps/vendor-portal/vitest.config.ts',
     ],
   },
 })
