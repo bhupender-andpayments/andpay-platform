@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { readVendorWorkQueue } from '../src/vendor-reads.js'
+import { readVendorWorkQueue, readVendorHistory } from '../src/vendor-reads.js'
 
 // Spec 14b Task 3: the vendor work-queue read, running under
 // fulfillment_vendor_read (Task 2's role plus RESTRICTIVE vndr-axis RLS).
@@ -104,5 +104,74 @@ describe('readVendorWorkQueue (spec 14b task 3)', () => {
     expect(rows[0]!.openEntries).toBe(2)
     // PII-free: the row type has no ship_to* keys at all.
     expect(Object.keys(rows[0]!)).toEqual(['btchId', 'unitCount', 'status', 'openEntries', 'createdAt'])
+  })
+})
+
+interface HistorySeeded {
+  btchV1Wire: string
+  v1Wire: string
+  awb: string
+}
+
+// Seeds B1 (print_vndr=V1) with a dispatched unit (unit.shipment -> shpt,
+// awb 'AWB1', status DISPATCHED_BY_VENDOR), and B2 (print_vndr=V2) with its
+// own dispatched unit, to prove V1's history never surfaces V2's dispatch.
+async function seedHistory(): Promise<HistorySeeded> {
+  const v1Wire = newId('vndr')
+  const v1Uuid = toUuid(v1Wire)
+  const v2Uuid = toUuid(newId('vndr'))
+  const tnnt = toUuid(newId('tnnt'))
+  const prog = toUuid(newId('prog'))
+
+  const btchV1Wire = newId('btch')
+  const btchV1Uuid = toUuid(btchV1Wire)
+  const btchV2Uuid = toUuid(newId('btch'))
+
+  await db.$executeRaw`
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchV1Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1Uuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+  `
+  await db.$executeRaw`
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchV2Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v2Uuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+  `
+
+  const shptV1Uuid = toUuid(newId('shpt'))
+  const shptV2Uuid = toUuid(newId('shpt'))
+  const dispatchDate = new Date('2026-08-01T10:00:00.000Z')
+
+  await db.$executeRaw`
+    INSERT INTO shpt (id, awb, status, dispatch_date, tenant_id, program_id, updated_at)
+    VALUES (${shptV1Uuid}::uuid, 'AWB1', 'DISPATCHED_BY_VENDOR', ${dispatchDate}, ${tnnt}::uuid, ${prog}::uuid, now())
+  `
+  await db.$executeRaw`
+    INSERT INTO shpt (id, awb, status, dispatch_date, tenant_id, program_id, updated_at)
+    VALUES (${shptV2Uuid}::uuid, 'AWB2', 'DISPATCHED_BY_VENDOR', ${dispatchDate}, ${tnnt}::uuid, ${prog}::uuid, now())
+  `
+
+  const unitV1Uuid = toUuid(newId('unit'))
+  const unitV2Uuid = toUuid(newId('unit'))
+
+  await db.$executeRaw`
+    INSERT INTO unit (id, kind, product_type, manufacturer_vndr, batch, status, device_serial, shipment, updated_at)
+    VALUES (${unitV1Uuid}::uuid, 'SERIALIZED', 'SOUNDBOX', ${v1Uuid}::uuid, ${btchV1Uuid}::uuid, 'DISPATCHED', 'SN-V1', ${shptV1Uuid}::uuid, now())
+  `
+  await db.$executeRaw`
+    INSERT INTO unit (id, kind, product_type, manufacturer_vndr, batch, status, device_serial, shipment, updated_at)
+    VALUES (${unitV2Uuid}::uuid, 'SERIALIZED', 'SOUNDBOX', ${v2Uuid}::uuid, ${btchV2Uuid}::uuid, 'DISPATCHED', 'SN-V2', ${shptV2Uuid}::uuid, now())
+  `
+
+  return { btchV1Wire: fromUuid('btch', btchV1Uuid), v1Wire, awb: 'AWB1' }
+}
+
+describe('readVendorHistory (spec 14b task 4)', () => {
+  it('history lists own-vndr dispatched units with their AWB/status, PII-free', async () => {
+    const { btchV1Wire, v1Wire, awb } = await seedHistory()
+
+    const rows = await readVendorHistory(db, v1Wire)
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ btchId: btchV1Wire, awb, shptStatus: 'DISPATCHED_BY_VENDOR' })
+    expect(Object.keys(rows[0]!)).toEqual(['btchId', 'awb', 'shptStatus', 'dispatchDate', 'deviceSerial'])
   })
 })
