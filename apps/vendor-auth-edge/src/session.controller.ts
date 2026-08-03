@@ -1,9 +1,17 @@
-import { Body, Controller, HttpCode, HttpException, HttpStatus, Inject, Post, Req, Res, UnauthorizedException } from '@nestjs/common'
+import { Body, Controller, Headers, HttpCode, HttpException, HttpStatus, Inject, Post, Req, Res, UnauthorizedException } from '@nestjs/common'
 import { randomUUID, createHash } from 'node:crypto'
-import { vendorLogin } from '@andpay/auth-service'
+import {
+  vendorLogin,
+  rotateRefresh,
+  logoutByRefreshToken,
+  issueAccessToken,
+  VENDOR_PLANE,
+  VENDOR_OPERATOR_SET_NAME,
+} from '@andpay/auth-service'
+import { verifyAccessToken, type Acr, type Amr } from '@andpay/authz'
 import { EDGE_DEPS, type VendorAuthEdgeDeps } from './deps.js'
-import { serializeVendorRefreshCookie } from './cookies.js'
-import { sourceKey } from './request.js'
+import { serializeVendorRefreshCookie, clearVendorRefreshCookie } from './cookies.js'
+import { sourceKey, readRefreshCookie, readBearer } from './request.js'
 
 // The minimal response shape this controller writes to (mirrors
 // apps/auth-edge/src/login.controller.ts's EdgeResponse: this repo does not
@@ -96,5 +104,162 @@ export class SessionController {
       // unmet).
       throw new UnauthorizedException()
     }
+  }
+
+  // A successful refresh is a 200 (a rotated session, not a newly-created
+  // resource at a new URL): the fresh access token rides in the body, the
+  // fresh refresh token rides in the rotated Set-Cookie, exactly as login
+  // splits them. Mirrors apps/auth-edge/src/session.controller.ts's refresh
+  // (spec 12 task 10), adapted for the class-7 vendor audience
+  // (VENDOR_PLANE, principalType:'vendor_operator', vendor_operator row).
+  @Post('refresh')
+  @HttpCode(200)
+  async refresh(
+    @Headers('cookie') cookieHeader: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Res({ passthrough: true }) res: EdgeResponse,
+  ): Promise<{ accessToken: string }> {
+    // The opaque refresh token is the PRIMARY control: no cookie, no rotation.
+    const presented = readRefreshCookie(cookieHeader)
+    if (!presented) {
+      res.setHeader('Set-Cookie', clearVendorRefreshCookie())
+      throw new UnauthorizedException()
+    }
+
+    // CSRF binding (defense-in-depth; SameSite=Strict is the primary CSRF
+    // control): the caller must also present its in-memory access token. That
+    // token is expiring (which is WHY the client is refreshing), so it is
+    // verified for signature + issuer + audience(andpay:vendor) + mode but with
+    // its expiry tolerated via a leeway equal to the family idle window
+    // (deps.idleSec), mirroring auth-edge's refresh handler exactly. Verified
+    // BEFORE the rotation so a missing/forged/foreign-plane token 401s WITHOUT
+    // burning a rotation.
+    const bearer = readBearer(authorization)
+    if (!bearer) {
+      res.setHeader('Set-Cookie', clearVendorRefreshCookie())
+      throw new UnauthorizedException()
+    }
+    let boundSub: string
+    try {
+      const claims = await verifyAccessToken(bearer, {
+        jwks: this.deps.jwks,
+        expectedIss: this.deps.expectedIss,
+        expectedAud: VENDOR_PLANE,
+        expectedMode: this.deps.expectedMode,
+        leewaySec: this.deps.idleSec,
+      })
+      boundSub = claims.sub
+    } catch {
+      res.setHeader('Set-Cookie', clearVendorRefreshCookie())
+      throw new UnauthorizedException()
+    }
+
+    // Re-derive the session's assurance from the bound principal's row. The
+    // refresh_token row carries neither acr/amr nor the vendor_operator's
+    // status, and no Session row is written at login, so the vendor_operator
+    // row is the only durable source. A suspended/revoked operator must not
+    // keep a live vendor session alive by refreshing, so a non-ACTIVE/absent
+    // operator 401s here (before the rotation is spent). Class 7 is a SINGLE
+    // fixed-assurance role (D122, Field 8): there is no per-operator role
+    // lookup (unlike the internal-admin path), so the achieved acr is always
+    // the fixed AAL2 floor vendorLogin enforces at login.
+    const operator = await this.deps.authDb.vendorOperator.findUnique({ where: { id: boundSub } })
+    if (!operator || operator.status !== 'ACTIVE') {
+      res.setHeader('Set-Cookie', clearVendorRefreshCookie())
+      throw new UnauthorizedException()
+    }
+    const acr: Acr = 'AAL2'
+    const amr: Amr[] = ['pwd', 'otp']
+
+    const now = Math.floor(Date.now() / 1000)
+    const traceId = randomUUID()
+
+    // Rotate the family: a reused/revoked/idle/absolute-expired token throws
+    // an AuthzError which the app-wide error filter maps to a generic 401.
+    // principalType:'vendor_operator' (task 5) so this can never rotate an
+    // internal family's token even if a tokenHash collided (it cannot: the
+    // hash is over the opaque token bytes, not over principalId).
+    let rotated: { refreshToken: string; principalId: string }
+    try {
+      rotated = await rotateRefresh(presented, {
+        db: this.deps.authDb,
+        idleSec: this.deps.idleSec,
+        now,
+        principalType: 'vendor_operator',
+        audit: {
+          principalId: boundSub,
+          cls: 7,
+          operation: 'refresh',
+          decision: 'ALLOW',
+          resourceIds: [],
+          outcome: 'rotated',
+          acr,
+          traceId,
+        },
+        revokeAudit: {
+          principalId: boundSub,
+          cls: 7,
+          operation: 'refresh',
+          decision: 'DENY',
+          resourceIds: [],
+          outcome: 'reuse-family-revoked',
+          reasonCode: 'refresh-reuse',
+          traceId,
+        },
+      })
+    } catch {
+      res.setHeader('Set-Cookie', clearVendorRefreshCookie())
+      throw new UnauthorizedException()
+    }
+
+    // The CSRF binding: the bound access token's subject MUST be the rotated
+    // family's principal. A mismatch 401s; the rotation is already spent, but
+    // a mismatch is an attack signal SameSite=Strict already blocks, so
+    // burning that one rotation is an acceptable, safe outcome.
+    if (rotated.principalId !== boundSub) {
+      res.setHeader('Set-Cookie', clearVendorRefreshCookie())
+      throw new UnauthorizedException()
+    }
+
+    // Mint the successor access token via the SAME claims shape vendorLogin
+    // uses (cls 7, live, VENDOR_PLANE, scope.vndr re-derived from the row,
+    // psr vset:vendor_operator, epoch 1, acr/amr). auth_time is deliberately
+    // OMITTED: a silent refresh is NOT a re-authentication, so it must not
+    // reset the step-up freshness clock.
+    const accessToken = await issueAccessToken(
+      {
+        principalId: rotated.principalId,
+        cls: 7,
+        mode: this.deps.expectedMode,
+        scope: { vndr: operator.vndrId },
+        psr: `vset:${VENDOR_OPERATOR_SET_NAME}`,
+        epoch: 1,
+        aud: VENDOR_PLANE,
+        acr,
+        amr,
+      },
+      { signer: this.deps.signer, iss: this.deps.expectedIss, ttlSec: this.deps.accessTtlSec, now },
+    )
+
+    // Rotate the cookie: a FRESH andpay_vendor_rt with the same security flags.
+    res.setHeader('Set-Cookie', serializeVendorRefreshCookie(rotated.refreshToken, this.deps.absoluteSec))
+    return { accessToken }
+  }
+
+  // Logout revokes the entire refresh-token family so the next rotate 401s,
+  // then clears the cookie. Idempotent: a missing or unknown cookie still
+  // clears and returns 204 (no body). No CSRF binding is required to revoke:
+  // a revoke is not sensitive, is idempotent, and SameSite=Strict already
+  // gates the cookie. principalType:'vendor_operator' so this can only ever
+  // kill a vendor family, never an internal one.
+  @Post('logout')
+  @HttpCode(204)
+  async logout(
+    @Headers('cookie') cookieHeader: string | undefined,
+    @Res({ passthrough: true }) res: EdgeResponse,
+  ): Promise<void> {
+    const presented = readRefreshCookie(cookieHeader)
+    if (presented) await logoutByRefreshToken(this.deps.authDb, presented, randomUUID(), 'vendor_operator')
+    res.setHeader('Set-Cookie', clearVendorRefreshCookie())
   }
 }

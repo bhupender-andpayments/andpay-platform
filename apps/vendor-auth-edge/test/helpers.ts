@@ -27,7 +27,10 @@ const authUrl = process.env.AUTH_DATABASE_URL ?? DEFAULT_AUTH_DATABASE_URL
 // The ONE auth-context Prisma client every helper function in this file
 // shares. Real DB, real schema (auth), pinned via AUTH_DATABASE_URL exactly
 // like every services/auth test.
-const authDb: AuthDb = new AuthClient({ datasourceUrl: authUrl })
+// Exported (additive) so a later test (e.g. refresh-logout.test.ts's
+// disjointness proof) can seed a same-principalId internal refresh family
+// directly, without a second Prisma client instance.
+export const authDb: AuthDb = new AuthClient({ datasourceUrl: authUrl })
 
 // The ONE multi-key signer every call to `buildTestVendorAuthEdgeApp` uses by
 // default (mint and verify share one keypair PAIR: the returned `jwks` is
