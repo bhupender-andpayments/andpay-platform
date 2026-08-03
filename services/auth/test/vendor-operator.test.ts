@@ -171,6 +171,38 @@ describe('lookupVendorOperatorByUsername (spec 14a task 4)', () => {
   it('returns null when no operator matches the username', async () => {
     expect(await lookupVendorOperatorByUsername(db, `no-such-${randomUUID()}`)).toBeNull()
   })
+
+  // Spec 14a audit finding (task 16, Bhupender's ruling): username must be
+  // GLOBALLY unique, not just unique per-vendor, because lookup resolves by
+  // username ALONE. This proves the lookup is unambiguous: exactly one row
+  // comes back for a username that exists at exactly one vendor.
+  it('returns the single unambiguous operator for a globally-unique username', async () => {
+    const input = provisionInput()
+    const { id } = await provisionVendorOperator(db, input)
+
+    const row = await lookupVendorOperatorByUsername(db, input.username)
+    expect(row).not.toBeNull()
+    expect(row!.id).toBe(id)
+    expect(row!.vndrId).toBe(input.vndrId)
+  })
+})
+
+describe('username global uniqueness (spec 14a task 16, Bhupender ruling)', () => {
+  it('rejects provisioning the SAME username at a DIFFERENT vendor with VendorOperatorDuplicateError', async () => {
+    const username = `dupe-${randomUUID()}`
+    const inputA = provisionInput({ username })
+    await provisionVendorOperator(db, inputA)
+
+    const inputB = provisionInput({ username })
+    expect(inputB.vndrId).not.toBe(inputA.vndrId)
+
+    await expect(provisionVendorOperator(db, inputB)).rejects.toThrow(VendorOperatorDuplicateError)
+
+    // Only the first vendor's operator exists; no cross-vendor duplicate was created.
+    const rows = await db.vendorOperator.findMany({ where: { username } })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.vndrId).toBe(inputA.vndrId)
+  })
 })
 
 describe('updateVendorOperatorPasswordHash (spec 14a task 4, low-level primitive for Task 7)', () => {

@@ -29,7 +29,13 @@ describe('vendor_operator table (spec 14a task 3)', () => {
     }
   })
 
-  it('has a UNIQUE constraint on (vndr_id, username)', async () => {
+  // Spec 14a task 16 (Bhupender's ruling, whole-branch audit finding): the
+  // by-username login (lookupVendorOperatorByUsername) resolves by username
+  // ALONE, so username must be GLOBALLY unique, not merely unique per-vendor
+  // (mirrors internal_principal.login_handle, itself globally @unique). The
+  // old composite (vndr_id, username) unique is dropped: a global unique on
+  // username subsumes it.
+  it('has a GLOBAL UNIQUE constraint on username alone (not the old composite)', async () => {
     const rows = await db.$queryRawUnsafe<{ indexname: string; cols: string[] }[]>(
       `SELECT i.relname AS indexname,
               (SELECT array_agg(a.attname::text ORDER BY a.attname) FROM unnest(ix.indkey) k JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k) AS cols
@@ -39,8 +45,10 @@ describe('vendor_operator table (spec 14a task 3)', () => {
        JOIN pg_namespace n ON n.oid = t.relnamespace
        WHERE n.nspname = 'auth' AND t.relname = 'vendor_operator' AND ix.indisunique = true AND NOT ix.indisprimary`,
     )
-    const found = rows.some((r) => JSON.stringify(r.cols) === JSON.stringify(['username', 'vndr_id']))
-    expect(found).toBe(true)
+    const foundGlobalUsername = rows.some((r) => JSON.stringify(r.cols) === JSON.stringify(['username']))
+    const foundOldComposite = rows.some((r) => JSON.stringify(r.cols) === JSON.stringify(['username', 'vndr_id']))
+    expect(foundGlobalUsername).toBe(true)
+    expect(foundOldComposite).toBe(false)
   })
 
   it('under SET LOCAL ROLE auth_write, INSERT into vendor_operator succeeds', async () => {

@@ -55,8 +55,11 @@ export interface VendorOperatorDeps {
 // (Argon2id, same primitive login.ts verifies against), inserts under
 // auth_write (enterWriteRole FIRST), and co-commits ONE 6e provision record
 // on the SAME transaction (IDs/enums only, actor = createdByActor, no
-// password material). A duplicate (vndr_id, username) is rejected with a
-// typed VendorOperatorDuplicateError; no duplicate operator is created.
+// password material). A duplicate username is rejected with a typed
+// VendorOperatorDuplicateError; no duplicate operator is created. Spec 14a
+// task 16 (Bhupender's ruling): username is GLOBALLY unique now, not
+// composite (vndr_id, username), so this P2002 now trips on a duplicate
+// username at ANY vendor, not just the same one.
 export async function provisionVendorOperator(
   db: AuthDb,
   input: ProvisionVendorOperatorInput,
@@ -105,7 +108,10 @@ export async function provisionVendorOperator(
 // service, e.g. internalPrincipal.findUnique in login.ts and
 // vendorCredential.findMany in credentials.ts, queries directly).
 export async function lookupVendorOperatorByUsername(db: AuthDb, username: string): Promise<VendorOperatorRow | null> {
-  const row = await db.vendorOperator.findFirst({ where: { username } })
+  // Spec 14a task 16 (Bhupender's ruling): username is now GLOBALLY unique
+  // (a global @unique constraint, not the old composite (vndr_id, username)),
+  // so findUnique on username alone is provably unambiguous.
+  const row = await db.vendorOperator.findUnique({ where: { username } })
   if (!row) return null
   return { id: row.id, vndrId: row.vndrId, username: row.username, passwordHash: row.passwordHash, status: row.status }
 }

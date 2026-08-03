@@ -44,13 +44,12 @@ model InternalPrincipal {
 model VendorOperator {
   id              String   @id @db.Uuid
   vndrId          String   @map("vndr_id")
-  username        String
+  username        String   @unique
   passwordHash    String   @map("password_hash")
   status          String // ACTIVE | SUSPENDED | REVOKED
   createdByActor  String   @map("created_by_actor")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  @@unique([vndrId, username])
   @@map("vendor_operator")
 }
 
