@@ -9,6 +9,14 @@ import { login as loginEndpoint, logout as logoutEndpoint } from '../api/endpoin
 export interface Principal {
   sub: string
   roleLabel?: string
+  // The operator's own vendor wire id (scope.vndr from the token), exposed
+  // so a feature page (the return upload, task 14) can use it as a
+  // ReturnSheet's vndrId WITHOUT the SPA ever supplying its own value: the
+  // edge and the handler both check resource.vndrId === claim.scope.vndr,
+  // so this must come from the verified token, never a request/UI input.
+  // Display-only like the rest of Principal (S24/T14): the edge is still
+  // the sole authority and re-verifies scope.vndr on every call.
+  vndr?: string
 }
 
 // Derives a human-readable role label from the psr (permission-set
@@ -35,10 +43,15 @@ export function decodeTokenClaims(token: string): Principal {
   const base64 = payload.replace(/-/g, '+').replace(/_/g, '/')
   const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=')
   const json = atob(padded)
-  const claims = JSON.parse(json) as { sub?: unknown; psr?: unknown }
+  const claims = JSON.parse(json) as { sub?: unknown; psr?: unknown; scope?: unknown }
   if (typeof claims.sub !== 'string' || claims.sub === '') throw new Error('malformed token: missing sub claim')
   const roleLabel = typeof claims.psr === 'string' && claims.psr !== '' ? deriveRoleLabel(claims.psr) : undefined
-  return roleLabel === undefined ? { sub: claims.sub } : { sub: claims.sub, roleLabel }
+  const scope = typeof claims.scope === 'object' && claims.scope !== null ? (claims.scope as Record<string, unknown>) : undefined
+  const vndr = scope !== undefined && typeof scope.vndr === 'string' && scope.vndr !== '' ? scope.vndr : undefined
+  const principal: Principal = { sub: claims.sub }
+  if (roleLabel !== undefined) principal.roleLabel = roleLabel
+  if (vndr !== undefined) principal.vndr = vndr
+  return principal
 }
 
 export interface AuthContextValue {

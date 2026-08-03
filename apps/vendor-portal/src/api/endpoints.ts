@@ -19,10 +19,6 @@ export function history(c: Client) {
   return c.request<HistoryRow[]>({ method: 'GET', path: '/vendor/history', base: 'vendor' })
 }
 
-export function submitReturn(c: Client, body: unknown, idempotencyKey: string) {
-  return c.request<unknown>({ method: 'POST', path: '/vendor/return', base: 'vendor', body, idempotencyKey })
-}
-
 export function packageDownloadPath(btchId: string): string {
   return `/vendor/batch/${encodeURIComponent(btchId)}/package`
 }
