@@ -1,11 +1,26 @@
-// Minimal shell for spec 14b task 9 (scaffold only). Routes, auth, and the
-// print/ship features land in later tasks.
+import { BrowserRouter } from 'react-router-dom'
+import { AuthProvider } from './auth/AuthContext.js'
+import { AppRoutes } from './routes.js'
+
+// The real app shell (spec 14b task 15): AuthProvider wraps a real
+// BrowserRouter over the router-agnostic route tree in routes.tsx, mirroring
+// apps/ops-portal/src/App.tsx but with vendor branding and vendor routes
+// only. NO step-up dialog (the vendor portal has no destructive actions).
+// The header stays outside RequireAuth/the router so it renders on every
+// route, unauthenticated or not (it also keeps the original Task-9 smoke
+// test, which renders <App/> with no route or auth setup, passing
+// unchanged).
 export function App() {
   return (
-    <div className="flex min-h-screen flex-col bg-white">
-      <header className="border-b border-slate-200 px-4 py-3">
-        <h1 className="text-lg font-semibold text-slate-900">AndPayments Vendor</h1>
-      </header>
-    </div>
+    <AuthProvider>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <div className="flex min-h-screen flex-col bg-white">
+          <header className="border-b border-slate-200 px-4 py-3">
+            <h1 className="text-lg font-semibold text-slate-900">AndPayments Vendor</h1>
+          </header>
+          <AppRoutes />
+        </div>
+      </BrowserRouter>
+    </AuthProvider>
   )
 }

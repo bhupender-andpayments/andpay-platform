@@ -4,18 +4,22 @@ import { workQueue } from '../../api/endpoints.js'
 import { ApiError } from '../../api/errors.js'
 import type { WorkQueueRow } from '../../api/types.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { DownloadPackageButton } from '../pull/DownloadPackageButton.js'
 
 // Vendor work queue (spec 14b task 12). Reads GET /vendor/work-queue via the
 // existing workQueue(client) endpoint (task 10). PII-free by construction:
 // the backend row (WorkQueueRow) carries no ship-to or contact fields, so
-// this page renders exactly its columns and adds nothing.
-
+// this page renders exactly its columns and adds nothing. The Package
+// column (task 15) wires in the standalone DownloadPackageButton (task 13)
+// per row, passing only row.btchId: the button stays PII-free too, and the
+// FR-04 pull's own vndr/authorization check happens solely at the edge.
 const COLUMNS: ReadonlyArray<DataTableColumn<WorkQueueRow>> = [
   { key: 'btchId', header: 'Batch', cell: (row) => row.btchId },
   { key: 'unitCount', header: 'Units', cell: (row) => row.unitCount },
   { key: 'status', header: 'Status', cell: (row) => row.status },
   { key: 'openEntries', header: 'Open entries', cell: (row) => row.openEntries },
   { key: 'createdAt', header: 'Created', cell: (row) => row.createdAt },
+  { key: 'package', header: 'Package', cell: (row) => <DownloadPackageButton btchId={row.btchId} /> },
 ]
 
 export function WorkQueuePage() {

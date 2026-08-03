@@ -69,6 +69,10 @@ describe('WorkQueuePage', () => {
     expect(headerValue(call!, 'Authorization')).toBe('Bearer tok-1')
     expect(call!.url).not.toContain('vndr')
     expect(call!.init.body === undefined || !JSON.stringify(call!.init.body).includes('vndr')).toBe(true)
+
+    // Task 15: a DownloadPackageButton (task 13) renders per row, one per
+    // batch, taking only btchId (no PII column added).
+    expect(screen.getAllByRole('button', { name: /download dispatch package/i })).toHaveLength(2)
   })
 
   it('shows an error message when the request fails', async () => {
