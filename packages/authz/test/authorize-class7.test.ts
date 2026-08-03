@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { it, expect } from 'vitest'
 import { authorize, humanRole, type RoleConfig, type LeanClaim } from '../src/index.js'
 
 const cfg: RoleConfig = {
@@ -11,6 +11,11 @@ it('cls:7 is authorized by the vendor set and IGNORES the work-queue (Fork C)', 
   const claim = { ...base, cls: 7, psr: 'vset:printops', scope: { vndr: 'vndr_A' } } as unknown as LeanClaim
   // no workQueue on the resource, and the claim has no scope.wq: still allowed for cls:7
   expect(authorize(claim, 'batch:pull-artifacts', { vndrId: 'vndr_A' }, cfg)).toEqual({ allowed: true })
+  // Discriminating: a resource workQueue that would DENY a cls:6 principal
+  // (mirror of the cls:6 WQ2 deny below) must be IGNORED for cls:7, since the
+  // claim carries no scope.wq at all. This proves cls:7 truly skips the wq
+  // axis rather than merely comparing two undefineds.
+  expect(authorize(claim, 'batch:pull-artifacts', { vndrId: 'vndr_A', workQueue: 'WQ2' }, cfg)).toEqual({ allowed: true })
   // cross-vndr still denied (scope.vndr stays enforced)
   expect(authorize(claim, 'batch:pull-artifacts', { vndrId: 'vndr_B' }, cfg).allowed).toBe(false)
 })
