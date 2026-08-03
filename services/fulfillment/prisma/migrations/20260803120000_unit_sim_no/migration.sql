@@ -1,0 +1,13 @@
+-- Fast-follow (post spec 14a): capture the manufacturer intake "Sim No" column
+-- (an ICCID) that the built system was dropping at the S8 edge whitelist.
+--
+-- Additive, nullable, reversible (S23 expand-contract): no change to existing
+-- rows, no destructive DDL, no money surface (S20). sim_no is a subscriber-
+-- linkable identifier, so it is sensitive-by-default: stored for capture, but
+-- NEVER emitted on a fact (S7) and NOT granted to any read role here (unit is
+-- not in any fulfillment_ops_read / tenant_read GRANT), pending the architecture
+-- PII/residency ruling. No UNIQUE constraint in this additive step: the intake
+-- INSERT's ON CONFLICT targets device_serial only, so a sim_no UNIQUE would turn
+-- a duplicate ICCID into a whole-file rollback (E1). Uniqueness is an OPEN
+-- question for the ratifying spec.
+ALTER TABLE "unit" ADD COLUMN IF NOT EXISTS "sim_no" TEXT;

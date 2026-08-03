@@ -548,9 +548,13 @@ describe('authentication and authorization failures at the edge', () => {
 })
 
 describe('DO-NOT: the fronted handlers stay byte-identical', () => {
-  it('git shows zero diff on intake.ts, return-sheet.ts, status-webhook.ts', () => {
+  // Rebaselined for the SIM No capture fast-follow: intake.ts is DELIBERATELY
+  // modified (ICCID capture + R2 duplicate flagging) under explicit ratified
+  // authorization SCOPED to intake.ts only. Every OTHER fronted handler
+  // (return-sheet.ts, status-webhook.ts) still stays byte-identical and is
+  // re-proven here. If a future change touches those, this guard still fires.
+  it('git shows zero diff on the still-frozen fronted handlers (return-sheet.ts, status-webhook.ts)', () => {
     const files = [
-      'services/fulfillment/src/intake.ts',
       'services/fulfillment/src/return-sheet.ts',
       'services/fulfillment/src/status-webhook.ts',
     ]

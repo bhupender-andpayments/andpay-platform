@@ -4,7 +4,7 @@ import type { LeanClaim } from '@andpay/authz'
 import { newEnvelope, type Envelope } from '@andpay/envelope'
 import { onceWithin, enqueue } from '@andpay/outbox'
 import { PrismaClient } from '../generated/client/index.js'
-import { ingestIntakeSheet, type IntakeSheet, type IntakeRow } from '../src/intake.js'
+import { ingestIntakeSheet, ingestIntakeSheetWithinTx, type IntakeSheet, type IntakeRow } from '../src/intake.js'
 import { projectDemandFact } from '../src/pool.js'
 import { CONSUMER } from '../src/internal.js'
 import { UNIT_TOPIC, unitFactEnvelope, type AssignmentFactView, type UnitFactPayload } from '../src/events.js'
@@ -166,6 +166,45 @@ describe('ingestIntakeSheet (manufacturer intake, the only Unit-creating channel
     expect(Number(obCount[0]!.n)).toBe(2) // no second fact emitted on redelivery
   })
 
+  it('(a2) SIM No capture: a SERIALIZED row carrying simNo persists unit.sim_no; a row without it stays NULL; and simNo is NEVER on the emitted fact (S7)', async () => {
+    const vndrId = newId('vndr')
+    const workQueue = 'wq-A'
+    const claim = classSixClaim(vndrId, workQueue)
+    const iccid = '8991922406975395100U'
+    const sheet: IntakeSheet = {
+      fileId: 'file-sim-1',
+      vndrId,
+      workQueue,
+      rows: [
+        { kind: 'SERIALIZED', deviceSerial: 'SIM-DEV-1', productType: 'SOUNDBOX', deviceQr: deviceQrFixture('SIM-DEV-1'), simNo: iccid },
+        // no simNo: a non-SIM serialized device (the column must stay NULL)
+        { kind: 'SERIALIZED', deviceSerial: 'NO-SIM-1', productType: 'STANDEE', deviceQr: deviceQrFixture('NO-SIM-1') },
+      ],
+    }
+
+    const res = await ingestIntakeSheet(db, claim, sheet, 'trace-sim')
+    expect(res.rejected).toBeUndefined()
+    expect(res.createdUnitIds).toHaveLength(2)
+
+    const withSim = await db.$queryRaw<{ sim_no: string | null }[]>`SELECT sim_no FROM unit WHERE device_serial = 'SIM-DEV-1'`
+    expect(withSim).toHaveLength(1)
+    expect(withSim[0]!.sim_no).toBe(iccid)
+
+    const noSim = await db.$queryRaw<{ sim_no: string | null }[]>`SELECT sim_no FROM unit WHERE device_serial = 'NO-SIM-1'`
+    expect(noSim).toHaveLength(1)
+    expect(noSim[0]!.sim_no).toBeNull()
+
+    // S7 (sensitive-by-default): the ICCID rides into the row ONLY. It never
+    // appears on any emitted unit fact, in any casing, nor does its value.
+    const ob = await db.$queryRaw<UnitOutboxRow[]>`SELECT event_type, partition_key, payload FROM outbox WHERE event_type = ${UNIT_TOPIC}`
+    for (const row of ob) {
+      const json = JSON.stringify(row.payload.payload)
+      expect(json.includes('simNo')).toBe(false)
+      expect(json.includes('sim_no')).toBe(false)
+      expect(json.includes(iccid)).toBe(false)
+    }
+  })
+
   it('(b) a wrong-vndr-scoped claim is rejected (105c scope-denied): ZERO Units, no state change', async () => {
     const vndrId = newId('vndr')
     const otherVndrId = newId('vndr') // a DIFFERENT vndr wire id
@@ -297,12 +336,17 @@ describe('ingestIntakeSheet (manufacturer intake, the only Unit-creating channel
     expect(units[0]!.procured).toBe(5) // the FIRST row's count; the second is a no-op, not summed
   })
 
-  it('(h) a device_serial reused across DIFFERENT files (the device_serial UNIQUE backstop) is a silent no-op: no throw, not quarantined, and no second fact for the reused serial', async () => {
+  it('(h) SIM No fast-follow (R2/BRD): a device_serial reused across DIFFERENT files is now FLAGGED for review, not a silent no-op; still no second unit and no second fact', async () => {
+    // NOTE: this replaces the pre-fast-follow assertion that a cross-file
+    // repeat serial was a SILENT no-op (exceptionCount === 0). The ratified R2
+    // ruling ("repeat serial -> FLAG ... NO silent DO NOTHING", BRD "same
+    // Soundbox ID in ... recent uploads, flag for review") overturns that on
+    // the manufacturer-intake path. The no-second-unit / no-second-fact
+    // guarantees are unchanged; only the silent-vs-flagged behavior changed.
     const vndrId = newId('vndr')
     const workQueue = 'wq-A'
     const claim = classSixClaim(vndrId, workQueue)
 
-    // File A: a SERIALIZED row for serial X, ingested and accepted.
     const sheetA: IntakeSheet = {
       fileId: 'file-h-a',
       vndrId,
@@ -314,10 +358,9 @@ describe('ingestIntakeSheet (manufacturer intake, the only Unit-creating channel
     expect(resA.createdUnitIds).toHaveLength(1)
     const xUnitId = resA.createdUnitIds[0]!
 
-    // File B: a DIFFERENT fileId, SAME vndrId, containing serial X again PLUS
-    // a genuinely new serial Y. The file-level {vendor}|{file_id} key does NOT
-    // dedupe this (different fileId), so the loop actually runs and hits the
-    // device_serial UNIQUE backstop for X.
+    // File B: a DIFFERENT fileId, SAME vndrId, serial X again PLUS a new serial
+    // Y. The file-level key does NOT dedupe this (different fileId), so the loop
+    // runs: X is a cross-file repeat serial (flagged), Y is genuinely new.
     const sheetB: IntakeSheet = {
       fileId: 'file-h-b',
       vndrId,
@@ -329,19 +372,172 @@ describe('ingestIntakeSheet (manufacturer intake, the only Unit-creating channel
     expect(resB.deduped).toBe(false)
     expect(resB.createdUnitIds).toHaveLength(1) // ONLY Y, not X
     expect(resB.createdUnitIds).not.toContain(xUnitId)
-    const yUnitId = resB.createdUnitIds[0]!
-    expect(yUnitId).not.toBe(xUnitId)
+    expect(resB.quarantined).toBe(1) // X flagged for review
 
     const unitCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
-    expect(Number(unitCount[0]!.n)).toBe(2) // X once, Y once
+    expect(Number(unitCount[0]!.n)).toBe(2) // X once, Y once (no second X unit)
 
-    const exceptionCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM intake_exception`
-    expect(Number(exceptionCount[0]!.n)).toBe(0) // this is a silent no-op path, NOT a quarantine
+    const exc = await db.$queryRaw<{ row_ref: string; reason_code: string }[]>`
+      SELECT row_ref, reason_code FROM intake_exception
+    `
+    expect(exc).toHaveLength(1)
+    expect(exc[0]!.row_ref).toBe('row-0') // X is row 0 of file B
+    expect(exc[0]!.reason_code).toBe('duplicate_device_serial_existing_unit')
 
     const xFactCount = await db.$queryRaw<{ n: bigint }[]>`
       SELECT count(*) AS n FROM outbox WHERE event_type = ${UNIT_TOPIC} AND partition_key = ${xUnitId}
     `
-    expect(Number(xFactCount[0]!.n)).toBe(1) // no second fact emitted for X on the cross-file resubmission
+    expect(Number(xFactCount[0]!.n)).toBe(1) // no second fact emitted for X
+  })
+
+  it('(k) SIM No fast-follow (Confirm 3): a duplicate ICCID already bound to ANOTHER unit CREATES the new device with sim_no NULL and flags duplicate_sim_no_existing_unit; the exception stores NO ICCID', async () => {
+    const vndrId = newId('vndr')
+    const workQueue = 'wq-A'
+    const claim = classSixClaim(vndrId, workQueue)
+    const iccid = '8991922406975395100U'
+
+    const sheetA: IntakeSheet = {
+      fileId: 'file-k-a',
+      vndrId,
+      workQueue,
+      rows: [{ kind: 'SERIALIZED', deviceSerial: 'SER-K-A', productType: 'SOUNDBOX', deviceQr: deviceQrFixture('SER-K-A'), simNo: iccid }],
+    }
+    const resA = await ingestIntakeSheet(db, claim, sheetA, 'trace-k-a')
+    expect(resA.createdUnitIds).toHaveLength(1)
+
+    // File B: a genuinely NEW serial, but the SAME ICCID as unit A. Two devices
+    // can never share one SIM. Confirm 3: the device is a DIFFERENT real unit
+    // (needed for D118 dispatch/tracking, which does not consume the ICCID), so
+    // it is CREATED with sim_no NULL and the ICCID conflict is flagged.
+    const sheetB: IntakeSheet = {
+      fileId: 'file-k-b',
+      vndrId,
+      workQueue,
+      rows: [{ kind: 'SERIALIZED', deviceSerial: 'SER-K-B', productType: 'SOUNDBOX', deviceQr: deviceQrFixture('SER-K-B'), simNo: iccid }],
+    }
+    const resB = await ingestIntakeSheet(db, claim, sheetB, 'trace-k-b')
+    expect(resB.rejected).toBeUndefined()
+    expect(resB.createdUnitIds).toHaveLength(1) // the DIFFERENT real device IS created (Confirm 3)
+    expect(resB.quarantined).toBe(1) // the ICCID conflict is flagged separately
+
+    const bUnit = await db.$queryRaw<{ sim_no: string | null }[]>`SELECT sim_no FROM unit WHERE device_serial = 'SER-K-B'`
+    expect(bUnit).toHaveLength(1) // the SER-K-B device WAS created
+    expect(bUnit[0]!.sim_no).toBeNull() // but its ICCID is NULL (conflict held for ops adjudication)
+
+    const exc = await db.$queryRaw<{ vndr_id: string; file_id: string; row_ref: string; reason_code: string }[]>`
+      SELECT vndr_id, file_id, row_ref, reason_code FROM intake_exception
+    `
+    expect(exc).toHaveLength(1)
+    expect(exc[0]!.reason_code).toBe('duplicate_sim_no_existing_unit')
+    expect(exc[0]!.file_id).toBe('file-k-b')
+    // Sensitive-by-default in the flag path: the ICCID appears in NO column of
+    // the exception row (only IDs + reason_code + row_ref are stored).
+    for (const v of Object.values(exc[0]!)) expect(String(v).includes(iccid)).toBe(false)
+  })
+
+  it('(l) SIM No fast-follow (Confirm 3): a duplicate ICCID WITHIN one file keeps the first occurrence ICCID, CREATES the later device with sim_no NULL, and flags duplicate_sim_no_in_file', async () => {
+    const vndrId = newId('vndr')
+    const workQueue = 'wq-A'
+    const claim = classSixClaim(vndrId, workQueue)
+    const iccid = '8991922406975395100U'
+
+    const sheet: IntakeSheet = {
+      fileId: 'file-l',
+      vndrId,
+      workQueue,
+      rows: [
+        { kind: 'SERIALIZED', deviceSerial: 'SER-L-1', productType: 'SOUNDBOX', deviceQr: deviceQrFixture('SER-L-1'), simNo: iccid },
+        { kind: 'SERIALIZED', deviceSerial: 'SER-L-2', productType: 'SOUNDBOX', deviceQr: deviceQrFixture('SER-L-2'), simNo: iccid },
+      ],
+    }
+    const res = await ingestIntakeSheet(db, claim, sheet, 'trace-l')
+    expect(res.rejected).toBeUndefined()
+    expect(res.createdUnitIds).toHaveLength(2) // BOTH devices created (Confirm 3): different serials
+    expect(res.quarantined).toBe(1) // the second row's ICCID conflict is flagged
+
+    const rows = await db.$queryRaw<{ device_serial: string; sim_no: string | null }[]>`
+      SELECT device_serial, sim_no FROM unit ORDER BY device_serial
+    `
+    expect(rows).toHaveLength(2)
+    expect(rows.find((r) => r.device_serial === 'SER-L-1')!.sim_no).toBe(iccid) // first occurrence keeps the ICCID
+    expect(rows.find((r) => r.device_serial === 'SER-L-2')!.sim_no).toBeNull() // later device created with NULL
+
+    const exc = await db.$queryRaw<{ row_ref: string; reason_code: string }[]>`
+      SELECT row_ref, reason_code FROM intake_exception
+    `
+    expect(exc).toHaveLength(1)
+    expect(exc[0]!.row_ref).toBe('row-1') // the second occurrence is flagged
+    expect(exc[0]!.reason_code).toBe('duplicate_sim_no_in_file')
+  })
+
+  it('(m) SIM No fast-follow (Confirm 3 precedence): a row that is BOTH a cross-file serial-dup AND an ICCID-dup gets ONLY the serial flag, no ICCID flag, no new unit', async () => {
+    const vndrId = newId('vndr')
+    const workQueue = 'wq-A'
+    const claim = classSixClaim(vndrId, workQueue)
+    const iccid = '8991922406975395100U'
+
+    // File A: serial X carrying ICCID Z.
+    const sheetA: IntakeSheet = {
+      fileId: 'file-m-a',
+      vndrId,
+      workQueue,
+      rows: [{ kind: 'SERIALIZED', deviceSerial: 'SER-M-X', productType: 'SOUNDBOX', deviceQr: deviceQrFixture('SER-M-X'), simNo: iccid }],
+    }
+    await ingestIntakeSheet(db, claim, sheetA, 'trace-m-a')
+
+    // File B: serial X AGAIN (the SAME device) carrying ICCID Z AGAIN (also a
+    // duplicate). The serial path owns the row (same device -> no new unit);
+    // precedence means the ICCID conflict is NOT separately flagged.
+    const sheetB: IntakeSheet = {
+      fileId: 'file-m-b',
+      vndrId,
+      workQueue,
+      rows: [{ kind: 'SERIALIZED', deviceSerial: 'SER-M-X', productType: 'SOUNDBOX', deviceQr: deviceQrFixture('SER-M-X'), simNo: iccid }],
+    }
+    const resB = await ingestIntakeSheet(db, claim, sheetB, 'trace-m-b')
+    expect(resB.createdUnitIds).toHaveLength(0) // same device: no second unit
+    expect(resB.quarantined).toBe(1) // exactly ONE flag
+
+    const units = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit WHERE device_serial = 'SER-M-X'`
+    expect(Number(units[0]!.n)).toBe(1)
+
+    const exc = await db.$queryRaw<{ reason_code: string }[]>`SELECT reason_code FROM intake_exception`
+    expect(exc).toHaveLength(1) // ONLY the serial flag (precedence: no ICCID flag)
+    expect(exc[0]!.reason_code).toBe('duplicate_device_serial_existing_unit')
+
+    // The pre-existing unit's ICCID is intact (untouched by the flagged re-send).
+    const preserved = await db.$queryRaw<{ sim_no: string | null }[]>`SELECT sim_no FROM unit WHERE device_serial = 'SER-M-X'`
+    expect(preserved[0]!.sim_no).toBe(iccid)
+  })
+
+  it('(h2) the correction/legacy path (flagDuplicates OFF) keeps the silent no-op on a cross-file repeat serial: no regression, sim_no preserved (untouched)', async () => {
+    const vndrId = newId('vndr')
+    const vndrUuid = toUuid(vndrId)
+    const iccid = '8991922406975395100U'
+    // Seed an existing unit for serial X carrying an ICCID.
+    const seedUuid = toUuid(newId('unit'))
+    await db.$executeRaw`
+      INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, sim_no, updated_at)
+      VALUES (${seedUuid}::uuid, ${'SERIALIZED'}, ${'SOUNDBOX'}, ${vndrUuid}::uuid, ${'IN_STOCK'}, ${'SER-LEGACY-X'}, ${JSON.stringify(deviceQrFixture('SER-LEGACY-X'))}::jsonb, ${iccid}, now())
+    `
+    // Re-drive the same serial through the within-tx body with DEFAULT opts
+    // (flagDuplicates off), exactly as resolveIntakeException does.
+    const sheet: IntakeSheet = {
+      fileId: 'file-legacy',
+      vndrId,
+      workQueue: 'wq-A',
+      rows: [{ kind: 'SERIALIZED', deviceSerial: 'SER-LEGACY-X', productType: 'SOUNDBOX', deviceQr: deviceQrFixture('SER-LEGACY-X') }],
+    }
+    const res = await db.$transaction((tx) => ingestIntakeSheetWithinTx(tx, sheet, 'trace-legacy'))
+    expect(res.createdUnitIds).toHaveLength(0)
+    expect(res.quarantined).toBe(0) // legacy: silent no-op, NOT flagged
+
+    const excCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM intake_exception`
+    expect(Number(excCount[0]!.n)).toBe(0) // no quarantine on the correction path
+
+    // The existing unit's sim_no was left untouched (DO NOTHING never wrote it).
+    const preserved = await db.$queryRaw<{ sim_no: string | null }[]>`SELECT sim_no FROM unit WHERE device_serial = 'SER-LEGACY-X'`
+    expect(preserved[0]!.sim_no).toBe(iccid)
   })
 
   it('(i) a QUANTITY_LINE row with a missing/non-positive count is schema_invalid (D103b): the WHOLE sheet is rejected, ZERO Units, ZERO intake_exception', async () => {

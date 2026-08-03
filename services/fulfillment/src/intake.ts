@@ -15,6 +15,12 @@ export interface SerializedIntakeRow {
   deviceSerial: string
   productType: string
   deviceQr: object
+  // The manufacturer file's "Sim No" column (an ICCID). OPTIONAL: only SIM-
+  // bearing devices carry it. Subscriber-linkable, so sensitive-by-default:
+  // persisted to unit.sim_no for capture, but NEVER placed on a fact payload
+  // (S7, see events.ts) or any read surface, pending the architecture PII/
+  // residency ruling.
+  simNo?: string
 }
 export interface QuantityLineIntakeRow {
   kind: 'QUANTITY_LINE'
@@ -60,7 +66,11 @@ function isStructurallyValid(row: IntakeRow): boolean {
       r.deviceSerial.length > 0 &&
       typeof r.deviceQr === 'object' &&
       r.deviceQr !== null &&
-      !Array.isArray(r.deviceQr)
+      !Array.isArray(r.deviceQr) &&
+      // simNo is OPTIONAL; only its type is gated when present (absent stays
+      // valid, an empty/non-string simNo does not). Belt-and-suspenders on top
+      // of the edge parser for the ops re-ingest path that builds rows directly.
+      (r.simNo === undefined || (typeof r.simNo === 'string' && r.simNo.length > 0))
     )
   }
   if (r.kind === 'QUANTITY_LINE') {
@@ -101,7 +111,15 @@ export async function ingestIntakeSheetWithinTx(
   tx: Tx,
   sheet: IntakeSheet,
   traceId: string,
+  // Path separation (SIM No fast-follow, R2): the manufacturer-intake path
+  // passes flagDuplicates:true, so a repeat serial or a duplicate ICCID is
+  // FLAGGED for review (BRD). The ops correction path (resolveIntakeException)
+  // and any other caller omit it, keeping the legacy silent-no-op semantics
+  // byte-for-byte. Optional with a default so the correction call site is
+  // unchanged.
+  opts: { flagDuplicates?: boolean } = {},
 ): Promise<IntakeResult> {
+  const { flagDuplicates = false } = opts
   const vndrUuid = toUuid(sheet.vndrId)
   const createdUnitIds: string[] = []
   let quarantined = 0
@@ -120,34 +138,97 @@ export async function ingestIntakeSheetWithinTx(
       // has not fixed a value for; a within-file duplicate serial has no such
       // extensibility concern and is explicitly named in the task brief).
       const seenSerials = new Set<string>()
+      // Fast-follow (SIM No capture): within-file duplicate-ICCID detection,
+      // sibling of seenSerials. Populated ONLY on the manufacturer-intake path
+      // (flagDuplicates); the ops correction path leaves it empty and keeps its
+      // legacy semantics untouched.
+      const seenSimNos = new Set<string>()
+
+      // Quarantine one row to intake_exception (D103d), same shape as the
+      // existing within-file duplicate-serial flag: IDs plus a reason_code
+      // ONLY, row_ref locates the row in the source file. NO device_serial and
+      // NO ICCID are stored here. Sensitive-by-default holds even in the flag
+      // path; the operator resolves via file_id + row_ref against the file.
+      const flag = async (rowRef: string, reasonCode: string): Promise<void> => {
+        await tx.$executeRaw`
+          INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+          VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${reasonCode})
+        `
+        quarantined++
+      }
 
       for (let i = 0; i < sheet.rows.length; i++) {
         const row = sheet.rows[i]!
         const rowRef = `row-${i}`
 
         if (row.kind === 'SERIALIZED' && seenSerials.has(row.deviceSerial)) {
-          await tx.$executeRaw`
-            INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
-            VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'duplicate_device_serial_in_file'})
-          `
-          quarantined++
+          await flag(rowRef, 'duplicate_device_serial_in_file')
           continue
         }
 
         if (row.kind === 'SERIALIZED') {
+          // Confirm 3 (spec 15) - the ICCID-dup path is DELIBERATELY asymmetric
+          // with the serial-dup path. A duplicate ICCID means a DIFFERENT real
+          // device carrying a CONFLICTING SIM. It must NOT block the device:
+          // D118 dispatch/tracking does not consume the ICCID (that is FR-07,
+          // deferred), so blocking a real device on a not-yet-used field
+          // over-couples the device lifecycle to the SIM conflict. The unit is
+          // CREATED with sim_no NULL and the ICCID conflict is flagged
+          // SEPARATELY. Two flavors, detected on the intake path only:
+          //   - within-file: the ICCID was already stored by an earlier row
+          //     (keep the first occurrence's ICCID);
+          //   - cross-unit: the ICCID is already bound to a prior unit. The
+          //     all-time SELECT satisfies the BRD "recent uploads" window and
+          //     is safe because the action is FLAG not reject. It is an internal
+          //     same-context write-path comparison, never a read surface (the
+          //     value is compared, never surfaced), consistent with S7.
+          let iccidDupReason: string | null = null
+          let simNoForInsert: string | null = row.simNo ?? null
+          if (flagDuplicates && row.simNo !== undefined) {
+            if (seenSimNos.has(row.simNo)) {
+              iccidDupReason = 'duplicate_sim_no_in_file'
+              simNoForInsert = null
+            } else {
+              const simDup = await tx.$queryRaw<{ one: number }[]>`
+                SELECT 1 AS one FROM unit WHERE sim_no = ${row.simNo} LIMIT 1
+              `
+              if (simDup.length > 0) {
+                iccidDupReason = 'duplicate_sim_no_existing_unit'
+                simNoForInsert = null
+              }
+            }
+          }
+
           seenSerials.add(row.deviceSerial)
           const unitUuid = toUuid(newId('unit'))
-          // Per-unit idempotency is {device_serial}|intake PLUS the
-          // device_serial UNIQUE backstop (a re-submission of the same serial
-          // in a LATER file is a no-op, not a quarantine: the file-level key
-          // above already handles a re-submission of the SAME file).
+          // sim_no (ICCID): the stored value is NULL for a non-SIM row OR for a
+          // duplicate ICCID (Confirm 3). Bound as a text parameter, never
+          // interpolated; it never rides into the fact enqueued below (S7).
           const won = await tx.$queryRaw<{ id: string }[]>`
-            INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, updated_at)
-            VALUES (${unitUuid}::uuid, ${'SERIALIZED'}, ${row.productType}, ${vndrUuid}::uuid, ${'IN_STOCK'}, ${row.deviceSerial}, ${JSON.stringify(row.deviceQr)}::jsonb, now())
+            INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, sim_no, updated_at)
+            VALUES (${unitUuid}::uuid, ${'SERIALIZED'}, ${row.productType}, ${vndrUuid}::uuid, ${'IN_STOCK'}, ${row.deviceSerial}, ${JSON.stringify(row.deviceQr)}::jsonb, ${simNoForInsert}, now())
             ON CONFLICT (device_serial) DO NOTHING
             RETURNING id::text AS id
           `
-          if (won.length === 0) continue
+          if (won.length === 0) {
+            // The serial already exists: the SAME device, so no second unit.
+            // The legacy (correction) path keeps this silent no-op backstop; the
+            // manufacturer-intake path (flagDuplicates) FLAGS it (BRD "same
+            // Soundbox ID in ... recent uploads, flag for review"). PRECEDENCE:
+            // the serial path owns this row, so even when the ICCID was ALSO a
+            // duplicate, NO separate ICCID flag is raised and seenSimNos is left
+            // untouched. Either way: no second unit, no second fact.
+            if (flagDuplicates) await flag(rowRef, 'duplicate_device_serial_existing_unit')
+            continue
+          }
+          // A new unit WAS created. Flag the ICCID conflict now (precedence:
+          // only after a real insert). Record the ICCID in the within-file
+          // seen-set ONLY when it was actually stored (never a NULL/duplicate).
+          if (iccidDupReason !== null) {
+            await flag(rowRef, iccidDupReason)
+          } else if (row.simNo !== undefined) {
+            seenSimNos.add(row.simNo)
+          }
           const unitId = fromUuid('unit', unitUuid)
           createdUnitIds.push(unitId)
           await enqueue(tx, {
@@ -248,6 +329,8 @@ export async function ingestIntakeSheet(
   // body is left untouched.
   return db.$transaction(async (tx: Tx) => {
     await enterWriteRole(tx, 'fulfillment_write')
-    return ingestIntakeSheetWithinTx(tx, sheet, traceId)
+    // Manufacturer-intake path: duplicates (repeat serial or duplicate ICCID)
+    // are FLAGGED for review, not silently dropped (BRD, R2 path separation).
+    return ingestIntakeSheetWithinTx(tx, sheet, traceId, { flagDuplicates: true })
   })
 }
