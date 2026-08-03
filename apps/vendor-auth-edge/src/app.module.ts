@@ -2,23 +2,25 @@ import { type DynamicModule, Module, type INestApplication } from '@nestjs/commo
 import { APP_FILTER, NestFactory } from '@nestjs/core'
 import { applyPortalCors } from '@andpay/edge'
 import { ProbeController } from './probe.controller.js'
+import { SessionController } from './session.controller.js'
 import { VendorAuthErrorFilter } from './vendor-auth-error.filter.js'
 import { EDGE_DEPS, type VendorAuthEdgeDeps } from './deps.js'
 
 // Token-provided deps (NO type-reflection DI), mirroring
 // apps/auth-edge/src/app.module.ts exactly: the module is built fresh per
-// caller with `deps` bound to EDGE_DEPS via useValue. Only `ProbeController`
-// is registered in this task; the login/refresh/logout/enroll controllers
-// register here in Tasks 9 to 12 as they are built. `VendorAuthErrorFilter`
-// is registered app-wide via the APP_FILTER DI token so every route, present
-// and future, maps an AuthzError/EdgeAuthError to a generic 401 without each
-// controller catching it by hand.
+// caller with `deps` bound to EDGE_DEPS via useValue. `SessionController`
+// (login, Task 9; refresh/logout, Task 10) is registered alongside
+// `ProbeController`; the enroll controller registers here in Task 11 as it
+// is built. `VendorAuthErrorFilter` is registered app-wide via the
+// APP_FILTER DI token so every route, present and future, maps an
+// AuthzError/EdgeAuthError to a generic 401 without each controller catching
+// it by hand.
 @Module({})
 export class VendorAuthEdgeModule {
   static register(deps: VendorAuthEdgeDeps): DynamicModule {
     return {
       module: VendorAuthEdgeModule,
-      controllers: [ProbeController],
+      controllers: [ProbeController, SessionController],
       providers: [
         { provide: EDGE_DEPS, useValue: deps },
         { provide: APP_FILTER, useClass: VendorAuthErrorFilter },
