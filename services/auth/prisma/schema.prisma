@@ -34,25 +34,43 @@ model InternalPrincipal {
   role         String
   createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
-  mfa          MfaEnrollment[]
 
   @@map("internal_principal")
 }
 
+// Class-3 vendor human login store (spec 14a). Platform-only, no program_id
+// (mirrors internal_principal, D121/4c): a vendor operator authenticates
+// against a specific vndr_ (referenced, not owned, D115), never a Program.
+model VendorOperator {
+  id              String   @id @db.Uuid
+  vndrId          String   @map("vndr_id")
+  username        String
+  passwordHash    String   @map("password_hash")
+  status          String // ACTIVE | DISABLED
+  createdByActor  String   @map("created_by_actor")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([vndrId, username])
+  @@map("vendor_operator")
+}
+
 // Class-3 MFA enrollment (6a). The TOTP secret or WebAuthn credential is
 // custodied in Secrets Manager; the row holds only a reference, never the
-// secret (S4).
+// secret (S4). No FK to a principal table (spec 14a, S23 expand-contract):
+// principal_id can now identify either an internal_principal or a
+// vendor_operator row, disambiguated by principal_type; the app enforces
+// valid principal_ids since a single-table FK is no longer possible.
 model MfaEnrollment {
-  id          String            @id @db.Uuid
-  principalId String            @map("principal_id") @db.Uuid
-  factor      String // webauthn | totp | sms (phishing-resistance-ranked, 6a)
-  secretRef   String?           @map("secret_ref")
-  status      String
-  enrolledAt  DateTime          @default(now()) @map("enrolled_at") @db.Timestamptz(6)
-  enrolledByActor String        @map("enrolled_by_actor") @db.Uuid
-  principal   InternalPrincipal @relation(fields: [principalId], references: [id])
+  id              String   @id @db.Uuid
+  principalId     String   @map("principal_id") @db.Uuid
+  principalType   String   @default("internal") @map("principal_type") // internal | vendor_operator
+  factor          String // webauthn | totp | sms (phishing-resistance-ranked, 6a)
+  secretRef       String?  @map("secret_ref")
+  status          String
+  enrolledAt      DateTime @default(now()) @map("enrolled_at") @db.Timestamptz(6)
+  enrolledByActor String   @map("enrolled_by_actor") @db.Uuid
 
-  @@index([principalId])
+  @@index([principalId, principalType])
   @@map("mfa_enrollment")
 }
 
@@ -86,6 +104,7 @@ model RefreshToken {
   tokenHash       String   @unique @map("token_hash")
   familyId        String   @map("family_id") @db.Uuid
   principalId     String   @map("principal_id") @db.Uuid
+  principalType   String   @default("internal") @map("principal_type") // internal | vendor_operator
   clientBind      String   @map("client_bind")
   used            Boolean  @default(false)
   revoked         Boolean  @default(false)
@@ -100,9 +119,10 @@ model RefreshToken {
 // D3 emergency denylist: any principal id or jti, checked cheaply on the hot
 // path.
 model Denylist {
-  entry   String   @id
-  reason  String?
-  addedAt DateTime @default(now()) @map("added_at") @db.Timestamptz(6)
+  entry         String   @id
+  reason        String?
+  principalType String   @default("internal") @map("principal_type") // internal | vendor_operator
+  addedAt       DateTime @default(now()) @map("added_at") @db.Timestamptz(6)
 
   @@map("denylist")
 }
