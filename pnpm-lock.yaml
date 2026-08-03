@@ -14,6 +14,9 @@ importers:
       '@andpay/audit':
         specifier: workspace:*
         version: link:packages/audit
+      '@andpay/auth-edge':
+        specifier: workspace:*
+        version: link:apps/auth-edge
       '@andpay/auth-service':
         specifier: workspace:*
         version: link:services/auth
@@ -50,6 +53,12 @@ importers:
       '@andpay/tms-service':
         specifier: workspace:*
         version: link:services/tms
+      '@andpay/vendor-auth-edge':
+        specifier: workspace:*
+        version: link:apps/vendor-auth-edge
+      '@andpay/vendor-edge':
+        specifier: workspace:*
+        version: link:apps/vendor-edge
       '@eslint/js':
         specifier: ^9.18.0
         version: 9.39.5
@@ -86,6 +95,9 @@ importers:
       prisma:
         specifier: ^6.3.0
         version: 6.19.3(typescript@5.9.3)
+      reflect-metadata:
+        specifier: ^0.2.2
+        version: 0.2.2
       supertest:
         specifier: ^7.0.0
         version: 7.2.2
