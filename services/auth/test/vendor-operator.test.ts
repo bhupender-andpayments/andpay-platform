@@ -186,7 +186,7 @@ describe('updateVendorOperatorPasswordHash (spec 14a task 4, low-level primitive
 })
 
 describe('suspendVendorOperator (spec 14a task 4)', () => {
-  it('flips status to suspended and co-commits its own 6e audit', async () => {
+  it('flips status to SUSPENDED and co-commits its own 6e audit', async () => {
     const input = provisionInput()
     const { id } = await provisionVendorOperator(db, input)
     const actor = randomUUID()
@@ -194,11 +194,38 @@ describe('suspendVendorOperator (spec 14a task 4)', () => {
     await suspendVendorOperator(db, { id, actor, traceId: 'trace-suspend' })
 
     const row = await lookupVendorOperatorByUsername(db, input.username)
-    expect(row!.status).toBe('suspended')
+    expect(row!.status).toBe('SUSPENDED')
 
     const audits = await db.outbox.findMany({ where: { eventType: 'authz.audit' } })
     const suspendAudit = audits.find((a) => JSON.stringify(a.payload).includes('"operation":"vendor_operator:suspend"'))
     expect(suspendAudit).toBeDefined()
     expect(JSON.stringify(suspendAudit!.payload).includes(id)).toBe(true)
+  })
+
+  it('a current_user assertion INSIDE the suspend transaction shows auth_write (SET LOCAL ROLE first)', async () => {
+    const input = provisionInput()
+    const { id } = await provisionVendorOperator(db, input)
+    const actor = randomUUID()
+
+    await db.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION test_task4_assert_aw_update() RETURNS trigger AS $BODY$
+      BEGIN
+        IF current_user <> 'auth_write' THEN
+          RAISE EXCEPTION 'spec 14a task 4: expected current_user auth_write on vendor_operator update, got %', current_user;
+        END IF;
+        RETURN NEW;
+      END;
+      $BODY$ LANGUAGE plpgsql;
+    `)
+    await db.$executeRawUnsafe('DROP TRIGGER IF EXISTS test_task4_aw_update_trg ON vendor_operator')
+    await db.$executeRawUnsafe(
+      'CREATE TRIGGER test_task4_aw_update_trg BEFORE UPDATE ON vendor_operator FOR EACH ROW EXECUTE FUNCTION test_task4_assert_aw_update()',
+    )
+    try {
+      // A correctly role-scoped suspend passes silently (no RAISE EXCEPTION).
+      await expect(suspendVendorOperator(db, { id, actor, traceId: 'trace-suspend-aw' })).resolves.toBeUndefined()
+    } finally {
+      await db.$executeRawUnsafe('DROP TRIGGER IF EXISTS test_task4_aw_update_trg ON vendor_operator')
+    }
   })
 })

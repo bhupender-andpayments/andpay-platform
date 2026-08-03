@@ -129,7 +129,7 @@ export interface SuspendVendorOperatorInput {
   traceId: string
 }
 
-// Flips status to 'suspended' under auth_write, co-committed with its own 6e
+// Flips status to 'SUSPENDED' under auth_write, co-committed with its own 6e
 // audit record on the same transaction (E1).
 export async function suspendVendorOperator(
   db: AuthDb,
@@ -138,7 +138,7 @@ export async function suspendVendorOperator(
 ): Promise<void> {
   await db.$transaction(async (tx) => {
     await enterWriteRole(tx, 'auth_write')
-    await tx.vendorOperator.update({ where: { id: input.id }, data: { status: 'suspended' } })
+    await tx.vendorOperator.update({ where: { id: input.id }, data: { status: 'SUSPENDED' } })
     await emitAuthzAudit(tx, {
       principalId: input.actor,
       cls: 7,

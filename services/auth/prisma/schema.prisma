@@ -46,7 +46,7 @@ model VendorOperator {
   vndrId          String   @map("vndr_id")
   username        String
   passwordHash    String   @map("password_hash")
-  status          String // ACTIVE | DISABLED
+  status          String // ACTIVE | SUSPENDED | REVOKED
   createdByActor  String   @map("created_by_actor")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
