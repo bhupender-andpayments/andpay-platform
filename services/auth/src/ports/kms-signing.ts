@@ -58,4 +58,49 @@ export class LocalEs256Adapter implements KmsSigningPort {
   async jwks(): Promise<JSONWebKeySet> {
     return { keys: [this.#publicJwk] }
   }
+
+  // Fork D (spec 14a task 2): a multi-key signer that selects the signing key
+  // by audience/plane and publishes BOTH public keys in the JWKS, so any
+  // verifier edge (ops/tenant/vendor) can validate either audience's token by
+  // kid. Composes existing single-key adapters; each plane keeps its own
+  // adapter and kid untouched, so an internal token signed via this selector
+  // is signed by the SAME key/kid as the single-key adapter (D6): the only
+  // additive change is that jwks() now also carries the vendor public key.
+  static createMulti(byPlane: Record<string, LocalEs256Adapter>): KmsSigningPort {
+    return new SelectingSigner(byPlane)
+  }
+}
+
+// Selects the underlying single-key adapter by the sign() input's aud, and
+// aggregates all adapters' public keys into one JWKS (superset per D6).
+class SelectingSigner implements KmsSigningPort {
+  readonly #byPlane: Record<string, LocalEs256Adapter>
+
+  constructor(byPlane: Record<string, LocalEs256Adapter>) {
+    if (Object.keys(byPlane).length === 0) {
+      throw new Error('SelectingSigner requires at least one plane->adapter mapping')
+    }
+    this.#byPlane = byPlane
+  }
+
+  // No single kid represents a multi-key signer; exposed for interface
+  // completeness only. Callers must use sign()/jwks(), not this field, to
+  // learn which key was used.
+  get kid(): string {
+    const first = Object.values(this.#byPlane)[0]
+    return first!.kid
+  }
+
+  async sign(input: SignInput): Promise<string> {
+    const adapter = this.#byPlane[input.aud]
+    if (!adapter) {
+      throw new Error(`SelectingSigner: no signing key configured for audience/plane "${input.aud}"`)
+    }
+    return adapter.sign(input)
+  }
+
+  async jwks(): Promise<JSONWebKeySet> {
+    const allJwks = await Promise.all(Object.values(this.#byPlane).map((a) => a.jwks()))
+    return { keys: allJwks.flatMap((j) => j.keys) }
+  }
 }
