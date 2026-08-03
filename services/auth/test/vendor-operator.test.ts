@@ -5,11 +5,15 @@ import { newId } from '@andpay/ids'
 import { PrismaClient, type AuthDb } from '../src/index.js'
 import { enterWriteRole } from '../src/write-context.js'
 import { emitAuthzAudit } from '../src/audit.js'
+import { issueRefreshFamily, rotateRefresh } from '../src/refresh.js'
+import * as vendorOperatorModule from '../src/vendor-operator.js'
 import {
   provisionVendorOperator,
   lookupVendorOperatorByUsername,
   updateVendorOperatorPasswordHash,
   suspendVendorOperator,
+  changeVendorPassword,
+  adminResetVendorPassword,
   VendorOperatorDuplicateError,
 } from '../src/vendor-operator.js'
 
@@ -226,6 +230,101 @@ describe('suspendVendorOperator (spec 14a task 4)', () => {
       await expect(suspendVendorOperator(db, { id, actor, traceId: 'trace-suspend-aw' })).resolves.toBeUndefined()
     } finally {
       await db.$executeRawUnsafe('DROP TRIGGER IF EXISTS test_task4_aw_update_trg ON vendor_operator')
+    }
+  })
+})
+
+// Spec 14a Task 7: the authenticated change-password and admin-reset FLOWS
+// built on Task 4's primitives. No self-service email/SMS reset path exists.
+describe('changeVendorPassword (spec 14a task 7)', () => {
+  it('with the CORRECT current password: updates the hash (new works, old fails), revokes the operator other vendor refresh families, and co-commits ONE 6e ALLOW password-change', async () => {
+    const input = provisionInput()
+    const { id } = await provisionVendorOperator(db, input)
+
+    // A pre-existing vendor refresh family for this operator (hygiene revoke target).
+    const { refreshToken: priorRefresh } = await issueRefreshFamily(id, 'client-A', { db, idleSec: 1800, absoluteSec: 28800 }, 'vendor_operator')
+
+    await changeVendorPassword(
+      db,
+      { operatorId: id, currentPassword: input.password, newPassword: 'a whole new correct horse', traceId: 'trace-change' },
+    )
+
+    const row = await lookupVendorOperatorByUsername(db, input.username)
+    expect(await argonVerify(row!.passwordHash, 'a whole new correct horse')).toBe(true)
+    expect(await argonVerify(row!.passwordHash, input.password)).toBe(false)
+
+    // The prior vendor refresh family is now revoked: rotating it fails.
+    await expect(rotateRefresh(priorRefresh, { db, idleSec: 1800, principalType: 'vendor_operator' })).rejects.toThrow()
+
+    const audits = await db.outbox.findMany({ where: { eventType: 'authz.audit' } })
+    const allow = audits.find(
+      (a) => JSON.stringify(a.payload).includes('"operation":"password-change"') && JSON.stringify(a.payload).includes('"decision":"ALLOW"'),
+    )
+    expect(allow).toBeDefined()
+    const json = JSON.stringify(allow!.payload)
+    expect(json.includes(id)).toBe(true)
+    expect(json.includes('a whole new correct horse')).toBe(false)
+    expect(json.includes(input.password)).toBe(false)
+  })
+
+  it('with a WRONG current password: DENIES, is durable BEFORE the throw, the hash stays unchanged, and no family is revoked', async () => {
+    const input = provisionInput()
+    const { id } = await provisionVendorOperator(db, input)
+    const { refreshToken: priorRefresh } = await issueRefreshFamily(id, 'client-A', { db, idleSec: 1800, absoluteSec: 28800 }, 'vendor_operator')
+
+    const before = await lookupVendorOperatorByUsername(db, input.username)
+
+    await expect(
+      changeVendorPassword(db, { operatorId: id, currentPassword: 'totally wrong password', newPassword: 'irrelevant new password', traceId: 'trace-deny' }),
+    ).rejects.toThrow()
+
+    const after = await lookupVendorOperatorByUsername(db, input.username)
+    expect(after!.passwordHash).toBe(before!.passwordHash)
+
+    // The prior family is untouched: rotation still works.
+    const rotated = await rotateRefresh(priorRefresh, { db, idleSec: 1800, principalType: 'vendor_operator' })
+    expect(rotated.refreshToken).toBeTruthy()
+
+    const audits = await db.outbox.findMany({ where: { eventType: 'authz.audit' } })
+    const deny = audits.find(
+      (a) => JSON.stringify(a.payload).includes('"operation":"password-change"') && JSON.stringify(a.payload).includes('"decision":"DENY"'),
+    )
+    expect(deny).toBeDefined()
+    expect(JSON.stringify(deny!.payload).includes('totally wrong password')).toBe(false)
+  })
+})
+
+describe('adminResetVendorPassword (spec 14a task 7)', () => {
+  it('updates the hash with NO current-password check, revokes vendor refresh families, and co-commits ONE 6e ALLOW admin-reset with the class-3 actor', async () => {
+    const input = provisionInput()
+    const { id } = await provisionVendorOperator(db, input)
+    const { refreshToken: priorRefresh } = await issueRefreshFamily(id, 'client-A', { db, idleSec: 1800, absoluteSec: 28800 }, 'vendor_operator')
+    const actor = randomUUID()
+
+    await adminResetVendorPassword(db, { operatorId: id, newPassword: 'admin chosen replacement', actor, traceId: 'trace-admin-reset' })
+
+    const row = await lookupVendorOperatorByUsername(db, input.username)
+    expect(await argonVerify(row!.passwordHash, 'admin chosen replacement')).toBe(true)
+    expect(await argonVerify(row!.passwordHash, input.password)).toBe(false)
+
+    await expect(rotateRefresh(priorRefresh, { db, idleSec: 1800, principalType: 'vendor_operator' })).rejects.toThrow()
+
+    const audits = await db.outbox.findMany({ where: { eventType: 'authz.audit' } })
+    const allow = audits.find(
+      (a) => JSON.stringify(a.payload).includes('"operation":"admin-reset"') && JSON.stringify(a.payload).includes('"decision":"ALLOW"'),
+    )
+    expect(allow).toBeDefined()
+    const json = JSON.stringify(allow!.payload)
+    expect(json.includes(actor)).toBe(true)
+    expect(json.includes('admin chosen replacement')).toBe(false)
+  })
+})
+
+describe('no self-service reset path (spec 14a task 7)', () => {
+  it('exports no self-service email/SMS reset function from vendor-operator.ts', () => {
+    const exportNames = Object.keys(vendorOperatorModule)
+    for (const name of exportNames) {
+      expect(name.toLowerCase()).not.toMatch(/selfservice|self_service|emailreset|smsreset|resetlink|resettoken/)
     }
   })
 })

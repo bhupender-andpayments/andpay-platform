@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { hash as argonHash } from '@node-rs/argon2'
+import { hash as argonHash, verify as argonVerify } from '@node-rs/argon2'
+import { AuthzError } from '@andpay/authz'
 import type { Prisma } from '../generated/client/index.js'
 import type { AuthDb } from './db.js'
 import { enterWriteRole } from './write-context.js'
-import { emitAuthzAudit } from './audit.js'
+import { emitAuthzAudit, auditStandalone } from './audit.js'
 
 type Tx = Prisma.TransactionClient
 
@@ -146,6 +147,109 @@ export async function suspendVendorOperator(
       decision: 'ALLOW',
       outcome: 'suspended',
       resourceIds: [input.id],
+      traceId: input.traceId,
+    })
+  })
+}
+
+export interface ChangeVendorPasswordInput {
+  operatorId: string
+  currentPassword: string
+  newPassword: string
+  traceId: string
+}
+
+// Spec 14a Task 7: the AUTHENTICATED change-password flow (the operator
+// changing their own password). Verifies the CURRENT peppered password
+// (Argon2id, same primitive vendor-login.ts verifies against) against the
+// stored hash before touching anything. A mismatch is a pure DENY with no
+// auth write to ride: its 6e is a SYNCHRONOUS STANDALONE durable commit
+// BEFORE the throw is observable (the Q1 invariant, same pattern as
+// vendor-login.ts's denyThrow). On success, INSIDE ONE auth write tx
+// (enterWriteRole FIRST): updates the hash to the new peppered value,
+// revokes the operator's OTHER vendor refresh families as a hygiene step
+// (principalType:'vendor_operator', mirrors logoutFamily's revoke shape but
+// scoped by principalId+principalType rather than a single familyId), and
+// co-commits ONE 6e ALLOW (operation 'password-change', actor = the
+// operator itself, IDs only, never the raw password).
+export async function changeVendorPassword(
+  db: AuthDb,
+  input: ChangeVendorPasswordInput,
+  _deps: VendorOperatorDeps = {},
+): Promise<void> {
+  const row = await db.vendorOperator.findUnique({ where: { id: input.operatorId } })
+
+  if (!row || !(await argonVerify(row.passwordHash, input.currentPassword))) {
+    await auditStandalone(db, {
+      principalId: input.operatorId,
+      cls: 7,
+      operation: 'password-change',
+      decision: 'DENY',
+      outcome: 'denied',
+      reasonCode: 'authn-failed',
+      resourceIds: [input.operatorId],
+      traceId: input.traceId,
+    })
+    throw new AuthzError('authn-failed')
+  }
+
+  const newHash = await argonHash(input.newPassword)
+
+  await db.$transaction(async (tx) => {
+    await enterWriteRole(tx, 'auth_write')
+    await updateVendorOperatorPasswordHash(tx, { id: input.operatorId, newHash })
+    await tx.refreshToken.updateMany({
+      where: { principalId: input.operatorId, principalType: 'vendor_operator', revoked: false },
+      data: { revoked: true },
+    })
+    await emitAuthzAudit(tx, {
+      principalId: input.operatorId,
+      cls: 7,
+      operation: 'password-change',
+      decision: 'ALLOW',
+      outcome: 'password-changed',
+      resourceIds: [input.operatorId],
+      traceId: input.traceId,
+    })
+  })
+}
+
+export interface AdminResetVendorPasswordInput {
+  operatorId: string
+  newPassword: string
+  // The class-3 admin's sub, passed by the edge which performs the authz
+  // check (this module never authorizes the caller, it only records who the
+  // edge told us acted).
+  actor: string
+  traceId: string
+}
+
+// Spec 14a Task 7: the class-3-AUTHORIZED admin reset (no current-password
+// check: admin authority, granted upstream by the edge). INSIDE ONE auth
+// write tx (enterWriteRole FIRST): updates the hash, revokes the operator's
+// vendor refresh families, and co-commits ONE 6e ALLOW (operation
+// 'admin-reset', the class-3 actor recorded as principalId, IDs only).
+export async function adminResetVendorPassword(
+  db: AuthDb,
+  input: AdminResetVendorPasswordInput,
+  _deps: VendorOperatorDeps = {},
+): Promise<void> {
+  const newHash = await argonHash(input.newPassword)
+
+  await db.$transaction(async (tx) => {
+    await enterWriteRole(tx, 'auth_write')
+    await updateVendorOperatorPasswordHash(tx, { id: input.operatorId, newHash })
+    await tx.refreshToken.updateMany({
+      where: { principalId: input.operatorId, principalType: 'vendor_operator', revoked: false },
+      data: { revoked: true },
+    })
+    await emitAuthzAudit(tx, {
+      principalId: input.actor,
+      cls: 3,
+      operation: 'admin-reset',
+      decision: 'ALLOW',
+      outcome: 'password-reset',
+      resourceIds: [input.operatorId],
       traceId: input.traceId,
     })
   })
