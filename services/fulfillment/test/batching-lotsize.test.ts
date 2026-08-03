@@ -13,12 +13,18 @@ const url =
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 const db = new PrismaClient({ datasourceUrl: url })
 
+const TABLES =
+  'pending_pool_entry, batch, batch_pool, saga_timer, saga_step, saga_instance, outbox, inbox'
+
 beforeEach(async () => {
-  await db.$executeRawUnsafe(
-    'TRUNCATE pending_pool_entry, batch, batch_pool, saga_timer, saga_step, saga_instance, outbox, inbox CASCADE',
-  )
+  await db.$executeRawUnsafe(`TRUNCATE ${TABLES} CASCADE`)
 })
 afterAll(async () => {
+  // The fulfillment test suite shares one database and runs serially
+  // (fileParallelism:false); beforeEach only cleans up BEFORE this file's own
+  // tests, leaving committed rows behind for whichever file runs next. Clean
+  // up after this file's tests too, so it never pollutes a later file.
+  await db.$executeRawUnsafe(`TRUNCATE ${TABLES} CASCADE`)
   await db.$disconnect()
 })
 
