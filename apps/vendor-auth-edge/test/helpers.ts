@@ -9,6 +9,7 @@ import {
   TotpAdapter,
   enrollTotp,
   provisionVendorOperator,
+  issueAccessToken,
   loadConfig,
   INTERNAL_ADMIN_PLANE,
   VENDOR_PLANE,
@@ -158,6 +159,29 @@ export async function seedVendorOperatorWithTotp(vndrId: string, username: strin
   })
 
   return { id, vndrId, username, secret: extractSecret(otpauthUri) }
+}
+
+// Mints a real class-3 internal-admin token off the SAME shared multi-key
+// signer `buildTestVendorAuthEdgeApp` wires (Fork D): the internal-admin
+// public key lives in the same JWKS this edge's admin guard verifies
+// against, so a token minted here is accepted by a real app instance built
+// via this file, exactly as if apps/auth-edge (a distinct process in a real
+// deploy sharing the same KMS key, per deps.ts's scaffold-limitation
+// comment) had minted it. Spec 14a task 11.
+export async function mintAdminToken(principalId: string = randomUUID()): Promise<string> {
+  const signer = await sharedSigner()
+  return issueAccessToken(
+    {
+      principalId,
+      cls: 3,
+      mode: 'live',
+      scope: {},
+      psr: 'role:admin',
+      epoch: 1,
+      aud: INTERNAL_ADMIN_PLANE,
+    },
+    { signer, iss: EXPECTED_ISS, ttlSec: 600 },
+  )
 }
 
 function extractSecret(otpauthUri: string): string {
