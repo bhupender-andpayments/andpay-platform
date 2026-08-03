@@ -10,8 +10,19 @@ export interface EnrollInput {
   enrolledByActor: string
   issuer: string
   // Custody seam (S7): persist the secret to Secrets Manager, return only the
-  // reference. The raw secret NEVER touches the DB row or a log line.
-  storeSecret: (principalId: string, secret: string) => Promise<string>
+  // reference. The raw secret NEVER touches the DB row or a log line. The
+  // principalType is appended as a THIRD, optional argument (spec 14a task 5):
+  // every pre-existing 2-arg implementation still type-checks and still runs
+  // unchanged (JS ignores an extra argument it never declared), so the
+  // internal-only custody callers already in production are byte-unchanged.
+  // A principalType-aware custody adapter can use the 3rd argument to key the
+  // secret by (principalId, principalType), so an internal and a vendor
+  // operator sharing the same principalId value get distinct secrets.
+  storeSecret: (principalId: string, secret: string, principalType?: string) => Promise<string>
+  // Spec 14a task 5, additive: DEFAULT 'internal' so every existing call site
+  // (which passes no principalType) is byte-unchanged. Discriminates the row
+  // and the custody key from a second principal_type (vendor_operator).
+  principalType?: 'internal' | 'vendor_operator'
   traceId: string
 }
 
@@ -22,14 +33,18 @@ export interface EnrollInput {
 // portal, no server-side image gen). Idempotent-rotate on the target principal:
 // the single active enrollment is replaced so a re-seed rotates the secret.
 export async function enrollTotp(db: AuthDb, input: EnrollInput): Promise<{ otpauthUri: string }> {
+  const principalType = input.principalType ?? 'internal'
   const secret = authenticator.generateSecret()
   const otpauthUri = authenticator.keyuri(input.targetAccountLabel, input.issuer, secret)
-  const secretRef = await input.storeSecret(input.targetPrincipalId, secret)
+  const secretRef = await input.storeSecret(input.targetPrincipalId, secret, principalType)
   await db.$transaction(async (tx) => {
     await enterWriteRole(tx, 'auth_write')
-    await tx.mfaEnrollment.updateMany({ where: { principalId: input.targetPrincipalId, status: 'active' }, data: { status: 'revoked' } })
+    // Scoped by (principalId, principalType): revoking a re-seed for one
+    // principal_type must never touch the other type's active row, even when
+    // both share the same principalId value (spec 14a task 5 disjointness).
+    await tx.mfaEnrollment.updateMany({ where: { principalId: input.targetPrincipalId, principalType, status: 'active' }, data: { status: 'revoked' } })
     await tx.mfaEnrollment.create({
-      data: { id: randomUUID(), principalId: input.targetPrincipalId, factor: 'totp', secretRef, status: 'active', enrolledByActor: input.enrolledByActor },
+      data: { id: randomUUID(), principalId: input.targetPrincipalId, principalType, factor: 'totp', secretRef, status: 'active', enrolledByActor: input.enrolledByActor },
     })
     await emitAuthzAudit(tx, {
       principalId: input.targetPrincipalId, cls: 3, operation: 'mfa-enroll', decision: 'ALLOW',

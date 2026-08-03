@@ -1,7 +1,7 @@
 import type { AuthDb } from './db.js'
 import { enterWriteRole } from './write-context.js'
 import { emitAuthzAudit } from './audit.js'
-import { hashToken } from './refresh.js'
+import { hashToken, type PrincipalType } from './refresh.js'
 
 export interface LogoutInput { principalId: string; familyId: string; traceId: string }
 
@@ -35,8 +35,16 @@ export async function logoutFamily(db: AuthDb, input: LogoutInput): Promise<void
 // logoutFamily. Idempotent by design: an unknown, cleared, or already-revoked
 // cookie resolves to no row and is a clean no-op, so the caller can always
 // return 204. logoutFamily itself is idempotent for the already-revoked family.
-export async function logoutByRefreshToken(db: AuthDb, presented: string, traceId: string): Promise<void> {
+//
+// Spec 14a task 5, additive 4th param, DEFAULT 'internal': every existing
+// call site (which passes 3 args) is byte-unchanged. A presented token whose
+// row belongs to the OTHER principal_type is treated the SAME as an unknown
+// token (clean no-op, never a distinct error), so a vendor-context logout can
+// never revoke an internal family sharing the same principalId, and vice
+// versa (the disjointness this task requires).
+export async function logoutByRefreshToken(db: AuthDb, presented: string, traceId: string, principalType: PrincipalType = 'internal'): Promise<void> {
   const row = await db.refreshToken.findUnique({ where: { tokenHash: hashToken(presented) } })
   if (!row) return
+  if (row.principalType !== principalType) return
   await logoutFamily(db, { principalId: row.principalId, familyId: row.familyId, traceId })
 }

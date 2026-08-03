@@ -27,12 +27,20 @@ export interface IssueFamilyDeps {
   audit?: AuthzAuditRecord
 }
 
+export type PrincipalType = 'internal' | 'vendor_operator'
+
 // Start a new D3 refresh-token family (6b): opaque, hashed at rest, client-bound,
-// with independent idle and absolute bounds.
+// with independent idle and absolute bounds. principalType is a 4th, optional
+// parameter (spec 14a task 5) defaulting to 'internal': every existing call
+// site (which passes 3 args) is byte-unchanged. A vendor_operator family
+// sharing the SAME principalId value as an internal family is a wholly
+// separate row from the moment it is issued (own randomUUID familyId), and
+// carries its own principal_type for the disjointness checks in rotate/logout.
 export async function issueRefreshFamily(
   principalId: string,
   clientBind: string,
   deps: IssueFamilyDeps,
+  principalType: PrincipalType = 'internal',
 ): Promise<{ refreshToken: string; familyId: string }> {
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   const token = newOpaqueToken()
@@ -53,6 +61,7 @@ export async function issueRefreshFamily(
         tokenHash: hashToken(token),
         familyId,
         principalId,
+        principalType,
         clientBind,
         issuedAt: new Date(now * 1000),
         idleExpires: new Date((now + deps.idleSec) * 1000),
@@ -76,6 +85,15 @@ export interface RotateDeps {
   now?: number
   audit?: AuthzAuditRecord
   revokeAudit?: AuthzAuditRecord
+  // Spec 14a task 5, additive, DEFAULT 'internal': the caller's asserted
+  // principal_type. rotateRefresh checks it against the row it finds by
+  // tokenHash and rejects a mismatch as 'refresh-unknown' (the SAME opaque
+  // error as a genuinely unknown token, so a wrong-type presentation never
+  // distinguishes "exists under the other type" from "does not exist"). This
+  // is the disjointness enforcement: a vendor-context caller can never rotate
+  // an internal family's token, and vice versa, even though tokenHash alone
+  // already uniquely resolves the row.
+  principalType?: PrincipalType
 }
 
 // One-time-use rotation with family-wide revocation on reuse (6b). A presented
@@ -87,10 +105,16 @@ export async function rotateRefresh(
   deps: RotateDeps,
 ): Promise<{ refreshToken: string; principalId: string; familyId: string }> {
   const now = deps.now ?? Math.floor(Date.now() / 1000)
+  const principalType = deps.principalType ?? 'internal'
   const presentedHash = hashToken(presented)
 
   const row = await deps.db.refreshToken.findUnique({ where: { tokenHash: presentedHash } })
   if (!row) throw new AuthzError('refresh-unknown')
+  // Disjointness (spec 14a task 5): a token from the OTHER principal_type is
+  // treated identically to an unknown token, never a distinct error, so no
+  // information about the other family's existence leaks across the type
+  // boundary.
+  if (row.principalType !== principalType) throw new AuthzError('refresh-unknown')
   if (row.revoked) throw new AuthzError('refresh-revoked')
   if (row.used) {
     // Reuse of a rotated token: revoke the ENTIRE family (6b anti-replay). This
@@ -138,6 +162,7 @@ export async function rotateRefresh(
         tokenHash: hashToken(token),
         familyId: row.familyId,
         principalId: row.principalId,
+        principalType: row.principalType,
         clientBind: row.clientBind,
         issuedAt: nowDate,
         idleExpires: new Date((now + deps.idleSec) * 1000),
