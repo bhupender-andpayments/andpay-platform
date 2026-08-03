@@ -81,6 +81,14 @@ model Unit {
   // serialized-only
   deviceSerial       String?  @unique @map("device_serial")
   deviceQr           Json?    @map("device_qr") @db.JsonB
+  // The manufacturer file's "Sim No" column (an ICCID), captured at intake.
+  // Subscriber-linkable, sensitive-by-default: stored here, but NEVER emitted
+  // on a fact (S7) and not granted to any read role, pending the architecture
+  // PII/residency ruling. No @unique in this additive step (the intake INSERT's
+  // ON CONFLICT targets device_serial only; a sim_no UNIQUE would turn a
+  // duplicate ICCID into a whole-file E1 rollback) - uniqueness is an OPEN
+  // question for the ratifying spec.
+  simNo              String?  @map("sim_no")
   shipment           String?  @db.Uuid
   printedForMerchant String?  @map("printed_for_merchant") @db.Uuid
   location           String?
@@ -96,6 +104,12 @@ model Unit {
   createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  // Non-unique index backing the intake-time duplicate-ICCID lookup (SELECT ...
+  // WHERE sim_no = ?). NOT @unique: the BRD treats a duplicate ICCID as a
+  // flag-for-review case (windowed detection), never an all-time uniqueness
+  // assertion, so a legitimate SIM re-use is adjudicated by ops, not rejected
+  // by a constraint.
+  @@index([simNo])
   @@map("unit")
 }
 

@@ -75,6 +75,67 @@ describe('parseIntakeSheet', () => {
     })
     expect(sheet.rows).toHaveLength(1)
   })
+
+  // Fast-follow (SIM No capture): the SERIALIZED shape admits an OPTIONAL simNo
+  // (an ICCID). Only SIM-bearing devices carry it, so a serialized row WITHOUT
+  // simNo stays valid; when present it is validated like any id/label field
+  // (non-empty, no control byte, m1).
+  it('accepts a SERIALIZED row carrying an optional simNo (ICCID)', () => {
+    const sheet = parseIntakeSheet({
+      ...baseIntake(),
+      rows: [
+        {
+          kind: 'SERIALIZED',
+          deviceSerial: 'SER-1',
+          productType: 'SOUNDBOX',
+          deviceQr: { di: 'DI-1' },
+          simNo: '8991922406975395100U',
+        },
+      ],
+    })
+    const row = sheet.rows[0]!
+    expect(row.kind).toBe('SERIALIZED')
+    if (row.kind === 'SERIALIZED') expect(row.simNo).toBe('8991922406975395100U')
+  })
+
+  it('accepts a SERIALIZED row WITHOUT simNo (optional, non-SIM devices)', () => {
+    const sheet = parseIntakeSheet({
+      ...baseIntake(),
+      rows: [{ kind: 'SERIALIZED', deviceSerial: 'SER-1', productType: 'STANDEE', deviceQr: { di: 'DI-1' } }],
+    })
+    const row = sheet.rows[0]!
+    expect(row.kind).toBe('SERIALIZED')
+    if (row.kind === 'SERIALIZED') expect(row.simNo).toBeUndefined()
+  })
+
+  it('rejects an empty-string simNo', () => {
+    expect(() =>
+      parseIntakeSheet({
+        ...baseIntake(),
+        rows: [{ kind: 'SERIALIZED', deviceSerial: 'SER-1', productType: 'SOUNDBOX', deviceQr: { di: 'DI-1' }, simNo: '' }],
+      }),
+    ).toThrow(EdgeParseError)
+  })
+
+  it('rejects a non-string simNo', () => {
+    expect(() =>
+      parseIntakeSheet({
+        ...baseIntake(),
+        rows: [{ kind: 'SERIALIZED', deviceSerial: 'SER-1', productType: 'SOUNDBOX', deviceQr: { di: 'DI-1' }, simNo: 42 }],
+      }),
+    ).toThrow(EdgeParseError)
+  })
+
+  it('rejects a control-character simNo (m1 defense-in-depth)', () => {
+    expect(() =>
+      parseIntakeSheet({
+        ...baseIntake(),
+        rows: [
+          { kind: 'SERIALIZED', deviceSerial: 'SER-1', productType: 'SOUNDBOX', deviceQr: { di: 'DI-1' }, simNo: '8991\x1e22' },
+        ],
+      }),
+    ).toThrow(EdgeParseError)
+  })
 })
 
 describe('parseReturnSheet', () => {

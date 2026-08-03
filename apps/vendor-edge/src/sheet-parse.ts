@@ -52,7 +52,11 @@ export function parseWebhookBody(json: unknown): unknown {
 }
 
 const INTAKE_SHEET_FIELDS = ['fileId', 'vndrId', 'workQueue', 'rows'] as const
-const SERIALIZED_ROW_FIELDS = ['kind', 'deviceSerial', 'productType', 'deviceQr'] as const
+// simNo (ICCID) is an OPTIONAL SERIALIZED field (only SIM-bearing devices carry
+// it). Admitted here so the strict assertOnlyKeys whitelist no longer REJECTS a
+// row that carries it. Sensitive-by-default downstream: stored, never emitted on
+// a fact (S7) and not on any read surface, pending the architecture PII ruling.
+const SERIALIZED_ROW_FIELDS = ['kind', 'deviceSerial', 'productType', 'deviceQr', 'simNo'] as const
 const QUANTITY_LINE_ROW_FIELDS = ['kind', 'productType', 'count', 'qrString'] as const
 
 function parseIntakeRow(row: unknown, index: number): IntakeRow {
@@ -63,7 +67,10 @@ function parseIntakeRow(row: unknown, index: number): IntakeRow {
     const deviceSerial = requireString(row, 'deviceSerial', context)
     const productType = requireString(row, 'productType', context)
     if (!isPlainObject(row.deviceQr)) throw new EdgeParseError(`${context}: "deviceQr" must be an object`)
-    return { kind: 'SERIALIZED', deviceSerial, productType, deviceQr: row.deviceQr }
+    // Optional: absent for non-SIM devices; when present, validated exactly like
+    // any id/label field (non-empty string, no control byte, m1).
+    const simNo = row.simNo === undefined ? undefined : requireString(row, 'simNo', context)
+    return { kind: 'SERIALIZED', deviceSerial, productType, deviceQr: row.deviceQr, ...(simNo !== undefined ? { simNo } : {}) }
   }
   if (row.kind === 'QUANTITY_LINE') {
     assertOnlyKeys(row, QUANTITY_LINE_ROW_FIELDS, context)
