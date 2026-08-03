@@ -38,3 +38,4 @@ export * from "./redact.js";
 export * from "./identity-seam.js";
 export * from "./logout.js";
 export * from "./vendor-operator.js";
+export * from "./vendor-login.js";
