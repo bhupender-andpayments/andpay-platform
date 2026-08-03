@@ -71,6 +71,8 @@ export { type CredentialProjectionRow } from '@andpay/authz'
 export { emitVendorAuthzAudit } from './vendor-audit.js'
 export { enterReadScope } from './read-context.js'
 export { enterWriteScope, enterWriteRole } from './write-context.js'
+export { enterVendorReadScope } from './vendor-read-context.js'
+export { type WorkQueueRow, readVendorWorkQueue } from './vendor-reads.js'
 export {
   correctStatus,
   overrideTerminal,

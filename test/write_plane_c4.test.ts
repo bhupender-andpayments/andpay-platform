@@ -562,6 +562,7 @@ describe('check 1/4: every service file that opens a domain write transaction en
       'services/fulfillment/src/courier-status.ts', // program-agnostic; callers enter scope
       'services/fulfillment/src/read.ts', // read path (enterReadScope)
       'services/tms/src/read.ts', // read path (enterReadScope)
+      'services/fulfillment/src/vendor-reads.ts', // vendor read path (enterVendorReadScope, spec 14b)
       'services/fulfillment/src/ops-read.ts',
       'services/tms/src/ops-read.ts',
       'services/auth/src/authz-chain.ts', // the 6e appender path: runs under auth_appender (Task 5, C2)
