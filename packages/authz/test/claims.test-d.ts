@@ -3,7 +3,7 @@ import type { LeanClaim, Plane, Scope, PrincipalClass, Acr, Amr } from '../src/i
 
 // The D3 lean claim shape (16.3), locked at spec-04 planning.
 expectTypeOf<LeanClaim['cls']>().toEqualTypeOf<PrincipalClass>()
-expectTypeOf<PrincipalClass>().toEqualTypeOf<1 | 2 | 3 | 4 | 5 | 6>()
+expectTypeOf<PrincipalClass>().toEqualTypeOf<1 | 2 | 3 | 4 | 5 | 6 | 7>()
 expectTypeOf<LeanClaim['aud']>().toEqualTypeOf<Plane>()
 expectTypeOf<LeanClaim['mode']>().toEqualTypeOf<'live' | 'test'>()
 expectTypeOf<LeanClaim['scope']>().toEqualTypeOf<Scope>()

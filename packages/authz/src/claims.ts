@@ -6,8 +6,9 @@
 // (S10.5, S7).
 
 // Principal taxonomy (16.1). Classes 1, 2, 4, 5 are reserved for later specs;
-// this slice exercises class 3 (internal humans) and class 6 (vendors).
-export type PrincipalClass = 1 | 2 | 3 | 4 | 5 | 6
+// this slice exercises class 3 (internal humans), class 6 (vendor systems),
+// and class 7 (vendor-operator humans, D122, spec 14a).
+export type PrincipalClass = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
 // Live/test plane (S2/S16). Orthogonal to the audience, ANDed at evaluation,
 // always present, never a request-body field.

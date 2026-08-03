@@ -76,8 +76,8 @@ export function validateVendorSet(perms: readonly string[]): asserts perms is Cl
 // scope (ABAC, which resources), both ANDed and evaluated LOCALLY (T4, 16.2). A
 // missing permission denies the operation; a scope miss denies the resource.
 export function authorize(claim: LeanClaim, operation: string, resource: AuthzResource, cfg: RoleConfig): AuthzDecision {
-  return claim.cls === 6
-    ? authorizeVendor(claim, operation, resource, cfg)
+  return claim.cls === 6 || claim.cls === 7
+    ? authorizeVendor(claim, operation, resource, cfg, { enforceWorkQueue: claim.cls === 6 })
     : authorizeHuman(claim, operation, resource, cfg)
 }
 
@@ -119,14 +119,31 @@ export function authorizeHuman(claim: LeanClaim, operation: string, resource: Au
   return { allowed: true }
 }
 
-export function authorizeVendor(claim: LeanClaim, operation: string, resource: AuthzResource, cfg: RoleConfig): AuthzDecision {
+// Parameterized to serve both class 6 (vendor systems) and class 7
+// (vendor-operator humans, D122). The work-queue check is an explicit
+// opt-in, defaulted to true so every pre-existing class-6 call site (none of
+// which pass opts) is byte-behavior-unchanged. Class 7 carries scope.vndr
+// only and skips the work-queue axis (Fork C); the vendor-id isolation axis
+// stays enforced for both classes.
+export function authorizeVendor(
+  claim: LeanClaim,
+  operation: string,
+  resource: AuthzResource,
+  cfg: RoleConfig,
+  opts: { enforceWorkQueue?: boolean } = {},
+): AuthzDecision {
+  const enforceWorkQueue = opts.enforceWorkQueue ?? true
   const set = cfg.vendorSets[stripPrefix(claim.psr, 'vset:')]
   if (!set) return { allowed: false, reason: 'unknown-vendor-set' }
   if (!set.permissions.includes(operation as ClassSixPermission)) {
     return { allowed: false, reason: 'permission-denied' }
   }
-  // The vendor may act only on its own vendor id and work queue (105c).
-  if (resource.vndrId !== claim.scope.vndr || resource.workQueue !== claim.scope.wq) {
+  // The vendor may act only on its own vendor id (105c), always enforced.
+  if (resource.vndrId !== claim.scope.vndr) {
+    return { allowed: false, reason: 'scope-denied' }
+  }
+  // The work-queue axis is enforced only for class-6 machine calls.
+  if (enforceWorkQueue && resource.workQueue !== claim.scope.wq) {
     return { allowed: false, reason: 'scope-denied' }
   }
   return { allowed: true }
