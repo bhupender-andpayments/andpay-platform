@@ -2,6 +2,7 @@ import { type ArgumentsHost, Catch, HttpStatus } from '@nestjs/common'
 import { BaseExceptionFilter } from '@nestjs/core'
 import { AuthzError } from '@andpay/authz'
 import { EdgeAuthError } from '@andpay/edge'
+import { VendorOperatorDuplicateError } from '@andpay/auth-service'
 
 // Registered APP-WIDE (`app.module.ts`, `APP_FILTER`), `@Catch()` with no
 // argument so it sees every exception the app throws, including Nest's own
@@ -30,6 +31,18 @@ interface MinimalResponse {
 @Catch()
 export class VendorAuthErrorFilter extends BaseExceptionFilter {
   override catch(exception: unknown, host: ArgumentsHost): void {
+    // Spec 14a task 11 carry-forward (folded into task 12): a duplicate
+    // (vndrId, username) provision attempt throws a typed
+    // VendorOperatorDuplicateError. This is a genuine, expected 409 Conflict,
+    // never a 401 (it is not an authn/authz failure) and never Nest's default
+    // 500 (it is not an unexpected error): a generic conflict body, no PII,
+    // no password/secret material.
+    if (exception instanceof VendorOperatorDuplicateError) {
+      const res = host.switchToHttp().getResponse<MinimalResponse>()
+      res.status(HttpStatus.CONFLICT).json({ code: 'conflict', message: 'resource already exists' })
+      return
+    }
+
     if (!(exception instanceof AuthzError) && !(exception instanceof EdgeAuthError)) {
       super.catch(exception, host)
       return

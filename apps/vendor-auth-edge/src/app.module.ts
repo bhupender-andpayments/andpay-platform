@@ -5,6 +5,7 @@ import { ProbeController } from './probe.controller.js'
 import { SessionController } from './session.controller.js'
 import { EnrollController } from './enroll.controller.js'
 import { ProvisionController } from './provision.controller.js'
+import { PasswordController } from './password.controller.js'
 import { VendorAuthEdgeAdminGuard } from './admin.guard.js'
 import { VendorAuthErrorFilter } from './vendor-auth-error.filter.js'
 import { EDGE_DEPS, type VendorAuthEdgeDeps } from './deps.js'
@@ -23,7 +24,7 @@ export class VendorAuthEdgeModule {
   static register(deps: VendorAuthEdgeDeps): DynamicModule {
     return {
       module: VendorAuthEdgeModule,
-      controllers: [ProbeController, SessionController, EnrollController, ProvisionController],
+      controllers: [ProbeController, SessionController, EnrollController, ProvisionController, PasswordController],
       providers: [
         { provide: EDGE_DEPS, useValue: deps },
         { provide: APP_FILTER, useClass: VendorAuthErrorFilter },
