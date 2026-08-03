@@ -563,6 +563,7 @@ describe('check 1/4: every service file that opens a domain write transaction en
       'services/fulfillment/src/read.ts', // read path (enterReadScope)
       'services/tms/src/read.ts', // read path (enterReadScope)
       'services/fulfillment/src/vendor-reads.ts', // vendor read path (enterVendorReadScope, spec 14b)
+      'services/fulfillment/src/vendor-pull.ts', // vendor read path (enterVendorReadScope, spec 14b task 5; the write-shaped 6e audit is emitted via emitVendorAuthzAudit's own tx, which itself enters fulfillment_write)
       'services/fulfillment/src/ops-read.ts',
       'services/tms/src/ops-read.ts',
       'services/auth/src/authz-chain.ts', // the 6e appender path: runs under auth_appender (Task 5, C2)
