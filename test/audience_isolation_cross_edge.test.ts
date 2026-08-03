@@ -211,6 +211,7 @@ beforeAll(async () => {
     expectedMode: 'live',
     jwks: sharedJwks,
     expectedIss: SHARED_ISS,
+    vendorPortalOrigin: 'https://vendor.andpay.test',
   }
   vendorIntakeEdgeApp = await buildVendorIntakeEdgeApp(vendorIntakeEdgeDeps)
   await vendorIntakeEdgeApp.init()

@@ -26,3 +26,17 @@ export function buildPortalCorsOptions(allowedOrigin: string): CorsOptions {
 export function applyPortalCors(app: CorsCapableApp, allowedOrigin: string): void {
   app.enableCors(buildPortalCorsOptions(allowedOrigin))
 }
+
+// Browser CORS for a BEARER-ONLY edge (spec 14a task 15, check 6): an edge
+// whose ONLY credential transport is the Authorization header, never a
+// cookie, so Access-Control-Allow-Credentials must never be true on this
+// path (a credentialed response is meaningless, and wrong, when no cookie is
+// ever set or read here). Allow-lists the single configured origin (never a
+// wildcard), same minimal methods/headers as the portal variant.
+export function buildBearerCorsOptions(allowedOrigin: string): CorsOptions {
+  return { origin: [allowedOrigin], credentials: false, methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['authorization', 'content-type'] }
+}
+
+export function applyBearerCors(app: CorsCapableApp, allowedOrigin: string): void {
+  app.enableCors(buildBearerCorsOptions(allowedOrigin))
+}

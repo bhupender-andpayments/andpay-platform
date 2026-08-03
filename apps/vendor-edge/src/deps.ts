@@ -24,6 +24,14 @@ export interface EdgeDeps {
   // together in buildVendorEdgeDepsFromEnv's fail-closed real bootstrap.
   jwks?: JSONWebKeySet
   expectedIss?: string
+  // The single allow-listed browser origin for the EXTERNAL vendor portal
+  // (spec 14a task 15, check 6), the SAME origin vendor-auth-edge allow-lists
+  // (deps.vendorPortalOrigin there). This edge is bearer-only (no cookie is
+  // ever set or read here), so its CORS is applied WITHOUT credentials
+  // (applyBearerCors, @andpay/edge), unlike vendor-auth-edge's credentialed
+  // cookie path. Never a wildcard; fails the process start closed if absent
+  // (buildEdgeDepsFromEnv).
+  vendorPortalOrigin: string
 }
 
 export const EDGE_DEPS = 'EDGE_DEPS'
@@ -55,6 +63,10 @@ export function buildEdgeDepsFromEnv(): EdgeDeps {
   if (!expectedIss) {
     throw new Error('VENDOR_EDGE_ISS is required (the pinned issuer is never defaulted in code, D3/S10)')
   }
+  const vendorPortalOrigin = process.env.VENDOR_PORTAL_ORIGIN
+  if (!vendorPortalOrigin) {
+    throw new Error('VENDOR_PORTAL_ORIGIN is required (the CORS allow-listed origin is never defaulted in code, check 6)')
+  }
   const datasourceUrl = process.env.FULFILLMENT_DATABASE_URL ?? DEFAULT_FULFILLMENT_DATABASE_URL
   const expectedMode: Mode = process.env.VENDOR_EDGE_MODE === 'live' ? 'live' : 'test'
   const jwks = JSON.parse(rawJwks) as JSONWebKeySet
@@ -64,5 +76,6 @@ export function buildEdgeDepsFromEnv(): EdgeDeps {
     expectedMode,
     jwks,
     expectedIss,
+    vendorPortalOrigin,
   }
 }

@@ -27,7 +27,7 @@ const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 let app: INestApplication
 
 beforeAll(async () => {
-  const deps: EdgeDeps = { fulfillmentDb, pepper: PEPPER, expectedMode: 'test' }
+  const deps: EdgeDeps = { fulfillmentDb, pepper: PEPPER, expectedMode: 'test', vendorPortalOrigin: 'https://vendor.andpay.test' }
   app = await buildEdgeApp(deps)
   await app.init()
 })

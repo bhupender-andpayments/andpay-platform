@@ -1,5 +1,6 @@
 import { type DynamicModule, Module, type INestApplication } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
+import { applyBearerCors } from '@andpay/edge'
 import { CourierStatusController } from './courier-status.controller.js'
 import { IntakeController } from './intake.controller.js'
 import { ReturnController } from './return.controller.js'
@@ -25,6 +26,14 @@ export class VendorEdgeModule {
 // bootstrap) and by the test (which calls `.init()` itself, then drives the
 // app via supertest against `app.getHttpServer()`, real in-process HTTP, no
 // bound port).
-export function buildEdgeApp(deps: EdgeDeps): Promise<INestApplication> {
-  return NestFactory.create(VendorEdgeModule.register(deps), { logger: false })
+export async function buildEdgeApp(deps: EdgeDeps): Promise<INestApplication> {
+  const app = await NestFactory.create(VendorEdgeModule.register(deps), { logger: false })
+  // Additive browser CORS for the EXTERNAL vendor portal (spec 14a task 15,
+  // check 6): allow-lists the SAME vendorPortalOrigin vendor-auth-edge does,
+  // but WITHOUT credentials (applyBearerCors, @andpay/edge) since this edge
+  // is bearer-only and never sets or reads a cookie. Applied before the app
+  // is returned, so no handler behavior changes, only the preflight/response
+  // headers.
+  applyBearerCors(app, deps.vendorPortalOrigin)
+  return app
 }

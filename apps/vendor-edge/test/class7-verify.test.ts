@@ -106,7 +106,14 @@ beforeAll(async () => {
   jwk.kid = KID
   jwks = { keys: [jwk] }
 
-  const deps: EdgeDeps = { fulfillmentDb, pepper: PEPPER, expectedMode: 'test', jwks, expectedIss: EXPECTED_ISS }
+  const deps: EdgeDeps = {
+    fulfillmentDb,
+    pepper: PEPPER,
+    expectedMode: 'test',
+    jwks,
+    expectedIss: EXPECTED_ISS,
+    vendorPortalOrigin: 'https://vendor.andpay.test',
+  }
   app = await buildEdgeApp(deps)
   await app.init()
 })
