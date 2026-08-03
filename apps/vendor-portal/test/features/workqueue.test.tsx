@@ -1,0 +1,87 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { render, screen, cleanup } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { AuthProvider } from '../../src/auth/AuthContext.js'
+import { WorkQueuePage } from '../../src/features/workqueue/WorkQueuePage.js'
+import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
+
+// The confirmed vendor-edge contract (task 10, grounded against
+// services/fulfillment/src/vendor-reads.ts readVendorWorkQueue):
+//   GET /vendor/work-queue -> WorkQueueRow[]. vndr scope comes from the
+// authenticated principal (never a request param), so the request must
+// carry no `vndr` anywhere in its URL or body.
+
+interface Call {
+  url: string
+  init: RequestInit
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+}
+
+function headerValue(call: Call, name: string): string | null {
+  const headers = call.init.headers as Record<string, string>
+  return headers[name] ?? null
+}
+
+const WORK_QUEUE_ROWS = [
+  { btchId: 'btch_1', unitCount: 10, status: 'OPEN', openEntries: 3, createdAt: '2026-08-01T00:00:00.000Z' },
+  { btchId: 'btch_2', unitCount: 5, status: 'CLOSED', openEntries: 0, createdAt: '2026-08-02T00:00:00.000Z' },
+]
+
+describe('WorkQueuePage', () => {
+  beforeEach(() => {
+    clearAccessToken()
+    setAccessToken('tok-1')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('renders work-queue rows fetched from GET /vendor/work-queue with a Bearer header and no vndr in the request', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init })
+        if (url.includes('/vendor/work-queue')) return jsonResponse(WORK_QUEUE_ROWS)
+        return jsonResponse([])
+      }),
+    )
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <WorkQueuePage />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('btch_1')).toBeTruthy()
+    expect(screen.getByText('btch_2')).toBeTruthy()
+    expect(screen.getByText('OPEN')).toBeTruthy()
+    expect(screen.getByText('CLOSED')).toBeTruthy()
+
+    const call = calls.find((c) => c.url.includes('/vendor/work-queue'))
+    expect(call).toBeTruthy()
+    expect(headerValue(call!, 'Authorization')).toBe('Bearer tok-1')
+    expect(call!.url).not.toContain('vndr')
+    expect(call!.init.body === undefined || !JSON.stringify(call!.init.body).includes('vndr')).toBe(true)
+  })
+
+  it('shows an error message when the request fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null, 500)))
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <WorkQueuePage />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByRole('alert')).toBeTruthy()
+  })
+})
