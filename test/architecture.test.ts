@@ -62,6 +62,53 @@ function otherContextConnection(other: string): RegExp[] {
   ]
 }
 
+// Strip TS/JS comments while leaving string and template literals intact. Check D
+// substring-scans for a `services/<other>/` path, and a real cross-context import
+// carries that path inside a string literal (import specifier); comment prose that
+// merely names another context (the C4 rationale) must not trip it. Character scan
+// rather than regex so a `//` inside a string (e.g. an http URL) is not mistaken
+// for a line comment, and an import path inside a string survives.
+function stripTsComments(text: string): string {
+  let out = ''
+  let i = 0
+  const n = text.length
+  while (i < n) {
+    const c = text[i]
+    const d = text[i + 1]
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c
+      out += c
+      i++
+      while (i < n) {
+        const ch = text[i]
+        out += ch
+        if (ch === '\\' && i + 1 < n) {
+          out += text[i + 1]
+          i += 2
+          continue
+        }
+        i++
+        if (ch === quote) break
+      }
+      continue
+    }
+    if (c === '/' && d === '/') {
+      i += 2
+      while (i < n && text[i] !== '\n') i++
+      continue
+    }
+    if (c === '/' && d === '*') {
+      i += 2
+      while (i < n && !(text[i] === '*' && text[i + 1] === '/')) i++
+      i += 2
+      continue
+    }
+    out += c
+    i++
+  }
+  return out
+}
+
 describe('cross-schema isolation guard', () => {
   it('A: every context has at least one migration', () => {
     for (const ctx of CONTEXTS) {
@@ -120,9 +167,10 @@ describe('cross-schema isolation guard', () => {
       const others = CONTEXTS.filter((c) => c !== ctx)
       for (const { file, text } of contextFiles(ctx)) {
         if (!file.endsWith('.ts')) continue
+        const code = stripTsComments(text)
         for (const other of others) {
           expect(
-            text.includes(`services/${other}/`),
+            code.includes(`services/${other}/`),
             `${file} must not import from services/${other}`,
           ).toBe(false)
         }
