@@ -5,7 +5,7 @@ import request from 'supertest'
 import { jwtVerify, createLocalJWKSet } from 'jose'
 import { authenticator } from 'otplib'
 import type { INestApplication } from '@nestjs/common'
-import { issueRefreshFamily, rotateRefresh } from '@andpay/auth-service'
+import { issueRefreshFamily, rotateRefresh, type AuthDb } from '@andpay/auth-service'
 import {
   buildTestVendorAuthEdgeApp,
   seedVendorOperatorWithTotp,
@@ -212,5 +212,63 @@ describe('vendor-auth-edge session lifecycle (spec 14a task 10, check 2)', () =>
       idleSec: 1800,
     })
     expect(stillAlive.principalId).toBe(sharedPrincipalId)
+  })
+
+  // Review finding (spec 14a task 10, refresh-catch narrowing): a TRANSIENT
+  // infra fault inside rotateRefresh's $transaction (e.g. a DB blip) is NOT
+  // the caller's fault and must NOT be folded into the uniform 401. This
+  // proxies the real authDb so refreshToken.findUnique (rotateRefresh's
+  // first read) throws a plain Error, simulating that blip while every other
+  // call (login, the operator lookup) passes through to the real DB
+  // untouched. The refresh must propagate as a non-401 (Nest's default 500,
+  // via the app-wide filter's rethrow path) and must NOT clear the
+  // still-valid, unused refresh cookie.
+  it('a transient (non-AuthzError) fault during rotate propagates as 5xx, NOT 401, and does not clear the cookie', async () => {
+    const throwingDb = new Proxy(authDb, {
+      get(target, prop) {
+        if (prop === 'refreshToken') {
+          const rt = (target as unknown as Record<string, unknown>)['refreshToken'] as Record<string, unknown>
+          return new Proxy(rt, {
+            get(rtTarget, rtProp) {
+              if (rtProp === 'findUnique') {
+                return () => {
+                  throw new Error('simulated transient db fault')
+                }
+              }
+              const val = rtTarget[rtProp as string]
+              return typeof val === 'function' ? (val as (...a: unknown[]) => unknown).bind(rtTarget) : val
+            },
+          })
+        }
+        const val = (target as unknown as Record<string, unknown>)[prop as string]
+        return typeof val === 'function' ? (val as (...a: unknown[]) => unknown).bind(target) : val
+      },
+    }) as unknown as AuthDb
+
+    const throwingApp = await buildTestVendorAuthEdgeApp({ authDb: throwingDb })
+    try {
+      const uniqueSuffix = randomUUID().slice(0, 8)
+      const { username: txUsername, secret: txSecret } = await seedVendorOperatorWithTotp(
+        `vndr_tx_${uniqueSuffix}`,
+        `operator_tx_${uniqueSuffix}`,
+      )
+      const totp = authenticator.generate(txSecret)
+      const loginRes = await request(throwingApp.getHttpServer())
+        .post('/session/login')
+        .send({ handle: txUsername, password: SEEDED_VENDOR_PASSWORD, totp })
+      expect(loginRes.status).toBe(200)
+      const cookie = (loginRes.headers['set-cookie'] as unknown as string[])[0]!
+
+      const res = await request(throwingApp.getHttpServer())
+        .post('/session/refresh')
+        .set('Cookie', cookie)
+        .set('Authorization', `Bearer ${loginRes.body.accessToken}`)
+
+      expect(res.status).not.toBe(401)
+      expect(res.status).toBeGreaterThanOrEqual(500)
+      expect(res.headers['set-cookie']).toBeUndefined()
+    } finally {
+      await throwingApp.close()
+    }
   })
 })

@@ -8,7 +8,8 @@ import {
   VENDOR_PLANE,
   VENDOR_OPERATOR_SET_NAME,
 } from '@andpay/auth-service'
-import { verifyAccessToken, type Acr, type Amr } from '@andpay/authz'
+import { verifyAccessToken, AuthzError, type Acr, type Amr } from '@andpay/authz'
+import { EdgeAuthError } from '@andpay/edge'
 import { EDGE_DEPS, type VendorAuthEdgeDeps } from './deps.js'
 import { serializeVendorRefreshCookie, clearVendorRefreshCookie } from './cookies.js'
 import { sourceKey, readRefreshCookie, readBearer } from './request.js'
@@ -149,7 +150,16 @@ export class SessionController {
         leewaySec: this.deps.idleSec,
       })
       boundSub = claims.sub
-    } catch {
+    } catch (e) {
+      // A genuine auth failure (invalid signature, expired-past-leeway,
+      // wrong iss/aud/mode, denylisted): verifyAccessToken throws ONLY
+      // AuthzError for every one of these (verify.ts), so a real bad-token
+      // presentation still 401s and clears the cookie. Anything else (a
+      // transient infra fault, e.g. a JWKS-fetch or other unexpected
+      // throw) is NOT the caller's fault: rethrow so the app-wide filter
+      // maps it to a genuine 5xx and the still-valid, unused refresh
+      // cookie is left intact rather than forcing a needless re-login.
+      if (!(e instanceof AuthzError) && !(e instanceof EdgeAuthError)) throw e
       res.setHeader('Set-Cookie', clearVendorRefreshCookie())
       throw new UnauthorizedException()
     }
@@ -207,7 +217,16 @@ export class SessionController {
           traceId,
         },
       })
-    } catch {
+    } catch (e) {
+      // rotateRefresh throws ONLY AuthzError for every genuine auth-failure
+      // path (refresh-unknown, refresh-revoked, refresh-reuse-family-revoked,
+      // refresh-idle-expired, refresh-absolute-expired; refresh.ts), so a
+      // real bad/reused/expired refresh token still 401s and clears the
+      // cookie. Anything else (e.g. a transient Prisma/DB fault inside the
+      // $transaction) is NOT the caller's fault: rethrow so the app-wide
+      // filter maps it to a genuine 5xx and the still-valid, unused refresh
+      // cookie is left intact rather than forcing a needless re-login.
+      if (!(e instanceof AuthzError) && !(e instanceof EdgeAuthError)) throw e
       res.setHeader('Set-Cookie', clearVendorRefreshCookie())
       throw new UnauthorizedException()
     }
