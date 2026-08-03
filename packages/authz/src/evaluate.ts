@@ -15,6 +15,10 @@ export const CLASS_SIX_PERMISSIONS = [
   // spec 09: the courier submits carrier status for its own shipments. No
   // artifact pull, so this set is strictly narrower than the print vendor's.
   'shipment:submit-status',
+  // Spec 14b: the class-7 vendor-portal work-queue/history READ capability.
+  // Distinct from batch:pull-artifacts ("see my queue" is not "download the
+  // PII package", least-privilege/T2). Class-6 machine sets never carry it.
+  'batch:read',
 ] as const
 
 export type ClassSixPermission = (typeof CLASS_SIX_PERMISSIONS)[number]

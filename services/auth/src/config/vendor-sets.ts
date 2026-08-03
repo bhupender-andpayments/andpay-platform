@@ -19,7 +19,10 @@ const COURIER: ClassSixPermission[] = ['shipment:submit-status']
 // (that carrier-status path stays class-6/COURIER-only). All class-7
 // operators reference this one set in v1 (the vendor_operator row carries no
 // role column, Task 3/4).
-const VENDOR_OPERATOR: ClassSixPermission[] = ['batch:pull-artifacts', 'sheet:submit-intake', 'sheet:submit-return']
+// Spec 14b: adds batch:read, the vendor-portal work-queue/history READ
+// capability. Kept in parity with the fulfillment context's own duplicated
+// copy of this set (guarded by test/vendor-operator-set-parity.test.ts).
+const VENDOR_OPERATOR: ClassSixPermission[] = ['batch:pull-artifacts', 'sheet:submit-intake', 'sheet:submit-return', 'batch:read']
 
 validateVendorSet(MANUFACTURER)
 validateVendorSet(PRINT)

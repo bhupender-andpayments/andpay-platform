@@ -47,6 +47,6 @@ describe('class-7 vendor_operator set parity (spec 14a): mint (auth) vs verify (
     // change BOTH sides identically (e.g. both accidentally trimmed to the
     // same wrong 2-element set) still fails against the known-correct set,
     // rather than only proving the two sides agree with each other.
-    expect([...mintPermissions].sort()).toEqual(['batch:pull-artifacts', 'sheet:submit-intake', 'sheet:submit-return'].sort())
+    expect([...mintPermissions].sort()).toEqual(['batch:pull-artifacts', 'sheet:submit-intake', 'sheet:submit-return', 'batch:read'].sort())
   })
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { validateVendorSet } from '@andpay/authz'
+import { authorize, validateVendorSet } from '@andpay/authz'
 import { loadFulfillmentConfig } from '../src/authz-config.js'
 
 describe('fulfillment class-6 authz config (local, C4: never imported from auth)', () => {
@@ -35,5 +35,11 @@ describe('fulfillment class-6 authz config (local, C4: never imported from auth)
     for (const p of ['ledger:post', 'kyc:read', 'posture:elevate', 'api_keys:manage', 'device:activate']) {
       expect(() => validateVendorSet([p])).toThrow()
     }
+  })
+
+  it('the real vendor_operator config authorizes a class-7 batch:read on own vndr (spec 14b)', () => {
+    const claim = { sub: 'op1', cls: 7 as const, mode: 'live' as const, scope: { vndr: 'vndr_abc' }, psr: 'vset:vendor_operator', aud: 'andpay:vendor', acr: 'aal2', amr: ['pwd', 'otp'] }
+    const d = authorize(claim as never, 'batch:read', { vndrId: 'vndr_abc' }, loadFulfillmentConfig())
+    expect(d.allowed).toBe(true)
   })
 })

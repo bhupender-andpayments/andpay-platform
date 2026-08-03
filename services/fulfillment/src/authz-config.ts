@@ -14,7 +14,10 @@ const COURIER: ClassSixPermission[] = ['shipment:submit-status']
 // `vset:vendor_operator` psr literal). Batch pull plus both sheet
 // submissions, but NOT shipment:submit-status (that carrier-status path stays
 // class-6/COURIER-only, 105d).
-const VENDOR_OPERATOR: ClassSixPermission[] = ['batch:pull-artifacts', 'sheet:submit-intake', 'sheet:submit-return']
+// Spec 14b: adds batch:read, the vendor-portal work-queue/history READ
+// capability. Kept in parity with services/auth/src/config/vendor-sets.ts's
+// copy (guarded by test/vendor-operator-set-parity.test.ts).
+const VENDOR_OPERATOR: ClassSixPermission[] = ['batch:pull-artifacts', 'sheet:submit-intake', 'sheet:submit-return', 'batch:read']
 
 // Validated at module load: naming an excluded permission throws here, not
 // silently ungranted (105d). This is the config-load enforcement point.

@@ -1,5 +1,5 @@
 import { it, expect } from 'vitest'
-import { authorize, humanRole, type RoleConfig, type LeanClaim } from '../src/index.js'
+import { authorize, humanRole, validateVendorSet, type RoleConfig, type LeanClaim } from '../src/index.js'
 
 const cfg: RoleConfig = {
   roles: { ops: humanRole({ permissions: ['ops:x'], ceiling: 'all-programs', requiredAcr: 'AAL2' }) },
@@ -29,4 +29,8 @@ it('cls:6 still ENFORCES the work-queue (unchanged)', () => {
 it('cls:3 human still rejects a class-6 permission', () => {
   const claim = { ...base, cls: 3, aud: 'andpay:internal-admin', psr: 'role:ops', scope: {}, acr: 'AAL2' } as unknown as LeanClaim
   expect(authorize(claim, 'batch:pull-artifacts', {}, cfg)).toEqual({ allowed: false, reason: 'class6-in-human-context' })
+})
+
+it('batch:read is a member of the class-6 permission universe (spec 14b)', () => {
+  expect(() => validateVendorSet(['batch:read'])).not.toThrow()
 })
