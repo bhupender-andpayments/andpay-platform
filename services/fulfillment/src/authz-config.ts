@@ -1,7 +1,7 @@
 import { validateVendorSet, type RoleConfig, type ClassSixPermission } from '@andpay/authz'
 
 // Local class-6 vendor sets (config-as-code, C4: fulfillment declares its own,
-// never imports services/auth's). Manufacturer submits intake + pulls artifacts.
+// never imports the auth service's). Manufacturer submits intake + pulls artifacts.
 const MANUFACTURER: ClassSixPermission[] = ['batch:pull-artifacts', 'sheet:submit-intake']
 const PRINT: ClassSixPermission[] = ['batch:pull-artifacts', 'sheet:submit-return']
 // Courier submits carrier status only. NO artifact pull (105d), narrower than
@@ -10,7 +10,7 @@ const COURIER: ClassSixPermission[] = ['shipment:submit-status']
 // Spec 14a (D122) task 13: class 7 is a SINGLE external human role, "vendor
 // operator", authenticated via a verified JWT (never apsk_). Local to this
 // context (C4, same reasoning as MANUFACTURER/PRINT/COURIER above: never
-// imported from services/auth's own vendor-sets.ts, which mints the matching
+// imported from the auth context's own vendor-sets module, which mints the matching
 // `vset:vendor_operator` psr literal). Batch pull plus both sheet
 // submissions, but NOT shipment:submit-status (that carrier-status path stays
 // class-6/COURIER-only, 105d).
@@ -31,7 +31,7 @@ export function loadFulfillmentConfig(): RoleConfig {
       vendor_print: { permissions: PRINT },
       vendor_courier: { permissions: COURIER },
       // The literal key MUST match the `vset:vendor_operator` psr minted by
-      // services/auth/src/vendor-login.ts's VENDOR_OPERATOR_SET_NAME
+      // the auth service's vendor-login module's VENDOR_OPERATOR_SET_NAME
       // ('vendor_operator'); duplicated here rather than imported, per C4.
       vendor_operator: { permissions: VENDOR_OPERATOR },
     },
