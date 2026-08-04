@@ -129,3 +129,29 @@ describe('@andpay/ids identity prefixes (spec 05, Section 11)', () => {
     expect(isId('prog', t)).toBe(false)
   })
 })
+
+describe('@andpay/ids sub-merchant prefix (Section 11)', () => {
+  it('mints and validates the smrch sub-merchant prefix', () => {
+    const id = newId('smrch')
+    expect(id.startsWith('smrch_')).toBe(true)
+    expect(parseId('smrch', id)).toBe(id)
+    expect(isId('smrch', id)).toBe(true)
+    expect(fromUuid('smrch', toUuid(id))).toBe(id)
+    expect(ID_PREFIXES.smrch).toBe('smrch_')
+  })
+
+  it('recovers the generation timestamp of a smrch id within 1ms', () => {
+    const before = Date.now()
+    const id = newId('smrch')
+    const after = Date.now()
+    const recovered = timestampOf(id).getTime()
+    expect(recovered).toBeGreaterThanOrEqual(before - 1)
+    expect(recovered).toBeLessThanOrEqual(after + 1)
+  })
+
+  it('rejects a mrch id parsed as a smrch id (wrong prefix)', () => {
+    const m = newId('mrch')
+    expect(() => parseId('smrch', m)).toThrow(InvalidIdError)
+    expect(isId('smrch', m)).toBe(false)
+  })
+})

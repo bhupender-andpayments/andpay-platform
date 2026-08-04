@@ -25,6 +25,9 @@ export const ID_PREFIXES = {
   // by Platform/Identity, implemented here per handoff spec 05; not invented.
   tnnt: 'tnnt_',
   prog: 'prog_',
+  // smrch_ (Sub-Merchant, the Identity context entity below Merchant in the
+  // 3-tier mrch_ -> smrch_ -> asgn_ model). A Section 11 registry row.
+  smrch: 'smrch_',
 } as const
 
 /** The set of registered id kinds. */
@@ -53,3 +56,4 @@ export type ApiId = Id<'api'>
 export type SgId = Id<'sg'>
 export type TnntId = Id<'tnnt'>
 export type ProgId = Id<'prog'>
+export type SmrchId = Id<'smrch'>
