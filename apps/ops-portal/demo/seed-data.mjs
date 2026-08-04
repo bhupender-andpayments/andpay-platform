@@ -11,9 +11,76 @@
 // lifecycle stage internally consistent (a delivered row has a delivery date, a
 // dispatched-not-delivered row has a dispatch date and no delivery date, etc.).
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
+import { PrismaClient as FulfillmentClient } from '@andpay/fulfillment-service'
+import { PrismaClient as TmsClient } from '@andpay/tms-service'
 
 const DB = 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics'
 const db = new AnalyticsClient({ datasourceUrl: DB })
+const fdb = new FulfillmentClient({ datasourceUrl: 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment' })
+const tdb = new TmsClient({ datasourceUrl: 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms' })
+
+// Fixed vendor UUIDs so exceptions can reference them and re-seeds are stable.
+const VENDORS = [
+  { id: 'a0000000-0000-4000-8000-000000000001', type: 'MANUFACTURER', displayName: 'Acme Devices', status: 'ACTIVE', courierCode: null },
+  { id: 'a0000000-0000-4000-8000-000000000002', type: 'MANUFACTURER', displayName: 'PrecisionBox Mfg', status: 'ACTIVE', courierCode: null },
+  { id: 'a0000000-0000-4000-8000-000000000003', type: 'PRINT', displayName: 'PrintCo Labels', status: 'ACTIVE', courierCode: null },
+  { id: 'a0000000-0000-4000-8000-000000000004', type: 'PRINT', displayName: 'RapidLabel', status: 'ACTIVE', courierCode: null },
+  { id: 'a0000000-0000-4000-8000-000000000005', type: 'COURIER', displayName: 'Speedy Couriers', status: 'ACTIVE', courierCode: 'SPD' },
+  { id: 'a0000000-0000-4000-8000-000000000006', type: 'COURIER', displayName: 'BlueDart Express', status: 'ACTIVE', courierCode: 'BDE' },
+  { id: 'a0000000-0000-4000-8000-000000000007', type: 'COURIER', displayName: 'Legacy Logistics', status: 'SUSPENDED', courierCode: 'LGL' },
+]
+
+async function seedDomain() {
+  // Vendors (upsert by fixed id; leaves any pre-existing rows untouched).
+  for (const v of VENDORS) {
+    await fdb.vendor.upsert({
+      where: { id: v.id },
+      update: { type: v.type, displayName: v.displayName, status: v.status, courierCode: v.courierCode },
+      create: v,
+    })
+  }
+
+  // Intake exceptions (manufacturer channel) and courier status exceptions.
+  await fdb.intakeException.deleteMany({})
+  await fdb.intakeException.createMany({
+    data: [
+      { vndrId: VENDORS[0].id, fileId: 'intake_2026_08_01.csv', rowRef: 'row-12', reasonCode: 'unknown_device_serial' },
+      { vndrId: VENDORS[0].id, fileId: 'intake_2026_08_01.csv', rowRef: 'row-27', reasonCode: 'duplicate_serial' },
+      { vndrId: VENDORS[1].id, fileId: 'intake_2026_08_02.csv', rowRef: 'row-4', reasonCode: 'malformed_device_qr' },
+    ],
+  })
+  await fdb.courierStatusException.deleteMany({})
+  await fdb.courierStatusException.createMany({
+    data: [
+      { vndrId: VENDORS[4].id, channel: 'BATCH_FILE', subjectRef: 'AWB5494481331', fileId: 'status_2026_08_03.csv', rowRef: 'row-8', reasonCode: 'unknown_awb' },
+      { vndrId: VENDORS[5].id, channel: 'WEBHOOK', subjectRef: 'AWB7392644979', fileId: null, rowRef: null, reasonCode: 'invalid_status_transition' },
+    ],
+  })
+
+  // Quarantine rows (bank request rows that failed edge validation). Raw SQL:
+  // quarantine_row is not a Prisma model here and needs id + raw_row.
+  await tdb.$executeRawUnsafe('DELETE FROM tms.quarantine_row')
+  const quarantine = [
+    ['bank_req_2026_08_01.csv', 5, 'invalid_qr_vpa_format'],
+    ['bank_req_2026_08_01.csv', 18, 'missing_mobile'],
+    ['bank_req_2026_08_02.csv', 3, 'invalid_mcc'],
+    ['bank_req_2026_08_02.csv', 9, 'invalid_qr_vpa_format'],
+  ]
+  for (const [fileId, rowNo, reason] of quarantine) {
+    await tdb.$executeRawUnsafe(
+      `INSERT INTO tms.quarantine_row (id, file_id, row_no, raw_row, reason_code, created_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, now())`,
+      fileId,
+      rowNo,
+      JSON.stringify({ bankMerchantReference: `REF-${rowNo}`, note: 'seeded demo quarantine row' }),
+      reason,
+    )
+  }
+
+  console.log(`seeded ${VENDORS.length} vendors, 3 intake exceptions, 2 status exceptions, ${quarantine.length} quarantine rows`)
+  await fdb.$disconnect()
+  await tdb.$disconnect()
+}
 
 const DAY = 24 * 60 * 60 * 1000
 const daysAgo = (n) => new Date(Date.now() - n * DAY)
@@ -188,6 +255,7 @@ async function main() {
   }
   console.log(`seeded analytics.dispatch_row: ${rows.length} rows across ${PROGRAMS.length} programs`)
   console.log('expected tile counts (cross-tenant):', JSON.stringify(perTile, null, 2))
+  await seedDomain()
   await db.$disconnect()
 }
 

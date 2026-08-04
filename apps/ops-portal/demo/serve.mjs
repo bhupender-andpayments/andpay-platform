@@ -13,6 +13,12 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { hash as argonHash } from '@node-rs/argon2'
 import { authenticator } from 'otplib'
+
+// Demo-only: widen the TOTP acceptance window so a code stays valid for a few
+// minutes (otplib is a shared singleton, so this also relaxes the auth
+// service's TotpAdapter.verify in this process). This is a live-demo
+// convenience, never a production posture; the spine is untouched.
+authenticator.options = { window: [10, 10] }
 import {
   PrismaClient as AuthClient,
   LocalEs256Adapter,
