@@ -144,6 +144,18 @@ async function resolveMerchant(
         status: 'ACTIVE',
       },
     })
+    // The 3-tier mrch_ -> smrch_ -> asgn_ model: auto-create exactly ONE
+    // default sub-merchant per merchant, in the SAME tx (1:1 in v1). No fact
+    // is emitted for it (not a corpus topic; nothing consumes it) and no
+    // cascade logic exists yet (there is no merchant-suspend surface today).
+    await tx.subMerchant.create({
+      data: {
+        id: toUuid(newId('smrch')),
+        merchantId: candidate,
+        registeredAddress: fields.registeredAddress,
+        status: 'ACTIVE',
+      },
+    })
     return { merchantUuid: candidate, minted: true, updated: false }
   }
   // lost the race: the concurrent winner committed the resolver row and the

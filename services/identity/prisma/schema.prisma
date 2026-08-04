@@ -32,7 +32,27 @@ model Merchant {
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  subMerchants SubMerchant[]
+
   @@map("merchant")
+}
+
+/// The Identity-owned sub-merchant (the 3-tier mrch_ -> smrch_ -> asgn_ model,
+/// asgn_ lives in TMS and is out of scope here). Exactly ONE default smrch_ is
+/// auto-created per mrch_ at ingest (1:1 in v1). A real intra-schema FK to
+/// merchant is allowed and required (same Identity schema, C4-safe); never
+/// thread smrch_ into another context's DB. status is cascade-ready for a
+/// later spec once a merchant-suspend surface exists; no cascade logic today.
+model SubMerchant {
+  id                String   @id @db.Uuid
+  merchantId        String   @map("merchant_id") @db.Uuid
+  merchant          Merchant @relation(fields: [merchantId], references: [id])
+  registeredAddress String   @map("registered_address")
+  status            String // ACTIVE | SUSPENDED (mirrors merchant.status; a status, never a delete)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("sub_merchant")
 }
 
 /// The Identity-owned merchant resolver (Fork B). The DB-ENFORCED

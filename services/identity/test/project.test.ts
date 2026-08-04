@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { newId, toUuid, fromUuid } from '@andpay/ids'
+import { newId, toUuid, fromUuid, isId } from '@andpay/ids'
 import { enqueue } from '@andpay/outbox'
 import { PrismaClient } from '../generated/client/index.js'
 import { projectRowFact } from '../src/project.js'
@@ -41,7 +41,7 @@ afterAll(async () => {
 })
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
+    'TRUNCATE sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
   )
 })
 
@@ -58,6 +58,26 @@ describe('consume-project-emit (spec 05, check 1 resolution and dedup)', () => {
     expect(await db.tenant.count()).toBe(1)
     expect(await db.program.count()).toBe(1)
     expect(await db.outbox.count()).toBe(4)
+    expect(await db.subMerchant.count()).toBe(1)
+  })
+
+  it('1(a): the auto-created sub_merchant is exactly one per merchant (1:1), smrch_-id, address copied, status active', async () => {
+    const res = await projectRowFact(db, row())
+    if (res.deduped) throw new Error('unexpected dedupe')
+    const subMerchants = await db.subMerchant.findMany()
+    expect(subMerchants).toHaveLength(1)
+    const sm = subMerchants[0]!
+    expect(sm.merchantId).toBe(toUuid(res.mrchId))
+    expect(isId('smrch', fromUuid('smrch', sm.id))).toBe(true)
+    expect(sm.registeredAddress).toBe('221B Baker Street')
+    expect(sm.status).toBe('ACTIVE')
+  })
+
+  it('1(c): a second row reusing the same mrch_ does NOT create a second sub_merchant', async () => {
+    await projectRowFact(db, row({}, 'file1|1'))
+    await projectRowFact(db, row({}, 'file1|2'))
+    expect(await db.merchant.count()).toBe(1)
+    expect(await db.subMerchant.count()).toBe(1)
   })
 
   it('1(b): a redelivered identical row is a no-op (inbox dedup, no duplicate fact)', async () => {
@@ -152,6 +172,14 @@ describe('consume-project-emit (spec 05, checks 3, 5, 7, 8, 9)', () => {
             status: 'ACTIVE',
           },
         })
+        await tx.subMerchant.create({
+          data: {
+            id: toUuid(newId('smrch')),
+            merchantId: mrch,
+            registeredAddress: 'a',
+            status: 'ACTIVE',
+          },
+        })
         const env = merchantFactEnvelope({
           payload: {
             eventType: 'MerchantCreated',
@@ -178,13 +206,15 @@ describe('consume-project-emit (spec 05, checks 3, 5, 7, 8, 9)', () => {
     ).rejects.toThrow('rollback')
     expect(await db.merchant.count()).toBe(0)
     expect(await db.outbox.count()).toBe(0)
+    expect(await db.subMerchant.count()).toBe(0)
   })
 
-  it('7: E1, a successful projection commits the merchant and all four facts together', async () => {
+  it('7: E1, a successful projection commits the merchant, its sub_merchant, and all four facts together', async () => {
     const res = await projectRowFact(db, row())
     expect(res.deduped).toBe(false)
     expect(await db.merchant.count()).toBe(1)
     expect(await db.outbox.count()).toBe(4)
+    expect(await db.subMerchant.count()).toBe(1)
   })
 
   it('8: the sponsor bank is minted as a tnnt_, never a bank_ (D116, I5)', async () => {
