@@ -28,15 +28,19 @@ afterAll(async () => {
 })
 
 // LOCAL fixture (fold correction 6): there is no production seed helper for
-// bank_composition_config. Keyed on (tenant_id, bank_code), the table's own
-// @@unique, with a minimal image_templates JSONB. updated_at is NOT NULL with
-// no DB default (no @default(now())), so it is set explicitly here.
-async function seedBankConfig(tenantUuid: string, bankCode: string): Promise<string> {
+// bank_composition_config. Keyed on (tenant_id, bank_code, branch_code), the
+// table's own @@unique (widened Phase 3 Task 5a), with a minimal
+// image_templates JSONB. updated_at is NOT NULL with no DB default (no
+// @default(now())), so it is set explicitly here. branchCode defaults to the
+// '' bank-level-default sentinel (never null, closing the NULL-distinct
+// unique-index gotcha); pass an explicit branch code to seed a branch-specific
+// row.
+async function seedBankConfig(tenantUuid: string, bankCode: string, branchCode = ''): Promise<string> {
   const rows = await db.$queryRaw<{ id: string }[]>`
     INSERT INTO bank_composition_config (
-      id, tenant_id, bank_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at
+      id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at
     ) VALUES (
-      gen_random_uuid(), ${tenantUuid}::uuid, ${bankCode}, 'ref-logo-master', 'ref-logo-derivative',
+      gen_random_uuid(), ${tenantUuid}::uuid, ${bankCode}, ${branchCode}, 'ref-logo-master', 'ref-logo-derivative',
       '{}'::jsonb, '{"SOUNDBOX":{},"STANDEE":{}}'::jsonb, now()
     )
     RETURNING id::text AS id
@@ -56,6 +60,7 @@ async function seedBatchedEntry(
   btchUuid: string,
   traceId: string,
   bankCode: string,
+  branchCode: string | null = null,
 ): Promise<{ asgnWire: string; asgnUuid: string }> {
   const asgnWire = newId('asgn')
   const asgnUuid = toUuid(asgnWire)
@@ -64,11 +69,11 @@ async function seedBatchedEntry(
     INSERT INTO pending_pool_entry (
       asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
       merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
-      ship_to_address, qr_value, vpa_value, pool_status, batch, source_event_id, trace_id, updated_at
+      ship_to_address, qr_value, vpa_value, pool_status, batch, source_event_id, trace_id, branch_code, updated_at
     ) VALUES (
       ${asgnUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${merchantUuid}::uuid, true, 1, 0, true,
       'Acme', 'Acme Pvt Ltd', '5814', ${bankCode}, 'HDFC Bank', '221B Baker Street',
-      'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${btchUuid}::uuid, 'file-1|1', ${traceId}, now()
+      'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${btchUuid}::uuid, 'file-1|1', ${traceId}, ${branchCode}, now()
     )
   `
   return { asgnWire, asgnUuid }
@@ -340,5 +345,57 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${entry.asgnUuid}::uuid
     `
     expect(entryAfterReal[0]!.dispatch_state).toBe('SENT_TO_VENDOR')
+  })
+
+  // Phase 3 Task 5a: bankConfigRefFor's branch-aware fallback order (mirrors
+  // the multi-bank test above, one batch, THREE entries under the SAME bank
+  // code HDFC but different branch situations):
+  //   entry a (branch BR-001) has an exact branch-specific config row -> resolves to it.
+  //   entry b (branch BR-002) has NO branch-specific row, only the bank-level
+  //     default ('' sentinel) -> falls back to the bank-level default row.
+  //   entry c (branch BR-003) has NEITHER a branch row NOR a bank-level
+  //     default for its bank (ICICI) -> resolves null (current no-branding
+  //     behavior).
+  it('Task 5a: bankConfigRefFor resolves branch-exact -> bank-level-default -> null, in that order', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+
+    // HDFC gets both a branch-specific row (BR-001) AND its bank-level
+    // default ('' sentinel). ICICI gets NEITHER.
+    const hdfcBranchConfigId = await seedBankConfig(tenantUuid, 'HDFC', 'BR-001')
+    const hdfcDefaultConfigId = await seedBankConfig(tenantUuid, 'HDFC', '')
+
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-a', 'HDFC', 'BR-001')
+    const b = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-b', 'HDFC', 'BR-002')
+    const c = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-c', 'ICICI', 'BR-003')
+
+    const env = batchFactEnvelope({
+      payload: {
+        btchId: btchWire,
+        tenantId: tenantWire,
+        programId: programWire,
+        triggerReason: 'LOT_SIZE',
+        unitCount: 3,
+        asgnIds: [a.asgnWire, b.asgnWire, c.asgnWire],
+      },
+      dedupKey: btchWire,
+      traceId: 'trace-batch-5a',
+    })
+
+    const res = await consumeBatchFact(db, env)
+    expect(res.deduped).toBe(false)
+
+    const artifacts = await db.$queryRaw<{ asgn_id: string; bank_config_ref: string | null }[]>`
+      SELECT asgn_id::text AS asgn_id, bank_config_ref::text AS bank_config_ref
+      FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid AND artifact_type = 'SOUNDBOX_IMG'
+    `
+    const byAsgn = new Map(artifacts.map((r) => [r.asgn_id, r.bank_config_ref]))
+    expect(byAsgn.get(a.asgnUuid)).toBe(hdfcBranchConfigId) // exact branch match
+    expect(byAsgn.get(b.asgnUuid)).toBe(hdfcDefaultConfigId) // falls back to the bank-level default
+    expect(byAsgn.get(c.asgnUuid)).toBeNull() // neither exists -> null (no-branding)
   })
 })

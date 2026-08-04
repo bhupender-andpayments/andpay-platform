@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 
 const url =
@@ -271,11 +272,12 @@ describe('fulfillment schema (spec 08 outbound: composed_artifact, shpt, bank_co
     expect(hasUnique('shpt', 'awb'), 'shpt missing UNIQUE index on awb').toBe(true)
   })
 
-  it('bank_composition_config carries the composition config columns and UNIQUE(tenant_id, bank_code)', async () => {
+  it('bank_composition_config carries the composition config columns and UNIQUE(tenant_id, bank_code, branch_code)', async () => {
     const cols = await columns('bank_composition_config')
     for (const c of [
       'tenant_id',
       'bank_code',
+      'branch_code',
       'logo_master_ref',
       'logo_derivative_ref',
       'branding_params',
@@ -293,10 +295,44 @@ describe('fulfillment schema (spec 08 outbound: composed_artifact, shpt, bank_co
       idx.some(
         (r) => r.tablename === table && r.indexdef.includes('UNIQUE') && tokens.every((t) => r.indexdef.includes(t)),
       )
+    // Phase 3 Task 5a: widened from (tenant_id, bank_code) to include
+    // branch_code (the old two-column index no longer exists).
     expect(
-      hasUnique('bank_composition_config', 'tenant_id', 'bank_code'),
-      'bank_composition_config missing UNIQUE(tenant_id, bank_code)',
+      hasUnique('bank_composition_config', 'tenant_id', 'bank_code', 'branch_code'),
+      'bank_composition_config missing UNIQUE(tenant_id, bank_code, branch_code)',
     ).toBe(true)
+    expect(
+      idx.some((r) => r.tablename === 'bank_composition_config' && r.indexdef.includes('bank_composition_config_tenant_id_bank_code_key')),
+      'the old two-column UNIQUE(tenant_id, bank_code) index must have been dropped, not left behind',
+    ).toBe(false)
+  })
+
+  // Phase 3 Task 5a: the NULL-distinct unique-index gotcha, closed. branch_code
+  // is NEVER null (the bank-level default row uses the '' sentinel instead),
+  // so the widened UNIQUE(tenant_id, bank_code, branch_code) actually enforces
+  // at most one bank-level-default row per (tenant, bank): a second '' row for
+  // the same (tenant, bank) must be rejected.
+  it('bank_composition_config rejects two bank-level-default (branch_code = \'\') rows for the same (tenant, bank) [Task 5a]', async () => {
+    const tenantUuid = toUuid(newId('tnnt'))
+    await db.$executeRawUnsafe('TRUNCATE bank_composition_config CASCADE')
+    await db.$executeRaw`
+      INSERT INTO bank_composition_config (
+        id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at
+      ) VALUES (
+        gen_random_uuid(), ${tenantUuid}::uuid, 'HDFC', '', 'ref-logo-master', 'ref-logo-derivative',
+        '{}'::jsonb, '{}'::jsonb, now()
+      )
+    `
+    await expect(
+      db.$executeRaw`
+        INSERT INTO bank_composition_config (
+          id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at
+        ) VALUES (
+          gen_random_uuid(), ${tenantUuid}::uuid, 'HDFC', '', 'ref-logo-master-2', 'ref-logo-derivative-2',
+          '{}'::jsonb, '{}'::jsonb, now()
+        )
+      `,
+    ).rejects.toThrow()
   })
 
   it('pending_pool_entry carries the spec-08 dispatch-state and ship-to-amendment columns, plus the 06a recipient snapshot', async () => {
@@ -309,6 +345,7 @@ describe('fulfillment schema (spec 08 outbound: composed_artifact, shpt, bank_co
       'superseded_ship_to',
       'ship_to_contact_name',
       'ship_to_mobile',
+      'branch_code',
     ]) {
       expect(cols, `pending_pool_entry missing ${c}`).toContain(c)
     }

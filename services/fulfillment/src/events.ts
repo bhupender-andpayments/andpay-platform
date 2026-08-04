@@ -91,6 +91,9 @@ export interface AssignmentFactView {
   qrValue: string; vpaValue: string; soundbox: boolean; standeeCount: number
   stickerCount: number; billable: boolean; demandState: string; sourceEventId: string
   contactName?: string; mobile?: string
+  // Phase 3 Task 5a: the branch code snapshot (T4, D120 FULL-compat), OPTIONAL
+  // on the wire. Tolerate its absence: an older/pre-T4 fact carries none.
+  branchCode?: string
 }
 export interface CredentialFactView {
   apiId: string; vndrRef: string; status: string; epoch: number; mode: string

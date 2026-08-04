@@ -189,6 +189,29 @@ describe('projectDemandFact (pending-pool projection from fct.tms.assignment.v1,
     expect(row[0]!.trace_id).toBe(env1.traceId)
   })
 
+  // Phase 3 Task 5a: the branch code snapshot (T4, D120 FULL-compat, optional
+  // on the wire). A fact WITH branchCode populates pending_pool_entry.branch_code;
+  // a fact WITHOUT it (a pre-T4 / legacy fact) leaves it null -- no crash, no
+  // fact version bump.
+  it('Task 5a: an assignment fact WITH branchCode populates pending_pool_entry.branch_code; one WITHOUT it (FULL-compat) leaves it null', async () => {
+    const withBranch = fixturePayload({ branchCode: 'BR-001' })
+    const envWith = demandEnv(withBranch, 'evt-5a-with|fulfillment.pool', 'trace-5a-with')
+    await projectDemandFact(db, envWith)
+
+    const legacy = fixturePayload()
+    delete (legacy as Partial<AssignmentFactView>).branchCode // pre-T4 fact: no branchCode key at all on the wire
+    const envWithout = demandEnv(legacy, 'evt-5a-without|fulfillment.pool', 'trace-5a-without')
+    await projectDemandFact(db, envWithout)
+
+    const rows = await db.$queryRaw<{ asgn_id: string; branch_code: string | null }[]>`
+      SELECT asgn_id::text AS asgn_id, branch_code FROM pending_pool_entry
+      WHERE asgn_id IN (${toUuid(withBranch.asgnId)}::uuid, ${toUuid(legacy.asgnId)}::uuid)
+    `
+    const byAsgn = new Map(rows.map((r) => [r.asgn_id, r.branch_code]))
+    expect(byAsgn.get(toUuid(withBranch.asgnId))).toBe('BR-001')
+    expect(byAsgn.get(toUuid(legacy.asgnId))).toBeNull()
+  })
+
   // E1 (check 1): the pending_pool_entry INSERT must commit or roll back
   // TOGETHER with its inbox row. Wrapping a call to projectDemandFact in an
   // outer transaction that throws afterward would prove nothing: projectDemandFact

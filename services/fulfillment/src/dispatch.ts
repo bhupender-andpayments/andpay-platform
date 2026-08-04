@@ -82,35 +82,51 @@ export async function consumeBatchFact(
             merchant_display_name: string
             qr_value: string
             bank_reference_code: string
+            branch_code: string | null
             soundbox: boolean
             standee_count: number
             sticker_count: number
           }[]
         >`
           SELECT asgn_id::text AS asgn_id, merchant_display_name, qr_value,
-                 bank_reference_code, soundbox, standee_count, sticker_count
+                 bank_reference_code, branch_code, soundbox, standee_count, sticker_count
           FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
         `
 
-        // bank_composition_config keys on (tenant_id, bank_code) - the table's
-        // own @@unique([tenantId, bankCode]) - so the lookup matches each
-        // entry's OWN bank_reference_code, not a single tenant-wide row: a
-        // batch may legitimately mix banks. Cached per bank_code to avoid
-        // repeat queries within one batch.
+        // bank_composition_config keys on (tenant_id, bank_code, branch_code) -
+        // the table's own @@unique([tenantId, bankCode, branchCode]), widened
+        // in Phase 3 Task 5a - so the lookup matches each entry's OWN
+        // bank_reference_code (a batch may legitimately mix banks) AND its
+        // OWN branch_code. Fallback order (Task 5a): an exact branch match ->
+        // the bank-level default row (the '' sentinel, never null, closing
+        // the NULL-distinct unique-index gotcha) -> null (current no-branding
+        // behavior). Cached per (bank_code, branch_code) to avoid repeat
+        // queries within one batch.
         const bankConfigCache = new Map<string, string | null>()
-        async function bankConfigRefFor(bankCode: string): Promise<string | null> {
-          if (bankConfigCache.has(bankCode)) return bankConfigCache.get(bankCode) ?? null
-          const cfg = await tx.$queryRaw<{ id: string }[]>`
-            SELECT id::text AS id FROM bank_composition_config
-            WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${bankCode}
-          `
-          const ref = cfg[0]?.id ?? null
-          bankConfigCache.set(bankCode, ref)
+        async function bankConfigRefFor(bankCode: string, branchCode: string | null): Promise<string | null> {
+          const cacheKey = `${bankCode}|${branchCode ?? ''}`
+          if (bankConfigCache.has(cacheKey)) return bankConfigCache.get(cacheKey) ?? null
+          let ref: string | null = null
+          if (branchCode) {
+            const exact = await tx.$queryRaw<{ id: string }[]>`
+              SELECT id::text AS id FROM bank_composition_config
+              WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${bankCode} AND branch_code = ${branchCode}
+            `
+            ref = exact[0]?.id ?? null
+          }
+          if (ref === null) {
+            const fallback = await tx.$queryRaw<{ id: string }[]>`
+              SELECT id::text AS id FROM bank_composition_config
+              WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${bankCode} AND branch_code = ''
+            `
+            ref = fallback[0]?.id ?? null
+          }
+          bankConfigCache.set(cacheKey, ref)
           return ref
         }
 
         for (const e of entries) {
-          const bankConfigRef = await bankConfigRefFor(e.bank_reference_code)
+          const bankConfigRef = await bankConfigRefFor(e.bank_reference_code, e.branch_code)
           for (const artifactType of artifactTypesFor(e)) {
             const assetRef = `s3://ap-south-1/fulfillment/artifacts/${p.btchId}/${e.asgn_id}/${artifactType}` // rasterization deferred
             // e.asgn_id is already the native uuid (selected as `::text` off a

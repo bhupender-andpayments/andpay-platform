@@ -170,6 +170,12 @@ model PendingPoolEntry {
   // Populated by the pool projection (a later task).
   shipToContactName   String?  @map("ship_to_contact_name")
   shipToMobile        String?  @map("ship_to_mobile")
+  // Phase 3 Task 5a: the branch code snapshot carried on
+  // fct.tms.assignment.v1 (T4, D120 FULL-compat, optional on the wire).
+  // Populated by projectDemandFact from the demand fact's branchCode; a fact
+  // without one (a pre-T4 / legacy fact) leaves this null. Drives the
+  // bank_composition_config branch-aware lookup in dispatch.ts.
+  branchCode          String?  @map("branch_code")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
   // Spec 10c: additive class-3 ops release stamp (nullable, expand-contract).
@@ -326,6 +332,15 @@ model BankCompositionConfig {
   id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId          String   @map("tenant_id") @db.Uuid
   bankCode          String   @map("bank_code")
+  // Phase 3 Task 5a: widens the config key to (tenant, bank, branch). NEVER
+  // NULL (Postgres treats NULLs as distinct in a unique index, which would
+  // let duplicate bank-level-default rows through); the bank-level default
+  // row is the '' empty-string sentinel, never null. A branch-specific row
+  // stores its own branch code. This keeps a plain UNIQUE enforcing exactly
+  // one bank-level-default row per (tenant, bank). The resolver
+  // (dispatch.ts bankConfigRefFor) mirrors this sentinel: it queries an
+  // exact branch match first, then falls back to branch_code = ''.
+  branchCode        String   @default("") @map("branch_code")
   logoMasterRef     String   @map("logo_master_ref")
   logoDerivativeRef String   @map("logo_derivative_ref")
   brandingParams    Json     @map("branding_params") @db.JsonB
@@ -333,7 +348,7 @@ model BankCompositionConfig {
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@unique([tenantId, bankCode])
+  @@unique([tenantId, bankCode, branchCode])
   @@map("bank_composition_config")
 }
 
