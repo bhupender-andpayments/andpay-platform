@@ -160,6 +160,20 @@ export async function createAssignmentFromEnrollment(
       const m = merch[0]!
       const t = ten[0]!
       const asgnUuid = toUuid(newId('asgn'))
+      // Phase 2 task 3 (D-F): the provenance marker, computed locally (no
+      // fact-schema change) inside this same transaction. If merchant_id
+      // already has at least one existing assignment, this one is
+      // ADDITIONAL; otherwise it is the merchant's first and is INITIAL.
+      // v1 known edge (documented on the schema field too): decided by
+      // processing order, not a DB constraint, so two rows for a brand-new
+      // merchant processed concurrently could both observe zero existing
+      // rows here and both be marked INITIAL. Acceptable for v1 (the marker
+      // is informational provenance, not an authoritative ordering
+      // guarantee); no locking added for it.
+      const priorCount = await tx.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM assignment WHERE merchant_id = ${mrchUuid}::uuid
+      `
+      const origin = Number(priorCount[0]!.n) > 0 ? 'ADDITIONAL' : 'INITIAL'
       // updated_at is @updatedAt in the Prisma schema, which is client-API
       // middleware only (it does not run for $queryRaw/$executeRaw) and the
       // column has no DB-level DEFAULT (unlike created_at), so it must be set
@@ -170,13 +184,13 @@ export async function createAssignmentFromEnrollment(
           merchant_display_name, merchant_legal_name, merchant_mcc,
           bank_reference_code, bank_display_name, ship_to_address,
           qr_value, vpa_value, soundbox, standee_count, sticker_count,
-          billable, demand_state, source_event_id, contact_name, mobile, updated_at
+          billable, demand_state, origin, source_event_id, contact_name, mobile, updated_at
         ) VALUES (
           ${asgnUuid}::uuid, ${mrchUuid}::uuid, ${progUuid}::uuid, ${tnntUuid}::uuid,
           ${m.display_name}, ${m.legal_name}, ${m.mcc},
           ${t.bank_reference_code}, ${t.display_name}, ${pr.ship_to_address},
           ${pr.qr_value}, ${pr.vpa_value}, ${pr.soundbox}, ${pr.standee_count}, ${pr.sticker_count},
-          ${true}, ${'received'}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, now()
+          ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, now()
         )
         ON CONFLICT (source_event_id) DO NOTHING
         RETURNING id

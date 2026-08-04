@@ -87,6 +87,18 @@ model Assignment {
   caseStatus          String?   @map("case_status") // Open | In-Progress | Closed (replacements only)
   demandState         String    @map("demand_state") // received | pooled-for-fulfillment | closed | replacement-raised | activated
   activatedAt         DateTime? @map("activated_at") @db.Timestamptz(6)
+  // Phase 2 task 3 (D-F): the additional-soundbox provenance marker, computed
+  // TMS-side inside the same insert transaction (NO fact-schema change).
+  // INITIAL = the first assignment processed for this merchant_id; ADDITIONAL
+  // = every later one. This repo's convention favors a plain string column
+  // with a comment over a Prisma enum (no enum exists anywhere in this
+  // schema), so origin follows demand_state's / case_status's style rather
+  // than introducing one. v1 known edge: the marker is decided by processing
+  // order, not a DB constraint, so two rows for a brand-new merchant
+  // processed concurrently could both observe zero prior assignments and
+  // both land INITIAL; acceptable for v1 (informational provenance, not an
+  // authoritative ordering guarantee), no locking added for it.
+  origin              String    @default("INITIAL") @map("origin") // INITIAL | ADDITIONAL
   sourceEventId       String    @unique @map("source_event_id")
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)

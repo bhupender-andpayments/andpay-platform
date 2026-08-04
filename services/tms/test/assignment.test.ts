@@ -154,6 +154,35 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
     expect(Number(n[0]!.n)).toBe(1)
   })
 
+  it('Phase 2 task 3 (D-F): a merchant first assignment is INITIAL, and a second row for the SAME merchant_id is ADDITIONAL (both persist)', async () => {
+    const ids = await seed('file-5|1')
+    const res1 = await createAssignmentFromEnrollment(db, enrollmentEnv(ids, 'file-5|1'))
+    expect(res1.created).toBe(true)
+
+    // a second bank-file row for the SAME merchant_id (an add-on soundbox request).
+    // A distinct dedupKey is required here: enrollmentEnv hardcodes one fixed
+    // dedupKey for all its calls (fine when a test reuses one correlationId to
+    // model a redelivery), but two DIFFERENT enrollment facts for the same
+    // merchant must dedup independently in the inbox (E6), or onceWithin would
+    // skip the second call outright regardless of its distinct sourceEventId.
+    await db.$executeRaw`INSERT INTO pending_row (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, status)
+      VALUES ('file-5|2', 'HDFC', true, 1, 1, 'upi://pay?pa=acme2@hdfcbank', 'acme2@hdfcbank', '221B Baker Street', 'awaiting-identity')`
+    const env2 = newEnvelope<EnrollmentFactView>({
+      type: 'fct.identity.enrollment.v1', version: 1, subject: ids.mrchId,
+      dedupKey: 'evt-e|identity.enrollment|file-5|2', traceId: 'trace-9',
+      payload: { enrollmentId: 'enr-2', mrchId: ids.mrchId, progId: ids.progId, tnntId: ids.tnntId, status: 'ACTIVE', sourceEventId: 'file-5|2' },
+    })
+    const res2 = await createAssignmentFromEnrollment(db, env2)
+    expect(res2.created).toBe(true)
+
+    const rows = await db.$queryRaw<{ source_event_id: string; origin: string }[]>`
+      SELECT source_event_id, origin FROM assignment WHERE merchant_id = ${toUuid(ids.mrchId)}::uuid ORDER BY source_event_id
+    `
+    expect(rows).toHaveLength(2) // both rows persist under the same merchant_id
+    expect(rows.find((r) => r.source_event_id === 'file-5|1')!.origin).toBe('INITIAL')
+    expect(rows.find((r) => r.source_event_id === 'file-5|2')!.origin).toBe('ADDITIONAL')
+  })
+
   it('throws when a projection is not yet present, so the inbox redelivers (readiness)', async () => {
     // pending_row present but projections missing.
     await db.$executeRaw`INSERT INTO pending_row (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, status)
