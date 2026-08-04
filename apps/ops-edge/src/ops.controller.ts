@@ -12,6 +12,13 @@ import {
   UseGuards,
 } from '@nestjs/common'
 import { authorize, requireStepUp, OPS_STEP_UP_CATALOG } from '@andpay/authz'
+// DEMO-SCOPED (branch demo/ops-portal-skin): the ops vendor read returns a raw
+// UUID (ratified spec-10c contract, ops-actions.test.ts:400) while suspendVendor
+// expects a wire-encoded vndr id. The SPA has no wire id to bridge that gap, so
+// the demo route below tolerates a raw uuid by wire-encoding it. This is a
+// demo-branch bridge for a real spec-10c<->spec-13 contract gap flagged for the
+// corpus; it is NOT part of the ratified edge and must not merge to main.
+import { fromUuid } from '@andpay/ids'
 import {
   correctStatus,
   overrideTerminal,
@@ -398,8 +405,13 @@ export class OpsController {
     @Headers('idempotency-key') idem: string | undefined,
   ): Promise<{ deduped: boolean }> {
     const g = await this.gate(req, 'ops:vendor-suspend', idem, [id], 'vendor-suspend')
+    // DEMO-SCOPED bridge (see the fromUuid import note): a raw-uuid path id is
+    // wire-encoded so suspendVendor's toUuid decode succeeds. A real wire id
+    // (with a prefix separator) passes through unchanged, so the ratified
+    // HTTP contract and its tests are unaffected.
+    const vndrId = id.includes('_') ? id : fromUuid('vndr', id)
     const result = await suspendVendor(this.deps.fulfillmentDb, {
-      vndrId: id,
+      vndrId,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

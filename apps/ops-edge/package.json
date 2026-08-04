@@ -13,6 +13,7 @@
     "@andpay/authz": "workspace:*",
     "@andpay/edge": "workspace:*",
     "@andpay/fulfillment-service": "workspace:*",
+    "@andpay/ids": "workspace:*",
     "@andpay/tms-service": "workspace:*",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
