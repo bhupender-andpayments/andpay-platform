@@ -621,3 +621,126 @@ describe('ops-edge actions: damage_reason admin CRUD (Phase 3 Task 1)', () => {
     }
   })
 })
+
+describe('ops-edge actions: courier master completion (Phase 3 Task 2, BRD FR-11)', () => {
+  // vndr is NOT in this file's beforeEach truncate list (other suites in this
+  // file/workspace may depend on it persisting across their own tests), so
+  // every row this block creates is deleted BY ID in a `finally`, same
+  // discipline as the damage_reason block above.
+  async function deleteVendor(idWire: string): Promise<void> {
+    await fulfillmentDb.$executeRaw`DELETE FROM vndr WHERE id = ${toUuid(idWire)}::uuid`
+  }
+
+  it('POST vendors with courierCode + integrationMode creates the row (200) and emits ONE vendor-create ALLOW 6e', async () => {
+    const token = await mint({})
+    const courierCode = `crt-${randomUUID().slice(0, 8)}`
+    const res = await request(app.getHttpServer())
+      .post('/ops/vendors')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ type: 'COURIER', displayName: 'Speedy Couriers', courierCode, integrationMode: 'webhook' })
+    expect(res.status).toBe(200)
+    expect(res.body.deduped).toBe(false)
+    const vndrId = res.body.vndrId as string
+    try {
+      const rows = await rawAuditRows()
+      const match = (rows as { operation: string; decision: string; resourceIds?: string[] }[]).filter(
+        (r) => r.operation === 'ops:vendor-create',
+      )
+      expect(match).toHaveLength(1)
+      expect(match[0]!.decision).toBe('ALLOW')
+      expect(match[0]!.resourceIds).toEqual([vndrId])
+
+      const dbRow = await fulfillmentDb.$queryRaw<{ courier_code: string | null; integration_mode: string | null }[]>`
+        SELECT courier_code, integration_mode FROM vndr WHERE id = ${toUuid(vndrId)}::uuid`
+      expect(dbRow[0]!.courier_code).toBe(courierCode)
+      expect(dbRow[0]!.integration_mode).toBe('webhook')
+    } finally {
+      await deleteVendor(vndrId)
+    }
+  })
+
+  it('POST vendors with a courierCode already taken -> 409/400 (a clean 4xx via OpsClientError, not 500)', async () => {
+    const token = await mint({})
+    const courierCode = `dup-${randomUUID().slice(0, 8)}`
+    const first = await request(app.getHttpServer())
+      .post('/ops/vendors')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ type: 'COURIER', displayName: 'Speedy Couriers', courierCode })
+    const vndrId = first.body.vndrId as string
+    try {
+      const dupToken = await mint({})
+      const res = await request(app.getHttpServer())
+        .post('/ops/vendors')
+        .set('Authorization', `Bearer ${dupToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ type: 'COURIER', displayName: 'Rival Couriers', courierCode })
+      expect(res.status).toBe(400)
+    } finally {
+      await deleteVendor(vndrId)
+    }
+  })
+
+  it('POST vendors/:id/edit updates displayName/courierCode/integrationMode (200) and emits ONE vendor-edit ALLOW 6e; an unauthorized role is rejected first', async () => {
+    const createToken = await mint({})
+    const originalCode = `orig-${randomUUID().slice(0, 8)}`
+    const createRes = await request(app.getHttpServer())
+      .post('/ops/vendors')
+      .set('Authorization', `Bearer ${createToken}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ type: 'COURIER', displayName: 'Old Name', courierCode: originalCode, integrationMode: 'batch' })
+    const vndrId = createRes.body.vndrId as string
+    try {
+      const unauthToken = await mint({ psr: 'role:not_ops' })
+      const deniedRes = await request(app.getHttpServer())
+        .post(`/ops/vendors/${vndrId}/edit`)
+        .set('Authorization', `Bearer ${unauthToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ displayName: 'Should Not Apply' })
+      expect(deniedRes.status).toBe(403)
+      const unchanged = await fulfillmentDb.$queryRaw<{ display_name: string }[]>`
+        SELECT display_name FROM vndr WHERE id = ${toUuid(vndrId)}::uuid`
+      expect(unchanged[0]!.display_name).toBe('Old Name')
+
+      const newCode = `new-${randomUUID().slice(0, 8)}`
+      const editToken = await mint({})
+      const editRes = await request(app.getHttpServer())
+        .post(`/ops/vendors/${vndrId}/edit`)
+        .set('Authorization', `Bearer ${editToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ displayName: 'New Name', courierCode: newCode, integrationMode: 'webhook' })
+      expect(editRes.status).toBe(200)
+      expect(editRes.body.deduped).toBe(false)
+
+      const dbRow = await fulfillmentDb.$queryRaw<
+        { display_name: string; courier_code: string | null; integration_mode: string | null }[]
+      >`SELECT display_name, courier_code, integration_mode FROM vndr WHERE id = ${toUuid(vndrId)}::uuid`
+      expect(dbRow[0]!.display_name).toBe('New Name')
+      expect(dbRow[0]!.courier_code).toBe(newCode)
+      expect(dbRow[0]!.integration_mode).toBe('webhook')
+
+      const rows = await rawAuditRows()
+      // Two 6e rows exist for this operation string (the earlier DENY from
+      // the unauthorized attempt above, plus this ALLOW); scope to the ALLOW
+      // decision so this assertion is about the successful edit only.
+      const match = (rows as { operation: string; decision: string; resourceIds?: string[] }[]).filter(
+        (r) => r.operation === 'ops:vendor-edit' && r.decision === 'ALLOW',
+      )
+      expect(match).toHaveLength(1)
+      expect(match[0]!.resourceIds).toEqual([vndrId])
+    } finally {
+      await deleteVendor(vndrId)
+    }
+  })
+
+  it('POST vendors/:id/edit on a non-existent vndrId -> 404, not 500', async () => {
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post(`/ops/vendors/${newId('vndr')}/edit`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ displayName: 'Ghost' })
+    expect(res.status).toBe(404)
+  })
+})

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { parseId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import { createVendor } from '../src/vendor.js'
@@ -35,5 +36,21 @@ describe('createVendor (class-3 ops action, D115)', () => {
     expect(rows[0]!.display_name).toBe('Acme Devices')
     expect(rows[0]!.status).toBe('ACTIVE')
     expect(rows[0]!.updated_at).not.toBeNull()
+  })
+
+  it('Phase 3 Task 2 (BRD FR-11): a COURIER create with courierCode + integrationMode inserts both columns', async () => {
+    const courierCode = `crt-${randomUUID().slice(0, 8)}`
+    const { vndrId } = await createVendor(
+      db,
+      { type: 'COURIER', displayName: 'Speedy Couriers', courierCode, integrationMode: 'batch' },
+      { operatorId: 'op-1' },
+      'trace-2',
+    )
+
+    const rows = await db.$queryRaw<
+      { courier_code: string | null; integration_mode: string | null }[]
+    >`SELECT courier_code, integration_mode FROM vndr WHERE id = ${toUuid(vndrId)}::uuid`
+    expect(rows[0]!.courier_code).toBe(courierCode)
+    expect(rows[0]!.integration_mode).toBe('batch')
   })
 })

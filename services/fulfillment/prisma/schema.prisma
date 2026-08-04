@@ -58,6 +58,11 @@ model Vendor {
   displayName String   @map("display_name")
   status      String // ACTIVE | SUSPENDED
   courierCode String?  @unique @map("courier_code")
+  // Phase 3 Task 2 (BRD FR-11): the courier integration channel, WEBHOOK or
+  // BATCH. Nullable, applies to COURIER rows only (a MANUFACTURER/PRINT vndr
+  // leaves this null); no credential of any kind lives here (S4, class-6 is
+  // Auth-owned, see CredentialProjection below).
+  integrationMode String? @map("integration_mode")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 

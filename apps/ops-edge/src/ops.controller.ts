@@ -24,6 +24,7 @@ import {
   manualBatch,
   suspendVendor,
   createVendorOps,
+  editVendorOps,
   resolveIntakeException,
   resolveStatusException,
   isKnownStatus,
@@ -78,6 +79,16 @@ interface BatchTriggerBody {
 interface VendorCreateBody {
   type: string
   displayName: string
+  // Phase 3 Task 2 (BRD FR-11): both optional, COURIER-applicable only.
+  courierCode?: string
+  integrationMode?: string
+}
+// Phase 3 Task 2 (BRD FR-11): the courier master edit body. Every field is
+// optional (a partial edit); the target vndr is the route param, never here.
+interface VendorEditBody {
+  displayName?: string
+  courierCode?: string
+  integrationMode?: string
 }
 interface DamageReasonCreateBody {
   code: string
@@ -446,6 +457,8 @@ export class OpsController {
     const result = await createVendorOps(this.deps.fulfillmentDb, {
       type: body.type,
       displayName: body.displayName,
+      ...(body.courierCode !== undefined ? { courierCode: body.courierCode } : {}),
+      ...(body.integrationMode !== undefined ? { integrationMode: body.integrationMode } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
@@ -463,6 +476,30 @@ export class OpsController {
     const g = await this.gate(req, 'ops:vendor-suspend', idem, [id], 'vendor-suspend')
     const result = await suspendVendor(this.deps.fulfillmentDb, {
       vndrId: id,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+    return result
+  }
+
+  // Phase 3 Task 2 (BRD FR-11): the courier master edit route. Mirrors the
+  // suspend route's guard/authz/idempotency posture; NOT step-up-gated, same
+  // as create (master-data maintenance, not a destructive action).
+  @Post('vendors/:id/edit')
+  @HttpCode(200)
+  async editVendorRoute(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @Body() body: VendorEditBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean }> {
+    const g = await this.gate(req, 'ops:vendor-edit', idem, [id])
+    const result = await editVendorOps(this.deps.fulfillmentDb, {
+      vndrId: id,
+      ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
+      ...(body.courierCode !== undefined ? { courierCode: body.courierCode } : {}),
+      ...(body.integrationMode !== undefined ? { integrationMode: body.integrationMode } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

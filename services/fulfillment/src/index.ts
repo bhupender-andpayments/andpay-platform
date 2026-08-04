@@ -4,7 +4,14 @@ export { FULFILLMENT_FACT_SCHEMAS } from './fact-schemas.js'
 export * from './redact.js'
 export { loadFulfillmentConfig } from './authz-config.js'
 export { type Tx, CONSUMER, setProgramContext } from './internal.js'
-export { type CreateVendorInput, type OpsActor, createVendor, createVendorWithinTx } from './vendor.js'
+export {
+  type CreateVendorInput,
+  type UpdateVendorInput,
+  type OpsActor,
+  createVendor,
+  createVendorWithinTx,
+  updateVendorWithinTx,
+} from './vendor.js'
 export { projectDemandFact } from './pool.js'
 export { projectShipToAmended, NotYet } from './ship-to.js'
 export { poolConfig, type PoolCfg } from './config/pool-config.js'
@@ -83,6 +90,7 @@ export {
   manualBatch,
   suspendVendor,
   createVendorOps,
+  editVendorOps,
   resolveIntakeException,
   resolveStatusException,
   OpsClientError,

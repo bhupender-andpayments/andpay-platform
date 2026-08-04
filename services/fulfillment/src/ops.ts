@@ -10,7 +10,7 @@ import { advanceShipmentStatus, type AdvanceOutcome } from './courier-status.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
 import { holdEntryWithinTx, triggerBatchWithinTx } from './batching.js'
 import { ingestIntakeSheetWithinTx, isSheetStructurallyValid, type IntakeSheet, type IntakeResult } from './intake.js'
-import { createVendorWithinTx } from './vendor.js'
+import { createVendorWithinTx, updateVendorWithinTx } from './vendor.js'
 
 // spec 10c ops writes on shpt_ (Task 6). Both handlers are class-3 human ops
 // actions (D-3); the ops HTTP edge (T9) calls these in-process and enforces
@@ -42,6 +42,21 @@ export class OpsClientError extends Error {
   ) {
     super(message)
   }
+}
+
+// Phase 3 Task 2 (BRD FR-11): a raw-SQL unique-constraint violation (mirrors
+// tms/src/ops.ts's identical helper, `isRawUniqueViolation`, verified there
+// against the same exact INSERT shape). `$executeRaw`/`$queryRaw` surface a
+// constraint violation as Prisma error code 'P2010' ("raw query failed") with
+// the ORIGINAL Postgres SQLSTATE inside `meta.code`; '23505' is Postgres's
+// unique_violation SQLSTATE. courier_code is @unique on vndr, so a duplicate
+// on create or edit trips this, and is mapped to a clean 4xx (OpsClientError),
+// never a raw 500.
+function isRawUniqueViolation(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return false
+  if ((err as { code?: unknown }).code !== 'P2010') return false
+  const meta = (err as { meta?: unknown }).meta
+  return typeof meta === 'object' && meta !== null && 'code' in meta && (meta as { code?: unknown }).code === '23505'
 }
 
 // The co-committed ALLOW 6e record (S15/T2 ruling, spec 10c CC-1b). Every ops
@@ -806,35 +821,126 @@ export async function suspendVendor(
  */
 export async function createVendorOps(
   db: FulfillmentDb,
-  args: { type: string; displayName: string; clientKey: string; actorId: string; traceId: string },
+  args: {
+    type: string
+    displayName: string
+    // Phase 3 Task 2 (BRD FR-11): both optional, COURIER-applicable only.
+    courierCode?: string
+    integrationMode?: string
+    clientKey: string
+    actorId: string
+    traceId: string
+  },
 ): Promise<{ deduped: boolean; vndrId: string | null }> {
   let vndrId: string | null = null
 
-  const ran = await db.$transaction(async (tx: Tx) => {
-    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
-    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:vendor-create'), async () => {
-      const res = await createVendorWithinTx(
-        tx,
-        { type: args.type, displayName: args.displayName },
-        { operatorId: args.actorId },
-        args.traceId,
-      )
-      vndrId = res.vndrId
-      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the create.
-      // The minted vendor id is the target resource (IDs only).
-      await enqueue(
-        tx,
-        buildAuthzAuditEvent(
-          opsAllow({
-            operation: 'ops:vendor-create',
-            principalId: args.actorId,
-            resourceIds: [res.vndrId],
-            traceId: args.traceId,
-          }),
-        ),
-      )
+  let ran: boolean
+  try {
+    ran = await db.$transaction(async (tx: Tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+      return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:vendor-create'), async () => {
+        const res = await createVendorWithinTx(
+          tx,
+          {
+            type: args.type,
+            displayName: args.displayName,
+            ...(args.courierCode !== undefined ? { courierCode: args.courierCode } : {}),
+            ...(args.integrationMode !== undefined ? { integrationMode: args.integrationMode } : {}),
+          },
+          { operatorId: args.actorId },
+          args.traceId,
+        )
+        vndrId = res.vndrId
+        // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the create.
+        // The minted vendor id is the target resource (IDs only).
+        await enqueue(
+          tx,
+          buildAuthzAuditEvent(
+            opsAllow({
+              operation: 'ops:vendor-create',
+              principalId: args.actorId,
+              resourceIds: [res.vndrId],
+              traceId: args.traceId,
+            }),
+          ),
+        )
+      })
     })
-  })
+  } catch (err) {
+    // A duplicate courierCode (courier_code is @unique on vndr) is an expected
+    // client condition, not a server fault: map it to a clean 4xx via
+    // OpsClientError rather than letting the raw constraint error reach the
+    // edge as a 500 (mirrors tms/src/ops.ts's createDamageReasonOps). The
+    // transaction rolled back (no partial row, no orphaned 6e).
+    if (isRawUniqueViolation(err)) {
+      throw new OpsClientError('invalid', 'a vendor with this courier code already exists')
+    }
+    throw err
+  }
 
   return { deduped: !ran, vndrId: ran ? vndrId : null }
+}
+
+/**
+ * Vendor edit (Phase 3 Task 2, BRD FR-11): the courier master edit,
+ * addressed by the WIRE vndrId, mirroring `suspendVendor`/`createVendorOps`'s
+ * bare-role pattern (vndr is PLATFORM-ONLY, no program to set). Every field
+ * (displayName, courierCode, integrationMode) is independently optional (a
+ * partial edit; `updateVendorWithinTx`'s COALESCE keeps whatever the caller
+ * omits). A not-found target throws OpsClientError('not-found', ...) INSIDE
+ * the onceWithin effect, so the whole transaction (including the E6 inbox
+ * insert) rolls back and the clientKey is never burned by a rejected attempt,
+ * same idiom as `recomposeArtifact`'s ship-to guard. Step-up is not required
+ * (not in OPS_STEP_UP_CATALOG), matching create's own no-step-up posture:
+ * this is master-data maintenance, not a destructive vendor/shipment action.
+ */
+export async function editVendorOps(
+  db: FulfillmentDb,
+  args: {
+    vndrId: string
+    displayName?: string
+    courierCode?: string
+    integrationMode?: string
+    clientKey: string
+    actorId: string
+    traceId: string
+  },
+): Promise<{ deduped: boolean }> {
+  let ran: boolean
+  try {
+    ran = await db.$transaction(async (tx: Tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+      return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:vendor-edit'), async () => {
+        const updated = await updateVendorWithinTx(tx, args.vndrId, {
+          ...(args.displayName !== undefined ? { displayName: args.displayName } : {}),
+          ...(args.courierCode !== undefined ? { courierCode: args.courierCode } : {}),
+          ...(args.integrationMode !== undefined ? { integrationMode: args.integrationMode } : {}),
+        })
+        if (updated === null) throw new OpsClientError('not-found', 'vndr not found')
+
+        // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the edit.
+        await enqueue(
+          tx,
+          buildAuthzAuditEvent(
+            opsAllow({
+              operation: 'ops:vendor-edit',
+              principalId: args.actorId,
+              resourceIds: [args.vndrId],
+              traceId: args.traceId,
+            }),
+          ),
+        )
+      })
+    })
+  } catch (err) {
+    // A duplicate courierCode is an expected client condition, not a server
+    // fault (same mapping as createVendorOps above). The transaction rolled
+    // back (no partial row, no orphaned 6e).
+    if (isRawUniqueViolation(err)) {
+      throw new OpsClientError('invalid', 'a vendor with this courier code already exists')
+    }
+    throw err
+  }
+
+  return { deduped: !ran }
 }

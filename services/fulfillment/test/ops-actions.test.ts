@@ -2,7 +2,16 @@ import { randomUUID } from 'node:crypto'
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { recomposeArtifact, holdRecord, releaseRecord, manualBatch, suspendVendor } from '../src/ops.js'
+import {
+  recomposeArtifact,
+  holdRecord,
+  releaseRecord,
+  manualBatch,
+  suspendVendor,
+  createVendorOps,
+  editVendorOps,
+  OpsClientError,
+} from '../src/ops.js'
 import { listVendors } from '../src/ops-read.js'
 import { ensurePool } from '../src/batching.js'
 
@@ -434,5 +443,213 @@ describe('suspendVendor / listVendors (spec 10c Task 7)', () => {
       expect(v.createdAt).toBeInstanceOf(Date)
       expect(v.updatedAt).toBeInstanceOf(Date)
     }
+  })
+})
+
+// Phase 3 Task 2 (BRD FR-11): the courier master completion (createVendorOps
+// extended with courierCode/integrationMode, plus the new editVendorOps).
+async function auditRowsFor(operation: string): Promise<{ decision: string; resourceIds: string[]; principalId: string }[]> {
+  const rows = await db.$queryRaw<
+    { payload: { decision: string; operation: string; resourceIds?: string[]; principalId: string } }[]
+  >`SELECT payload FROM outbox WHERE event_type = 'authz.audit' ORDER BY created_at ASC`
+  return rows
+    .filter((r) => r.payload.operation === operation)
+    .map((r) => ({ decision: r.payload.decision, resourceIds: r.payload.resourceIds ?? [], principalId: r.payload.principalId }))
+}
+
+async function readVndrRow(
+  vndrWire: string,
+): Promise<{ type: string; display_name: string; status: string; courier_code: string | null; integration_mode: string | null }> {
+  const rows = await db.$queryRaw<
+    { type: string; display_name: string; status: string; courier_code: string | null; integration_mode: string | null }[]
+  >`SELECT type, display_name, status, courier_code, integration_mode FROM vndr WHERE id = ${toUuid(vndrWire)}::uuid`
+  expect(rows).toHaveLength(1)
+  return rows[0]!
+}
+
+describe('createVendorOps courierCode/integrationMode (Phase 3 Task 2, BRD FR-11)', () => {
+  it('a COURIER create with courierCode + integrationMode inserts both, and co-commits the ALLOW 6e', async () => {
+    const actorId = randomUUID()
+    const courierCode = `SPD-${randomUUID().slice(0, 8)}`
+    const res = await createVendorOps(db, {
+      type: 'COURIER',
+      displayName: 'Speedy Couriers',
+      courierCode,
+      integrationMode: 'webhook',
+      clientKey: randomUUID(),
+      actorId,
+      traceId: 't-vc-1',
+    })
+    expect(res.deduped).toBe(false)
+    expect(res.vndrId).not.toBeNull()
+
+    const row = await readVndrRow(res.vndrId!)
+    expect(row.type).toBe('COURIER')
+    expect(row.courier_code).toBe(courierCode)
+    expect(row.integration_mode).toBe('webhook')
+
+    const rows = await auditRowsFor('ops:vendor-create')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('ALLOW')
+    expect(rows[0]!.resourceIds).toEqual([res.vndrId])
+    expect(rows[0]!.principalId).toBe(actorId)
+  })
+
+  it('a MANUFACTURER/PRINT create WITHOUT courierCode/integrationMode still works unchanged (both land null)', async () => {
+    const res = await createVendorOps(db, {
+      type: 'MANUFACTURER',
+      displayName: 'Acme Devices',
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-vc-2',
+    })
+    expect(res.deduped).toBe(false)
+    const row = await readVndrRow(res.vndrId!)
+    expect(row.type).toBe('MANUFACTURER')
+    expect(row.courier_code).toBeNull()
+    expect(row.integration_mode).toBeNull()
+  })
+
+  it('a duplicate courierCode maps to a clean 4xx (OpsClientError kind: invalid), not a 500, and creates no second row', async () => {
+    const courierCode = `DUP-${randomUUID().slice(0, 8)}`
+    const first = await createVendorOps(db, {
+      type: 'COURIER',
+      displayName: 'Speedy Couriers',
+      courierCode,
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-vc-3',
+    })
+    expect(first.deduped).toBe(false)
+
+    await expect(
+      createVendorOps(db, {
+        type: 'COURIER',
+        displayName: 'Rival Couriers',
+        courierCode,
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-vc-3',
+      }),
+    ).rejects.toBeInstanceOf(OpsClientError)
+    await expect(
+      createVendorOps(db, {
+        type: 'COURIER',
+        displayName: 'Rival Couriers',
+        courierCode,
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-vc-3',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+
+    const rows = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM vndr WHERE courier_code = ${courierCode}`
+    expect(Number(rows[0]!.n)).toBe(1)
+  })
+})
+
+describe('editVendorOps (Phase 3 Task 2, BRD FR-11)', () => {
+  async function seedCourier(courierCode: string | null = null): Promise<string> {
+    const vndrWire = newId('vndr')
+    const vndrUuid = toUuid(vndrWire)
+    await db.$executeRaw`
+      INSERT INTO vndr (id, type, display_name, status, courier_code, integration_mode, updated_at)
+      VALUES (${vndrUuid}::uuid, 'COURIER', 'Old Name', 'ACTIVE', ${courierCode}, 'batch', now())
+    `
+    return vndrWire
+  }
+
+  it('updates displayName/courierCode/integrationMode and co-commits the ALLOW 6e in the same tx', async () => {
+    const vndrWire = await seedCourier('OLD-CODE')
+    const actorId = randomUUID()
+    const newCode = `NEW-${randomUUID().slice(0, 8)}`
+
+    const res = await editVendorOps(db, {
+      vndrId: vndrWire,
+      displayName: 'New Name',
+      courierCode: newCode,
+      integrationMode: 'webhook',
+      clientKey: randomUUID(),
+      actorId,
+      traceId: 't-ve-1',
+    })
+    expect(res.deduped).toBe(false)
+
+    const row = await readVndrRow(vndrWire)
+    expect(row.display_name).toBe('New Name')
+    expect(row.courier_code).toBe(newCode)
+    expect(row.integration_mode).toBe('webhook')
+
+    const rows = await auditRowsFor('ops:vendor-edit')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('ALLOW')
+    expect(rows[0]!.resourceIds).toEqual([vndrWire])
+    expect(rows[0]!.principalId).toBe(actorId)
+  })
+
+  it('a partial edit (displayName only) leaves courierCode/integrationMode unchanged', async () => {
+    const vndrWire = await seedCourier('KEEP-CODE')
+    await editVendorOps(db, {
+      vndrId: vndrWire,
+      displayName: 'Renamed Only',
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-ve-2',
+    })
+    const row = await readVndrRow(vndrWire)
+    expect(row.display_name).toBe('Renamed Only')
+    expect(row.courier_code).toBe('KEEP-CODE')
+    expect(row.integration_mode).toBe('batch')
+  })
+
+  it('a replay (same clientKey) is deduped and emits no second 6e', async () => {
+    const vndrWire = await seedCourier()
+    const clientKey = randomUUID()
+    const args = { vndrId: vndrWire, displayName: 'Once', clientKey, actorId: randomUUID(), traceId: 't-ve-3' }
+
+    const first = await editVendorOps(db, args)
+    expect(first.deduped).toBe(false)
+    const replay = await editVendorOps(db, { ...args, displayName: 'Twice', actorId: randomUUID() })
+    expect(replay.deduped).toBe(true)
+
+    const row = await readVndrRow(vndrWire)
+    expect(row.display_name).toBe('Once')
+    const rows = await auditRowsFor('ops:vendor-edit')
+    expect(rows).toHaveLength(1)
+  })
+
+  it('an unknown vndrId throws OpsClientError (kind: not-found) and burns no clientKey (no 6e emitted)', async () => {
+    const clientKey = randomUUID()
+    await expect(
+      editVendorOps(db, {
+        vndrId: newId('vndr'),
+        displayName: 'Ghost',
+        clientKey,
+        actorId: randomUUID(),
+        traceId: 't-ve-4',
+      }),
+    ).rejects.toMatchObject({ kind: 'not-found' })
+
+    const rows = await auditRowsFor('ops:vendor-edit')
+    expect(rows).toHaveLength(0)
+  })
+
+  it('a duplicate courierCode on edit maps to a clean 4xx (OpsClientError kind: invalid), not a 500', async () => {
+    const takenCode = `TAKEN-${randomUUID().slice(0, 8)}`
+    await seedCourier(takenCode)
+    const vndrWire = await seedCourier('MINE-CODE')
+
+    await expect(
+      editVendorOps(db, {
+        vndrId: vndrWire,
+        courierCode: takenCode,
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-ve-5',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+
+    const row = await readVndrRow(vndrWire)
+    expect(row.courier_code).toBe('MINE-CODE')
   })
 })

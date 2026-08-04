@@ -33,6 +33,7 @@ const OPS_PERMISSIONS = [
   'ops:manual-batch-trigger',
   'ops:vendor-create',
   'ops:vendor-suspend',
+  'ops:vendor-edit',
   'ops:resolve-quarantine',
   'ops:resolve-intake-exception',
   'ops:resolve-status-exception',
