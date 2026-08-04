@@ -1,4 +1,6 @@
 import type { ApiRequest } from './client.js'
+import { getAccessToken } from './tokenStore.js'
+import { ApiError } from './errors.js'
 
 type Client = { request<T>(req: ApiRequest): Promise<T> }
 
@@ -327,59 +329,100 @@ export function getVendors(c: Client) {
 }
 
 // -----------------------------------------------------------------------
-// Bank and damage uploads (Task 13). The confirmed ops-edge contract
-// (apps/ops-edge/src/ops.controller.ts's uploadBank/uploadDamage, grounded
-// against services/tms/src/ingest.ts and services/tms/src/damage.ts): a
-// gated write (Idempotency-Key header required, D2 authorize), NOT
-// step-up-gated (`ops:upload-bank-file` / `ops:upload-damage-file` are
-// absent from OPS_STEP_UP_GATED_OPERATIONS). The body is plain JSON, never
-// multipart: the SPA parses a file to typed rows client-side
-// (features/uploads/parseSheet.ts) and posts the parsed rows.
-//
-// CONTRACT CHANGE (Phase 2 Task 2): the ops-edge upload surface has moved to
-// MULTIPART raw-file routes with server-side parse, and the old JSON-rows
-// routes are GONE. The new contract is:
-//   POST /ops/uploads/bank/preview   multipart `file` -> per-row verdict
-//     { rows: [{ rowNo, valid, errors, row }], summary, structuralErrors }
-//     (no Idempotency-Key, writes nothing)
+// Bank and damage uploads (Phase 2 Task 4). The confirmed ops-edge contract
+// (apps/ops-edge/src/ops.controller.ts's previewBank/commitBank/commitDamage,
+// grounded against services/tms/src/ops.ts and bank-file-adapter.ts): the
+// upload surface is MULTIPART raw-file routes with server-side parsing
+// (D-K); no client-side parsing of the picked file remains authoritative.
+//   POST /ops/uploads/bank/preview   multipart `file`, no Idempotency-Key,
+//     writes nothing -> BankPreviewResult { rows, summary, structuralErrors }
 //   POST /ops/uploads/bank/commit    multipart `file`, Idempotency-Key
 //     -> { accepted, quarantined, duplicate, fileId }
 //   POST /ops/uploads/damage/commit  multipart `file`, Idempotency-Key
 //     -> { replaced, quarantined, duplicate, fileId }
-// This SPA client and its upload pages still post the OLD JSON-rows contract
-// and are PENDING REWIRE to the multipart surface (a later frontend task; the
-// server-side parser services/tms/src/bank-file-adapter.ts is now live behind
-// the edge). The uploadBank/uploadDamage helpers below are retained only until
-// that rewire lands and target dead routes in the meantime.
+// This is a raw `fetch`, not the JSON api client (createApiClient/
+// client.request), which only ever sends application/json bodies: it mirrors
+// apps/vendor-portal ReturnUploadPage.tsx's multipart-from-SPA pattern
+// (FormData with a `file` part + a Bearer header read straight off
+// tokenStore). None of the three routes is step-up-gated.
 // -----------------------------------------------------------------------
 
-/** services/tms/src/damage.ts BankDamageRow. */
-export interface BankDamageRow {
-  fileId: string
+/** services/tms/src/ingest.ts RequestRowRejectReason. */
+export type RequestRowRejectReason = 'invalid_qr_vpa_format' | 'missing_recipient_contact'
+
+/** services/tms/src/ops.ts PreviewRowResult: one row's preview verdict. */
+export interface PreviewRowResult {
   rowNo: number
-  tenantReference: string
-  vpaValue: string
-  damageReason: string
-  bankRemarks: string
-  shipToAddress: string
+  valid: boolean
+  errors: RequestRowRejectReason[]
+  row: BankRequestRow
 }
 
-export function uploadBank(c: Client, rows: BankRequestRow[], idempotencyKey: string) {
-  return c.request<{ accepted: number; quarantined: number; duplicate: number }>({
-    method: 'POST',
-    path: '/ops/uploads/bank',
-    body: { rows },
-    idempotencyKey,
-  })
+/** services/tms/src/bank-file-adapter.ts StructuralParseError: a whole-file problem. */
+export type StructuralParseErrorCode = 'unsupported_extension' | 'unreadable_file' | 'missing_required_column'
+export interface StructuralParseError {
+  code: StructuralParseErrorCode
+  message: string
 }
 
-export function uploadDamage(c: Client, rows: BankDamageRow[], idempotencyKey: string) {
-  return c.request<{ replaced: number; quarantined: number; duplicate: number }>({
-    method: 'POST',
-    path: '/ops/uploads/damage',
-    body: { rows },
-    idempotencyKey,
-  })
+/** services/tms/src/ops.ts BankPreviewResult. */
+export interface BankPreviewResult {
+  rows: PreviewRowResult[]
+  summary: { total: number; valid: number; invalid: number }
+  structuralErrors: StructuralParseError[]
+}
+
+export interface BankCommitResult {
+  accepted: number
+  quarantined: number
+  duplicate: number
+  fileId: string
+}
+
+export interface DamageCommitResult {
+  replaced: number
+  quarantined: number
+  duplicate: number
+  fileId: string
+}
+
+// The 5 MiB multipart cap the ops-edge FileInterceptor enforces
+// (apps/ops-edge/src/deps.ts MAX_UPLOAD_BYTES). Checked client-side against
+// File.size BEFORE any network call, so an oversized file never posts.
+export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+
+function opsBaseUrl(): string {
+  return (import.meta.env.VITE_OPS_BASE as string | undefined) ?? 'http://localhost:3001'
+}
+
+// The shared raw multipart POST (mirrors ReturnUploadPage's fetch): a
+// FormData `file` part, a Bearer header read straight off tokenStore (never
+// the JSON client, which always sets Content-Type: application/json), and an
+// optional Idempotency-Key header for the two commit routes (the preview
+// route never sends one; it is a pure read).
+async function postFile<T>(path: string, file: File, idempotencyKey?: string): Promise<T> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  const headers: Record<string, string> = { Authorization: `Bearer ${getAccessToken()}` }
+  if (idempotencyKey !== undefined) headers['Idempotency-Key'] = idempotencyKey
+  const res = await fetch(`${opsBaseUrl()}${path}`, { method: 'POST', headers, body: form })
+  const text = await res.text()
+  if (!res.ok) {
+    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+  }
+  return (text === '' ? null : JSON.parse(text)) as T
+}
+
+export function previewBank(file: File): Promise<BankPreviewResult> {
+  return postFile<BankPreviewResult>('/ops/uploads/bank/preview', file)
+}
+
+export function commitBank(file: File, idempotencyKey: string): Promise<BankCommitResult> {
+  return postFile<BankCommitResult>('/ops/uploads/bank/commit', file, idempotencyKey)
+}
+
+export function commitDamage(file: File, idempotencyKey: string): Promise<DamageCommitResult> {
+  return postFile<DamageCommitResult>('/ops/uploads/damage/commit', file, idempotencyKey)
 }
 
 // -----------------------------------------------------------------------

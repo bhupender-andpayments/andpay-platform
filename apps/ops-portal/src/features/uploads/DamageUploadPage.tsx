@@ -1,20 +1,18 @@
 import { useState, type ChangeEvent } from 'react'
-import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { uploadDamage } from '../../api/endpoints.js'
-import { PerRowErrors, type UploadResultBreakdown } from '../../components/PerRowErrors.js'
-import { MAX_UPLOAD_BYTES, parseBankDamageSheet, readFileAsText } from './parseSheet.js'
+import { MAX_UPLOAD_BYTES, commitDamage, type DamageCommitResult } from '../../api/endpoints.js'
+import { PerRowErrors } from '../../components/PerRowErrors.js'
 
-// Replaces the Task 9 placeholder's damage half (spec 13, check 4). Same
-// shape as BankUploadPage: parse client-side (D117), POST plain JSON
-// { rows } with a fresh Idempotency-Key (apps/ops-edge/src/ops.controller.ts's
-// uploadDamage; NOT multipart, NOT step-up-gated), 5 MiB cap enforced against
-// File.size before any read/parse/POST.
+// Rewired to the D-K multipart contract (Phase 2 Task 4; supersedes the Task
+// 9/13 JSON-rows flow). The browser uploads the raw picked file; the server
+// parses and validates it server-side (commitDamage, writes; damage
+// validation is a DB match by tenant+vpa, so there is no separate preview
+// route in v1). No client-side parsing of the file remains authoritative.
+// The 5 MiB cap is still enforced against File.size before any network call.
 
 export function DamageUploadPage() {
-  const { client } = useAuth()
+  const [result, setResult] = useState<DamageCommitResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<UploadResultBreakdown | null>(null)
   const [busy, setBusy] = useState(false)
 
   async function handleFile(e: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -29,9 +27,7 @@ export function DamageUploadPage() {
     }
     setBusy(true)
     try {
-      const text = await readFileAsText(file)
-      const rows = parseBankDamageSheet(text, crypto.randomUUID())
-      const res = await uploadDamage(client, rows, newIdempotencyKey())
+      const res = await commitDamage(file, newIdempotencyKey())
       setResult(res)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to upload the damage report file.')
@@ -45,12 +41,12 @@ export function DamageUploadPage() {
       <h1 className="text-xl font-semibold text-slate-900">Damage report upload</h1>
       <div>
         <label className="block text-sm font-medium text-slate-700" htmlFor="damage-upload-file">
-          Damage report file (CSV, max 5 MiB)
+          Damage report file (CSV or XLSX, max 5 MiB)
         </label>
         <input
           id="damage-upload-file"
           type="file"
-          accept=".csv,text/csv"
+          accept=".csv,text/csv,.xlsx"
           disabled={busy}
           onChange={(e) => {
             void handleFile(e)
