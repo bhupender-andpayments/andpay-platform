@@ -1,4 +1,10 @@
-import { PrismaClient as FulfillmentClient, type FulfillmentDb, loadOpsConfig } from '@andpay/fulfillment-service'
+import {
+  PrismaClient as FulfillmentClient,
+  type FulfillmentDb,
+  loadOpsConfig,
+  type AssetStore,
+  InMemoryAssetStore,
+} from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient, type TmsDb } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient, type AnalyticsDb } from '@andpay/analytics-service'
 import type { Mode, RoleConfig } from '@andpay/authz'
@@ -38,6 +44,12 @@ export interface OpsEdgeDeps {
   // The single allow-listed browser origin for the ops portal (spec 12 task 7,
   // D6 additive). Never a wildcard; fails the process start closed if absent.
   portalOrigin: string
+  // Phase 3 Task 5b: the T3 binary-asset storage port, injected once at
+  // process start (the bank/branch logo upload route calls it in-process).
+  // The DEV adapter (InMemoryAssetStore) is the default everywhere today; a
+  // future AWS S3 adapter is a one-line change at the injection site, not a
+  // code change in the controller or the domain op.
+  assetStore: AssetStore
 }
 
 export const EDGE_DEPS = 'OPS_EDGE_DEPS'
@@ -95,5 +107,6 @@ export function buildOpsEdgeDepsFromEnv(): OpsEdgeDeps {
     expectedMode,
     roleConfig: loadOpsConfig(),
     portalOrigin,
+    assetStore: new InMemoryAssetStore(),
   }
 }

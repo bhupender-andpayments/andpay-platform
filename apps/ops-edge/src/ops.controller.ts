@@ -28,6 +28,8 @@ import {
   resolveIntakeException,
   resolveStatusException,
   isKnownStatus,
+  upsertBankCompositionConfig,
+  setBankLogo,
   type IntakeSheet,
 } from '@andpay/fulfillment-service'
 import {
@@ -94,6 +96,19 @@ interface DamageReasonCreateBody {
   code: string
   label: string
 }
+// Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
+// upsert body. bankCode/branchCode/tenantWire ARE legitimate request inputs
+// here (platform master data an AndPayments admin configures, not
+// principal-scoped tenant data, unlike M7/S16's merchant/vendor/mode rule);
+// the actor/traceId/idempotency-key still come from the gate, never here.
+// branchCode is optional (the '' bank-level-default sentinel, T5a).
+interface BankConfigUpsertBody {
+  tenantWire: string
+  bankCode: string
+  branchCode?: string
+  brandingParams: unknown
+  imageTemplates: unknown
+}
 // The minimal multer file shape the upload routes read (mirrors vendor-edge's
 // UploadedJson, extended with originalname): the raw bytes plus the client
 // filename the TMS adapter uses to detect .csv vs .xlsx. Avoids an
@@ -101,6 +116,15 @@ interface DamageReasonCreateBody {
 interface UploadedSheet {
   buffer: Buffer
   originalname: string
+}
+// The bank/branch logo upload's multer file shape: same two fields as
+// UploadedSheet plus mimetype (the AssetStore port's AssetMeta.contentType),
+// which the sheet uploads never needed (TMS re-detects .csv/.xlsx from
+// content, not the multipart mimetype).
+interface UploadedLogoFile {
+  buffer: Buffer
+  originalname: string
+  mimetype: string
 }
 interface ResolveQuarantineBody {
   correctedRow: BankRequestRow
@@ -624,5 +648,62 @@ export class OpsController {
       traceId: g.traceId,
     })
     return result
+  }
+
+  // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
+  // admin CRUD. Same gate/idempotency/co-committed-6e posture as every other
+  // ops mutation above; NOT step-up-gated (not in OPS_STEP_UP_CATALOG),
+  // matching vendor-create/damage-reason-create's own no-step-up posture
+  // (reference-data / master-data configuration, not a destructive
+  // vendor/shipment action).
+  @Post('bank-config')
+  @HttpCode(200)
+  async upsertBankConfigRoute(
+    @Req() req: EdgeRequest,
+    @Body() body: BankConfigUpsertBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; id: string | null }> {
+    const g = await this.gate(req, 'ops:template-config-set', idem, [])
+    return upsertBankCompositionConfig(this.deps.fulfillmentDb, {
+      tenantWire: body.tenantWire,
+      bankCode: body.bankCode,
+      ...(body.branchCode !== undefined ? { branchCode: body.branchCode } : {}),
+      brandingParams: body.brandingParams,
+      imageTemplates: body.imageTemplates,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // Multipart logo upload (mirrors the Phase-2 FileInterceptor + size-cap
+  // pattern used by the bank/damage file uploads above). tenantWire/bankCode/
+  // branchCode ride as ordinary multipart form fields alongside `file` (multer
+  // populates req.body with them exactly like a JSON body's fields); the
+  // actor/traceId/idempotency-key still come from the gate, never the body.
+  // Stores via the injected T3 AssetStore port (deps.assetStore, the dev
+  // adapter today) and persists the returned reference into logoMasterRef.
+  @Post('bank-config/logo')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async setBankLogoRoute(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedLogoFile | undefined,
+    @Body() body: BankConfigUpsertBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; id: string | null; reference: string | null; version: string | null }> {
+    const g = await this.gate(req, 'ops:bank-logo-set', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+    return setBankLogo(this.deps.fulfillmentDb, this.deps.assetStore, {
+      tenantWire: body.tenantWire,
+      bankCode: body.bankCode,
+      ...(body.branchCode !== undefined ? { branchCode: body.branchCode } : {}),
+      bytes: file.buffer,
+      contentType: file.mimetype,
+      filename: file.originalname,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
   }
 }

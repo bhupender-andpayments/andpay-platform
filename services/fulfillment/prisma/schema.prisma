@@ -341,8 +341,13 @@ model BankCompositionConfig {
   // (dispatch.ts bankConfigRefFor) mirrors this sentinel: it queries an
   // exact branch match first, then falls back to branch_code = ''.
   branchCode        String   @default("") @map("branch_code")
-  logoMasterRef     String   @map("logo_master_ref")
-  logoDerivativeRef String   @map("logo_derivative_ref")
+  // Phase 3 Task 5b: both nullable. A row born from a branding/template-only
+  // upsert (upsertBankCompositionConfig) carries no logo yet; a logo upload
+  // (setBankLogo) sets logoMasterRef and explicitly nulls logoDerivativeRef
+  // (rasterization deferred, so a stale derivative is invalidated rather than
+  // left pointing at the superseded master).
+  logoMasterRef     String?  @map("logo_master_ref")
+  logoDerivativeRef String?  @map("logo_derivative_ref")
   brandingParams    Json     @map("branding_params") @db.JsonB
   imageTemplates    Json     @map("image_templates") @db.JsonB // per product_type {SOUNDBOX,STANDEE,STICKER}
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)

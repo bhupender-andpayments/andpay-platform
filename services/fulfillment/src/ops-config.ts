@@ -40,6 +40,14 @@ const OPS_PERMISSIONS = [
   'ops:damage-reason-create',
   'ops:damage-reason-activate',
   'ops:damage-reason-deactivate',
+  // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
+  // admin write pair (branding/template upsert, logo upload). No
+  // `ops:bank-config-list` entry, same reasoning as the absent
+  // `ops:vendor-list`/`ops:damage-reason-list` above: the list route
+  // (`GET /ops/bank-config`) is guard-only at the edge (no D2 authorize, no
+  // 6e), so a read-side permission string here would be dead.
+  'ops:template-config-set',
+  'ops:bank-logo-set',
 ]
 
 export const OPS_ROLES: RoleConfig['roles'] = {

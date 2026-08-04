@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
-import { PrismaClient as FulfillmentClient, loadOpsConfig } from '@andpay/fulfillment-service'
+import { PrismaClient as FulfillmentClient, loadOpsConfig, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import {
   PrismaClient as TmsClient,
   DEFAULT_REQUEST_COLUMN_MAPPING,
@@ -158,6 +158,7 @@ beforeAll(async () => {
     expectedMode: 'live',
     roleConfig: loadOpsConfig(),
     portalOrigin: 'https://ops.andpay.test',
+    assetStore: new InMemoryAssetStore(),
   }
   app = await buildOpsEdgeApp(deps)
   await app.init()

@@ -94,6 +94,10 @@ export {
   resolveIntakeException,
   resolveStatusException,
   OpsClientError,
+  upsertBankCompositionConfig,
+  type UpsertBankCompositionConfigInput,
+  setBankLogo,
+  type SetBankLogoInput,
 } from './ops.js'
 export { OPS_ROLES, loadOpsConfig } from './ops-config.js'
 export {
@@ -103,7 +107,11 @@ export {
   readCourierStatusExceptions,
   type IntakeExceptionView,
   type CourierStatusExceptionView,
+  listBankCompositionConfigs,
+  type BankCompositionConfigRow,
 } from './ops-read.js'
+export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
+export { InMemoryAssetStore } from './storage/dev-asset-store.js'
 export {
   readShipments,
   readShipmentStatusTrail,

@@ -5,12 +5,13 @@ import { instanceKey } from '@andpay/keys'
 import type { Acr } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
-import { enterWriteScope } from './write-context.js'
+import { enterWriteScope, enterWriteRole } from './write-context.js'
 import { advanceShipmentStatus, type AdvanceOutcome } from './courier-status.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
 import { holdEntryWithinTx, triggerBatchWithinTx } from './batching.js'
 import { ingestIntakeSheetWithinTx, isSheetStructurallyValid, type IntakeSheet, type IntakeResult } from './intake.js'
 import { createVendorWithinTx, updateVendorWithinTx } from './vendor.js'
+import type { AssetStore } from './storage/asset-store.js'
 
 // spec 10c ops writes on shpt_ (Task 6). Both handlers are class-3 human ops
 // actions (D-3); the ops HTTP edge (T9) calls these in-process and enforces
@@ -943,4 +944,176 @@ export async function editVendorOps(
   }
 
   return { deduped: !ran }
+}
+
+// Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config admin
+// write path. bank_composition_config is TENANT-KEYED reference data, not
+// program-scoped (its own RLS policy, "bank_composition_config_v1", is
+// USING(true) WITH CHECK(true), unscoped by design -- see the schema.prisma
+// comment), so both ops functions below enter the write role BARE
+// (enterWriteRole, no program to set), exactly like createVendorOps/vndr. The
+// composite key is (tenantId, bankCode, branchCode); branchCode defaults to
+// the T5a '' sentinel for a bank-level default row (never null, matching the
+// resolver's own fallback in dispatch.ts).
+export interface UpsertBankCompositionConfigInput {
+  tenantWire: string
+  bankCode: string
+  // Omitted -> the '' bank-level-default sentinel (T5a); pass an explicit
+  // branch code to address (or create) a branch-specific row.
+  branchCode?: string
+  brandingParams: unknown
+  imageTemplates: unknown
+  clientKey: string
+  actorId: string
+  traceId: string
+}
+
+/**
+ * Upsert brandingParams + imageTemplates for a (tenant, bank, branch) key.
+ * A true upsert on the row's own natural key: INSERT ... ON CONFLICT (tenant_id,
+ * bank_code, branch_code) DO UPDATE, so create and edit are the SAME call
+ * (mirrors the brief's "upsert", not the separate create/edit pair
+ * createVendorOps/editVendorOps use for vndr, which has no natural key to
+ * upsert on). Because the ON CONFLICT target IS the table's only unique
+ * constraint, this can never itself raise a 23505 duplicate -- there is no
+ * isRawUniqueViolation catch here for that reason (unlike createVendorOps/
+ * editVendorOps, which address vndr by a SEPARATE surrogate id and so can
+ * collide on the courier_code side-unique). logoMasterRef/logoDerivativeRef
+ * are NEVER touched here (a fresh row is born with both null; an existing
+ * row's logo fields are left exactly as they are) -- the logo lives on its
+ * own path, setBankLogo below.
+ */
+export async function upsertBankCompositionConfig(
+  db: FulfillmentDb,
+  args: UpsertBankCompositionConfigInput,
+): Promise<{ deduped: boolean; id: string | null }> {
+  const tenantUuid = toUuid(args.tenantWire)
+  const branchCode = args.branchCode ?? ''
+  const brandingParamsJson = JSON.stringify(args.brandingParams ?? {})
+  const imageTemplatesJson = JSON.stringify(args.imageTemplates ?? {})
+
+  let id: string | null = null
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:bank-config-upsert'), async () => {
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, branding_params, image_templates, updated_at)
+        VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${args.bankCode}, ${branchCode}, ${brandingParamsJson}::jsonb, ${imageTemplatesJson}::jsonb, now())
+        ON CONFLICT (tenant_id, bank_code, branch_code)
+        DO UPDATE SET branding_params = EXCLUDED.branding_params, image_templates = EXCLUDED.image_templates, updated_at = now()
+        RETURNING id::text AS id
+      `
+      id = rows[0]!.id
+
+      // Co-commit the ALLOW 6e (S15/T2 ruling) in the SAME tx as the upsert.
+      // The row id is the target resource (IDs only).
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:template-config-set',
+            principalId: args.actorId,
+            resourceIds: [id],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return { deduped: !ran, id: ran ? id : null }
+}
+
+export interface SetBankLogoInput {
+  tenantWire: string
+  bankCode: string
+  branchCode?: string
+  bytes: Uint8Array
+  contentType: string
+  filename: string
+  clientKey: string
+  actorId: string
+  traceId: string
+}
+
+/**
+ * Store a new bank/branch logo via the T3 AssetStore port and persist the
+ * returned reference into logoMasterRef, nulling logoDerivativeRef
+ * (rasterization is deferred -- see the schema.prisma comment on both
+ * columns). Creates the config row if it does not already exist (a logo can
+ * be the FIRST write for a (tenant, bank, branch), before any branding/
+ * template upsert), otherwise updates the existing row in place, leaving
+ * brandingParams/imageTemplates untouched.
+ *
+ * The AssetStore `key` is the bank/branch CODE ONLY -- never the tenantId,
+ * actorId, or any PII (S4; the T3 dev reference embeds the key in plaintext,
+ * so a PII key would leak PII into a logged/persisted reference). A
+ * branch-specific upload keys on "{bankCode}/{branchCode}"; the bank-level
+ * default ('' branchCode) keys on the bare bankCode, so it never collides
+ * with a real branch code of the same bank.
+ *
+ * `assetStore.put()` runs INSIDE the onceWithin effect (after the client-key
+ * dedup check), not before: a replay of the same clientKey must never mint a
+ * second asset version (T3 semantics: a second put() supersedes but keeps
+ * history), so the put has to happen only on a genuinely fresh attempt, same
+ * ordering discipline as the domain row write and the co-committed 6e.
+ *
+ * The 6e carries the new version alongside the row id in resourceIds (IDs/
+ * enums only, S7/S10.5): a version token (T3: "opaque-but-orderable", e.g.
+ * "v3") is exactly such an enum-like short token, never free text or PII, so
+ * it rides the audit tagged as "logo-version:<version>" rather than needing a
+ * new free-text field on AuthzAuditRecord.
+ */
+export async function setBankLogo(
+  db: FulfillmentDb,
+  assetStore: AssetStore,
+  args: SetBankLogoInput,
+): Promise<{ deduped: boolean; id: string | null; reference: string | null; version: string | null }> {
+  const tenantUuid = toUuid(args.tenantWire)
+  const branchCode = args.branchCode ?? ''
+  const assetKey = branchCode === '' ? args.bankCode : `${args.bankCode}/${branchCode}`
+
+  let id: string | null = null
+  let reference: string | null = null
+  let version: string | null = null
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:bank-logo-set'), async () => {
+      const put = await assetStore.put(assetKey, args.bytes, {
+        contentType: args.contentType,
+        filename: args.filename,
+      })
+      reference = put.reference
+      version = put.version
+
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at)
+        VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${args.bankCode}, ${branchCode}, ${put.reference}, NULL, '{}'::jsonb, '{}'::jsonb, now())
+        ON CONFLICT (tenant_id, bank_code, branch_code)
+        DO UPDATE SET logo_master_ref = EXCLUDED.logo_master_ref, logo_derivative_ref = NULL, updated_at = now()
+        RETURNING id::text AS id
+      `
+      id = rows[0]!.id
+
+      // Co-commit the ALLOW 6e (S15/T2 ruling) in the SAME tx as the write.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:bank-logo-set',
+            principalId: args.actorId,
+            resourceIds: [id, `logo-version:${put.version}`],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return {
+    deduped: !ran,
+    id: ran ? id : null,
+    reference: ran ? reference : null,
+    version: ran ? version : null,
+  }
 }

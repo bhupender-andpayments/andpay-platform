@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
-import { loadOpsConfig, PrismaClient as FulfillmentClient } from '@andpay/fulfillment-service'
+import { loadOpsConfig, PrismaClient as FulfillmentClient, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '../src/index.js'
@@ -142,6 +142,7 @@ beforeAll(async () => {
     expectedMode: 'live',
     roleConfig: loadOpsConfig(),
     portalOrigin: 'https://ops.andpay.test',
+    assetStore: new InMemoryAssetStore(),
   }
   app = await buildOpsEdgeApp(deps)
   await app.init()

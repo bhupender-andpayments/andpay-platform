@@ -1,4 +1,4 @@
-import { fromUuid } from '@andpay/ids'
+import { fromUuid, toUuid } from '@andpay/ids'
 import type { FulfillmentDb } from './db.js'
 import type { Tx } from './internal.js'
 
@@ -190,4 +190,77 @@ export async function readCourierStatusExceptions(
     `
   })
   return rows.map(toCourierStatusExceptionDto)
+}
+
+// Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config admin
+// list, guard-only exactly like `vendors` above (no D2 authorize, no 6e; the
+// read-only DB role scopes visibility -- see the T5b migration's GRANT SELECT
+// on bank_composition_config to fulfillment_ops_read). No aggregate here (a
+// later guard scans this file): a plain row-list SELECT only, optionally
+// filtered to one tenant.
+export interface BankCompositionConfigRow {
+  id: string
+  tenantId: string
+  bankCode: string
+  branchCode: string
+  logoMasterRef: string | null
+  logoDerivativeRef: string | null
+  brandingParams: unknown
+  imageTemplates: unknown
+  createdAt: Date
+  updatedAt: Date
+}
+
+interface BankCompositionConfigDbRow {
+  id: string
+  tenant_id: string
+  bank_code: string
+  branch_code: string
+  logo_master_ref: string | null
+  logo_derivative_ref: string | null
+  branding_params: unknown
+  image_templates: unknown
+  created_at: Date
+  updated_at: Date
+}
+
+function toBankCompositionConfigDto(r: BankCompositionConfigDbRow): BankCompositionConfigRow {
+  return {
+    id: r.id,
+    tenantId: r.tenant_id,
+    bankCode: r.bank_code,
+    branchCode: r.branch_code,
+    logoMasterRef: r.logo_master_ref,
+    logoDerivativeRef: r.logo_derivative_ref,
+    brandingParams: r.branding_params,
+    imageTemplates: r.image_templates,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}
+
+export async function listBankCompositionConfigs(
+  db: FulfillmentDb,
+  opts: { tenantWire?: string } = {},
+): Promise<BankCompositionConfigRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    if (opts.tenantWire !== undefined) {
+      const tenantUuid = toUuid(opts.tenantWire)
+      return tx.$queryRaw<BankCompositionConfigDbRow[]>`
+        SELECT id::text AS id, tenant_id::text AS tenant_id, bank_code, branch_code,
+               logo_master_ref, logo_derivative_ref, branding_params, image_templates, created_at, updated_at
+        FROM bank_composition_config
+        WHERE tenant_id = ${tenantUuid}::uuid
+        ORDER BY bank_code, branch_code
+      `
+    }
+    return tx.$queryRaw<BankCompositionConfigDbRow[]>`
+      SELECT id::text AS id, tenant_id::text AS tenant_id, bank_code, branch_code,
+             logo_master_ref, logo_derivative_ref, branding_params, image_templates, created_at, updated_at
+      FROM bank_composition_config
+      ORDER BY bank_code, branch_code
+    `
+  })
+  return rows.map(toBankCompositionConfigDto)
 }

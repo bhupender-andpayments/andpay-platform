@@ -3,9 +3,11 @@ import {
   listVendors,
   readIntakeExceptions,
   readCourierStatusExceptions,
+  listBankCompositionConfigs,
   type VendorRow,
   type IntakeExceptionView,
   type CourierStatusExceptionView,
+  type BankCompositionConfigRow,
 } from '@andpay/fulfillment-service'
 import { readQuarantineQueue, listDamageReasons, type QuarantineRowView, type DamageReasonRow } from '@andpay/tms-service'
 import { OpsEdgeGuard } from './guard.js'
@@ -56,5 +58,15 @@ export class OpsReadController {
   @HttpCode(200)
   async statusExceptions(@Query('includeResolved') includeResolved?: string): Promise<CourierStatusExceptionView[]> {
     return readCourierStatusExceptions(this.deps.fulfillmentDb, { includeResolved: includeResolved === 'true' })
+  }
+
+  // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
+  // admin list, guard-only exactly like `vendors`/`damageReasons` above (no D2
+  // authorize, no 6e; the read-only DB role scopes visibility). `?tenantWire=`
+  // narrows to one tenant; omitted returns every configured row.
+  @Get('bank-config')
+  @HttpCode(200)
+  async bankConfig(@Query('tenantWire') tenantWire?: string): Promise<BankCompositionConfigRow[]> {
+    return listBankCompositionConfigs(this.deps.fulfillmentDb, tenantWire !== undefined ? { tenantWire } : {})
   }
 }
