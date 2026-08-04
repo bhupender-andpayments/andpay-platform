@@ -12,23 +12,47 @@ import { humanRole, type RoleConfig } from '@andpay/authz'
 // authorize call), so a read-side permission string here would be dead; none
 // is listed (a former `ops:vendor-list` entry was removed for exactly this
 // reason).
+// The full ops write-permission bundle (Task 2, D-B). One shared source so
+// every ops-capable role grants the identical set, no per-role duplication.
+const OPS_PERMISSIONS = [
+  'ops:upload-bank-file',
+  'ops:upload-damage-file',
+  'ops:status-correction',
+  'ops:terminal-override',
+  'ops:recompose-artifact',
+  'ops:record-hold',
+  'ops:record-release',
+  'ops:manual-batch-trigger',
+  'ops:vendor-create',
+  'ops:vendor-suspend',
+  'ops:resolve-quarantine',
+  'ops:resolve-intake-exception',
+  'ops:resolve-status-exception',
+]
+
 export const OPS_ROLES: RoleConfig['roles'] = {
+  // Retained legacy alias (Task 2, D-B): no real login mints role:ops_portal
+  // (only tests do); kept unchanged so those tests keep passing.
   ops_portal: humanRole({
-    permissions: [
-      'ops:upload-bank-file',
-      'ops:upload-damage-file',
-      'ops:status-correction',
-      'ops:terminal-override',
-      'ops:recompose-artifact',
-      'ops:record-hold',
-      'ops:record-release',
-      'ops:manual-batch-trigger',
-      'ops:vendor-create',
-      'ops:vendor-suspend',
-      'ops:resolve-quarantine',
-      'ops:resolve-intake-exception',
-      'ops:resolve-status-exception',
-    ],
+    permissions: OPS_PERMISSIONS,
+    ceiling: 'all-programs',
+    requiredAcr: 'AAL2',
+  }),
+  // The real AndPayments human operator roles (Task 2, D-B). Each gets the
+  // same full ops bundle as ops_portal; support_readonly is deliberately
+  // absent (read-only, no OPS_ROLES entry needed).
+  ops: humanRole({
+    permissions: OPS_PERMISSIONS,
+    ceiling: 'all-programs',
+    requiredAcr: 'AAL2',
+  }),
+  admin: humanRole({
+    permissions: OPS_PERMISSIONS,
+    ceiling: 'all-programs',
+    requiredAcr: 'AAL2',
+  }),
+  super_admin: humanRole({
+    permissions: OPS_PERMISSIONS,
     ceiling: 'all-programs',
     requiredAcr: 'AAL2',
   }),

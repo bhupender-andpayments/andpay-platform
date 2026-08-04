@@ -18,4 +18,30 @@ describe('class-3 ops RoleConfig', () => {
     expect(authorize(claim('role:nobody'), 'ops:manual-batch-trigger', {}, cfg).allowed).toBe(false)
     expect(authorize(claim('role:ops_portal'), 'ops:not-a-thing', {}, cfg).allowed).toBe(false)
   })
+
+  it.each(['ops', 'admin', 'super_admin'])(
+    'permits the full ops permission set for role:%s at an unscoped resource',
+    (role) => {
+      const cfg = loadOpsConfig()
+      expect(authorize(claim(`role:${role}`), 'ops:manual-batch-trigger', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:status-correction', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:upload-bank-file', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:upload-damage-file', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:terminal-override', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:recompose-artifact', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:record-hold', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:record-release', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:vendor-create', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:vendor-suspend', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:resolve-quarantine', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:resolve-intake-exception', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:resolve-status-exception', {}, cfg).allowed).toBe(true)
+    },
+  )
+
+  it('does not resolve support_readonly (no OPS_ROLES entry, unknown-role)', () => {
+    const cfg = loadOpsConfig()
+    expect(authorize(claim('role:support_readonly'), 'ops:manual-batch-trigger', {}, cfg).allowed).toBe(false)
+    expect(authorize(claim('role:support_readonly'), 'ops:status-correction', {}, cfg).allowed).toBe(false)
+  })
 })
