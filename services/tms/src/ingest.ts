@@ -25,6 +25,12 @@ export interface BankRequestRow {
   // fact (S7/S5), only pending_row and the assignment snapshot.
   contactName: string
   mobile: string
+  // Phase 3 Task 4: the mandatory bank-file Branch Code (BRD 5.1b). Like the
+  // recipient contact, it is TMS-local snapshot data (not an identity key: the
+  // tenant already keys on bank_reference_code), so it never reaches the row
+  // fact, only pending_row and the assignment snapshot. A row missing it is a
+  // row-level rejection, mirroring contactName/mobile.
+  branchCode: string
   vpaHint?: string
 }
 
@@ -32,12 +38,14 @@ export interface BankRequestRow {
 // ingest path below and the preview surface (services/tms/src/ops.ts
 // previewBankFile) run the SAME rules with no duplication: format-only QR/VPA
 // (D117) plus the FR-01b mandatory recipient contact/mobile (spec 06a). An
-// empty contact_name or mobile counts as missing. `null` means the row passes.
-export type RequestRowRejectReason = 'invalid_qr_vpa_format' | 'missing_recipient_contact'
+// empty contact_name or mobile counts as missing. An empty branch_code counts
+// as missing too (Phase 3 Task 4, BRD 5.1b mandatory). `null` means the row passes.
+export type RequestRowRejectReason = 'invalid_qr_vpa_format' | 'missing_recipient_contact' | 'missing_branch_code'
 
 export function requestRowRejectReason(row: BankRequestRow): RequestRowRejectReason | null {
   if (!validateQrVpaFormat(row.qrValue, row.vpaValue)) return 'invalid_qr_vpa_format'
   if (!row.contactName || !row.mobile) return 'missing_recipient_contact'
+  if (!row.branchCode) return 'missing_branch_code'
   return null
 }
 
@@ -85,9 +93,9 @@ export async function ingestRequestRowWithinTx(
   let outcome: 'accepted' | 'duplicate' = 'duplicate'
   const won = await tx.$queryRaw<{ id: string }[]>`
     INSERT INTO pending_row
-      (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, status)
+      (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code, status)
     VALUES
-      (${correlationId}, ${row.bankReferenceCode}, ${row.soundbox}, ${row.standeeCount}, ${row.stickerCount}, ${row.qrValue}, ${row.vpaValue}, ${row.shipToAddress}, ${row.contactName}, ${row.mobile}, ${'awaiting-identity'})
+      (${correlationId}, ${row.bankReferenceCode}, ${row.soundbox}, ${row.standeeCount}, ${row.stickerCount}, ${row.qrValue}, ${row.vpaValue}, ${row.shipToAddress}, ${row.contactName}, ${row.mobile}, ${row.branchCode}, ${'awaiting-identity'})
     ON CONFLICT (correlation_id) DO NOTHING
     RETURNING id
   `

@@ -151,7 +151,10 @@ export function applyFact(
       s.billableFlag = p.billable
       s.receivedAt = occurredAt
       s.pipelineState = advance(s.pipelineState, 'RECEIVED')
-      // branch has NO fact source in v1 -> stays null (registered follow-up).
+      // Phase 3 Task 4: the assignment fact now carries the Branch Code snapshot
+      // (BRD 5.1b, optional on the wire for D120 FULL compat). A fact WITHOUT it
+      // (a pre-Task-4 / legacy fact) still projects to null.
+      s.branch = p.branchCode ?? null
       return s
     }
     case T.SHIP_TO_AMENDED:

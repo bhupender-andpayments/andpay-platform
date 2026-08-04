@@ -32,6 +32,9 @@ export interface AssignmentFactView {
   sourceEventId: string
   contactName?: string
   mobile?: string
+  // Phase 3 Task 4: Branch Code snapshot, OPTIONAL on the wire (D120 FULL compat),
+  // projected into DispatchRow.branch.
+  branchCode?: string
 }
 
 // fct.tms.assignment.ship_to_amended.v1

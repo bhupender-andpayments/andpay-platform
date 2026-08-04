@@ -22,7 +22,7 @@ function validRow(over: Partial<BankRequestRow> = {}): BankRequestRow {
     mcc: '5814', registeredAddress: '221B Baker Street', bankReferenceCode: 'HDFC',
     productType: 'soundbox', vpaValue: 'acme@hdfcbank', qrValue: 'upi://pay?pa=acme@hdfcbank',
     soundbox: true, standeeCount: 1, stickerCount: 2, shipToAddress: '221B Baker Street',
-    contactName: 'Jane Doe', mobile: '+91-9000000000',
+    contactName: 'Jane Doe', mobile: '+91-9000000000', branchCode: 'BR-001',
     vpaHint: 'acme@hdfcbank', ...over,
   }
 }
@@ -38,13 +38,15 @@ describe('request-file ingest (spec 06 sections 6, 10; checks 3, 4)', () => {
     const r = await ingestRequestRow(db, validRow(), 'trace-1')
     expect(r).toBe('accepted')
 
-    const pend = await db.$queryRaw<{ correlation_id: string; qr_value: string; vpa_value: string; ship_to_address: string; contact_name: string | null; mobile: string | null }[]>`SELECT correlation_id, qr_value, vpa_value, ship_to_address, contact_name, mobile FROM pending_row`
+    const pend = await db.$queryRaw<{ correlation_id: string; qr_value: string; vpa_value: string; ship_to_address: string; contact_name: string | null; mobile: string | null; branch_code: string | null }[]>`SELECT correlation_id, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code FROM pending_row`
     expect(pend).toHaveLength(1)
     expect(pend[0]!.correlation_id).toBe('file-1|1')
     expect(pend[0]!.qr_value).toBe('upi://pay?pa=acme@hdfcbank')
     // 06a check 1: the recipient contact snapshot is parsed into pending_row.
     expect(pend[0]!.contact_name).toBe('Jane Doe')
     expect(pend[0]!.mobile).toBe('+91-9000000000')
+    // Task 4: the Branch Code snapshot is parsed into pending_row.
+    expect(pend[0]!.branch_code).toBe('BR-001')
 
     const ob = await outboxRows()
     expect(ob).toHaveLength(1)
@@ -99,6 +101,20 @@ describe('request-file ingest (spec 06 sections 6, 10; checks 3, 4)', () => {
     expect(q2[0]!.reason_code).toBe('missing_recipient_contact')
 
     // neither created a pending_row or a row fact (row-level rejection, S8).
+    const pend = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM pending_row`
+    expect(Number(pend[0]!.n)).toBe(0)
+    const ob = await outboxRows()
+    expect(ob).toHaveLength(0)
+  })
+
+  it('Task 4: a row missing branchCode is rejected at ingest (BRD 5.1b mandatory), quarantined with no row fact', async () => {
+    const noBranch = await ingestRequestRow(db, validRow({ rowNo: 5, branchCode: '' }), 'trace-1')
+    expect(noBranch).toBe('quarantined')
+    const q = await db.$queryRaw<{ reason_code: string }[]>`SELECT reason_code FROM quarantine_row WHERE row_no = 5`
+    expect(q).toHaveLength(1)
+    expect(q[0]!.reason_code).toBe('missing_branch_code')
+
+    // no pending_row or row fact for the rejected row (row-level rejection, S8).
     const pend = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM pending_row`
     expect(Number(pend[0]!.n)).toBe(0)
     const ob = await outboxRows()

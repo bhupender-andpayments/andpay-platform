@@ -35,6 +35,7 @@ function assignmentEnvelope(o: {
   bankDisplayName?: string
   merchantDisplayName?: string
   billable?: boolean
+  branchCode?: string
   ts: string
 }): Envelope {
   return newEnvelope({
@@ -63,6 +64,10 @@ function assignmentEnvelope(o: {
       billable: o.billable ?? true,
       demandState: 'pooled-for-fulfillment',
       sourceEventId: `file-1|${o.asgnId}`,
+      // Task 4: Branch Code snapshot, optional on the wire. Omitted when the
+      // test does not pass one (undefined -> dropped by JSON), modeling a
+      // pre-Task-4 / legacy fact that must still project to null.
+      branchCode: o.branchCode,
     },
   })
 }
@@ -195,7 +200,7 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
     const unit = newId('unit')
     const shpt = newId('shpt')
 
-    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnA, progId: progP, bankReferenceCode: 'HDFC', merchantDisplayName: 'Acme', billable: true, ts: '2026-07-01T00:00:00Z' }))
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnA, progId: progP, bankReferenceCode: 'HDFC', merchantDisplayName: 'Acme', billable: true, branchCode: 'BR-001', ts: '2026-07-01T00:00:00Z' }))
     await ingestEnvelope(db, batchEnvelope({ btchId: btch, programId: progP, asgnIds: [asgnA], ts: '2026-07-01T06:00:00Z' }))
     await ingestEnvelope(db, dispatchEnvelope({ btchId: btch, asgnIds: [asgnA], dispatchState: 'SENT_TO_VENDOR', ts: '2026-07-01T12:00:00Z' }))
     await ingestEnvelope(db, printForEnvelope({ asgnId: asgnA, unitId: unit, deviceId: 'DEV1', shptId: shpt, awb: 'AWB1', ts: '2026-07-01T13:00:00Z' }))
@@ -208,6 +213,7 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
       bankCode: 'HDFC',
       bankDisplay: 'HDFC Bank',
       merchantDisplay: 'Acme',
+      branch: 'BR-001', // Task 4: Branch Code projected from the assignment fact
       awb: 'AWB1',
       deviceIds: ['DEV1'],
       courierStatus: 'DELIVERED',
@@ -223,6 +229,21 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
     expect(row!.dispatchedAt).not.toBeNull()
     expect(row!.dispatchDate).not.toBeNull()
     expect(row!.deliveryDate).not.toBeNull()
+  })
+
+  it('Task 4: an assignment fact WITH branchCode populates dispatch_row.branch; one WITHOUT it projects to null (FULL-compat)', async () => {
+    const asgnWith = newId('asgn')
+    const asgnWithout = newId('asgn')
+    const progP = newId('prog') as ProgId
+
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnWith, progId: progP, branchCode: 'BR-042', ts: '2026-07-01T00:00:00Z' }))
+    // a pre-Task-4 / legacy fact: no branchCode on the wire.
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnWithout, progId: progP, ts: '2026-07-01T00:00:00Z' }))
+
+    const withBranch = await db.dispatchRow.findUnique({ where: { dispatchId: asgnWith } })
+    const withoutBranch = await db.dispatchRow.findUnique({ where: { dispatchId: asgnWithout } })
+    expect(withBranch!.branch).toBe('BR-042')
+    expect(withoutBranch!.branch).toBeNull()
   })
 
   it('replacement_raised updates BOTH the raising row and the replaced row', async () => {

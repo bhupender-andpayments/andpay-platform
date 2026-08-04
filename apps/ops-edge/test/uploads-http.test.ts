@@ -79,6 +79,7 @@ const BASE_REQUEST: Record<string, string> = {
   shipToAddress: '221B Baker Street',
   contactName: 'Jane Doe',
   mobile: '+91-9000000000',
+  branchCode: 'BR-001',
   vpaHint: 'acme@hdfcbank',
 }
 

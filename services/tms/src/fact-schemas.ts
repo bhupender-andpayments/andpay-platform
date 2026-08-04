@@ -46,6 +46,8 @@ export const TMS_FACT_SCHEMAS: Record<string, object> = {
       // spec 06a: recipient contact snapshot, OPTIONAL (FULL compat, no v2).
       contactName: { type: 'string' },
       mobile: { type: 'string' },
+      // Phase 3 Task 4: Branch Code snapshot, OPTIONAL (FULL compat, no v2).
+      branchCode: { type: 'string' },
     },
     required: ['asgnId', 'demandState'],
   },

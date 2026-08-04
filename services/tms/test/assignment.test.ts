@@ -21,8 +21,8 @@ async function seed(correlationId: string) {
   const mrchId = fromUuid('mrch', toUuid(newId('mrch')))
   const progId = fromUuid('prog', toUuid(newId('prog')))
   const tnntId = fromUuid('tnnt', toUuid(newId('tnnt')))
-  await db.$executeRaw`INSERT INTO pending_row (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, status)
-    VALUES (${correlationId}, 'HDFC', true, 1, 2, 'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', '221B Baker Street', 'Jane Doe', '+91-9000000000', 'awaiting-identity')`
+  await db.$executeRaw`INSERT INTO pending_row (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code, status)
+    VALUES (${correlationId}, 'HDFC', true, 1, 2, 'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', '221B Baker Street', 'Jane Doe', '+91-9000000000', 'BR-001', 'awaiting-identity')`
   await db.$executeRaw`INSERT INTO merchant_projection (id, display_name, legal_name, mcc, status, updated_at)
     VALUES (${toUuid(mrchId)}::uuid, 'Acme', 'Acme Pvt Ltd', '5814', 'ACTIVE', now())`
   await db.$executeRaw`INSERT INTO tenant_projection (id, display_name, bank_reference_code, updated_at)
@@ -61,10 +61,11 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
       source_event_id: string
       contact_name: string | null
       mobile: string | null
+      branch_code: string | null
     }[]>`
       SELECT merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
              ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count, demand_state, source_event_id,
-             contact_name, mobile
+             contact_name, mobile, branch_code
       FROM assignment
     `
     expect(asgn).toHaveLength(1)
@@ -84,6 +85,8 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
     // 06a check 1: the recipient contact snapshot carried from pending_row.
     expect(asgn[0]!.contact_name).toBe('Jane Doe')
     expect(asgn[0]!.mobile).toBe('+91-9000000000')
+    // Task 4: the Branch Code snapshot carried from pending_row.
+    expect(asgn[0]!.branch_code).toBe('BR-001')
 
     const ob = await db.$queryRaw<{ event_type: string; partition_key: string; payload: Envelope<AssignmentFactPayload> }[]>`SELECT event_type, partition_key, payload FROM outbox`
     expect(ob).toHaveLength(1)
@@ -118,6 +121,9 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
     // (populated for every new assignment, though optional on the wire).
     expect(fact.contactName).toBe('Jane Doe')
     expect(fact.mobile).toBe('+91-9000000000')
+    // Task 4: the Branch Code snapshot lands on the emitted fact (populated for
+    // every new assignment, optional on the wire).
+    expect(fact.branchCode).toBe('BR-001')
   })
 
   it('06a check 2: a legacy row with NULL contact/mobile re-emits a FULL-compatible fact with the fields ABSENT (not JSON null)', async () => {
@@ -143,6 +149,9 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
     // fail the strict `type: string` validator and break D120 FULL compat.
     expect(keys).not.toContain('contactName')
     expect(keys).not.toContain('mobile')
+    // Task 4: a pre-Task-4 row (no branch_code) re-emits with branchCode ABSENT
+    // (undefined -> dropped by JSON), keeping the fact D120 FULL-compatible.
+    expect(keys).not.toContain('branchCode')
   })
 
   it('a redelivered enrollment fact creates no second assignment (check 3, inbox + source_event_id UNIQUE)', async () => {

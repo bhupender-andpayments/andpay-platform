@@ -42,6 +42,7 @@ export const DEFAULT_REQUEST_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
   shipToAddress: 'shipToAddress',
   contactName: 'contactName',
   mobile: 'mobile',
+  branchCode: 'branchCode',
   vpaHint: 'vpaHint',
 })
 
@@ -267,6 +268,7 @@ function normalizeRequestRow(
     shipToAddress: get('shipToAddress'),
     contactName: get('contactName'),
     mobile: get('mobile'),
+    branchCode: get('branchCode'),
   }
   const vpaHint = get('vpaHint')
   return vpaHint === '' ? row : { ...row, vpaHint }

@@ -29,6 +29,7 @@ const REQUEST_DATA_ROW = [
   '221B Baker Street',
   'Jane Doe',
   '+91-9000000000',
+  'BR-001',
   'acme@hdfcbank',
 ]
 
@@ -72,6 +73,7 @@ describe('parseBankRequestFile (phase 2 task 1, D-C core)', () => {
         shipToAddress: '221B Baker Street',
         contactName: 'Jane Doe',
         mobile: '+91-9000000000',
+        branchCode: 'BR-001',
         vpaHint: 'acme@hdfcbank',
       },
     ])

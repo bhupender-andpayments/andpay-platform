@@ -44,6 +44,7 @@ const BASE_REQUEST: Record<string, string> = {
   shipToAddress: '221B Baker Street',
   contactName: PII_CONTACT,
   mobile: PII_MOBILE,
+  branchCode: 'BR-001',
   vpaHint: 'acme@hdfcbank',
 }
 
@@ -113,6 +114,7 @@ function validRow(over: Partial<BankRequestRow> = {}): BankRequestRow {
     shipToAddress: '221B Baker Street',
     contactName: 'Jane Doe',
     mobile: '+91-9000000000',
+    branchCode: 'BR-001',
     vpaHint: 'acme@hdfcbank',
     ...over,
   }

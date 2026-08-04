@@ -38,6 +38,10 @@ export interface AssignmentFactPayload {
   // assignment (ingest-mandatory). Entitled shipping-recipient PII (D104).
   contactName?: string
   mobile?: string
+  // Phase 3 Task 4: Branch Code snapshot (BRD 5.1b). Optional on the wire for
+  // D120 FULL compat (a pre-extension fact validates); populated for every new
+  // assignment (ingest-mandatory). Feeds analytics DispatchRow.branch.
+  branchCode?: string
 }
 
 export interface ShipToAmendedFactPayload {

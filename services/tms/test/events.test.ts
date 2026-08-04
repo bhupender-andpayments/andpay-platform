@@ -60,6 +60,7 @@ describe('tms fact envelopes', () => {
         sourceEventId: 'file-1|1',
         contactName: 'Jane Doe',
         mobile: '+91-9000000000',
+        branchCode: 'BR-001',
       },
       dedupKey: 'evt-1|tms.assignment',
       traceId: 'trace-1',
@@ -70,6 +71,8 @@ describe('tms fact envelopes', () => {
     // 06a: the recipient contact snapshot passes through the envelope (check 1)
     expect(env.payload.contactName).toBe('Jane Doe')
     expect(env.payload.mobile).toBe('+91-9000000000')
+    // Task 4: the Branch Code snapshot passes through the envelope
+    expect(env.payload.branchCode).toBe('BR-001')
   })
 
   it('amend, replacement, and activated facts partition on asgnId', () => {

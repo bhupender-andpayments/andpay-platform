@@ -36,6 +36,7 @@ interface PendingRowRow {
   ship_to_address: string
   contact_name: string | null
   mobile: string | null
+  branch_code: string | null
 }
 interface MerchantProjRow { display_name: string; legal_name: string; mcc: string }
 interface TenantProjRow { display_name: string; bank_reference_code: string }
@@ -61,6 +62,7 @@ interface AssignmentSnapshotRow {
   source_event_id: string
   contact_name: string | null
   mobile: string | null
+  branch_code: string | null
 }
 
 // Emit the demand fact for an already-inserted assignment (row present) and move
@@ -71,7 +73,7 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
     SELECT a.merchant_id, a.program_id, a.tenant_id, a.merchant_display_name AS display_name,
            a.merchant_legal_name AS legal_name, a.merchant_mcc AS mcc, a.bank_reference_code, a.bank_display_name,
            a.ship_to_address, a.qr_value, a.vpa_value, a.soundbox, a.standee_count, a.sticker_count,
-           a.billable, a.source_event_id, a.contact_name, a.mobile
+           a.billable, a.source_event_id, a.contact_name, a.mobile, a.branch_code
     FROM assignment a WHERE a.id = ${asgnUuid}::uuid
   `
   if (rows.length === 0) throw new Error(`emitDemandFact: assignment ${asgnUuid} not found`)
@@ -106,6 +108,10 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
         // absent optional field, keeping the fact D120 FULL-compatible.
         contactName: a.contact_name ?? undefined,
         mobile: a.mobile ?? undefined,
+        // Phase 3 Task 4: Branch Code snapshot (BRD 5.1b). Optional on the wire
+        // (FULL compat, no v2); populated for every new assignment (ingest-mandatory).
+        // Null (a pre-Task-4 row) becomes an absent optional field, same as above.
+        branchCode: a.branch_code ?? undefined,
       },
       dedupKey: eventKey(envId, 'tms.assignment'),
       traceId,
@@ -139,7 +145,7 @@ export async function createAssignmentFromEnrollment(
     await enterWriteScope(tx, 'tms_write', progUuid)
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       const pend = await tx.$queryRaw<PendingRowRow[]>`
-        SELECT soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile
+        SELECT soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code
         FROM pending_row WHERE correlation_id = ${p.sourceEventId}
       `
       if (pend.length === 0) throw new Error(`pending row not found for ${p.sourceEventId}`)
@@ -184,13 +190,13 @@ export async function createAssignmentFromEnrollment(
           merchant_display_name, merchant_legal_name, merchant_mcc,
           bank_reference_code, bank_display_name, ship_to_address,
           qr_value, vpa_value, soundbox, standee_count, sticker_count,
-          billable, demand_state, origin, source_event_id, contact_name, mobile, updated_at
+          billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, updated_at
         ) VALUES (
           ${asgnUuid}::uuid, ${mrchUuid}::uuid, ${progUuid}::uuid, ${tnntUuid}::uuid,
           ${m.display_name}, ${m.legal_name}, ${m.mcc},
           ${t.bank_reference_code}, ${t.display_name}, ${pr.ship_to_address},
           ${pr.qr_value}, ${pr.vpa_value}, ${pr.soundbox}, ${pr.standee_count}, ${pr.sticker_count},
-          ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, now()
+          ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, ${pr.branch_code}, now()
         )
         ON CONFLICT (source_event_id) DO NOTHING
         RETURNING id

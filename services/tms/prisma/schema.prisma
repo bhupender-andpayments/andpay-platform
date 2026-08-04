@@ -75,6 +75,13 @@ model Assignment {
   // are optional under D120 FULL compat); ingest makes them mandatory per row.
   contactName         String?   @map("contact_name")
   mobile              String?
+  // Phase 3 Task 4: mandatory bank-file Branch Code snapshot (BRD 5.1b).
+  // TMS-local snapshot data, not an identity key (the tenant keys on
+  // bank_reference_code); it feeds analytics DispatchRow.branch via the
+  // assignment fact. Nullable at the DB (additive to a BUILT-V1 table, and the
+  // fact field is optional under D120 FULL compat); ingest makes it mandatory
+  // per row, exactly like contact_name/mobile.
+  branchCode          String?   @map("branch_code")
   qrValue             String    @map("qr_value")
   vpaValue            String    @map("vpa_value")
   soundbox            Boolean
@@ -124,6 +131,9 @@ model PendingRow {
   // into the assignment snapshot at creation. Nullable at the DB; ingest-mandatory.
   contactName     String?  @map("contact_name")
   mobile          String?
+  // Phase 3 Task 4: mandatory bank-file Branch Code parsed at ingest (BRD 5.1b),
+  // carried into the assignment snapshot at creation. Nullable at the DB; ingest-mandatory.
+  branchCode      String?  @map("branch_code")
   status          String // awaiting-identity | consumed
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
