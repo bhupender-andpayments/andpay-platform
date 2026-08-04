@@ -16,7 +16,8 @@
     "@andpay/envelope": "workspace:*",
     "@andpay/ids": "workspace:*",
     "@andpay/keys": "workspace:*",
-    "@andpay/outbox": "workspace:*"
+    "@andpay/outbox": "workspace:*",
+    "exceljs": "^4.4.0"
   },
   "devDependencies": {
     "@andpay/bus": "workspace:*"

@@ -593,6 +593,9 @@ importers:
       '@andpay/outbox':
         specifier: workspace:*
         version: link:../../packages/outbox
+      exceljs:
+        specifier: ^4.4.0
+        version: 4.4.0
     devDependencies:
       '@andpay/bus':
         specifier: workspace:*
