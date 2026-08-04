@@ -79,14 +79,22 @@ export async function ingestDamageRowWithinTx(
   // issue"), not the admin-facing stable `code`. An inactive (deactivated)
   // reason does not match here either (`active = true`), so deactivating a
   // reason quarantines any later row still using it, same as an unknown one.
+  // Fix-round 1 (review finding, Important): the normalized-unique index on
+  // damage_reason.label (migration 20260804165617) means this can no longer
+  // find MORE than one row for any input going forward, but the check still
+  // branches on `!== 1`, not just `=== 0`, as defense-in-depth (mirrors the
+  // (bank_ref, vpa) match block above, which does the same): if the
+  // normalized-unique invariant were ever violated (a manual DB edit, a
+  // future migration regression), an ambiguous match must quarantine, never
+  // silently pick one row.
   const reasonMatches = await tx.$queryRaw<{ id: string }[]>`
     SELECT id FROM damage_reason
     WHERE active = true AND LOWER(TRIM(label)) = LOWER(TRIM(${row.damageReason}))
   `
-  if (reasonMatches.length === 0) {
+  if (reasonMatches.length !== 1) {
     await tx.$executeRaw`
       INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
-      VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_damage'}, ${'invalid_damage_reason'})
+      VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_damage'}, ${reasonMatches.length === 0 ? 'invalid_damage_reason' : 'ambiguous_damage_reason'})
       ON CONFLICT (file_id, row_no) DO NOTHING
     `
     outcome = 'quarantined'

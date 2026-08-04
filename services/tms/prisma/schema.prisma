@@ -180,13 +180,23 @@ model IngestFile {
 /// identifier (never derived from label, so a later relabel does not change
 /// the identifier an integration might reference); label is the human display
 /// text the ingest match runs against (case- and whitespace-insensitive, see
-/// damage.ts). Both are unique. id is a plain DB-generated uuid, not a typed
-/// @andpay/ids prefix: this is internal reference data, never a merchant-
-/// facing external id, so no new ID prefix is invented (repo DO-NOT list).
+/// damage.ts). code is unique on its exact value; label is unique on its
+/// NORMALIZED form only (fix-round 1, review finding: the ingest match is
+/// case/whitespace-insensitive, so a plain case-sensitive unique on label
+/// alone would let an admin create "battery issue" and "Battery Issue " as
+/// two DISTINCT rows -- deactivating one then silently does nothing, because
+/// the ingest match still finds the other, still-active, normalized-identical
+/// row). The normalized-unique index (`lower(trim(label))`) is
+/// migration-only, like the RLS policy/grants on this table: Prisma's schema
+/// DSL has no functional-index syntax, so it is intentionally NOT declared
+/// here (see migration 20260805000000_damage_reason_label_normalized_unique).
+/// id is a plain DB-generated uuid, not a typed @andpay/ids prefix: this is
+/// internal reference data, never a merchant-facing external id, so no new
+/// ID prefix is invented (repo DO-NOT list).
 model DamageReason {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   code      String   @unique
-  label     String   @unique
+  label     String
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)

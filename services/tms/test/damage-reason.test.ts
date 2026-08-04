@@ -51,6 +51,52 @@ async function auditRowsFor(operation: string): Promise<{ decision: string; reso
   return rows.filter((r) => r.payload.operation === operation).map((r) => ({ decision: r.payload.decision, resourceIds: r.payload.resourceIds ?? [], principalId: r.payload.principalId }))
 }
 
+describe('ingest ambiguous-reason defense-in-depth (fix-round 1, Important)', () => {
+  it('if two ACTIVE rows ever normalize-collide (constraint bypassed), the ingest match quarantines ambiguous_damage_reason rather than silently picking one', async () => {
+    // The normalized-unique index (migration 20260804165617) makes this
+    // state UNREACHABLE through the ops API or any ordinary INSERT; this
+    // test proves the ingest-side defense-in-depth is non-vacuous by
+    // temporarily dropping the index (mirrors the repo's own
+    // installCurrentUserGuard-style temporary-DB-object technique for a
+    // non-vacuous proof), inserting the colliding pair directly, then
+    // restoring the index in a `finally` so no other test observes the gap.
+    const code1 = `test_code_${randomUUID()}`
+    const code2 = `test_code_${randomUUID()}`
+    const label = `Ambiguous Reason ${randomUUID()}`
+    await db.$executeRawUnsafe('DROP INDEX "damage_reason_label_normalized_key"')
+    let id1 = ''
+    let id2 = ''
+    try {
+      const r1 = await db.$queryRaw<{ id: string }[]>`
+        INSERT INTO damage_reason (code, label, active, updated_at) VALUES (${code1}, ${label}, true, now()) RETURNING id
+      `
+      id1 = r1[0]!.id
+      const r2 = await db.$queryRaw<{ id: string }[]>`
+        INSERT INTO damage_reason (code, label, active, updated_at) VALUES (${code2}, ${`  ${label.toUpperCase()}  `}, true, now()) RETURNING id
+      `
+      id2 = r2[0]!.id
+
+      const vpa = `dr-ambig-${randomUUID()}@hdfcbank`
+      await seedOriginalAssignment(vpa, 'HDFC')
+      const outcome = await ingestDamageRow(
+        db,
+        { fileId: `dr-ambig-${code1}`, rowNo: 1, tenantReference: 'HDFC', vpaValue: vpa, damageReason: label, bankRemarks: '', shipToAddress: 'New Addr' },
+        't-dr-ambig',
+      )
+      expect(outcome).toBe('quarantined')
+      const q = await db.$queryRaw<{ reason_code: string }[]>`SELECT reason_code FROM quarantine_row WHERE file_id = ${`dr-ambig-${code1}`}`
+      expect(q).toHaveLength(1)
+      expect(q[0]!.reason_code).toBe('ambiguous_damage_reason')
+    } finally {
+      if (id1) await deleteReason(id1)
+      if (id2) await deleteReason(id2)
+      await db.$executeRawUnsafe(
+        'CREATE UNIQUE INDEX "damage_reason_label_normalized_key" ON "damage_reason" (lower(trim(label)))',
+      )
+    }
+  })
+})
+
 describe('damage_reason admin CRUD (Phase 3 Task 1, BRD FR-08/FR-11)', () => {
   it('createDamageReasonOps creates a row and co-commits the ALLOW 6e in the same tx', async () => {
     const code = `test_code_${randomUUID()}`
@@ -128,6 +174,81 @@ describe('damage_reason admin CRUD (Phase 3 Task 1, BRD FR-08/FR-11)', () => {
       expect(activateAudit).toHaveLength(1)
       expect(activateAudit[0]!.decision).toBe('ALLOW')
       expect(activateAudit[0]!.resourceIds).toEqual([id])
+    } finally {
+      await deleteReason(id)
+    }
+  })
+
+  it('fix-round 1 (Important): creating a case/whitespace variant of an EXISTING seeded reason is rejected with a clean 4xx (OpsClientError), not a 500, and creates no second row', async () => {
+    // 'battery issue' is one of the four BRD-seeded rows (migration
+    // 20260804163403). A normalized-collision create must fail at the
+    // normalized-unique index (migration 20260804165617), not silently
+    // succeed as a second, deactivation-defeating row.
+    const code = `test_code_${randomUUID()}`
+    await expect(
+      createDamageReasonOps(db, { code, label: '  Battery Issue  ', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-6' }),
+    ).rejects.toBeInstanceOf(OpsClientError)
+    await expect(
+      createDamageReasonOps(db, { code, label: '  Battery Issue  ', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-6' }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+
+    const rows = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM damage_reason WHERE lower(trim(label)) = lower(trim('  Battery Issue  '))`
+    expect(Number(rows[0]!.n)).toBe(1) // only the original seeded row, no variant
+    const byCode = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM damage_reason WHERE code = ${code}`
+    expect(Number(byCode[0]!.n)).toBe(0) // the rejected create's own code was never inserted either
+  })
+
+  it('fix-round 1 (Important): a normalized-duplicate LABEL (different code) is also rejected, same as a duplicate code', async () => {
+    const code1 = `test_code_${randomUUID()}`
+    const label = `Dup Label Test ${randomUUID()}`
+    const created = await createDamageReasonOps(db, { code: code1, label, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-7' })
+    const id = created.damageReason!.id
+    try {
+      const code2 = `test_code_${randomUUID()}`
+      await expect(
+        createDamageReasonOps(db, { code: code2, label: `  ${label.toUpperCase()}  `, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-7' }),
+      ).rejects.toMatchObject({ kind: 'invalid' })
+      const byCode2 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM damage_reason WHERE code = ${code2}`
+      expect(Number(byCode2[0]!.n)).toBe(0)
+    } finally {
+      await deleteReason(id)
+    }
+  })
+
+  it('fix-round 1 (Important): after deactivating a reason, an ingest row using ANY case/whitespace form of its label quarantines (invalid_damage_reason), proving deactivation is effective', async () => {
+    const code = `test_code_${randomUUID()}`
+    const label = `Cracked Screen ${randomUUID()}`
+    const created = await createDamageReasonOps(db, { code, label, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-8' })
+    const id = created.damageReason!.id
+    try {
+      const vpa1 = `dr-t8a-${randomUUID()}@hdfcbank`
+      await seedOriginalAssignment(vpa1, 'HDFC')
+      // while active, a DIFFERENT case/whitespace form of the same label
+      // still matches (the ingest match is itself normalized) and replaces.
+      const beforeDeactivate = await ingestDamageRow(
+        db,
+        { fileId: `dr-t8-before-${id}`, rowNo: 1, tenantReference: 'HDFC', vpaValue: vpa1, damageReason: `  ${label.toUpperCase()}  `, bankRemarks: '', shipToAddress: 'New Addr' },
+        't-dr-8',
+      )
+      expect(beforeDeactivate).toBe('replaced')
+
+      await deactivateDamageReasonOps(db, { id, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-8' })
+
+      const vpa2 = `dr-t8b-${randomUUID()}@hdfcbank`
+      await seedOriginalAssignment(vpa2, 'HDFC')
+      // NOW a case/whitespace-varied form of the (now-deactivated) label
+      // must quarantine: this is the exact collision the review flagged --
+      // before the fix, a second normalized-identical ACTIVE row could exist
+      // and this would still match and replace.
+      const afterDeactivate = await ingestDamageRow(
+        db,
+        { fileId: `dr-t8-after-${id}`, rowNo: 1, tenantReference: 'HDFC', vpaValue: vpa2, damageReason: label.toLowerCase(), bankRemarks: '', shipToAddress: 'New Addr' },
+        't-dr-8',
+      )
+      expect(afterDeactivate).toBe('quarantined')
+      const q = await db.$queryRaw<{ reason_code: string }[]>`SELECT reason_code FROM quarantine_row WHERE file_id = ${`dr-t8-after-${id}`}`
+      expect(q).toHaveLength(1)
+      expect(q[0]!.reason_code).toBe('invalid_damage_reason')
     } finally {
       await deleteReason(id)
     }

@@ -34,6 +34,27 @@ export class OpsClientError extends Error {
   }
 }
 
+// Fix-round 1 (review finding, Minor): a duplicate create (same code or
+// normalized label, a different Idempotency-Key so `onceWithin` does not
+// dedup it away) previously threw the RAW Prisma/Postgres unique-violation
+// error, which bypasses OpsErrorFilter's duck-type check (no `kind`
+// property) and falls through to a 500. createDamageReasonWithinTx uses raw
+// `$queryRaw` (not the typed client), so a constraint violation surfaces
+// DIFFERENTLY than the typed-client P2002 shape other services check for
+// (services/auth/src/vendor-operator.ts's isUniqueViolation): Prisma wraps a
+// failed raw query as `PrismaClientKnownRequestError` with the top-level
+// `code` fixed at 'P2010' ("raw query failed") and the ORIGINAL Postgres
+// SQLSTATE inside `meta.code` (verified empirically against this exact
+// INSERT: `{ code: 'P2010', meta: { code: '23505', message: 'Key (code)=(...)
+// already exists.' } }`). '23505' is Postgres's unique_violation SQLSTATE,
+// so this checks that, not 'P2002'.
+function isRawUniqueViolation(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return false
+  if ((err as { code?: unknown }).code !== 'P2010') return false
+  const meta = (err as { meta?: unknown }).meta
+  return typeof meta === 'object' && meta !== null && 'code' in meta && (meta as { code?: unknown }).code === '23505'
+}
+
 // A structural parse failure (unsupported extension, unreadable bytes, or a
 // missing required column) on a COMMIT: the file cannot be ingested at all, so
 // nothing is written. `kind: 'invalid'` is the discriminant the ops-edge
@@ -293,26 +314,40 @@ export async function createDamageReasonOps(
   }
 
   let damageReason: DamageReasonRow | null = null
-  const ran = await db.$transaction(async (tx: Tx) => {
-    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
-    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:damage-reason-create'), async () => {
-      const created = await createDamageReasonWithinTx(tx, { code, label })
-      damageReason = created
-      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the create.
-      // The minted damage_reason id is the target resource (IDs only).
-      await enqueue(
-        tx,
-        buildAuthzAuditEvent(
-          opsAllow({
-            operation: 'ops:damage-reason-create',
-            principalId: args.actorId,
-            resourceIds: [created.id],
-            traceId: args.traceId,
-          }),
-        ),
-      )
+  let ran: boolean
+  try {
+    ran = await db.$transaction(async (tx: Tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
+      return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:damage-reason-create'), async () => {
+        const created = await createDamageReasonWithinTx(tx, { code, label })
+        damageReason = created
+        // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the create.
+        // The minted damage_reason id is the target resource (IDs only).
+        await enqueue(
+          tx,
+          buildAuthzAuditEvent(
+            opsAllow({
+              operation: 'ops:damage-reason-create',
+              principalId: args.actorId,
+              resourceIds: [created.id],
+              traceId: args.traceId,
+            }),
+          ),
+        )
+      })
     })
-  })
+  } catch (err) {
+    // A duplicate code, OR a duplicate label under the normalized-unique
+    // index (fix-round 1: "battery issue" vs "Battery Issue " both trip this
+    // now), is an expected client condition, not a server fault: map it to a
+    // clean 4xx via OpsClientError rather than letting the raw constraint
+    // error reach the edge as a 500. The transaction rolled back (no
+    // partial row, no orphaned 6e).
+    if (isRawUniqueViolation(err)) {
+      throw new OpsClientError('invalid', 'a damage reason with this code or label already exists')
+    }
+    throw err
+  }
   return { deduped: !ran, damageReason: ran ? damageReason : null }
 }
 
