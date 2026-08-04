@@ -38,6 +38,28 @@ pnpm --filter @andpay/ops-portal demo:code     # print the current TOTP 6-digit 
 `demo:serve` prints the operator handle, password, TOTP base32 secret, and the
 current code on boot.
 
+## Ordering (important)
+
+The full `pnpm test` suite TRUNCATEs shared dev-DB tables (fulfillment/tms/
+analytics test setup), which WIPES the demo seed. So the order for a demo is:
+
+1. run any tests you need FIRST,
+2. then `demo:seed`,
+3. then `demo:serve` + `dev`,
+4. and do NOT run the suite again until after the demo.
+
+Re-running `demo:seed` restores all seeded state (vendors, dispatch rows,
+exceptions, quarantine) to their intended values.
+
+## Known demo notes
+
+- Step-up (destructive actions) only re-prompts for a code once the session is
+  no longer fresh; right after login a destructive action succeeds without the
+  dialog. To show the TOTP step-up on stage, act after the freshness window.
+- A demo-scoped ops-edge bridge wire-encodes the raw-uuid vendor id so suspend
+  works live (a real spec-10c<->spec-13 id-contract gap; see
+  `docs/plan/OPS_PORTAL_DEMO_FINDINGS.md`). Branch-only, never merge to main.
+
 ## Spine tripwire (Task 14 gate)
 
 ```
