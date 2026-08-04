@@ -64,9 +64,11 @@ describe('InMemoryAssetStore (dev AssetStore adapter)', () => {
 
     const history = await store.listVersions('bank:sbi')
     expect(history).toHaveLength(2)
+    const [newest, oldest] = history
+    if (!newest || !oldest) throw new Error('expected exactly two history entries')
     // Newest first.
-    expect(history[0].reference).toBe(v2.reference)
-    expect(history[1].reference).toBe(v1.reference)
+    expect(newest.reference).toBe(v2.reference)
+    expect(oldest.reference).toBe(v1.reference)
   })
 
   it('returns null from getCurrent for a key that was never put', async () => {
