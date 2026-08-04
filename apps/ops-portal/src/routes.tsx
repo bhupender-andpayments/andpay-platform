@@ -1,8 +1,8 @@
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth/AuthContext.js'
 import { LoginPage } from './auth/LoginPage.js'
-import { Nav } from './components/Nav.js'
 import { RequireAuth } from './components/RequireAuth.js'
+import { AppShell } from './ui/AppShell.js'
 import { TilesPage } from './features/dashboards/TilesPage.js'
 import { ReportPage } from './features/dashboards/ReportPage.js'
 import { QueuesPage } from './features/queues/QueuesPage.js'
@@ -23,15 +23,13 @@ function LoginRoute() {
   return <LoginPage />
 }
 
-// The authenticated shell: the left Nav plus whatever feature route matched.
+// The authenticated shell: the branded sidebar + top bar frame around whatever
+// feature route matched.
 function Shell() {
   return (
-    <div className="flex flex-1">
-      <Nav />
-      <main className="flex-1 overflow-auto p-6">
-        <Outlet />
-      </main>
-    </div>
+    <AppShell>
+      <Outlet />
+    </AppShell>
   )
 }
 
