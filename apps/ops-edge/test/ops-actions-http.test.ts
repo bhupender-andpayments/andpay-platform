@@ -113,16 +113,24 @@ async function rawAuditRows(): Promise<unknown[]> {
 
 // Seed one shpt (owner insert, mirrors the tenant-edge read test's shape). No
 // status_at is set, so the correct-path advance UPDATE's `status_at IS NULL`
-// guard is satisfied and a forward correction advances.
-async function seedShpt(status: string): Promise<{ shptId: string; programId: string }> {
-  const shptId = randomUUID()
+// guard is satisfied and a forward correction advances. The domain writes now
+// DECODE a wire shpt id (this task's contract change), so this returns both
+// the wire form (for the route URL / resourceIds assertions) and the raw
+// uuid (for direct DB assertions).
+async function seedShpt(status: string): Promise<{ shptWire: string; shptUuid: string; programId: string }> {
+  const shptWire = newId('shpt')
+  const shptUuid = toUuid(shptWire)
   const programId = randomUUID()
   const tenantId = randomUUID()
+  // A UUIDv7 id's leading bytes are a wall-clock timestamp (millisecond
+  // resolution), not random, so deriving the awb from a slice of shptUuid (as
+  // the pre-existing raw-uuid v4 id allowed) can collide across two shpt seeds
+  // minted close together. Use an independent random source instead.
   await fulfillmentDb.$executeRaw`
     INSERT INTO shpt (id, awb, courier_partner, status, dispatch_date, tenant_id, program_id, updated_at)
-    VALUES (${shptId}::uuid, ${'AWB-' + shptId.slice(0, 8)}, NULL, ${status}, now(), ${tenantId}::uuid, ${programId}::uuid, now())
+    VALUES (${shptUuid}::uuid, ${'AWB-' + randomUUID()}, NULL, ${status}, now(), ${tenantId}::uuid, ${programId}::uuid, now())
   `
-  return { shptId, programId }
+  return { shptWire, shptUuid, programId }
 }
 
 async function shptStatus(shptId: string): Promise<string> {
@@ -273,17 +281,17 @@ describe('ops-edge actions: the per-action step-up gate (check 1)', () => {
   })
 
   it('POST override with a FRESH AAL2 claim -> the action runs (200) and emits ONE terminal-override ALLOW 6e', async () => {
-    const { shptId } = await seedShpt('IN_TRANSIT')
+    const { shptWire, shptUuid } = await seedShpt('IN_TRANSIT')
     const token = await mint({})
     const res = await request(app.getHttpServer())
-      .post(`/ops/shipments/${shptId}/override`)
+      .post(`/ops/shipments/${shptWire}/override`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'DELIVERED', courierTimestamp: '2026-07-27T10:00:00Z', overrideReason: 'lost in transit, reissued manually' })
     expect(res.status).toBe(200)
     expect(res.body.overridden).toBe(true)
     // The raw C3 bypass took effect.
-    expect(await shptStatus(shptId)).toBe('DELIVERED')
+    expect(await shptStatus(shptUuid)).toBe('DELIVERED')
 
     const rows = await auditRows()
     expect(rows).toHaveLength(1)
@@ -292,7 +300,7 @@ describe('ops-edge actions: the per-action step-up gate (check 1)', () => {
     expect(rows[0]!.reasonCode).toBe('terminal-override')
     expect(rows[0]!.acr).toBe('AAL2')
     expect(typeof rows[0]!.authTime).toBe('number')
-    expect(rows[0]!.resourceIds).toEqual([shptId])
+    expect(rows[0]!.resourceIds).toEqual([shptWire])
     expect(rows[0]!.cls).toBe(3)
     expect(rows[0]!.actorChannel).toBe('human-direct')
 
@@ -305,10 +313,10 @@ describe('ops-edge actions: the per-action step-up gate (check 1)', () => {
 
 describe('ops-edge actions: the D2 authorize gate (check 2)', () => {
   it('a class-3 claim whose psr resolves to no ops role -> 403 + one DENY 6e, no domain effect', async () => {
-    const { shptId } = await seedShpt('DISPATCHED_BY_VENDOR')
+    const { shptWire, shptUuid } = await seedShpt('DISPATCHED_BY_VENDOR')
     const token = await mint({ psr: 'role:not_ops' })
     const res = await request(app.getHttpServer())
-      .post(`/ops/shipments/${shptId}/correct`)
+      .post(`/ops/shipments/${shptWire}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'IN_TRANSIT', courierTimestamp: '2026-07-27T10:00:00Z' })
@@ -326,22 +334,22 @@ describe('ops-edge actions: the D2 authorize gate (check 2)', () => {
     expect(rows[0]!.actorChannel).toBe('human-direct')
 
     // No domain effect: the shpt is untouched.
-    expect(await shptStatus(shptId)).toBe('DISPATCHED_BY_VENDOR')
+    expect(await shptStatus(shptUuid)).toBe('DISPATCHED_BY_VENDOR')
   })
 })
 
 describe('ops-edge actions: a representative ALLOW mutation end-to-end (check 3)', () => {
   it('POST correct on a fresh AAL2 claim runs, advances the shpt, and emits exactly ONE ALLOW 6e (IDs-only)', async () => {
-    const { shptId } = await seedShpt('DISPATCHED_BY_VENDOR')
+    const { shptWire, shptUuid } = await seedShpt('DISPATCHED_BY_VENDOR')
     const token = await mint({})
     const res = await request(app.getHttpServer())
-      .post(`/ops/shipments/${shptId}/correct`)
+      .post(`/ops/shipments/${shptWire}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'IN_TRANSIT', courierTimestamp: '2026-07-27T10:00:00Z' })
     expect(res.status).toBe(200)
     // The correction advanced the ladder (a non-catalog action needs no step-up).
-    expect(await shptStatus(shptId)).toBe('IN_TRANSIT')
+    expect(await shptStatus(shptUuid)).toBe('IN_TRANSIT')
 
     const rows = await auditRows()
     expect(rows).toHaveLength(1)
@@ -350,7 +358,7 @@ describe('ops-edge actions: a representative ALLOW mutation end-to-end (check 3)
     expect(rows[0]!.cls).toBe(3)
     expect(rows[0]!.actorChannel).toBe('human-direct')
     expect(rows[0]!.principalId).toBe('user_ops_1')
-    expect(rows[0]!.resourceIds).toEqual([shptId])
+    expect(rows[0]!.resourceIds).toEqual([shptWire])
     // A non-override ALLOW carries no reasonCode and no assurance fields.
     expect(rows[0]!.reasonCode).toBeUndefined()
     expect(rows[0]!.acr).toBeUndefined()
@@ -359,25 +367,25 @@ describe('ops-edge actions: a representative ALLOW mutation end-to-end (check 3)
 
 describe('ops-edge actions: the Fork-D client action key is mandatory (check 4)', () => {
   it('POST correct with NO Idempotency-Key header -> 400 and emits NO 6e (a 400, not a 6e-DENY)', async () => {
-    const { shptId } = await seedShpt('DISPATCHED_BY_VENDOR')
+    const { shptWire, shptUuid } = await seedShpt('DISPATCHED_BY_VENDOR')
     const token = await mint({})
     const res = await request(app.getHttpServer())
-      .post(`/ops/shipments/${shptId}/correct`)
+      .post(`/ops/shipments/${shptWire}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .send({ status: 'IN_TRANSIT', courierTimestamp: '2026-07-27T10:00:00Z' })
     expect(res.status).toBe(400)
     expect(await auditRows()).toHaveLength(0)
     // No domain effect.
-    expect(await shptStatus(shptId)).toBe('DISPATCHED_BY_VENDOR')
+    expect(await shptStatus(shptUuid)).toBe('DISPATCHED_BY_VENDOR')
   })
 })
 
 describe('ops-edge actions: isKnownStatus rejects a garbage target status before any domain write (check 5)', () => {
   it('POST correct with an unknown status -> 400 before the domain op, NO 6e, no domain effect', async () => {
-    const { shptId } = await seedShpt('DISPATCHED_BY_VENDOR')
+    const { shptWire, shptUuid } = await seedShpt('DISPATCHED_BY_VENDOR')
     const token = await mint({})
     const res = await request(app.getHttpServer())
-      .post(`/ops/shipments/${shptId}/correct`)
+      .post(`/ops/shipments/${shptWire}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'NOT_A_REAL_STATUS', courierTimestamp: '2026-07-27T10:00:00Z' })
@@ -385,20 +393,20 @@ describe('ops-edge actions: isKnownStatus rejects a garbage target status before
     // The gate passed (a valid claim), but status validation threw BEFORE the
     // domain op and BEFORE any ALLOW emit, so there is no 6e at all.
     expect(await auditRows()).toHaveLength(0)
-    expect(await shptStatus(shptId)).toBe('DISPATCHED_BY_VENDOR')
+    expect(await shptStatus(shptUuid)).toBe('DISPATCHED_BY_VENDOR')
   })
 
   it('POST override with an unknown status (fresh AAL2) -> 400 after the step-up gate, NO 6e, no domain effect', async () => {
-    const { shptId } = await seedShpt('IN_TRANSIT')
+    const { shptWire, shptUuid } = await seedShpt('IN_TRANSIT')
     const token = await mint({})
     const res = await request(app.getHttpServer())
-      .post(`/ops/shipments/${shptId}/override`)
+      .post(`/ops/shipments/${shptWire}/override`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'GARBAGE', courierTimestamp: '2026-07-27T10:00:00Z', overrideReason: 'x' })
     expect(res.status).toBe(400)
     expect(await auditRows()).toHaveLength(0)
-    expect(await shptStatus(shptId)).toBe('IN_TRANSIT')
+    expect(await shptStatus(shptUuid)).toBe('IN_TRANSIT')
   })
 })
 
@@ -415,7 +423,10 @@ describe('ops-edge actions: domain client-errors map to 4xx via the OpsErrorFilt
   it('POST correct with a non-existent shptId -> 404, not 500', async () => {
     const token = await mint({})
     const res = await request(app.getHttpServer())
-      .post(`/ops/shipments/${randomUUID()}/correct`)
+      // A well-formed but never-seeded wire shpt id: decodes fine, then
+      // resolveProgramAndAwb's own not-found throw maps to 404 (a raw,
+      // undecodable id would instead throw InvalidIdError, an unrelated 500).
+      .post(`/ops/shipments/${newId('shpt')}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'IN_TRANSIT', courierTimestamp: '2026-07-27T10:00:00Z' })
@@ -425,7 +436,7 @@ describe('ops-edge actions: domain client-errors map to 4xx via the OpsErrorFilt
   it('POST override with a non-existent shptId (fresh AAL2, valid reason) -> 404, not 500', async () => {
     const token = await mint({})
     const res = await request(app.getHttpServer())
-      .post(`/ops/shipments/${randomUUID()}/override`)
+      .post(`/ops/shipments/${newId('shpt')}/override`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({
@@ -437,16 +448,16 @@ describe('ops-edge actions: domain client-errors map to 4xx via the OpsErrorFilt
   })
 
   it('POST override with an EMPTY overrideReason (fresh AAL2, real shpt) -> 400, not 500', async () => {
-    const { shptId } = await seedShpt('IN_TRANSIT')
+    const { shptWire, shptUuid } = await seedShpt('IN_TRANSIT')
     const token = await mint({})
     const res = await request(app.getHttpServer())
-      .post(`/ops/shipments/${shptId}/override`)
+      .post(`/ops/shipments/${shptWire}/override`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'DELIVERED', courierTimestamp: '2026-07-27T10:00:00Z', overrideReason: '   ' })
     expect(res.status).toBe(400)
     // No domain effect: the reason check throws before the C3 bypass UPDATE.
-    expect(await shptStatus(shptId)).toBe('IN_TRANSIT')
+    expect(await shptStatus(shptUuid)).toBe('IN_TRANSIT')
   })
 
   it('POST recompose with a requestedShipTo that DIFFERS from the current ship-to -> 400, not 500', async () => {

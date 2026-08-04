@@ -22,14 +22,18 @@ afterAll(async () => {
   await db.$disconnect()
 })
 
-async function seedShipment(status: string, awb = `AWB-${randomUUID()}`): Promise<{ shptId: string; programId: string }> {
-  const shptUuid = toUuid(newId('shpt'))
+async function seedShipment(
+  status: string,
+  awb = `AWB-${randomUUID()}`,
+): Promise<{ shptWire: string; shptUuid: string; programId: string }> {
+  const shptWire = newId('shpt')
+  const shptUuid = toUuid(shptWire)
   const programUuid = toUuid(newId('prog'))
   await db.$executeRaw`
     INSERT INTO shpt (id, awb, courier_partner, status, dispatch_date, tenant_id, program_id, updated_at)
     VALUES (${shptUuid}::uuid, ${awb}, NULL, ${status}, now(), ${TENANT}::uuid, ${programUuid}::uuid, now())
   `
-  return { shptId: shptUuid, programId: programUuid }
+  return { shptWire, shptUuid, programId: programUuid }
 }
 
 interface CourierExceptionRow {
@@ -127,7 +131,7 @@ describe('resolveStatusException (spec 10c Task 8): re-drives the C3 advance and
 
     const r = await resolveStatusException(db, {
       exceptionId,
-      shptId: seeded.shptId,
+      shptId: seeded.shptWire,
       status: 'OUT_FOR_DELIVERY',
       courierTimestamp: new Date('2026-07-28T10:00:00.000Z'),
       clientKey: randomUUID(),
@@ -139,13 +143,13 @@ describe('resolveStatusException (spec 10c Task 8): re-drives the C3 advance and
     expect(r.outcome).toBe('advanced')
 
     const shptRow = await db.$queryRaw<{ status: string; status_source: string | null }[]>`
-      SELECT status, status_source FROM shpt WHERE id = ${seeded.shptId}::uuid
+      SELECT status, status_source FROM shpt WHERE id = ${seeded.shptUuid}::uuid
     `
     expect(shptRow[0]!.status).toBe('OUT_FOR_DELIVERY')
     expect(shptRow[0]!.status_source).toBe('OPS_MANUAL')
 
     const events = await db.$queryRaw<{ status: string; status_source: string; source_ref: string }[]>`
-      SELECT status, status_source, source_ref FROM shpt_status_event WHERE shpt_id = ${seeded.shptId}::uuid
+      SELECT status, status_source, source_ref FROM shpt_status_event WHERE shpt_id = ${seeded.shptUuid}::uuid
     `
     expect(events).toHaveLength(1)
     expect(events[0]!.status).toBe('OUT_FOR_DELIVERY')
@@ -172,7 +176,7 @@ describe('resolveStatusException (spec 10c Task 8): re-drives the C3 advance and
     const actorId = randomUUID()
     const args = {
       exceptionId,
-      shptId: seeded.shptId,
+      shptId: seeded.shptWire,
       status: 'OUT_FOR_DELIVERY',
       courierTimestamp: new Date('2026-07-28T11:00:00.000Z'),
       clientKey,
@@ -190,7 +194,7 @@ describe('resolveStatusException (spec 10c Task 8): re-drives the C3 advance and
     expect(replay.outcome).toBeNull()
 
     const events = await db.$queryRaw<{ n: bigint }[]>`
-      SELECT count(*) AS n FROM shpt_status_event WHERE shpt_id = ${seeded.shptId}::uuid
+      SELECT count(*) AS n FROM shpt_status_event WHERE shpt_id = ${seeded.shptUuid}::uuid
     `
     expect(Number(events[0]!.n)).toBe(1)
 

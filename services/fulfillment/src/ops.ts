@@ -113,9 +113,10 @@ export async function correctStatus(
   db: FulfillmentDb,
   args: { shptId: string; status: string; courierTimestamp: Date; clientKey: string; actorId: string; traceId: string },
 ): Promise<{ deduped: boolean; outcome: AdvanceOutcome | null }> {
+  const shptUuid = toUuid(args.shptId)
   let outcome: AdvanceOutcome | null = null
   const ran = await db.$transaction(async (tx: Tx) => {
-    const { programId, awb } = await resolveProgramAndAwb(tx, args.shptId)
+    const { programId, awb } = await resolveProgramAndAwb(tx, shptUuid)
     await enterWriteScope(tx, 'fulfillment_write', programId)
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:status-correction'), async () => {
       outcome = await advanceShipmentStatus(tx, {
@@ -188,8 +189,10 @@ export async function overrideTerminal(
 ): Promise<{ deduped: boolean; overridden: boolean }> {
   if (!args.overrideReason.trim()) throw new OpsClientError('invalid', 'override_reason required')
 
+  const shptUuid = toUuid(args.shptId)
+
   const ran = await db.$transaction(async (tx: Tx) => {
-    const { programId, awb, courierPartner } = await resolveProgramAndAwb(tx, args.shptId)
+    const { programId, awb, courierPartner } = await resolveProgramAndAwb(tx, shptUuid)
     await enterWriteScope(tx, 'fulfillment_write', programId)
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:terminal-override'), async () => {
       // The deliberate C3 bypass: no `status NOT IN ('DELIVERED', 'RETURNED')`
@@ -199,17 +202,20 @@ export async function overrideTerminal(
         UPDATE shpt
         SET status = ${args.status}, status_at = ${args.courierTimestamp},
             status_source = 'OPS_MANUAL', updated_at = now()
-        WHERE id = ${args.shptId}::uuid
+        WHERE id = ${shptUuid}::uuid
       `
       await tx.$executeRaw`
         INSERT INTO shpt_status_event
           (shpt_id, program_id, status, courier_timestamp, status_source, source_ref, trace_id, override_reason)
         VALUES
-          (${args.shptId}::uuid, ${programId}::uuid, ${args.status}, ${args.courierTimestamp},
+          (${shptUuid}::uuid, ${programId}::uuid, ${args.status}, ${args.courierTimestamp},
            'OPS_MANUAL', ${args.actorId}, ${args.traceId}, ${args.overrideReason})
       `
 
-      const shptWire = fromUuid('shpt', args.shptId)
+      // args.shptId is already the caller's wire form (the input contract is
+      // now wire, decoded above into shptUuid for the raw SQL); no re-encode
+      // needed here.
+      const shptWire = args.shptId
       const tsIso = args.courierTimestamp.toISOString()
       await enqueue(tx, {
         aggregateType: 'shpt',
@@ -285,10 +291,11 @@ export async function resolveStatusException(
     traceId: string
   },
 ): Promise<{ deduped: boolean; outcome: AdvanceOutcome | null }> {
+  const shptUuid = toUuid(args.shptId)
   let outcome: AdvanceOutcome | null = null
 
   const ran = await db.$transaction(async (tx: Tx) => {
-    const { programId, awb } = await resolveProgramAndAwb(tx, args.shptId)
+    const { programId, awb } = await resolveProgramAndAwb(tx, shptUuid)
     await enterWriteScope(tx, 'fulfillment_write', programId)
 
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:resolve-status-exception'), async () => {

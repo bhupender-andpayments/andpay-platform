@@ -4,7 +4,7 @@ import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
 import type { AuthzAuditRecord } from '@andpay/audit'
-import { newId } from '@andpay/ids'
+import { newId, toUuid } from '@andpay/ids'
 import {
   PrismaClient as AuthClient,
   consumeAuthzAudit,
@@ -101,19 +101,28 @@ function abortingTms(): TmsClient {
   }) as unknown as TmsClient
 }
 
+// The domain writes now DECODE a wire shpt id (this task's contract change),
+// so every seed carries both the wire form (for the route URL / direct domain
+// calls / resourceIds assertions) and the raw uuid (for direct DB reads).
 interface Seeded {
-  shptId: string
+  shptWire: string
+  shptUuid: string
 }
 
 async function seedShpt(status: string): Promise<Seeded> {
-  const shptId = randomUUID()
+  const shptWire = newId('shpt')
+  const shptUuid = toUuid(shptWire)
   const tenantId = randomUUID()
   const programId = randomUUID()
+  // A UUIDv7 id's leading bytes are a wall-clock timestamp (millisecond
+  // resolution), not random, so deriving the awb from a slice of shptUuid (as
+  // the pre-existing raw-uuid v4 id allowed) can collide across two shpt seeds
+  // minted close together. Use an independent random source instead.
   await fulfillmentDb.$executeRaw`
     INSERT INTO shpt (id, awb, courier_partner, status, dispatch_date, tenant_id, program_id, updated_at)
-    VALUES (${shptId}::uuid, ${'AWB-' + shptId.slice(0, 8)}, NULL, ${status}, now(), ${tenantId}::uuid, ${programId}::uuid, now())
+    VALUES (${shptUuid}::uuid, ${'AWB-' + randomUUID()}, NULL, ${status}, now(), ${tenantId}::uuid, ${programId}::uuid, now())
   `
-  return { shptId }
+  return { shptWire, shptUuid }
 }
 
 let seeded: Seeded
@@ -257,14 +266,14 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     // target id.
     const allowToken = await mint({})
     const allowRes = await request(app.getHttpServer())
-      .post(`/ops/shipments/${seeded.shptId}/override`)
+      .post(`/ops/shipments/${seeded.shptWire}/override`)
       .set('Authorization', `Bearer ${allowToken}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'DELIVERED', courierTimestamp: '2026-07-27T10:00:00Z', overrideReason: OVERRIDE_REASON })
     expect(allowRes.status).toBe(200)
     expect(allowRes.body.overridden).toBe(true)
     // Sanity: the mutation genuinely took effect (the raw C3 bypass).
-    expect(await shptStatus(seeded.shptId)).toBe('DELIVERED')
+    expect(await shptStatus(seeded.shptUuid)).toBe('DELIVERED')
 
     // (b) a REAL step-up-required DENY over HTTP: the SAME action with a STALE
     // auth_time -> 403 before any domain op runs. The edge emits ONE
@@ -296,7 +305,7 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     expect(allowPayload.reasonCode).toBe('terminal-override')
     expect(allowPayload.acr).toBe('AAL2')
     expect(typeof allowPayload.authTime).toBe('number')
-    expect(allowPayload.resourceIds).toContain(seeded.shptId)
+    expect(allowPayload.resourceIds).toContain(seeded.shptWire)
     expect(allowPayload.cls).toBe(3)
     expect(allowPayload.principalId).toBe('user_ops_6e_e2e')
     expect(allowPayload.actorChannel).toBe('human-direct')
@@ -339,12 +348,12 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     // A fulfillment ops action (correct advances the ladder) -> ALLOW
     // co-committed to FULFILLMENT's outbox.
     const correctRes = await request(app.getHttpServer())
-      .post(`/ops/shipments/${seeded.shptId}/correct`)
+      .post(`/ops/shipments/${seeded.shptWire}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'OUT_FOR_DELIVERY', courierTimestamp: '2026-07-27T11:00:00Z' })
     expect(correctRes.status).toBe(200)
-    expect(await shptStatus(seeded.shptId)).toBe('OUT_FOR_DELIVERY')
+    expect(await shptStatus(seeded.shptUuid)).toBe('OUT_FOR_DELIVERY')
 
     // A tms ops action (bank-file upload) -> ALLOW co-committed to TMS's OWN
     // outbox (no cross-schema write, C4).
@@ -365,7 +374,7 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     const tAllow = tmsAudit[0]!
     expect(fAllow.decision).toBe('ALLOW')
     expect(fAllow.operation).toBe('ops:status-correction')
-    expect(fAllow.resourceIds).toContain(seeded.shptId)
+    expect(fAllow.resourceIds).toContain(seeded.shptWire)
     expect(tAllow.decision).toBe('ALLOW')
     expect(tAllow.operation).toBe('ops:upload-bank-file')
     expect(tAllow.cls).toBe(3)
@@ -385,10 +394,10 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
   it('CO-COMMIT: a rolled-back domain tx leaves NEITHER the effect NOR the 6e; a commit leaves exactly ONE of each (fulfillment + tms)', async () => {
     // --- Fulfillment: overrideTerminal. Abort the tx at the authz.audit
     // enqueue and prove the raw C3-bypass UPDATE is ALSO rolled back. ---
-    const abortShpt = (await seedShpt('IN_TRANSIT')).shptId
+    const abortShpt = await seedShpt('IN_TRANSIT')
     await expect(
       overrideTerminal(abortingFulfillment(), {
-        shptId: abortShpt,
+        shptId: abortShpt.shptWire,
         status: 'DELIVERED',
         courierTimestamp: new Date('2026-07-27T10:00:00Z'),
         overrideReason: OVERRIDE_REASON,
@@ -401,13 +410,13 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     ).rejects.toBeInstanceOf(CoCommitAbort)
     // DISCRIMINATOR: under co-commit the effect is gone (still IN_TRANSIT); a
     // separate-tx emit would have left it DELIVERED. And no 6e row exists.
-    expect(await shptStatus(abortShpt)).toBe('IN_TRANSIT')
+    expect(await shptStatus(abortShpt.shptUuid)).toBe('IN_TRANSIT')
     expect(await readFulfillmentAudit()).toHaveLength(0)
 
     // A clean commit: effect applied AND exactly one co-committed 6e.
-    const commitShpt = (await seedShpt('IN_TRANSIT')).shptId
+    const commitShpt = await seedShpt('IN_TRANSIT')
     await overrideTerminal(fulfillmentDb, {
-      shptId: commitShpt,
+      shptId: commitShpt.shptWire,
       status: 'DELIVERED',
       courierTimestamp: new Date('2026-07-27T10:00:00Z'),
       overrideReason: OVERRIDE_REASON,
@@ -417,7 +426,7 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
       acr: 'AAL2',
       authTime: 1,
     })
-    expect(await shptStatus(commitShpt)).toBe('DELIVERED')
+    expect(await shptStatus(commitShpt.shptUuid)).toBe('DELIVERED')
     const fAfter = await readFulfillmentAudit()
     expect(fAfter).toHaveLength(1)
     expect(fAfter[0]!.operation).toBe('ops:terminal-override')
@@ -464,13 +473,13 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     // An authz-deny (a psr resolving to no ops role) on a non-catalog action.
     const noRoleToken = await mint({ psr: 'role:not_ops' })
     const authzRes = await request(app.getHttpServer())
-      .post(`/ops/shipments/${seeded.shptId}/correct`)
+      .post(`/ops/shipments/${seeded.shptWire}/correct`)
       .set('Authorization', `Bearer ${noRoleToken}`)
       .set('Idempotency-Key', randomUUID())
       .send({ status: 'OUT_FOR_DELIVERY', courierTimestamp: '2026-07-27T11:00:00Z' })
     expect(authzRes.status).toBe(403)
     // No domain effect for the rejected correction.
-    expect(await shptStatus(seeded.shptId)).toBe('IN_TRANSIT')
+    expect(await shptStatus(seeded.shptUuid)).toBe('IN_TRANSIT')
 
     const rows = await readFulfillmentAudit()
     expect(rows).toHaveLength(2)
@@ -484,7 +493,7 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
 
     // First correct: advances and co-commits ONE ALLOW.
     const first = await request(app.getHttpServer())
-      .post(`/ops/shipments/${seeded.shptId}/correct`)
+      .post(`/ops/shipments/${seeded.shptWire}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', idem)
       .send({ status: 'OUT_FOR_DELIVERY', courierTimestamp: '2026-07-27T11:00:00Z' })
@@ -495,7 +504,7 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     // runs, so no new 6e is emitted (the co-commit enqueue lives INSIDE that
     // callback). Exactly one 6e per actual mutation, not per request.
     const replay = await request(app.getHttpServer())
-      .post(`/ops/shipments/${seeded.shptId}/correct`)
+      .post(`/ops/shipments/${seeded.shptWire}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', idem)
       .send({ status: 'OUT_FOR_DELIVERY', courierTimestamp: '2026-07-27T11:00:00Z' })
@@ -516,13 +525,13 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     const token = await mint({})
     const idem = randomUUID()
 
-    // seeded.shptId is IN_TRANSIT (rank 2, beforeEach). A REGRESSIVE report to
+    // The seeded shpt is IN_TRANSIT (rank 2, beforeEach). A REGRESSIVE report to
     // DISPATCHED_BY_VENDOR (rank 0) fails the C3 forward-rank guard in
     // advanceShipmentStatus: the append-only trail row is written, but the
     // rowcount-gated shpt.status UPDATE returns 0 rows, so the outcome is
     // 'trail_only' and shpt.status is genuinely untouched.
     const first = await request(app.getHttpServer())
-      .post(`/ops/shipments/${seeded.shptId}/correct`)
+      .post(`/ops/shipments/${seeded.shptWire}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', idem)
       .send({ status: 'DISPATCHED_BY_VENDOR', courierTimestamp: '2026-07-27T09:00:00Z' })
@@ -530,7 +539,7 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     expect(first.body.deduped).toBe(false)
     expect(first.body.outcome).toBe('trail_only')
     // The domain row did NOT change (the discriminator this test is built on).
-    expect(await shptStatus(seeded.shptId)).toBe('IN_TRANSIT')
+    expect(await shptStatus(seeded.shptUuid)).toBe('IN_TRANSIT')
 
     // The ruled behavior (Option 1, uniform across all 13 ops): the ALLOW 6e
     // is emitted whenever the co-committed onceWithin callback RUNS, not when
@@ -541,21 +550,21 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     expect(afterFirst).toHaveLength(1)
     expect(afterFirst[0]!.decision).toBe('ALLOW')
     expect(afterFirst[0]!.operation).toBe('ops:status-correction')
-    expect(afterFirst[0]!.resourceIds).toContain(seeded.shptId)
+    expect(afterFirst[0]!.resourceIds).toContain(seeded.shptWire)
     expect(afterFirst[0]!.cls).toBe(3)
 
     // A SAME-client-key REPLAY: the outer onceWithin's E6 inbox dedup
     // suppresses BOTH the effect and the 6e (the callback never re-runs), so
     // the outbox authz.audit row count for this action stays exactly 1.
     const replay = await request(app.getHttpServer())
-      .post(`/ops/shipments/${seeded.shptId}/correct`)
+      .post(`/ops/shipments/${seeded.shptWire}/correct`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', idem)
       .send({ status: 'DISPATCHED_BY_VENDOR', courierTimestamp: '2026-07-27T09:00:00Z' })
     expect(replay.status).toBe(200)
     expect(replay.body.deduped).toBe(true)
     expect(replay.body.outcome).toBeNull()
-    expect(await shptStatus(seeded.shptId)).toBe('IN_TRANSIT')
+    expect(await shptStatus(seeded.shptUuid)).toBe('IN_TRANSIT')
     expect(await readFulfillmentAudit()).toHaveLength(1)
   })
 

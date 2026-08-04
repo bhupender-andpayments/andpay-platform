@@ -1,3 +1,4 @@
+import { fromUuid } from '@andpay/ids'
 import type { FulfillmentDb } from './db.js'
 import type { Tx } from './internal.js'
 
@@ -32,7 +33,7 @@ interface VendorDbRow {
 
 function toVendorDto(r: VendorDbRow): VendorRow {
   return {
-    id: r.id,
+    id: fromUuid('vndr', r.id),
     type: r.type,
     displayName: r.display_name,
     status: r.status,
@@ -90,7 +91,7 @@ interface IntakeExceptionDbRow {
 function toIntakeExceptionDto(r: IntakeExceptionDbRow): IntakeExceptionView {
   return {
     id: r.id,
-    vndrId: r.vndr_id,
+    vndrId: fromUuid('vndr', r.vndr_id),
     fileId: r.file_id,
     rowRef: r.row_ref,
     reasonCode: r.reason_code,
@@ -154,7 +155,7 @@ interface CourierStatusExceptionDbRow {
 function toCourierStatusExceptionDto(r: CourierStatusExceptionDbRow): CourierStatusExceptionView {
   return {
     id: r.id,
-    vndrId: r.vndr_id,
+    vndrId: fromUuid('vndr', r.vndr_id),
     channel: r.channel,
     subjectRef: r.subject_ref,
     fileId: r.file_id,

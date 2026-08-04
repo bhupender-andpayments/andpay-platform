@@ -397,7 +397,7 @@ describe('suspendVendor / listVendors (spec 10c Task 7)', () => {
     expect(res.deduped).toBe(false)
 
     const vendors = await listVendors(db)
-    const found = vendors.find((v) => v.id === toUuid(vndrWire))
+    const found = vendors.find((v) => v.id === vndrWire)
     expect(found).toBeDefined()
     expect(found!.status).toBe('SUSPENDED')
     expect(found!.displayName).toBe('Speedy Couriers')
@@ -416,7 +416,7 @@ describe('suspendVendor / listVendors (spec 10c Task 7)', () => {
     expect(replay.deduped).toBe(true)
 
     const vendors = await listVendors(db)
-    const found = vendors.find((v) => v.id === toUuid(vndrWire))
+    const found = vendors.find((v) => v.id === vndrWire)
     expect(found!.status).toBe('SUSPENDED')
   })
 
