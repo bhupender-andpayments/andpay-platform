@@ -148,6 +148,11 @@ async function resolveMerchant(
     // default sub-merchant per merchant, in the SAME tx (1:1 in v1). No fact
     // is emitted for it (not a corpus topic; nothing consumes it) and no
     // cascade logic exists yet (there is no merchant-suspend surface today).
+    // The 1:1 invariant is enforced here in code: this is the sole insert site,
+    // inside the merchant_bank_ref mint-winner branch, so it fires exactly once
+    // per merchant. A DB @@unique on sub_merchant.merchantId is intentionally
+    // deferred to the later multi-location spec, which repoints assignments to
+    // the sub-merchant and relaxes 1:1 to 1:many.
     await tx.subMerchant.create({
       data: {
         id: toUuid(newId('smrch')),
