@@ -3,7 +3,24 @@ export * from './events.js'
 export * from './row-fact.js'
 export * from './redact.js'
 export { TMS_FACT_SCHEMAS } from './fact-schemas.js'
-export { ingestRequestRow, ingestRequestRowWithinTx, type BankRequestRow } from './ingest.js'
+export {
+  ingestRequestRow,
+  ingestRequestRowWithinTx,
+  requestRowRejectReason,
+  type BankRequestRow,
+  type RequestRowRejectReason,
+} from './ingest.js'
+export {
+  parseBankRequestFile,
+  parseBankDamageFile,
+  DEFAULT_REQUEST_COLUMN_MAPPING,
+  DEFAULT_DAMAGE_COLUMN_MAPPING,
+  type BankColumnMapping,
+  type StructuralParseError,
+  type StructuralParseErrorCode,
+  type BankRequestParseResult,
+  type BankDamageParseResult,
+} from './bank-file-adapter.js'
 export { projectMerchantFact, projectTenantFact } from './projections.js'
 export {
   createAssignmentFromEnrollment,
@@ -17,5 +34,13 @@ export { UnwiredDevicePort, type DevicePort, type ActivationCommand, type Activa
 export { enterReadScope } from './read-context.js'
 export { enterWriteScope, enterWriteRole } from './write-context.js'
 export { readAssignments, readAssignmentById, type AssignmentReadRow } from './read.js'
-export { uploadBankFile, uploadDamageFile, resolveQuarantineRow } from './ops.js'
+export {
+  previewBankFile,
+  commitBankFile,
+  commitDamageFile,
+  resolveQuarantineRow,
+  BankFileParseError,
+  type BankPreviewResult,
+  type PreviewRowResult,
+} from './ops.js'
 export { readQuarantineQueue, type QuarantineRowView } from './ops-read.js'

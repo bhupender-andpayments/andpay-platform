@@ -42,6 +42,16 @@ export interface OpsEdgeDeps {
 
 export const EDGE_DEPS = 'OPS_EDGE_DEPS'
 
+// The multipart file size cap for the bank/damage upload routes
+// (authenticated-DoS guard, mirroring vendor-edge's MAX_SHEET_BYTES): without a
+// limit, multer buffers an arbitrarily large "file" part fully into memory
+// before the handler runs. 5 MiB matches the cap the ops portal already
+// enforces client-side today (apps/ops-portal parseSheet.ts MAX_UPLOAD_BYTES).
+// An oversized part is aborted by multer (MulterError LIMIT_FILE_SIZE), which
+// NestJS's default FileInterceptor maps to a 413 PayloadTooLargeException, so no
+// extra exception filter is needed.
+export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+
 export const DEFAULT_FULFILLMENT_DATABASE_URL =
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 export const DEFAULT_TMS_DATABASE_URL = 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'

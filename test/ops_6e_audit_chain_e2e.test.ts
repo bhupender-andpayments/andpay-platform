@@ -17,7 +17,12 @@ import {
   overrideTerminal,
   ensurePool,
 } from '@andpay/fulfillment-service'
-import { PrismaClient as TmsClient, uploadBankFile, type BankRequestRow } from '@andpay/tms-service'
+import {
+  PrismaClient as TmsClient,
+  commitBankFile,
+  DEFAULT_REQUEST_COLUMN_MAPPING,
+  type BankRequestRow,
+} from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '@andpay/ops-edge'
 
@@ -128,7 +133,7 @@ async function seedShpt(status: string): Promise<Seeded> {
 let seeded: Seeded
 
 // A structurally valid bank request row (mirrors services/tms/test/ops.test.ts's
-// validRow) so uploadBankFile posts a real pending_row.
+// validRow) so a commit posts a real pending_row.
 function validBankRow(rowNo: number): BankRequestRow {
   return {
     fileId: 'file-e2e',
@@ -150,6 +155,16 @@ function validBankRow(rowNo: number): BankRequestRow {
     mobile: '+91-9000000000',
     vpaHint: 'acme@hdfcbank',
   }
+}
+
+// The same valid row serialized to .csv bytes (identity-mapping headers today),
+// the multipart body the new server-parse upload surface consumes.
+function validBankCsv(): Buffer {
+  const headers = Object.values(DEFAULT_REQUEST_COLUMN_MAPPING)
+  const row = validBankRow(1) as unknown as Record<string, unknown>
+  const line = (arr: string[]): string => arr.map((f) => (f.includes(',') ? `"${f}"` : f)).join(',')
+  const cells = headers.map((h) => (row[h] === undefined ? '' : String(row[h])))
+  return Buffer.from([line(headers), line(cells)].join('\n') + '\n', 'utf8')
 }
 
 // Mint a live class-3 internal-admin access token. Defaults to a FRESH AAL2
@@ -355,13 +370,13 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     expect(correctRes.status).toBe(200)
     expect(await shptStatus(seeded.shptUuid)).toBe('OUT_FOR_DELIVERY')
 
-    // A tms ops action (bank-file upload) -> ALLOW co-committed to TMS's OWN
-    // outbox (no cross-schema write, C4).
+    // A tms ops action (multipart bank-file commit) -> ALLOW co-committed to
+    // TMS's OWN outbox (no cross-schema write, C4).
     const uploadRes = await request(app.getHttpServer())
-      .post('/ops/uploads/bank')
+      .post('/ops/uploads/bank/commit')
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
-      .send({ rows: [validBankRow(1)] })
+      .attach('file', validBankCsv(), 'requests.csv')
     expect(uploadRes.status).toBe(200)
     expect(uploadRes.body.accepted).toBe(1)
 
@@ -431,11 +446,14 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     expect(fAfter).toHaveLength(1)
     expect(fAfter[0]!.operation).toBe('ops:terminal-override')
 
-    // --- TMS: uploadBankFile. Abort at the authz.audit enqueue and prove the
-    // pending_row ingest is ALSO rolled back (co-commit into the TMS outbox). ---
+    // --- TMS: commitBankFile. Abort at the authz.audit enqueue and prove the
+    // pending_row ingest is ALSO rolled back (co-commit into the TMS outbox).
+    // The server-side parse runs BEFORE the tx, so the abort still fires only
+    // at the in-tx 6e enqueue, exactly as the old rows-array path did. ---
     await expect(
-      uploadBankFile(abortingTms(), {
-        rows: [validBankRow(1)],
+      commitBankFile(abortingTms(), {
+        fileBytes: validBankCsv(),
+        filename: 'requests.csv',
         clientKey: randomUUID(),
         actorId: randomUUID(),
         traceId: 't-abort-t',
@@ -445,8 +463,9 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
     expect(await readTmsAudit()).toHaveLength(0)
 
     // A clean commit: one pending_row AND exactly one co-committed 6e.
-    await uploadBankFile(tmsDb, {
-      rows: [validBankRow(1)],
+    await commitBankFile(tmsDb, {
+      fileBytes: validBankCsv(),
+      filename: 'requests.csv',
       clientKey: randomUUID(),
       actorId: randomUUID(),
       traceId: 't-commit-t',

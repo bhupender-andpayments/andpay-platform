@@ -28,6 +28,19 @@ export interface BankRequestRow {
   vpaHint?: string
 }
 
+// The row-level reject reason (S8 row validation), extracted so BOTH the
+// ingest path below and the preview surface (services/tms/src/ops.ts
+// previewBankFile) run the SAME rules with no duplication: format-only QR/VPA
+// (D117) plus the FR-01b mandatory recipient contact/mobile (spec 06a). An
+// empty contact_name or mobile counts as missing. `null` means the row passes.
+export type RequestRowRejectReason = 'invalid_qr_vpa_format' | 'missing_recipient_contact'
+
+export function requestRowRejectReason(row: BankRequestRow): RequestRowRejectReason | null {
+  if (!validateQrVpaFormat(row.qrValue, row.vpaValue)) return 'invalid_qr_vpa_format'
+  if (!row.contactName || !row.mobile) return 'missing_recipient_contact'
+  return null
+}
+
 // Ingest one bank request-file row (S8-untrusted, D116). Validates FORMAT only
 // (D117). On accept: stashes the TMS-owned slice in pending_row and emits
 // fct.tms.bank_file_row.v1 (identity slice + vpaHint only, S7/S5) in the same
@@ -48,15 +61,9 @@ export async function ingestRequestRowWithinTx(
 ): Promise<'accepted' | 'duplicate' | 'quarantined'> {
   const correlationId = `${row.fileId}|${row.rowNo}`
 
-  // S8 row-level validation: format-only for QR/VPA (D117), plus the FR-01b
-  // mandatory recipient contact/mobile (spec 06a). Either failure quarantines
-  // the row via the same reject/report path; an empty contact_name or mobile
-  // counts as missing.
-  const rejectReason = !validateQrVpaFormat(row.qrValue, row.vpaValue)
-    ? 'invalid_qr_vpa_format'
-    : !row.contactName || !row.mobile
-      ? 'missing_recipient_contact'
-      : null
+  // S8 row-level validation (the SAME rules the preview surface runs): a
+  // failure quarantines the row via the reject/report path.
+  const rejectReason = requestRowRejectReason(row)
   if (rejectReason) {
     let quarantined = false
     const won = await tx.$queryRaw<{ id: string }[]>`

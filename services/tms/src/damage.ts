@@ -126,7 +126,7 @@ export async function ingestDamageRowWithinTx(
 // (replaced) path's own enterWriteScope call inside ingestDamageRowWithinTx
 // then re-enters the role together with the resolved program_id; re-setting
 // SET LOCAL ROLE to the same role mid-transaction is a harmless no-op (the
-// identical pattern already ratified for tms uploadDamageFile, spec 10c).
+// identical pattern already ratified for tms commitDamageFile, spec 10c).
 export async function ingestDamageRow(
   db: TmsDb,
   row: BankDamageRow,

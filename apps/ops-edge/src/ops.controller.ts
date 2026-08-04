@@ -9,8 +9,11 @@ import {
   Param,
   Post,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { authorize, requireStepUp, OPS_STEP_UP_CATALOG } from '@andpay/authz'
 import {
   correctStatus,
@@ -27,14 +30,15 @@ import {
   type IntakeSheet,
 } from '@andpay/fulfillment-service'
 import {
-  uploadBankFile,
-  uploadDamageFile,
+  previewBankFile,
+  commitBankFile,
+  commitDamageFile,
   resolveQuarantineRow,
   type BankRequestRow,
-  type BankDamageRow,
+  type BankPreviewResult,
 } from '@andpay/tms-service'
 import { OpsEdgeGuard } from './guard.js'
-import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
+import { EDGE_DEPS, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAuthzAudit } from './audit.js'
 import type { EdgeRequest } from './request.js'
 
@@ -71,11 +75,13 @@ interface VendorCreateBody {
   type: string
   displayName: string
 }
-interface UploadBankBody {
-  rows: BankRequestRow[]
-}
-interface UploadDamageBody {
-  rows: BankDamageRow[]
+// The minimal multer file shape the upload routes read (mirrors vendor-edge's
+// UploadedJson, extended with originalname): the raw bytes plus the client
+// filename the TMS adapter uses to detect .csv vs .xlsx. Avoids an
+// @types/multer dependency for two fields.
+interface UploadedSheet {
+  buffer: Buffer
+  originalname: string
 }
 interface ResolveQuarantineBody {
   correctedRow: BankRequestRow
@@ -213,38 +219,87 @@ export class OpsController {
     return { clientKey, actorId, traceId: req.traceId }
   }
 
-  @Post('uploads/bank')
-  @HttpCode(200)
-  async uploadBank(
-    @Req() req: EdgeRequest,
-    @Body() body: UploadBankBody,
-    @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ accepted: number; quarantined: number; duplicate: number }> {
-    const g = await this.gate(req, 'ops:upload-bank-file', idem, [])
-    const result = await uploadBankFile(this.deps.tmsDb, {
-      rows: body.rows,
-      clientKey: g.clientKey,
-      actorId: g.actorId,
-      traceId: g.traceId,
-    })
-    return result
+  // The read-like authorize for the preview surface: a plain D2 authorize with
+  // NO side effect. It emits no 6e on either outcome (persist-nothing), unlike
+  // the mutation gate above: an ALLOW writes nothing, and a DENY throws a bare
+  // 403 rather than a durable DENY 6e (that would be an outbox write). This is
+  // the same no-audit posture the class-3 read plane uses; the authorize is
+  // still run because the preview response returns decoded bank PII.
+  private authorizePreview(req: EdgeRequest, operation: string): void {
+    const decision = authorize(req.claim, operation, {}, this.deps.roleConfig)
+    if (!decision.allowed) throw new ForbiddenException()
   }
 
-  @Post('uploads/damage')
+  // The bank-upload preview (D-K, spec P2 Task 2). Multipart raw file; the TMS
+  // adapter parses it and runs the SAME S8 row validators the commit runs,
+  // returning a per-row verdict. It PERSISTS NOTHING (no pending_row,
+  // quarantine_row, ingest_file, inbox, or outbox is written) and logs no row
+  // content, so it deliberately does NOT run the mutation gate: there is no
+  // idempotency key (a pure read needs none), no co-committed ALLOW 6e, and no
+  // durable DENY 6e (a DENY 6e is itself an outbox write, which the persist-
+  // nothing invariant forbids). This mirrors the read-plane posture
+  // (OpsReadController emits no 6e). The RESPONSE carries decoded bank PII, so a
+  // direct D2 authorize still gates access in code (the read plane relies on DB
+  // read-roles to scope data; a preview touches no DB, so it gates here) and an
+  // unauthorized operator gets a 403.
+  @Post('uploads/bank/preview')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   @HttpCode(200)
-  async uploadDamage(
+  async previewBank(
     @Req() req: EdgeRequest,
-    @Body() body: UploadDamageBody,
+    @UploadedFile() file: UploadedSheet | undefined,
+  ): Promise<BankPreviewResult> {
+    this.authorizePreview(req, 'ops:upload-bank-file')
+    if (!file) throw new BadRequestException('missing file')
+    return previewBankFile(file.buffer, file.originalname)
+  }
+
+  // The bank-upload commit (D-K). Multipart raw file, re-parsed SERVER-SIDE by
+  // TMS (never trusting client rows). Keeps the full mutation gate (mandatory
+  // Idempotency-Key, D2 authorize, co-committed ALLOW 6e) and the same
+  // guard-only, NOT step-up-gated posture the old JSON route carried. A file
+  // that fails structural parse throws BankFileParseError (kind:'invalid'),
+  // which the app-wide OpsErrorFilter maps to a 400.
+  @Post('uploads/bank/commit')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async commitBank(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
     @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ replaced: number; quarantined: number; duplicate: number }> {
-    const g = await this.gate(req, 'ops:upload-damage-file', idem, [])
-    const result = await uploadDamageFile(this.deps.tmsDb, {
-      rows: body.rows,
+  ): Promise<{ accepted: number; quarantined: number; duplicate: number; fileId: string }> {
+    const g = await this.gate(req, 'ops:upload-bank-file', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+    return commitBankFile(this.deps.tmsDb, {
+      fileBytes: file.buffer,
+      filename: file.originalname,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
     })
-    return result
+  }
+
+  // The damage-file commit (D-K). Multipart raw file, server-parsed; no
+  // separate preview in v1 (damage validation is a DB match by tenant+vpa,
+  // which a pure preview cannot do). Same gate and partial-accept as the bank
+  // commit.
+  @Post('uploads/damage/commit')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async commitDamage(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ replaced: number; quarantined: number; duplicate: number; fileId: string }> {
+    const g = await this.gate(req, 'ops:upload-damage-file', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+    return commitDamageFile(this.deps.tmsDb, {
+      fileBytes: file.buffer,
+      filename: file.originalname,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
   }
 
   @Post('shipments/:id/correct')

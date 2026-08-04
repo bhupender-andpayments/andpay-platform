@@ -4,6 +4,7 @@ export { buildOpsEdgeApp, OpsEdgeModule } from './app.module.js'
 export {
   type OpsEdgeDeps,
   EDGE_DEPS,
+  MAX_UPLOAD_BYTES,
   buildOpsEdgeDepsFromEnv,
   DEFAULT_FULFILLMENT_DATABASE_URL,
   DEFAULT_TMS_DATABASE_URL,

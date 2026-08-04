@@ -3,8 +3,52 @@ import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
 import { instanceKey } from '@andpay/keys'
 import type { TmsDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
-import { ingestRequestRowWithinTx, type BankRequestRow } from './ingest.js'
-import { ingestDamageRowWithinTx, type BankDamageRow } from './damage.js'
+import {
+  ingestRequestRowWithinTx,
+  requestRowRejectReason,
+  type BankRequestRow,
+  type RequestRowRejectReason,
+} from './ingest.js'
+import { ingestDamageRowWithinTx } from './damage.js'
+import {
+  parseBankRequestFile,
+  parseBankDamageFile,
+  type StructuralParseError,
+} from './bank-file-adapter.js'
+
+// A structural parse failure (unsupported extension, unreadable bytes, or a
+// missing required column) on a COMMIT: the file cannot be ingested at all, so
+// nothing is written. `kind: 'invalid'` is the discriminant the ops-edge
+// OpsErrorFilter duck-types on to return a 400 (no new edge import needed); the
+// structural detail rides the thrown error for the caller/log, never the DB.
+export class BankFileParseError extends Error {
+  readonly kind = 'invalid' as const
+  readonly structuralErrors: StructuralParseError[]
+  constructor(structuralErrors: StructuralParseError[]) {
+    super('bank file failed structural parse')
+    this.name = 'BankFileParseError'
+    this.structuralErrors = structuralErrors
+  }
+}
+
+// One preview row result: the row's 1-based data index, whether it passes the
+// SAME S8 row validators the commit path runs, the reason codes on failure,
+// and the parsed row itself. The row content (bank PII) travels ONLY in this
+// response object; it is never persisted and never logged (S4/5c).
+export interface PreviewRowResult {
+  rowNo: number
+  valid: boolean
+  errors: RequestRowRejectReason[]
+  row: BankRequestRow
+}
+
+export interface BankPreviewResult {
+  rows: PreviewRowResult[]
+  summary: { total: number; valid: number; invalid: number }
+  // Whole-file structural problems (a preview surfaces them rather than
+  // throwing, so the operator can see exactly what is wrong before a commit).
+  structuralErrors: StructuralParseError[]
+}
 
 // The co-committed ALLOW 6e record (S15, spec 10c CC-1). Each TMS ops MUTATION
 // enqueues its ALLOW authz.audit INSIDE the same domain transaction as the
@@ -50,15 +94,55 @@ function opsAllow(args: {
 // re-run the loop, so the returned tally is the zero tally the counters
 // already start at.
 
-export async function uploadBankFile(
+// Phase 2 Task 2 (D-K): the SERVER-SIDE preview of a bank request file. Parses
+// the raw file via the Task 1 adapter and runs the SAME S8 row validators the
+// commit path runs (requestRowRejectReason, the single source in ingest.ts),
+// returning a per-row valid/invalid verdict plus a summary. It is PURE and
+// read-only in the strongest sense: it opens NO transaction, touches NO DB
+// (no pending_row, quarantine_row, ingest_file, inbox, or outbox is written or
+// even read), and logs NOTHING. The parsed rows (bank PII) live only in the
+// returned object. The fileId here is a fixed non-identifying placeholder: it
+// only ever appears inside the returned rows' correlation shape and never
+// reaches a store, so no clientKey and no client-supplied value is needed.
+export async function previewBankFile(fileBytes: Uint8Array, filename: string): Promise<BankPreviewResult> {
+  const parsed = await parseBankRequestFile(fileBytes, filename, 'preview')
+  if (parsed.errors.length > 0) {
+    return { rows: [], summary: { total: 0, valid: 0, invalid: 0 }, structuralErrors: parsed.errors }
+  }
+  const rows: PreviewRowResult[] = parsed.rows.map((row) => {
+    const reason = requestRowRejectReason(row)
+    return { rowNo: row.rowNo, valid: reason === null, errors: reason === null ? [] : [reason], row }
+  })
+  const valid = rows.reduce((n, r) => n + (r.valid ? 1 : 0), 0)
+  return { rows, summary: { total: rows.length, valid, invalid: rows.length - valid }, structuralErrors: [] }
+}
+
+// Phase 2 Task 2 (D-K): the bank request-file COMMIT. Re-parses the raw file
+// SERVER-SIDE via the Task 1 adapter (it never trusts a client-supplied rows
+// array; the row shape is reconstructed here from the bytes), then runs the
+// UNCHANGED S8 validate + partial-accept + quarantine + row-fact outbox logic
+// under tms_write in one transaction, co-committing the ALLOW 6e exactly as
+// before. Returns the same counts, plus the server-owned fileId.
+//
+// The fileId is the clientKey (the Idempotency-Key the edge already trusts as
+// the per-operation identity). It is server-received (a header, never the
+// request body, M7/S16), and deterministic across a replay: on a client-key
+// replay `onceWithin` skips the body entirely, so the returned fileId still
+// names the file that WAS ingested on the original call rather than a fresh
+// unused id.
+export async function commitBankFile(
   db: TmsDb,
-  args: { rows: BankRequestRow[]; clientKey: string; actorId: string; traceId: string },
-): Promise<{ accepted: number; quarantined: number; duplicate: number }> {
+  args: { fileBytes: Uint8Array; filename: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ accepted: number; quarantined: number; duplicate: number; fileId: string }> {
+  const fileId = args.clientKey
+  const parsed = await parseBankRequestFile(args.fileBytes, args.filename, fileId)
+  if (parsed.errors.length > 0) throw new BankFileParseError(parsed.errors)
+
   const tally = { accepted: 0, quarantined: 0, duplicate: 0 }
   await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
     await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:upload-bank-file'), async () => {
-      for (const row of args.rows) {
+      for (const row of parsed.rows) {
         const outcome = await ingestRequestRowWithinTx(tx, row, args.traceId)
         tally[outcome] += 1
       }
@@ -78,18 +162,28 @@ export async function uploadBankFile(
       )
     })
   })
-  return tally
+  return { ...tally, fileId }
 }
 
-export async function uploadDamageFile(
+// Phase 2 Task 2 (D-K): the damage-file COMMIT. Same server-side re-parse and
+// server-owned fileId rule as commitBankFile; there is no separate damage
+// preview in v1 (damage validation is a DB match by tenant+vpa, which a pure
+// preview cannot do; a later task may add one). Runs the UNCHANGED damage
+// ingest (match + non-billable replacement + linkage/demand facts) under
+// tms_write, keeping the partial-accept and the co-committed ALLOW 6e.
+export async function commitDamageFile(
   db: TmsDb,
-  args: { rows: BankDamageRow[]; clientKey: string; actorId: string; traceId: string },
-): Promise<{ replaced: number; quarantined: number; duplicate: number }> {
+  args: { fileBytes: Uint8Array; filename: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ replaced: number; quarantined: number; duplicate: number; fileId: string }> {
+  const fileId = args.clientKey
+  const parsed = await parseBankDamageFile(args.fileBytes, args.filename, fileId)
+  if (parsed.errors.length > 0) throw new BankFileParseError(parsed.errors)
+
   const tally = { replaced: 0, quarantined: 0, duplicate: 0 }
   await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
     await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:upload-damage-file'), async () => {
-      for (const row of args.rows) {
+      for (const row of parsed.rows) {
         const outcome = await ingestDamageRowWithinTx(tx, row, args.traceId)
         tally[outcome] += 1
       }
@@ -107,7 +201,7 @@ export async function uploadDamageFile(
       )
     })
   })
-  return tally
+  return { ...tally, fileId }
 }
 
 // Re-drives the S8 ingest for a corrected row, then stamps the SOURCE

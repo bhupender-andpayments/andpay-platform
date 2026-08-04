@@ -335,6 +335,22 @@ export function getVendors(c: Client) {
 // absent from OPS_STEP_UP_GATED_OPERATIONS). The body is plain JSON, never
 // multipart: the SPA parses a file to typed rows client-side
 // (features/uploads/parseSheet.ts) and posts the parsed rows.
+//
+// CONTRACT CHANGE (Phase 2 Task 2): the ops-edge upload surface has moved to
+// MULTIPART raw-file routes with server-side parse, and the old JSON-rows
+// routes are GONE. The new contract is:
+//   POST /ops/uploads/bank/preview   multipart `file` -> per-row verdict
+//     { rows: [{ rowNo, valid, errors, row }], summary, structuralErrors }
+//     (no Idempotency-Key, writes nothing)
+//   POST /ops/uploads/bank/commit    multipart `file`, Idempotency-Key
+//     -> { accepted, quarantined, duplicate, fileId }
+//   POST /ops/uploads/damage/commit  multipart `file`, Idempotency-Key
+//     -> { replaced, quarantined, duplicate, fileId }
+// This SPA client and its upload pages still post the OLD JSON-rows contract
+// and are PENDING REWIRE to the multipart surface (a later frontend task; the
+// server-side parser services/tms/src/bank-file-adapter.ts is now live behind
+// the edge). The uploadBank/uploadDamage helpers below are retained only until
+// that rewire lands and target dead routes in the meantime.
 // -----------------------------------------------------------------------
 
 /** services/tms/src/damage.ts BankDamageRow. */
