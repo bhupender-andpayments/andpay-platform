@@ -24,8 +24,10 @@ async function seedOriginal(vpa: string, bank: string, sourceEventId = 'req-1|1'
     true, 'pooled-for-fulfillment', ${sourceEventId}, now()
   )`
   // spec 06a: the original carries a recipient contact snapshot; a replacement
-  // must carry it forward (the damage file has no recipient columns).
-  await db.$executeRaw`UPDATE assignment SET contact_name = 'Original Contact', mobile = '+91-8888888888' WHERE id = ${asgnUuid}::uuid`
+  // must carry it forward (the damage file has no recipient columns). Task 4:
+  // the original also carries a Branch Code snapshot that must carry forward the
+  // same way (the damage file has no branch column either).
+  await db.$executeRaw`UPDATE assignment SET contact_name = 'Original Contact', mobile = '+91-8888888888', branch_code = 'BR-ORIG' WHERE id = ${asgnUuid}::uuid`
   return fromUuid('asgn', asgnUuid)
 }
 
@@ -40,8 +42,8 @@ describe('damage ingest and replacement (check 6, D116)', () => {
     const r = await ingestDamageRow(db, { fileId: 'dmg-1', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank', damageReason: '  Battery Issue  ', bankRemarks: 'replace asap', shipToAddress: 'New Addr' }, 't')
     expect(r).toBe('replaced')
 
-    const repl = await db.$queryRaw<{ id: string; replacement_of: string; billable: boolean; case_status: string; damage_reason: string; bank_remarks: string; demand_state: string; contact_name: string | null; mobile: string | null }[]>`
-      SELECT id, replacement_of, billable, case_status, damage_reason, bank_remarks, demand_state, contact_name, mobile FROM assignment WHERE replacement_of IS NOT NULL
+    const repl = await db.$queryRaw<{ id: string; replacement_of: string; billable: boolean; case_status: string; damage_reason: string; bank_remarks: string; demand_state: string; contact_name: string | null; mobile: string | null; branch_code: string | null }[]>`
+      SELECT id, replacement_of, billable, case_status, damage_reason, bank_remarks, demand_state, contact_name, mobile, branch_code FROM assignment WHERE replacement_of IS NOT NULL
     `
     expect(repl).toHaveLength(1)
     expect(fromUuid('asgn', repl[0]!.replacement_of)).toBe(original)
@@ -56,14 +58,21 @@ describe('damage ingest and replacement (check 6, D116)', () => {
     // forward from the original (the damage file supplies no recipient columns).
     expect(repl[0]!.contact_name).toBe('Original Contact')
     expect(repl[0]!.mobile).toBe('+91-8888888888')
+    // Task 4 on the D116 replacement path: the Branch Code snapshot carries
+    // forward from the original (the damage file supplies no branch column).
+    expect(repl[0]!.branch_code).toBe('BR-ORIG')
 
     // and the replacement's emitted demand fact carries the recipient too.
-    const demand = await db.$queryRaw<{ payload: { payload: { contactName?: string; mobile?: string } } }[]>`
+    const demand = await db.$queryRaw<{ payload: { payload: { contactName?: string; mobile?: string; branchCode?: string } } }[]>`
       SELECT payload FROM outbox WHERE event_type = ${TMS_ASSIGNMENT_TOPIC}
     `
     expect(demand).toHaveLength(1)
     expect(demand[0]!.payload.payload.contactName).toBe('Original Contact')
     expect(demand[0]!.payload.payload.mobile).toBe('+91-8888888888')
+    // Task 4: the replacement's demand fact carries the original's Branch Code,
+    // so analytics DispatchRow.branch is populated for the replacement dispatch
+    // (not null), matching the original.
+    expect(demand[0]!.payload.payload.branchCode).toBe('BR-ORIG')
 
     // the original moves to replacement-raised
     const orig = await db.$queryRaw<{ demand_state: string }[]>`SELECT demand_state FROM assignment WHERE id = ${toUuid(original)}::uuid`

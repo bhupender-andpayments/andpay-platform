@@ -34,6 +34,7 @@ interface OriginalRow {
   sticker_count: number
   contact_name: string | null
   mobile: string | null
+  branch_code: string | null
 }
 
 // Damage-file ingest (D116). Matches an original asgn_ by (tenant, vpa), creates
@@ -52,7 +53,7 @@ export async function ingestDamageRowWithinTx(
   const matches = await tx.$queryRaw<OriginalRow[]>`
     SELECT id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
            bank_reference_code, bank_display_name, qr_value, vpa_value, soundbox, standee_count, sticker_count,
-           contact_name, mobile
+           contact_name, mobile, branch_code
     FROM assignment
     WHERE bank_reference_code = ${row.tenantReference} AND vpa_value = ${row.vpaValue} AND replacement_of IS NULL
   `
@@ -115,14 +116,14 @@ export async function ingestDamageRowWithinTx(
       bank_reference_code, bank_display_name, ship_to_address,
       qr_value, vpa_value, soundbox, standee_count, sticker_count,
       billable, replacement_of, damage_reason, bank_remarks, case_status,
-      demand_state, source_event_id, contact_name, mobile, updated_at
+      demand_state, source_event_id, contact_name, mobile, branch_code, updated_at
     ) VALUES (
       ${replUuid}::uuid, ${o.merchant_id}::uuid, ${o.program_id}::uuid, ${o.tenant_id}::uuid,
       ${o.merchant_display_name}, ${o.merchant_legal_name}, ${o.merchant_mcc},
       ${o.bank_reference_code}, ${o.bank_display_name}, ${row.shipToAddress},
       ${o.qr_value}, ${o.vpa_value}, ${o.soundbox}, ${o.standee_count}, ${o.sticker_count},
       ${false}, ${o.id}::uuid, ${row.damageReason}, ${row.bankRemarks}, ${'Open'},
-      ${'received'}, ${correlationId}, ${o.contact_name}, ${o.mobile}, now()
+      ${'received'}, ${correlationId}, ${o.contact_name}, ${o.mobile}, ${o.branch_code}, now()
     )
     ON CONFLICT (source_event_id) DO NOTHING
     RETURNING id
