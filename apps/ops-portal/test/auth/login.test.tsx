@@ -28,6 +28,18 @@ function LoginHarness() {
   return principal ? <Nav /> : <LoginPage />
 }
 
+// The demo skin login is two-step: username + password, then Continue, then the
+// TOTP code, then Sign in. Both factors are still submitted together in one
+// login() call, so the auth flow (and its uniform-failure behavior) is
+// unchanged; only the presentation splits across two screens.
+async function twoStepSignIn(user: ReturnType<typeof userEvent.setup>, handle: string, password: string, totp: string) {
+  await user.type(screen.getByLabelText(/username/i), handle)
+  await user.type(screen.getByLabelText(/password/i), password)
+  await user.click(screen.getByRole('button', { name: /continue/i }))
+  await user.type(await screen.findByLabelText(/totp/i), totp)
+  await user.click(screen.getByRole('button', { name: /sign in/i }))
+}
+
 describe('auth login', () => {
   beforeEach(() => { clearAccessToken(); vi.unstubAllGlobals(); localStorage.clear(); sessionStorage.clear() })
   // vitest.config.ts does not set test.globals, so @testing-library/react's
@@ -37,13 +49,11 @@ describe('auth login', () => {
   afterEach(() => { cleanup() })
 
   it('login stores the access token in memory (not storage), sets the principal, and the Nav shows the derived role label', async () => {
+    const user = userEvent.setup()
     const fakeToken = makeFakeJwt({ sub: 'u-1', psr: 'role:ops' })
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ accessToken: fakeToken }), { status: 200, headers: { 'content-type': 'application/json' } })))
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
-    await userEvent.type(screen.getByLabelText(/username/i), 'alice')
-    await userEvent.type(screen.getByLabelText(/password/i), 'pw')
-    await userEvent.type(screen.getByLabelText(/totp/i), '123456')
-    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+    await twoStepSignIn(user, 'alice', 'pw', '123456')
     expect(await screen.findByText('u-1')).toBeTruthy()
     // The psr claim (`role:ops`) is derived into the display label with the
     // `role:` prefix stripped (AuthContext.deriveRoleLabel), not shown raw.
@@ -54,34 +64,32 @@ describe('auth login', () => {
   })
 
   it('a failed login (401) surfaces an error and does not set a token or principal', async () => {
+    const user = userEvent.setup()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(null), { status: 401, headers: { 'content-type': 'application/json' } })))
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
-    await userEvent.type(screen.getByLabelText(/username/i), 'alice')
-    await userEvent.type(screen.getByLabelText(/password/i), 'wrong')
-    await userEvent.type(screen.getByLabelText(/totp/i), '000000')
-    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+    await twoStepSignIn(user, 'alice', 'wrong', '000000')
     expect(await screen.findByRole('alert')).toBeTruthy()
     expect(getAccessToken()).toBeNull()
     expect(screen.queryByText('u-1')).toBeNull()
   })
 
   it('a malformed token on a 200 response fails safely (no token, no principal, no crash)', async () => {
+    const user = userEvent.setup()
     // decodeTokenClaims throws BEFORE setAccessToken/setPrincipal (AuthContext.login):
     // a 200 with a garbage accessToken must still land the user on the failed-login
     // path, exactly like a 401, never with a token in memory or a principal set.
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ accessToken: 'not-a-valid-jwt' }), { status: 200, headers: { 'content-type': 'application/json' } })))
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
-    await userEvent.type(screen.getByLabelText(/username/i), 'alice')
-    await userEvent.type(screen.getByLabelText(/password/i), 'pw')
-    await userEvent.type(screen.getByLabelText(/totp/i), '123456')
-    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+    await twoStepSignIn(user, 'alice', 'pw', '123456')
     expect(await screen.findByRole('alert')).toBeTruthy()
     expect(getAccessToken()).toBeNull()
     expect(screen.queryByText('u-1')).toBeNull()
+    // On failure the form returns to step 1, so the username field is present again.
     expect(screen.getByLabelText(/username/i)).toBeTruthy()
   })
 
   it('logout clears the token and principal', async () => {
+    const user = userEvent.setup()
     const fakeToken = makeFakeJwt({ sub: 'u-1', psr: 'role:ops' })
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/session/login')) {
@@ -92,13 +100,10 @@ describe('auth login', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
-    await userEvent.type(screen.getByLabelText(/username/i), 'alice')
-    await userEvent.type(screen.getByLabelText(/password/i), 'pw')
-    await userEvent.type(screen.getByLabelText(/totp/i), '123456')
-    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+    await twoStepSignIn(user, 'alice', 'pw', '123456')
     expect(await screen.findByText('u-1')).toBeTruthy()
 
-    await userEvent.click(screen.getByRole('button', { name: /logout/i }))
+    await user.click(screen.getByRole('button', { name: /logout/i }))
     expect(await screen.findByLabelText(/username/i)).toBeTruthy()
     expect(getAccessToken()).toBeNull()
   })

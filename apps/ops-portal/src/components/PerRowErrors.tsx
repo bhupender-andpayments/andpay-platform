@@ -12,44 +12,35 @@ export interface UploadResultBreakdown {
   duplicate?: number
 }
 
-// Renders task 13's upload result breakdown with a link to the quarantine
-// queue (task 11's /queues route) so an operator can go straight to the rows
-// that failed.
+function StatBox({ label, value, tone }: { label: string; value: number; tone: 'good' | 'warn' | 'muted' }) {
+  const toneClass = tone === 'good' ? 'text-[#15803d]' : tone === 'warn' ? 'text-[#a15c07]' : 'text-ink'
+  return (
+    <div className="rounded-lg border border-line bg-surface px-4 py-3">
+      <dt className="text-[12px] font-medium text-muted">{label}</dt>
+      <dd className={`num mt-1 text-2xl font-semibold ${toneClass}`}>{value}</dd>
+    </div>
+  )
+}
+
+// Task 10 upload result breakdown with a link to the quarantine queue so an
+// operator can jump straight to the rows that failed validation.
 export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
   return (
-    <dl className="flex flex-wrap gap-6 text-sm">
-      {result.accepted !== undefined && (
-        <div>
-          <dt className="text-slate-500">Accepted</dt>
-          <dd className="text-lg font-semibold text-slate-900">{result.accepted}</dd>
-        </div>
+    <div className="space-y-3">
+      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {result.accepted !== undefined && <StatBox label="Accepted" value={result.accepted} tone="good" />}
+        {result.replaced !== undefined && <StatBox label="Replaced" value={result.replaced} tone="good" />}
+        <StatBox label="Quarantined" value={result.quarantined} tone={result.quarantined > 0 ? 'warn' : 'muted'} />
+        {result.duplicate !== undefined && <StatBox label="Duplicate" value={result.duplicate} tone="muted" />}
+      </dl>
+      {result.quarantined > 0 && (
+        <Link
+          to="/queues"
+          className="inline-flex items-center gap-1 text-[13px] font-medium text-brand hover:text-brand-strong hover:underline"
+        >
+          view in quarantine queue →
+        </Link>
       )}
-      {result.replaced !== undefined && (
-        <div>
-          <dt className="text-slate-500">Replaced</dt>
-          <dd className="text-lg font-semibold text-slate-900">{result.replaced}</dd>
-        </div>
-      )}
-      <div>
-        <dt className="text-slate-500">Quarantined</dt>
-        <dd className="text-lg font-semibold text-amber-700">
-          {result.quarantined}
-          {result.quarantined > 0 && (
-            <>
-              {' '}
-              <Link to="/queues" className="text-sm font-medium text-blue-600 underline hover:text-blue-800">
-                view in quarantine queue
-              </Link>
-            </>
-          )}
-        </dd>
-      </div>
-      {result.duplicate !== undefined && (
-        <div>
-          <dt className="text-slate-500">Duplicate</dt>
-          <dd className="text-lg font-semibold text-slate-900">{result.duplicate}</dd>
-        </div>
-      )}
-    </dl>
+    </div>
   )
 }

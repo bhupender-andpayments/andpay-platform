@@ -4,6 +4,8 @@ import { newIdempotencyKey } from '../../api/idempotency.js'
 import { uploadDamage } from '../../api/endpoints.js'
 import { PerRowErrors, type UploadResultBreakdown } from '../../components/PerRowErrors.js'
 import { MAX_UPLOAD_BYTES, parseBankDamageSheet, readFileAsText } from './parseSheet.js'
+import { Card, CardHeader, ErrorNote, Spinner } from '../../ui/primitives.js'
+import { IconUploads } from '../../ui/icons.js'
 
 // Replaces the Task 9 placeholder's damage half (spec 13, check 4). Same
 // shape as BankUploadPage: parse client-side (D117), POST plain JSON
@@ -42,28 +44,40 @@ export function DamageUploadPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold text-slate-900">Damage report upload</h1>
-      <div>
-        <label className="block text-sm font-medium text-slate-700" htmlFor="damage-upload-file">
-          Damage report file (CSV, max 5 MiB)
-        </label>
-        <input
-          id="damage-upload-file"
-          type="file"
-          accept=".csv,text/csv"
-          disabled={busy}
-          onChange={(e) => {
-            void handleFile(e)
-          }}
-          className="mt-1 text-sm"
-        />
-      </div>
-      {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
+      <Card>
+        <CardHeader title="Damage report upload" subtitle="CSV, max 5 MiB. Rows are validated at the edge; invalid rows go to quarantine." />
+        <div className="p-5">
+          <label
+            htmlFor="damage-upload-file"
+            className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-line-strong bg-surface-2/40 px-6 py-10 text-center transition-colors hover:border-brand/50 hover:bg-brand-weak/30"
+          >
+            {busy ? <Spinner size={22} /> : <IconUploads width={24} height={24} className="text-brand" />}
+            <span className="text-sm font-medium text-ink">
+              {busy ? 'Uploading…' : 'Choose a damage report file'}
+            </span>
+            <span className="text-[12px] text-subtle">CSV up to 5 MiB</span>
+            <input
+              id="damage-upload-file"
+              type="file"
+              accept=".csv,text/csv"
+              disabled={busy}
+              onChange={(e) => {
+                void handleFile(e)
+              }}
+              className="sr-only"
+            />
+          </label>
+        </div>
+      </Card>
+      {error !== null && <ErrorNote>{error}</ErrorNote>}
+      {result !== null && (
+        <Card>
+          <CardHeader title="Upload result" subtitle="Per-row outcome from the edge validator." />
+          <div className="p-5">
+            <PerRowErrors result={result} />
+          </div>
+        </Card>
       )}
-      {result !== null && <PerRowErrors result={result} />}
     </div>
   )
 }

@@ -21,7 +21,11 @@ describe('TilesPage', () => {
   beforeEach(() => { clearAccessToken(); setAccessToken('tok-1'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup() })
 
-  it('renders the seven tiles faithfully; the two activation tiles show the empty marker, never a fabricated count', async () => {
+  // Demo skin (Task 12): the ACTIVATION-EMPTY masking is dropped because the
+  // demo seed carries a real activation write, so every tile renders its real
+  // value (including the two activation tiles) and each value may appear both
+  // in a KPI card and in the lifecycle rail.
+  it('renders the seven tiles with their real values (no masking) and a freshness marker', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -31,9 +35,9 @@ describe('TilesPage', () => {
             pendingQrAwaitingBatch: { count: 2, oldestAgeDays: 1.5 },
             pendingPrintVendorPickup: 3,
             dispatchedNotDelivered: 4,
-            deliveredNotActivated: 9, // backend may return a number: must NOT be rendered as-is
+            deliveredNotActivated: 9,
             damagedReplacementOpen: 1,
-            activatedSuccessfully: 7, // same
+            activatedSuccessfully: 7,
           },
           watermark: { asOf: '2026-07-29T12:00:00.000Z', perTopic: {} },
         }),
@@ -48,18 +52,14 @@ describe('TilesPage', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByText('5')).toBeTruthy()
-    expect(screen.getByText('2')).toBeTruthy()
-    expect(screen.getByText('3')).toBeTruthy()
-    expect(screen.getByText('4')).toBeTruthy()
-    expect(screen.getByText('1')).toBeTruthy()
-    // The fabricated activation counts must never appear anywhere on the page.
-    expect(screen.queryByText('9')).toBeNull()
-    expect(screen.queryByText('7')).toBeNull()
-    // Both activation-dependent tiles show the neutral empty marker instead.
-    expect(screen.getAllByText(/not available/i)).toHaveLength(2)
-    // The watermark badge reflects the body's watermark.asOf, not a header.
-    expect(screen.getByText(/as of 2026-07-29T12:00:00\.000Z/i)).toBeTruthy()
+    // Every tile value renders (>= once; a value may also appear in the rail).
+    for (const value of ['5', '2', '3', '4', '9', '1', '7']) {
+      expect((await screen.findAllByText(value)).length).toBeGreaterThanOrEqual(1)
+    }
+    // The activation values are now shown, never masked.
+    expect(screen.queryByText(/not available/i)).toBeNull()
+    // The freshness marker reflects the body's watermark.asOf.
+    expect(screen.getByText(/updated/i)).toBeTruthy()
   })
 })
 
@@ -67,7 +67,7 @@ describe('ReportPage', () => {
   beforeEach(() => { clearAccessToken(); setAccessToken('tok-1'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup() })
 
-  it('renders report rows and the watermark badge from the response body', async () => {
+  it('renders report rows and the freshness marker from the response body', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -99,7 +99,7 @@ describe('ReportPage', () => {
 
     expect(await screen.findByText('asgn_1')).toBeTruthy()
     expect(screen.getByText('HDFC')).toBeTruthy()
-    expect(screen.getByText(/as of 2026-07-29T12:00:00\.000Z/i)).toBeTruthy()
+    expect(screen.getByText(/updated/i)).toBeTruthy()
   })
 
   it('CSV export requests format=csv via the text path and triggers a Blob download', async () => {

@@ -51,8 +51,8 @@ export function RecomposeForm() {
   }
 
   return (
-    <div className="space-y-4 rounded border border-slate-200 p-4">
-      <h2 className="text-sm font-semibold text-slate-800">Recompose artifact</h2>
+    <div className="space-y-4 rounded-lg border border-line bg-surface p-5 shadow-sm">
+      <h2 className="text-sm font-semibold text-ink">Recompose artifact</h2>
       <form
         onSubmit={(e) => {
           void handleSubmit(e)
@@ -60,25 +60,25 @@ export function RecomposeForm() {
         className="flex flex-wrap items-end gap-3"
       >
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="recompose-asgnId">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="recompose-asgnId">
             Assignment ID
           </label>
           <input
             id="recompose-asgnId"
             value={asgnId}
             onChange={(e) => setAsgnId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="recompose-artifactType">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="recompose-artifactType">
             Artifact type
           </label>
           <select
             id="recompose-artifactType"
             value={artifactType}
             onChange={(e) => setArtifactType(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           >
             {ARTIFACT_TYPES.map((t) => (
               <option key={t} value={t}>
@@ -88,33 +88,33 @@ export function RecomposeForm() {
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="recompose-requestedShipTo">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="recompose-requestedShipTo">
             Requested ship-to (optional)
           </label>
           <input
             id="recompose-requestedShipTo"
             value={requestedShipTo}
             onChange={(e) => setRequestedShipTo(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           />
         </div>
         <button
           type="submit"
           disabled={busy}
-          className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-40"
+          className="inline-flex h-10 items-center justify-center gap-2 rounded bg-brand px-4 text-sm font-medium text-brand-contrast shadow-sm hover:bg-brand-strong disabled:opacity-40"
         >
           Recompose
         </button>
       </form>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="rounded border border-[#f1c9c9] bg-[#fdf1f1] px-3.5 py-2.5 text-[13px] text-[#a11616]">
           {error}
         </p>
       )}
 
       {result !== null && (
-        <p className="text-sm text-slate-800">
+        <p className="text-sm text-ink">
           {result.deduped ? 'Already applied (deduped). ' : ''}
           Artifact: <span className="font-mono">{result.artifactId ?? 'none'}</span>
         </p>

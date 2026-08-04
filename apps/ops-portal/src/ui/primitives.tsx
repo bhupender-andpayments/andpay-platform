@@ -102,6 +102,39 @@ export function Toolbar({ children, className }: { children: ReactNode; classNam
   return <div className={cx('flex flex-wrap items-end gap-3', className)}>{children}</div>
 }
 
+// -- Tabs ------------------------------------------------------------ //
+export interface TabItem<K extends string> {
+  key: K
+  label: string
+}
+export function Tabs<K extends string>({ tabs, active, onChange }: { tabs: ReadonlyArray<TabItem<K>>; active: K; onChange(key: K): void }) {
+  return (
+    <div className="inline-flex items-center gap-1 rounded-lg border border-line bg-surface-2 p-1">
+      {tabs.map((t) => {
+        const isActive = t.key === active
+        return (
+          <button
+            key={t.key}
+            type="button"
+            aria-pressed={isActive}
+            onClick={() => onChange(t.key)}
+            className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors ${
+              isActive ? 'bg-surface text-ink shadow-sm' : 'text-muted hover:text-ink'
+            }`}
+          >
+            {t.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// -- Raw code/id chip ------------------------------------------------ //
+export function CodeChip({ children }: { children: ReactNode }) {
+  return <span className="num rounded bg-surface-2 px-1.5 py-0.5 text-[12px] text-muted">{children}</span>
+}
+
 // -- Status pill ----------------------------------------------------- //
 export function StatusPill({ value }: { value: string | null | undefined }) {
   const { variant, label } = statusMeta(value)

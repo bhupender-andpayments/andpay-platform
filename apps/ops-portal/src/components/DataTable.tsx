@@ -4,6 +4,8 @@ export interface DataTableColumn<T> {
   key: string
   header: string
   cell(row: T, index: number): ReactNode
+  // Optional right-alignment for numeric columns (demo skin).
+  align?: 'left' | 'right'
 }
 
 export interface DataTableProps<T> {
@@ -13,41 +15,52 @@ export interface DataTableProps<T> {
   emptyMessage?: string
 }
 
-// A generic, presentational table for the read views the feature tasks
-// (10 to 14) render (tiles/report rows, queue rows, vendor rows, upload
-// results). It owns no data fetching and no authorization logic: callers
-// supply already-fetched rows and column definitions.
+// A generic, presentational table for the read views the feature pages render.
+// Demo skin: token-styled (uppercase hairline header, hairline rows, hover),
+// same public API as before so every caller and its tests are unchanged. It
+// owns no data fetching and no authorization logic.
 export function DataTable<T>({ columns, rows, getRowKey, emptyMessage = 'No records.' }: DataTableProps<T>) {
   return (
-    <table className="w-full border-collapse text-left text-sm">
-      <thead>
-        <tr className="border-b border-slate-200">
-          {columns.map((column) => (
-            <th key={column.key} scope="col" className="px-3 py-2 font-semibold text-slate-700">
-              {column.header}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.length === 0 ? (
-          <tr>
-            <td colSpan={columns.length} className="px-3 py-6 text-center text-slate-500">
-              {emptyMessage}
-            </td>
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-left text-[13px]">
+        <thead>
+          <tr className="border-b border-line bg-surface-2">
+            {columns.map((column) => (
+              <th
+                key={column.key}
+                scope="col"
+                className={`px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-subtle ${
+                  column.align === 'right' ? 'text-right' : 'text-left'
+                }`}
+              >
+                {column.header}
+              </th>
+            ))}
           </tr>
-        ) : (
-          rows.map((row, index) => (
-            <tr key={getRowKey ? getRowKey(row, index) : index} className="border-b border-slate-100">
-              {columns.map((column) => (
-                <td key={column.key} className="px-3 py-2 text-slate-800">
-                  {column.cell(row, index)}
-                </td>
-              ))}
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={columns.length} className="px-4 py-12 text-center text-[13px] text-muted">
+                {emptyMessage}
+              </td>
             </tr>
-          ))
-        )}
-      </tbody>
-    </table>
+          ) : (
+            rows.map((row, index) => (
+              <tr key={getRowKey ? getRowKey(row, index) : index} className="border-b border-line/70 last:border-0 hover:bg-surface-2/60">
+                {columns.map((column) => (
+                  <td
+                    key={column.key}
+                    className={`px-4 py-2.5 align-top text-ink ${column.align === 'right' ? 'text-right' : ''}`}
+                  >
+                    {column.cell(row, index)}
+                  </td>
+                ))}
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
   )
 }

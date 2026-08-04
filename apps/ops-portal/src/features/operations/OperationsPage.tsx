@@ -7,6 +7,8 @@ import { DispatchHistoryPage } from './DispatchHistoryPage.js'
 import { TerminalOverrideForm } from '../destructive/TerminalOverrideForm.js'
 import { HoldReleaseButton } from '../destructive/HoldReleaseButton.js'
 import { VendorSuspendButton } from '../destructive/VendorSuspendButton.js'
+import { PageHeader, Tabs, InfoNote } from '../../ui/primitives.js'
+import { IconShield } from '../../ui/icons.js'
 
 // Replaces the Task 9 placeholder with the real operational actions (spec
 // 13 task 14, check 6): batch trigger, status correction, recompose, hold,
@@ -34,23 +36,9 @@ const TABS: ReadonlyArray<{ key: TabKey; label: string }> = [
 export function OperationsPage() {
   const [tab, setTab] = useState<TabKey>('batch')
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold text-slate-900">Operations</h1>
-      <div className="flex gap-2">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            aria-pressed={tab === t.key}
-            onClick={() => setTab(t.key)}
-            className={`rounded px-3 py-1.5 text-sm font-medium ${
-              tab === t.key ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+    <div className="space-y-5">
+      <PageHeader title="Operations" description="Operational actions across the dispatch lifecycle. Destructive actions require step-up." />
+      <Tabs tabs={TABS} active={tab} onChange={(k) => setTab(k as TabKey)} />
       {tab === 'batch' && <BatchPage />}
       {tab === 'correction' && <StatusCorrectionForm />}
       {tab === 'recompose' && <RecomposeForm />}
@@ -58,6 +46,13 @@ export function OperationsPage() {
       {tab === 'history' && <DispatchHistoryPage />}
       {tab === 'destructive' && (
         <div className="space-y-4">
+          <InfoNote>
+            <span className="inline-flex items-center gap-1.5 font-medium text-ink">
+              <IconShield width={15} height={15} className="text-brand" />
+              Step-up required
+            </span>
+            . These actions re-prompt for your authenticator code and are re-authorized at the edge.
+          </InfoNote>
           <TerminalOverrideForm />
           <HoldReleaseButton />
           <VendorSuspendButton />

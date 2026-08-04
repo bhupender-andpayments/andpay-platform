@@ -54,8 +54,8 @@ export function StatusCorrectionForm() {
   }
 
   return (
-    <div className="space-y-4 rounded border border-slate-200 p-4">
-      <h2 className="text-sm font-semibold text-slate-800">Status correction</h2>
+    <div className="space-y-4 rounded-lg border border-line bg-surface p-5 shadow-sm">
+      <h2 className="text-sm font-semibold text-ink">Status correction</h2>
       <form
         onSubmit={(e) => {
           void handleSubmit(e)
@@ -63,25 +63,25 @@ export function StatusCorrectionForm() {
         className="flex flex-wrap items-end gap-3"
       >
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="correct-shptId">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="correct-shptId">
             Shipment ID
           </label>
           <input
             id="correct-shptId"
             value={shptId}
             onChange={(e) => setShptId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="correct-status">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="correct-status">
             Status
           </label>
           <select
             id="correct-status"
             value={status}
             onChange={(e) => setStatus(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           >
             {KNOWN_STATUSES.map((s) => (
               <option key={s} value={s}>
@@ -91,7 +91,7 @@ export function StatusCorrectionForm() {
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="correct-courierTimestamp">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="correct-courierTimestamp">
             Courier timestamp
           </label>
           <input
@@ -99,26 +99,26 @@ export function StatusCorrectionForm() {
             value={courierTimestamp}
             onChange={(e) => setCourierTimestamp(e.target.value)}
             placeholder="2026-08-01T10:00"
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           />
         </div>
         <button
           type="submit"
           disabled={busy}
-          className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-40"
+          className="inline-flex h-10 items-center justify-center gap-2 rounded bg-brand px-4 text-sm font-medium text-brand-contrast shadow-sm hover:bg-brand-strong disabled:opacity-40"
         >
           Submit correction
         </button>
       </form>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="rounded border border-[#f1c9c9] bg-[#fdf1f1] px-3.5 py-2.5 text-[13px] text-[#a11616]">
           {error}
         </p>
       )}
 
       {result !== null && (
-        <p className="text-sm text-slate-800">
+        <p className="text-sm text-ink">
           {result.deduped ? 'Already applied (deduped). ' : ''}
           Outcome: <span className="font-mono">{result.outcome ?? 'none'}</span>
         </p>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { PageHeader, Tabs } from '../../ui/primitives.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   getQuarantine,
@@ -52,23 +53,9 @@ function orDash(value: string | null): string {
 export function QueuesPage() {
   const [tab, setTab] = useState<TabKey>('quarantine')
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold text-slate-900">Queues</h1>
-      <div className="flex gap-2">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            aria-pressed={tab === t.key}
-            onClick={() => setTab(t.key)}
-            className={`rounded px-3 py-1.5 text-sm font-medium ${
-              tab === t.key ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+    <div className="space-y-5">
+      <PageHeader title="Queues" description="Quarantined rows and ingest exceptions awaiting an operator correction." />
+      <Tabs tabs={TABS} active={tab} onChange={(k) => setTab(k as TabKey)} />
       {tab === 'quarantine' && <QuarantineTab />}
       {tab === 'intake' && <IntakeExceptionsTab />}
       {tab === 'status' && <StatusExceptionsTab />}
@@ -171,7 +158,7 @@ function QuarantineTab() {
           disabled={r.resolvedAt !== null}
           aria-label={`Resolve quarantine row ${r.id}`}
           onClick={() => startResolve(r)}
-          className="rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+          className="inline-flex h-8 items-center justify-center rounded border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40"
         >
           Resolve
         </button>
@@ -181,13 +168,13 @@ function QuarantineTab() {
 
   return (
     <div className="space-y-4">
-      <label className="flex items-center gap-2 text-sm text-slate-600">
-        <input type="checkbox" checked={includeResolved} onChange={(e) => setIncludeResolved(e.target.checked)} />
+      <label className="flex items-center gap-2 text-[13px] text-muted">
+        <input type="checkbox" className="h-4 w-4 accent-[color:var(--brand)]" checked={includeResolved} onChange={(e) => setIncludeResolved(e.target.checked)} />
         Show resolved rows
       </label>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="rounded border border-[#f1c9c9] bg-[#fdf1f1] px-3.5 py-2.5 text-[13px] text-[#a11616]">
           {error}
         </p>
       )}
@@ -195,17 +182,17 @@ function QuarantineTab() {
       <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No quarantined rows." />
 
       {resolvingId !== null && form !== null && (
-        <form onSubmit={(e) => { void submitResolve(e) }} className="space-y-3 rounded border border-slate-200 p-4">
-          <h2 className="text-sm font-semibold text-slate-800">Correct and resolve quarantine row</h2>
+        <form onSubmit={(e) => { void submitResolve(e) }} className="space-y-4 rounded-lg border border-line bg-surface p-5 shadow-sm">
+          <h2 className="text-sm font-semibold text-ink">Correct and resolve quarantine row</h2>
           {formError !== null && (
-            <p role="alert" className="text-sm text-red-700">
+            <p role="alert" className="rounded border border-[#f1c9c9] bg-[#fdf1f1] px-3.5 py-2.5 text-[13px] text-[#a11616]">
               {formError}
             </p>
           )}
           <div className="grid grid-cols-2 gap-3">
             {BANK_REQUEST_ROW_FIELDS.map((f) => (
               <div key={f.key}>
-                <label className="block text-xs font-medium text-slate-600" htmlFor={`qr-form-${f.key}`}>
+                <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor={`qr-form-${f.key}`}>
                   {f.label}
                 </label>
                 <input
@@ -216,7 +203,7 @@ function QuarantineTab() {
                     const value = e.target.value
                     setForm((prev) => (prev === null ? prev : { ...prev, [f.key]: value }))
                   }}
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                  className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
                 />
               </div>
             ))}
@@ -230,19 +217,19 @@ function QuarantineTab() {
                   setForm((prev) => (prev === null ? prev : { ...prev, soundbox: checked }))
                 }}
               />
-              <label className="text-xs font-medium text-slate-600" htmlFor="qr-form-soundbox">
+              <label className="text-[13px] font-medium text-ink" htmlFor="qr-form-soundbox">
                 Soundbox
               </label>
             </div>
           </div>
           <div className="flex gap-2">
-            <button type="submit" className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700">
+            <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded bg-brand px-4 text-sm font-medium text-brand-contrast shadow-sm hover:bg-brand-strong">
               Submit correction
             </button>
             <button
               type="button"
               onClick={cancelResolve}
-              className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded border border-line-strong bg-surface px-4 text-sm font-medium text-ink hover:bg-surface-2"
             >
               Cancel
             </button>
@@ -357,7 +344,7 @@ function IntakeExceptionsTab() {
           disabled={r.resolvedAt !== null}
           aria-label={`Resolve intake exception ${r.id}`}
           onClick={() => startResolve(r)}
-          className="rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+          className="inline-flex h-8 items-center justify-center rounded border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40"
         >
           Resolve
         </button>
@@ -367,13 +354,13 @@ function IntakeExceptionsTab() {
 
   return (
     <div className="space-y-4">
-      <label className="flex items-center gap-2 text-sm text-slate-600">
-        <input type="checkbox" checked={includeResolved} onChange={(e) => setIncludeResolved(e.target.checked)} />
+      <label className="flex items-center gap-2 text-[13px] text-muted">
+        <input type="checkbox" className="h-4 w-4 accent-[color:var(--brand)]" checked={includeResolved} onChange={(e) => setIncludeResolved(e.target.checked)} />
         Show resolved rows
       </label>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="rounded border border-[#f1c9c9] bg-[#fdf1f1] px-3.5 py-2.5 text-[13px] text-[#a11616]">
           {error}
         </p>
       )}
@@ -381,17 +368,17 @@ function IntakeExceptionsTab() {
       <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No intake exceptions." />
 
       {resolvingId !== null && form !== null && (
-        <form onSubmit={(e) => { void submitResolve(e) }} className="space-y-3 rounded border border-slate-200 p-4">
-          <h2 className="text-sm font-semibold text-slate-800">Correct and resolve intake exception</h2>
+        <form onSubmit={(e) => { void submitResolve(e) }} className="space-y-4 rounded-lg border border-line bg-surface p-5 shadow-sm">
+          <h2 className="text-sm font-semibold text-ink">Correct and resolve intake exception</h2>
           {formError !== null && (
-            <p role="alert" className="text-sm text-red-700">
+            <p role="alert" className="rounded border border-[#f1c9c9] bg-[#fdf1f1] px-3.5 py-2.5 text-[13px] text-[#a11616]">
               {formError}
             </p>
           )}
 
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-600" htmlFor="ie-form-fileId">
+              <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="ie-form-fileId">
                 File ID
               </label>
               <input
@@ -401,11 +388,11 @@ function IntakeExceptionsTab() {
                   const value = e.target.value
                   setForm((prev) => (prev === null ? prev : { ...prev, fileId: value }))
                 }}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-600" htmlFor="ie-form-vndrId">
+              <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="ie-form-vndrId">
                 Vendor ID
               </label>
               <input
@@ -415,11 +402,11 @@ function IntakeExceptionsTab() {
                   const value = e.target.value
                   setForm((prev) => (prev === null ? prev : { ...prev, vndrId: value }))
                 }}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-600" htmlFor="ie-form-workQueue">
+              <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="ie-form-workQueue">
                 Work queue
               </label>
               <input
@@ -429,7 +416,7 @@ function IntakeExceptionsTab() {
                   const value = e.target.value
                   setForm((prev) => (prev === null ? prev : { ...prev, workQueue: value }))
                 }}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
               />
             </div>
           </div>
@@ -438,9 +425,9 @@ function IntakeExceptionsTab() {
             {form.rows.map((row, index) => (
               // Index as key: these editable rows have no stable id of their
               // own until submit, and this editor never reorders rows.
-              <div key={index} className="rounded border border-slate-200 p-3">
+              <div key={index} className="rounded-lg border border-line bg-surface-2/40 p-4">
                 <div className="mb-2 flex items-center justify-between">
-                  <p className="text-xs font-semibold text-slate-500">
+                  <p className="text-[12px] font-semibold uppercase tracking-wide text-subtle">
                     Row {index + 1}: {row.kind === 'SERIALIZED' ? 'Serialized' : 'Quantity line'}
                   </p>
                   <button
@@ -455,54 +442,54 @@ function IntakeExceptionsTab() {
                 {row.kind === 'SERIALIZED' ? (
                   <div className="grid grid-cols-3 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-slate-600" htmlFor={`ie-row-${index}-deviceSerial`}>
+                      <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor={`ie-row-${index}-deviceSerial`}>
                         Device serial
                       </label>
                       <input
                         id={`ie-row-${index}-deviceSerial`}
                         value={row.deviceSerial}
                         onChange={(e) => updateSerializedField(index, 'deviceSerial', e.target.value)}
-                        className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                        className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-600" htmlFor={`ie-row-${index}-productType`}>
+                      <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor={`ie-row-${index}-productType`}>
                         Product type
                       </label>
                       <input
                         id={`ie-row-${index}-productType`}
                         value={row.productType}
                         onChange={(e) => updateSerializedField(index, 'productType', e.target.value)}
-                        className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                        className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-600" htmlFor={`ie-row-${index}-deviceQr`}>
+                      <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor={`ie-row-${index}-deviceQr`}>
                         Device QR (JSON)
                       </label>
                       <textarea
                         id={`ie-row-${index}-deviceQr`}
                         value={row.deviceQrJson}
                         onChange={(e) => updateSerializedField(index, 'deviceQrJson', e.target.value)}
-                        className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                        className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
                       />
                     </div>
                   </div>
                 ) : (
                   <div className="grid grid-cols-3 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-slate-600" htmlFor={`ie-row-${index}-productType`}>
+                      <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor={`ie-row-${index}-productType`}>
                         Product type
                       </label>
                       <input
                         id={`ie-row-${index}-productType`}
                         value={row.productType}
                         onChange={(e) => updateQuantityField(index, 'productType', e.target.value)}
-                        className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                        className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-600" htmlFor={`ie-row-${index}-count`}>
+                      <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor={`ie-row-${index}-count`}>
                         Count
                       </label>
                       <input
@@ -510,18 +497,18 @@ function IntakeExceptionsTab() {
                         type="number"
                         value={row.count}
                         onChange={(e) => updateQuantityField(index, 'count', e.target.value)}
-                        className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                        className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-600" htmlFor={`ie-row-${index}-qrString`}>
+                      <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor={`ie-row-${index}-qrString`}>
                         QR string
                       </label>
                       <input
                         id={`ie-row-${index}-qrString`}
                         value={row.qrString}
                         onChange={(e) => updateQuantityField(index, 'qrString', e.target.value)}
-                        className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                        className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
                       />
                     </div>
                   </div>
@@ -534,27 +521,27 @@ function IntakeExceptionsTab() {
             <button
               type="button"
               onClick={addSerializedRow}
-              className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded border border-line-strong bg-surface px-4 text-sm font-medium text-ink hover:bg-surface-2"
             >
               Add serialized row
             </button>
             <button
               type="button"
               onClick={addQuantityLineRow}
-              className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded border border-line-strong bg-surface px-4 text-sm font-medium text-ink hover:bg-surface-2"
             >
               Add quantity line row
             </button>
           </div>
 
           <div className="flex gap-2">
-            <button type="submit" className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700">
+            <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded bg-brand px-4 text-sm font-medium text-brand-contrast shadow-sm hover:bg-brand-strong">
               Submit correction
             </button>
             <button
               type="button"
               onClick={cancelResolve}
-              className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded border border-line-strong bg-surface px-4 text-sm font-medium text-ink hover:bg-surface-2"
             >
               Cancel
             </button>
@@ -638,7 +625,7 @@ function StatusExceptionsTab() {
           disabled={r.resolvedAt !== null}
           aria-label={`Resolve status exception ${r.id}`}
           onClick={() => startResolve(r)}
-          className="rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+          className="inline-flex h-8 items-center justify-center rounded border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40"
         >
           Resolve
         </button>
@@ -648,13 +635,13 @@ function StatusExceptionsTab() {
 
   return (
     <div className="space-y-4">
-      <label className="flex items-center gap-2 text-sm text-slate-600">
-        <input type="checkbox" checked={includeResolved} onChange={(e) => setIncludeResolved(e.target.checked)} />
+      <label className="flex items-center gap-2 text-[13px] text-muted">
+        <input type="checkbox" className="h-4 w-4 accent-[color:var(--brand)]" checked={includeResolved} onChange={(e) => setIncludeResolved(e.target.checked)} />
         Show resolved rows
       </label>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="rounded border border-[#f1c9c9] bg-[#fdf1f1] px-3.5 py-2.5 text-[13px] text-[#a11616]">
           {error}
         </p>
       )}
@@ -662,16 +649,16 @@ function StatusExceptionsTab() {
       <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No status exceptions." />
 
       {resolvingId !== null && form !== null && (
-        <form onSubmit={(e) => { void submitResolve(e) }} className="space-y-3 rounded border border-slate-200 p-4">
-          <h2 className="text-sm font-semibold text-slate-800">Resolve status exception</h2>
+        <form onSubmit={(e) => { void submitResolve(e) }} className="space-y-4 rounded-lg border border-line bg-surface p-5 shadow-sm">
+          <h2 className="text-sm font-semibold text-ink">Resolve status exception</h2>
           {formError !== null && (
-            <p role="alert" className="text-sm text-red-700">
+            <p role="alert" className="rounded border border-[#f1c9c9] bg-[#fdf1f1] px-3.5 py-2.5 text-[13px] text-[#a11616]">
               {formError}
             </p>
           )}
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-600" htmlFor="se-form-shptId">
+              <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="se-form-shptId">
                 Shipment ID
               </label>
               <input
@@ -681,11 +668,11 @@ function StatusExceptionsTab() {
                   const value = e.target.value
                   setForm((prev) => (prev === null ? prev : { ...prev, shptId: value }))
                 }}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-600" htmlFor="se-form-status">
+              <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="se-form-status">
                 Status
               </label>
               <input
@@ -695,11 +682,11 @@ function StatusExceptionsTab() {
                   const value = e.target.value
                   setForm((prev) => (prev === null ? prev : { ...prev, status: value }))
                 }}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-600" htmlFor="se-form-courierTimestamp">
+              <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="se-form-courierTimestamp">
                 Courier timestamp
               </label>
               <input
@@ -709,18 +696,18 @@ function StatusExceptionsTab() {
                   const value = e.target.value
                   setForm((prev) => (prev === null ? prev : { ...prev, courierTimestamp: value }))
                 }}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
               />
             </div>
           </div>
           <div className="flex gap-2">
-            <button type="submit" className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700">
+            <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded bg-brand px-4 text-sm font-medium text-brand-contrast shadow-sm hover:bg-brand-strong">
               Submit correction
             </button>
             <button
               type="button"
               onClick={cancelResolve}
-              className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded border border-line-strong bg-surface px-4 text-sm font-medium text-ink hover:bg-surface-2"
             >
               Cancel
             </button>

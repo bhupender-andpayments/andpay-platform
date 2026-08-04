@@ -15,6 +15,10 @@ export default tseslint.config(
       // ledger, plans, and raw acceptance-evidence scripts. Not shipped source.
       'docs/**',
       'evidence/**',
+      // Throwaway demo tooling (branch demo/ops-portal-skin): plain Node .mjs
+      // scripts that boot the local edge stack and seed data for the seeded
+      // ops-portal demo. Not shipped source, not part of the workspace lint.
+      'apps/ops-portal/demo/**',
     ],
   },
   js.configs.recommended,

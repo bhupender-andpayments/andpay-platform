@@ -74,15 +74,15 @@ export function DispatchHistoryPage() {
   }, [])
 
   return (
-    <div className="space-y-4 rounded border border-slate-200 p-4">
+    <div className="space-y-4 rounded-lg border border-line bg-surface p-5 shadow-sm">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-800">Dispatch history</h2>
+        <h2 className="text-sm font-semibold text-ink">Dispatch history</h2>
         <WatermarkBadge watermark={watermark} />
       </div>
 
       <div className="flex flex-wrap items-end gap-4">
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="dispatch-from">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="dispatch-from">
             From
           </label>
           <input
@@ -90,11 +90,11 @@ export function DispatchHistoryPage() {
             type="date"
             value={from}
             onChange={(e) => setFrom(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="dispatch-to">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="dispatch-to">
             To
           </label>
           <input
@@ -102,11 +102,11 @@ export function DispatchHistoryPage() {
             type="date"
             value={to}
             onChange={(e) => setTo(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="dispatch-bank">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="dispatch-bank">
             Bank
           </label>
           <input
@@ -114,11 +114,11 @@ export function DispatchHistoryPage() {
             type="text"
             value={bank}
             onChange={(e) => setBank(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="dispatch-status">
+          <label className="mb-1 block text-[13px] font-medium text-ink" htmlFor="dispatch-status">
             Status
           </label>
           <input
@@ -126,7 +126,7 @@ export function DispatchHistoryPage() {
             type="text"
             value={status}
             onChange={(e) => setStatus(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            className="rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
           />
         </div>
         <button
@@ -134,18 +134,18 @@ export function DispatchHistoryPage() {
           onClick={() => {
             void load()
           }}
-          className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+          className="inline-flex h-10 items-center justify-center gap-2 rounded bg-brand px-4 text-sm font-medium text-brand-contrast shadow-sm hover:bg-brand-strong"
         >
           Search
         </button>
       </div>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="rounded border border-[#f1c9c9] bg-[#fdf1f1] px-3.5 py-2.5 text-[13px] text-[#a11616]">
           {error}
         </p>
       )}
-      {loading && <p className="text-sm text-slate-500">Loading...</p>}
+      {loading && <p className="text-[13px] text-subtle">Loading...</p>}
 
       <DataTable columns={buildColumns(rows)} rows={rows} emptyMessage="No dispatch history for the current filters." />
     </div>
