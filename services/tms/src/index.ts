@@ -39,8 +39,17 @@ export {
   commitBankFile,
   commitDamageFile,
   resolveQuarantineRow,
+  createDamageReasonOps,
+  activateDamageReasonOps,
+  deactivateDamageReasonOps,
   BankFileParseError,
+  OpsClientError,
   type BankPreviewResult,
   type PreviewRowResult,
 } from './ops.js'
-export { readQuarantineQueue, type QuarantineRowView } from './ops-read.js'
+export { readQuarantineQueue, listDamageReasons, type QuarantineRowView } from './ops-read.js'
+export {
+  createDamageReasonWithinTx,
+  setDamageReasonActiveWithinTx,
+  type DamageReasonRow,
+} from './damage-reason.js'

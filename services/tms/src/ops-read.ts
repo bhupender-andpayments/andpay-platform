@@ -1,5 +1,6 @@
 import type { TmsDb } from './db.js'
 import type { Tx } from './internal.js'
+import { toDamageReasonDto, type DamageReasonDbRow, type DamageReasonRow } from './damage-reason.js'
 
 // spec 10c ops read (Task 5). The ops queue view over quarantine_row for the
 // class-3 human ops portal. `tms_ops_read` is broad (its SELECT policy is
@@ -39,6 +40,23 @@ function toDto(r: QuarantineRowDbRow): QuarantineRowView {
     resolvedAt: r.resolved_at,
     resolvedByActor: r.resolved_by_actor,
   }
+}
+
+// Phase 3 Task 1 (BRD FR-08, FR-11): the class-3 admin list view over the
+// damage_reason master. Platform-only (no program_id), permissive v1 RLS
+// (`damage_reason_v1` USING(true)), so this is a plain `SET LOCAL ROLE` with
+// no analog to enterReadScope, exactly like listVendors/readQuarantineQueue
+// above. Returns EVERY row (active and inactive): the admin UI needs to see
+// and toggle both, unlike the ingest match (damage.ts), which filters to
+// active = true itself.
+export async function listDamageReasons(db: TmsDb): Promise<DamageReasonRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<DamageReasonDbRow[]>`
+      SELECT id, code, label, active, created_at, updated_at FROM damage_reason ORDER BY code
+    `
+  })
+  return rows.map(toDamageReasonDto)
 }
 
 export async function readQuarantineQueue(

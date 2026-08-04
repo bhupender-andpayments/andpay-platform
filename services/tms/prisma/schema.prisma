@@ -169,6 +169,31 @@ model IngestFile {
   @@map("ingest_file")
 }
 
+/// Damage-reason master (BRD FR-08, FR-11; Phase 3 Task 1). The admin-managed
+/// reference list the damage-file ingest (damage.ts ingestDamageRowWithinTx)
+/// validates row.damageReason against before creating a replacement; an
+/// unmatched or deactivated reason quarantines the row instead (the existing
+/// S8 quarantine_row pattern), reason_code invalid_damage_reason. Platform-only
+/// (no program_id, no merchant scope, permissive v1 RLS): a damage reason is a
+/// shared taxonomy across every tenant/program, mirroring vndr's platform-only
+/// shape in fulfillment (D115). code is a stable admin-supplied machine
+/// identifier (never derived from label, so a later relabel does not change
+/// the identifier an integration might reference); label is the human display
+/// text the ingest match runs against (case- and whitespace-insensitive, see
+/// damage.ts). Both are unique. id is a plain DB-generated uuid, not a typed
+/// @andpay/ids prefix: this is internal reference data, never a merchant-
+/// facing external id, so no new ID prefix is invented (repo DO-NOT list).
+model DamageReason {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code      String   @unique
+  label     String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("damage_reason")
+}
+
 /// Rejected or discrepant rows (S8 row-level rejection, never an auto-create).
 /// raw_row is stored redacted for log. Permissive in v1 (ratified).
 model QuarantineRow {

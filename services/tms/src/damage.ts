@@ -66,6 +66,33 @@ export async function ingestDamageRowWithinTx(
     return outcome
   }
   const o = matches[0]!
+
+  // Phase 3 Task 1 (BRD FR-08, FR-11): validate row.damageReason against the
+  // ACTIVE damage_reason master, AFTER the (bank_ref, vpa) match above, never
+  // before. Checking the match first preserves the existing no_match/
+  // ambiguous_match quarantine behavior exactly as it was (a row with an
+  // unrecognized reason AND no/ambiguous original match still quarantines
+  // with no_match/ambiguous_match, not invalid_damage_reason); only a row that
+  // DID resolve to exactly one original then also has its reason checked.
+  // Match is by label, case- and whitespace-insensitive (LOWER(TRIM(...))):
+  // the bank file supplies free-text human-readable reasons (e.g. "battery
+  // issue"), not the admin-facing stable `code`. An inactive (deactivated)
+  // reason does not match here either (`active = true`), so deactivating a
+  // reason quarantines any later row still using it, same as an unknown one.
+  const reasonMatches = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM damage_reason
+    WHERE active = true AND LOWER(TRIM(label)) = LOWER(TRIM(${row.damageReason}))
+  `
+  if (reasonMatches.length === 0) {
+    await tx.$executeRaw`
+      INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+      VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_damage'}, ${'invalid_damage_reason'})
+      ON CONFLICT (file_id, row_no) DO NOTHING
+    `
+    outcome = 'quarantined'
+    return outcome
+  }
+
   await enterWriteScope(tx, 'tms_write', o.program_id)
 
   const replUuid = toUuid(newId('asgn'))

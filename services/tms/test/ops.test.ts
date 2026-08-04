@@ -47,10 +47,14 @@ const BASE_REQUEST: Record<string, string> = {
   vpaHint: 'acme@hdfcbank',
 }
 
+// Phase 3 Task 1 (BRD FR-08, FR-11): must be one of the four seeded
+// damage_reason master examples (services/tms/prisma/migrations/
+// 20260804163403_add_damage_reason_master), or the damage ingest now
+// quarantines it (invalid_damage_reason) instead of replacing.
 const BASE_DAMAGE: Record<string, string> = {
   tenantReference: 'HDFC',
   vpaValue: 'acme@hdfcbank',
-  damageReason: 'water_damage',
+  damageReason: 'battery issue',
   bankRemarks: 'replace asap',
   shipToAddress: 'New Addr',
 }

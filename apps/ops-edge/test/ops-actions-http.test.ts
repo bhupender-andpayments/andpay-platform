@@ -492,3 +492,132 @@ describe('ops-edge actions: domain client-errors map to 4xx via the OpsErrorFilt
     expect(res.status).toBe(404)
   })
 })
+
+// Phase 3 Task 1 (BRD FR-08, FR-11): the damage_reason master admin CRUD
+// routes. This is a TMS-domain action (unlike every other route in this
+// file, which is fulfillment-domain), so its co-committed ALLOW 6e lands in
+// the TMS outbox, NOT fulfillmentDb's (C4: no cross-schema write); the DENY
+// 6e from the shared edge gate() still lands in fulfillmentDb's outbox
+// regardless of domain (emitOpsAuthzAudit is always called with
+// this.deps.fulfillmentDb in ops.controller.ts). damage_reason is reference
+// data seeded by migration, never truncated by this file's beforeEach (which
+// only truncates fulfillment tables), so every row created here is deleted
+// BY ID in a `finally`.
+describe('ops-edge actions: damage_reason admin CRUD (Phase 3 Task 1)', () => {
+  // Filters on BOTH operation and the exact target resource id (not operation
+  // alone): the TMS outbox is never truncated by this file's beforeEach
+  // (which only truncates fulfillment tables), and other TMS-domain test
+  // files (e.g. services/tms/test/damage-reason.test.ts) write the SAME
+  // operation strings against their OWN ids when the whole workspace suite
+  // runs as one serial vitest invocation. Scoping to `id` keeps this
+  // assertion correct regardless of run order or what else has run before it.
+  async function tmsAuditRowsFor(operation: string, id: string): Promise<{ decision: string; resourceIds: string[] }[]> {
+    const rows = await tmsDb.$queryRaw<{ payload: { decision: string; operation: string; resourceIds?: string[] } }[]>`
+      SELECT payload FROM outbox WHERE event_type = 'authz.audit' ORDER BY created_at ASC`
+    return rows
+      .filter((r) => r.payload.operation === operation && (r.payload.resourceIds ?? []).includes(id))
+      .map((r) => ({ decision: r.payload.decision, resourceIds: r.payload.resourceIds ?? [] }))
+  }
+
+  async function deleteDamageReason(id: string): Promise<void> {
+    await tmsDb.$executeRaw`DELETE FROM damage_reason WHERE id = ${id}::uuid`
+  }
+
+  it('a class-3 claim whose psr resolves to no ops role -> 403 + DENY 6e (fulfillment outbox), no domain effect', async () => {
+    const token = await mint({ psr: 'role:not_ops' })
+    const res = await request(app.getHttpServer())
+      .post('/ops/damage-reasons')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ code: `unauthorized_${randomUUID()}`, label: `Unauthorized ${randomUUID()}` })
+    expect(res.status).toBe(403)
+    const rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('DENY')
+    expect(rows[0]!.operation).toBe('ops:damage-reason-create')
+    expect(rows[0]!.reasonCode).toBe('unknown-role')
+    // No domain effect: no row was created under that code.
+    const created = await tmsDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM damage_reason WHERE code LIKE 'unauthorized_%'`
+    expect(Number(created[0]!.n)).toBe(0)
+  })
+
+  it('POST damage-reasons with a fresh AAL2 claim creates the row (200) and emits ONE ALLOW 6e in the TMS outbox (no step-up needed)', async () => {
+    const token = await mint({})
+    const code = `test_${randomUUID()}`
+    const label = `Test Reason ${randomUUID()}`
+    const res = await request(app.getHttpServer())
+      .post('/ops/damage-reasons')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ code, label })
+    expect(res.status).toBe(200)
+    expect(res.body.deduped).toBe(false)
+    expect(res.body.damageReason.code).toBe(code)
+    expect(res.body.damageReason.label).toBe(label)
+    expect(res.body.damageReason.active).toBe(true)
+    const id = res.body.damageReason.id as string
+    try {
+      const rows = await tmsAuditRowsFor('ops:damage-reason-create', id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.decision).toBe('ALLOW')
+      expect(rows[0]!.resourceIds).toEqual([id])
+      // No DENY landed in the fulfillment outbox for this ALLOW path.
+      expect(await auditRows()).toHaveLength(0)
+    } finally {
+      await deleteDamageReason(id)
+    }
+  })
+
+  it('POST damage-reasons/:id/deactivate then /activate: each emits its own ALLOW 6e; an unauthorized role is rejected on deactivate', async () => {
+    const createToken = await mint({})
+    const code = `test_${randomUUID()}`
+    const label = `Test Reason ${randomUUID()}`
+    const createRes = await request(app.getHttpServer())
+      .post('/ops/damage-reasons')
+      .set('Authorization', `Bearer ${createToken}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ code, label })
+    const id = createRes.body.damageReason.id as string
+    try {
+      const unauthToken = await mint({ psr: 'role:not_ops' })
+      const deniedRes = await request(app.getHttpServer())
+        .post(`/ops/damage-reasons/${id}/deactivate`)
+        .set('Authorization', `Bearer ${unauthToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({})
+      expect(deniedRes.status).toBe(403)
+      expect((await tmsAuditRowsFor('ops:damage-reason-deactivate', id)).length).toBe(0)
+
+      const deactivateToken = await mint({})
+      const deactivateRes = await request(app.getHttpServer())
+        .post(`/ops/damage-reasons/${id}/deactivate`)
+        .set('Authorization', `Bearer ${deactivateToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({})
+      expect(deactivateRes.status).toBe(200)
+      expect(deactivateRes.body.deduped).toBe(false)
+      const deactivateAudit = await tmsAuditRowsFor('ops:damage-reason-deactivate', id)
+      expect(deactivateAudit).toHaveLength(1)
+      expect(deactivateAudit[0]!.decision).toBe('ALLOW')
+      expect(deactivateAudit[0]!.resourceIds).toEqual([id])
+      const afterDeactivate = await tmsDb.$queryRaw<{ active: boolean }[]>`SELECT active FROM damage_reason WHERE id = ${id}::uuid`
+      expect(afterDeactivate[0]!.active).toBe(false)
+
+      const activateToken = await mint({})
+      const activateRes = await request(app.getHttpServer())
+        .post(`/ops/damage-reasons/${id}/activate`)
+        .set('Authorization', `Bearer ${activateToken}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({})
+      expect(activateRes.status).toBe(200)
+      const activateAudit = await tmsAuditRowsFor('ops:damage-reason-activate', id)
+      expect(activateAudit).toHaveLength(1)
+      expect(activateAudit[0]!.decision).toBe('ALLOW')
+      expect(activateAudit[0]!.resourceIds).toEqual([id])
+      const afterActivate = await tmsDb.$queryRaw<{ active: boolean }[]>`SELECT active FROM damage_reason WHERE id = ${id}::uuid`
+      expect(afterActivate[0]!.active).toBe(true)
+    } finally {
+      await deleteDamageReason(id)
+    }
+  })
+})

@@ -7,7 +7,7 @@ import {
   type IntakeExceptionView,
   type CourierStatusExceptionView,
 } from '@andpay/fulfillment-service'
-import { readQuarantineQueue, type QuarantineRowView } from '@andpay/tms-service'
+import { readQuarantineQueue, listDamageReasons, type QuarantineRowView, type DamageReasonRow } from '@andpay/tms-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 
@@ -28,6 +28,16 @@ export class OpsReadController {
   @HttpCode(200)
   async vendors(): Promise<VendorRow[]> {
     return listVendors(this.deps.fulfillmentDb)
+  }
+
+  // Phase 3 Task 1 (BRD FR-08, FR-11): the damage_reason master list, guard-
+  // only exactly like `vendors` above (no D2 authorize, no 6e; the read-only
+  // DB role scopes the visible data). Returns every row (active and
+  // inactive) so the admin UI can toggle either direction.
+  @Get('damage-reasons')
+  @HttpCode(200)
+  async damageReasons(): Promise<DamageReasonRow[]> {
+    return listDamageReasons(this.deps.tmsDb)
   }
 
   @Get('quarantine')

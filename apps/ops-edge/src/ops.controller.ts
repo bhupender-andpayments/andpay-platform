@@ -34,8 +34,12 @@ import {
   commitBankFile,
   commitDamageFile,
   resolveQuarantineRow,
+  createDamageReasonOps,
+  activateDamageReasonOps,
+  deactivateDamageReasonOps,
   type BankRequestRow,
   type BankPreviewResult,
+  type DamageReasonRow,
 } from '@andpay/tms-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
@@ -74,6 +78,10 @@ interface BatchTriggerBody {
 interface VendorCreateBody {
   type: string
   displayName: string
+}
+interface DamageReasonCreateBody {
+  code: string
+  label: string
 }
 // The minimal multer file shape the upload routes read (mirrors vendor-edge's
 // UploadedJson, extended with originalname): the raw bytes plus the client
@@ -455,6 +463,63 @@ export class OpsController {
     const g = await this.gate(req, 'ops:vendor-suspend', idem, [id], 'vendor-suspend')
     const result = await suspendVendor(this.deps.fulfillmentDb, {
       vndrId: id,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+    return result
+  }
+
+  // Phase 3 Task 1 (BRD FR-08, FR-11): the damage_reason master admin CRUD.
+  // No step-up (not in OPS_STEP_UP_CATALOG): this is reference-data config, not
+  // a destructive vendor/shipment action, matching create/vendor-create's own
+  // no-step-up posture. Every mutation keeps the same gate (Idempotency-Key,
+  // D2 authorize, co-committed ALLOW 6e) as every other ops mutation above.
+  @Post('damage-reasons')
+  @HttpCode(200)
+  async createDamageReason(
+    @Req() req: EdgeRequest,
+    @Body() body: DamageReasonCreateBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; damageReason: DamageReasonRow | null }> {
+    const g = await this.gate(req, 'ops:damage-reason-create', idem, [])
+    const result = await createDamageReasonOps(this.deps.tmsDb, {
+      code: body.code,
+      label: body.label,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+    return result
+  }
+
+  @Post('damage-reasons/:id/activate')
+  @HttpCode(200)
+  async activateDamageReasonRoute(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean }> {
+    const g = await this.gate(req, 'ops:damage-reason-activate', idem, [id])
+    const result = await activateDamageReasonOps(this.deps.tmsDb, {
+      id,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+    return result
+  }
+
+  @Post('damage-reasons/:id/deactivate')
+  @HttpCode(200)
+  async deactivateDamageReasonRoute(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean }> {
+    const g = await this.gate(req, 'ops:damage-reason-deactivate', idem, [id])
+    const result = await deactivateDamageReasonOps(this.deps.tmsDb, {
+      id,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

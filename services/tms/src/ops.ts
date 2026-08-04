@@ -15,6 +15,24 @@ import {
   parseBankDamageFile,
   type StructuralParseError,
 } from './bank-file-adapter.js'
+import { createDamageReasonWithinTx, setDamageReasonActiveWithinTx, type DamageReasonRow } from './damage-reason.js'
+
+// Fix wave 1 (fulfillment/src/ops.ts, Task 9 review, Important 1) equivalent
+// for TMS: a discriminated client-error for an expected client condition (a
+// caller-supplied value that fails validation), so the ops HTTP edge's
+// app-wide OpsErrorFilter can map it to a 4xx via duck-typing on `kind`
+// (the filter's comment names this exact future addition, "a future tms
+// equivalent needs no new import here"). `kind` is intentionally narrow
+// (only the one shape this domain throws in v1): 'invalid' for a
+// caller-supplied value that fails validation.
+export class OpsClientError extends Error {
+  constructor(
+    public readonly kind: 'invalid',
+    message: string,
+  ) {
+    super(message)
+  }
+}
 
 // A structural parse failure (unsupported extension, unreadable bytes, or a
 // missing required column) on a COMMIT: the file cannot be ingested at all, so
@@ -247,4 +265,99 @@ export async function resolveQuarantineRow(
     })
   })
   return { deduped: !ran, outcome }
+}
+
+// Phase 3 Task 1 (BRD FR-08, FR-11) admin CRUD on the damage_reason master,
+// the class-3 ops HTTP edge counterpart to createDamageReasonWithinTx /
+// setDamageReasonActiveWithinTx (damage-reason.ts). Same shape as
+// createVendorOps/suspendVendor in fulfillment/src/ops.ts: enters tms_write
+// FIRST (the spec 10d landmine: role entry before onceWithin/co-commit),
+// dedups on the client-key action instance via the shared E6 inbox
+// (`onceWithin`), and co-commits the ALLOW 6e (spec 10c CC-1) in the SAME tx
+// as the effect. damage_reason is platform-only (no program_id, permissive
+// v1 RLS), so this enters the write role bare, exactly like
+// createVendorOps/suspendVendor.
+
+// Trims both fields (defense-in-depth against a caller-supplied all-
+// whitespace value that would otherwise slip past the unique constraint as
+// a distinct-looking row); rejects an empty code or label as a client error
+// BEFORE opening the transaction.
+export async function createDamageReasonOps(
+  db: TmsDb,
+  args: { code: string; label: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean; damageReason: DamageReasonRow | null }> {
+  const code = args.code.trim()
+  const label = args.label.trim()
+  if (code === '' || label === '') {
+    throw new OpsClientError('invalid', 'code and label are required')
+  }
+
+  let damageReason: DamageReasonRow | null = null
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:damage-reason-create'), async () => {
+      const created = await createDamageReasonWithinTx(tx, { code, label })
+      damageReason = created
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the create.
+      // The minted damage_reason id is the target resource (IDs only).
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:damage-reason-create',
+            principalId: args.actorId,
+            resourceIds: [created.id],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+  return { deduped: !ran, damageReason: ran ? damageReason : null }
+}
+
+async function setDamageReasonActiveOps(
+  db: TmsDb,
+  operation: 'ops:damage-reason-activate' | 'ops:damage-reason-deactivate',
+  active: boolean,
+  args: { id: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean }> {
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, operation), async () => {
+      await setDamageReasonActiveWithinTx(tx, args.id, active)
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the toggle.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation,
+            principalId: args.actorId,
+            resourceIds: [args.id],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+  return { deduped: !ran }
+}
+
+export async function activateDamageReasonOps(
+  db: TmsDb,
+  args: { id: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean }> {
+  return setDamageReasonActiveOps(db, 'ops:damage-reason-activate', true, args)
+}
+
+// The reason this task exists (FR-08, FR-11): once a reason is deactivated,
+// any LATER damage-file row still using its label quarantines
+// (invalid_damage_reason, damage.ts) instead of creating a replacement, even
+// though the label string itself is unchanged; only rows already replaced
+// before deactivation are unaffected (this never touches assignment).
+export async function deactivateDamageReasonOps(
+  db: TmsDb,
+  args: { id: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean }> {
+  return setDamageReasonActiveOps(db, 'ops:damage-reason-deactivate', false, args)
 }

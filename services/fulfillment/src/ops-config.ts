@@ -14,6 +14,14 @@ import { humanRole, type RoleConfig } from '@andpay/authz'
 // reason).
 // The full ops write-permission bundle (Task 2, D-B). One shared source so
 // every ops-capable role grants the identical set, no per-role duplication.
+//
+// Phase 3 Task 1 (BRD FR-08, FR-11) adds the three damage_reason master
+// MUTATION permissions (create/activate/deactivate), mirroring the
+// vendor-create/vendor-suspend pair exactly. No `ops:damage-reason-list`
+// entry, for the SAME reason a former `ops:vendor-list` entry was removed
+// (comment above): the list route (`GET /ops/damage-reasons`) is guard-only
+// at the edge (authenticated class-3, no D2 authorize call), so a read-side
+// permission string here would be dead.
 const OPS_PERMISSIONS = [
   'ops:upload-bank-file',
   'ops:upload-damage-file',
@@ -28,6 +36,9 @@ const OPS_PERMISSIONS = [
   'ops:resolve-quarantine',
   'ops:resolve-intake-exception',
   'ops:resolve-status-exception',
+  'ops:damage-reason-create',
+  'ops:damage-reason-activate',
+  'ops:damage-reason-deactivate',
 ]
 
 export const OPS_ROLES: RoleConfig['roles'] = {
