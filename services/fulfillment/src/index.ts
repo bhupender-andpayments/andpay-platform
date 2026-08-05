@@ -45,6 +45,7 @@ export {
   buildDispatchPackage,
   dispatchXlsx,
   assembleTypePdf,
+  AssetResolutionError,
 } from './package.js'
 export {
   type ReturnRow,

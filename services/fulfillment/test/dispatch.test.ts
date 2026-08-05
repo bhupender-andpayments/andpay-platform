@@ -6,7 +6,7 @@ import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { consumeBatchFact } from '../src/dispatch.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
-import { buildDispatchPackage, assembleTypePdf, dispatchXlsx } from '../src/package.js'
+import { buildDispatchPackage, assembleTypePdf, dispatchXlsx, AssetResolutionError } from '../src/package.js'
 import { PDFDocument } from 'pdf-lib'
 import QRCode from 'qrcode'
 import { CONSUMER, setProgramContext } from '../src/internal.js'
@@ -501,5 +501,23 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     // the sorted dispatch Excel is a real PK zip
     const xlsx = await dispatchXlsx(lines)
     expect(xlsx.subarray(0, 2).toString('latin1')).toBe('PK')
+  })
+
+  it('P4-3: a composed_artifact whose stored asset does NOT resolve is a FAULT (AssetResolutionError), never a silent empty', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-fault', 'HDFC')
+    // a composed_artifact row referencing an asset that is NOT in the store
+    await db.$executeRaw`
+      INSERT INTO composed_artifact (id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr, bank_config_ref)
+      VALUES (gen_random_uuid(), ${a.asgnUuid}::uuid, ${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'SOUNDBOX_IMG', 'missing-ref-not-in-store', 'Acme', 'upi://x', NULL)
+    `
+    await expect(assembleTypePdf(db, assetStore, btchWire, 'SOUNDBOX_IMG')).rejects.toBeInstanceOf(AssetResolutionError)
+    // a type with NO row is still a legitimate empty (null), not a fault
+    expect(await assembleTypePdf(db, assetStore, btchWire, 'STICKER_IMG')).toBeNull()
   })
 })

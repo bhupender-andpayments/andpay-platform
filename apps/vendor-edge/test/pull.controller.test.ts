@@ -191,19 +191,19 @@ describe('GET /vendor/batch/:btchId/package (spec 14b task 7, FR-04 pull)', () =
 })
 
 describe('GET /vendor/batch/:btchId/collateral/:artifactType (Phase 4 Task 4b, FR-04)', () => {
-  it('an own-vndr pull is authorized (not 403): 404 here because the seeded artifact refs are not real stored PDFs', async () => {
+  it('an own-vndr pull is authorized (not 403): 404 for a product type the batch has no artifact of', async () => {
     const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
     const { btchWire } = await seedBatch(vndrWire)
     const token = await mint({ scope: { vndr: vndrWire } })
 
+    // The seed carries only a SOUNDBOX_IMG artifact; STANDEE_IMG has no row, so
+    // assembleTypePdf returns null -> 404 (a legitimate empty, NOT a fault).
+    // Being 404 rather than 403 proves the own-vndr authorize allowed. Real-PDF
+    // streaming and the fault path are covered by the fulfillment unit tests.
     const res = await request(app.getHttpServer())
-      .get(`/vendor/batch/${btchWire}/collateral/SOUNDBOX_IMG`)
+      .get(`/vendor/batch/${btchWire}/collateral/STANDEE_IMG`)
       .set('Authorization', `Bearer ${token}`)
 
-    // authorized (would be 403 if not own-vndr); the batch's seeded artifact
-    // references are placeholders not present in the asset store, so the merge
-    // yields nothing -> 404. Real-PDF streaming is covered by the fulfillment
-    // assembleTypePdf unit test.
     expect(res.status).toBe(404)
   })
 

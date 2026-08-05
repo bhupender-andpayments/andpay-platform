@@ -156,13 +156,27 @@ export async function dispatchXlsx(lines: PackageLine[]): Promise<Buffer> {
   return Buffer.from(arrayBuf)
 }
 
+// A stored collateral asset a composed_artifact row references could not be
+// resolved or read. This is a genuine storage FAULT (P4-2 guarantees every
+// composed_artifact carries a real, readable stored reference), deliberately
+// distinct from "the batch has no artifact of this type" (a legitimate empty).
+// Carries only ids/enums, never PII or the bytes (S7).
+export class AssetResolutionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AssetResolutionError'
+  }
+}
+
 // Phase 4 (P4-D5): assemble ONE merged PDF for a single product type across the
 // whole batch, in bank + branch order, by merging the stored per-collateral PDFs
 // (the single source of truth is the bytes generated at composition, Task 2).
 // artifactType 'SOUNDBOX_IMG' yields the FR-04 step-10 soundbox-only view.
-// Returns null if the batch has no artifact of that type. Reads no PII (uses the
-// 'print' view). A reference that does not resolve is skipped defensively (P4-2
-// guarantees every composed_artifact carries a real stored reference).
+// Returns null ONLY when the batch has no composed_artifact of that type. If a
+// referenced asset exists as a row but does not resolve or is not a readable
+// PDF, that is a FAULT and throws AssetResolutionError -- it must NEVER be
+// collapsed into an empty/404, or a merchant's label would silently vanish from
+// the dispatch package (Task-3/4 review, Important). Reads no PII ('print' view).
 export async function assembleTypePdf(
   db: FulfillmentDb,
   assetStore: AssetStore,
@@ -177,18 +191,25 @@ export async function assembleTypePdf(
   merged.setProducer('andpay-collateral')
   merged.setCreator('andpay-collateral')
 
-  let any = false
+  let matched = 0
   for (const line of lines) {
     for (const art of line.artifacts) {
       if (art.artifactType !== artifactType) continue
+      matched++
       const rec = await assetStore.getByReference(art.assetReference)
-      if (rec === null) continue
-      const src = await PDFDocument.load(rec.bytes)
+      if (rec === null) {
+        throw new AssetResolutionError(`stored collateral not found for a ${artifactType} artifact in batch ${btchId}`)
+      }
+      let src: PDFDocument
+      try {
+        src = await PDFDocument.load(rec.bytes)
+      } catch {
+        throw new AssetResolutionError(`stored collateral is not a readable PDF for a ${artifactType} artifact in batch ${btchId}`)
+      }
       const pages = await merged.copyPages(src, src.getPageIndices())
       for (const pg of pages) merged.addPage(pg)
-      any = true
     }
   }
-  if (!any) return null
+  if (matched === 0) return null
   return await merged.save()
 }
