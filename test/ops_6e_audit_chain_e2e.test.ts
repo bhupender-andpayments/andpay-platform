@@ -16,6 +16,7 @@ import {
   loadOpsConfig,
   overrideTerminal,
   ensurePool,
+  InMemoryAssetStore,
 } from '@andpay/fulfillment-service'
 import {
   PrismaClient as TmsClient,
@@ -242,6 +243,7 @@ beforeAll(async () => {
     expectedMode: 'live',
     roleConfig: loadOpsConfig(),
     portalOrigin: 'https://ops.andpay.test',
+    assetStore: new InMemoryAssetStore(),
   }
   app = await buildOpsEdgeApp(deps)
   await app.init()

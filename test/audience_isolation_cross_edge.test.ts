@@ -16,7 +16,7 @@ import {
   INTERNAL_ADMIN_PLANE,
   VENDOR_PLANE,
 } from '@andpay/auth-service'
-import { PrismaClient as FulfillmentClient, loadOpsConfig } from '@andpay/fulfillment-service'
+import { PrismaClient as FulfillmentClient, loadOpsConfig, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { buildAuthEdgeApp, type AuthEdgeDeps, NoThrottle as AuthNoThrottle } from '@andpay/auth-edge'
@@ -169,6 +169,7 @@ beforeAll(async () => {
     expectedMode: 'live',
     roleConfig: loadOpsConfig(),
     portalOrigin: 'https://ops.andpay.test',
+    assetStore: new InMemoryAssetStore(),
   }
   opsEdgeApp = await buildOpsEdgeApp(opsEdgeDeps)
   await opsEdgeApp.init()
