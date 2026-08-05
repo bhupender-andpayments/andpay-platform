@@ -14,7 +14,7 @@ export {
 } from './vendor.js'
 export { projectDemandFact } from './pool.js'
 export { projectShipToAmended, NotYet } from './ship-to.js'
-export { poolConfig, type PoolCfg } from './config/pool-config.js'
+export { poolConfig, resolvePoolConfig, DEFAULT_POOL_CFG, type PoolCfg } from './config/pool-config.js'
 export {
   ensurePool,
   triggerBatch,
@@ -98,6 +98,8 @@ export {
   type UpsertBankCompositionConfigInput,
   setBankLogo,
   type SetBankLogoInput,
+  upsertBatchingConfig,
+  type UpsertBatchingConfigInput,
 } from './ops.js'
 export { OPS_ROLES, loadOpsConfig } from './ops-config.js'
 export {
@@ -109,6 +111,8 @@ export {
   type CourierStatusExceptionView,
   listBankCompositionConfigs,
   type BankCompositionConfigRow,
+  listBatchingConfigs,
+  type BatchingConfigRow,
 } from './ops-read.js'
 export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
 export { InMemoryAssetStore } from './storage/dev-asset-store.js'

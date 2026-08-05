@@ -48,4 +48,26 @@ describe('class-3 ops RoleConfig', () => {
     expect(authorize(claim('role:support_readonly'), 'ops:manual-batch-trigger', {}, cfg).allowed).toBe(false)
     expect(authorize(claim('role:support_readonly'), 'ops:status-correction', {}, cfg).allowed).toBe(false)
   })
+
+  // Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role differentiation. The
+  // batching-config write is admin-tier: admin / super_admin ONLY, never the
+  // baseline ops / ops_portal operator.
+  it('ops:batching-config-set is ALLOWED for admin and super_admin only', () => {
+    const cfg = loadOpsConfig()
+    expect(authorize(claim('role:admin'), 'ops:batching-config-set', {}, cfg).allowed).toBe(true)
+    expect(authorize(claim('role:super_admin'), 'ops:batching-config-set', {}, cfg).allowed).toBe(true)
+  })
+
+  it('ops:batching-config-set is DENIED for the baseline ops and ops_portal roles (differentiation)', () => {
+    const cfg = loadOpsConfig()
+    expect(authorize(claim('role:ops'), 'ops:batching-config-set', {}, cfg).allowed).toBe(false)
+    expect(authorize(claim('role:ops_portal'), 'ops:batching-config-set', {}, cfg).allowed).toBe(false)
+  })
+
+  it('the differentiation is additive: ops still keeps every SHARED ops permission', () => {
+    const cfg = loadOpsConfig()
+    expect(authorize(claim('role:ops'), 'ops:manual-batch-trigger', {}, cfg).allowed).toBe(true)
+    expect(authorize(claim('role:ops'), 'ops:template-config-set', {}, cfg).allowed).toBe(true)
+    expect(authorize(claim('role:admin'), 'ops:manual-batch-trigger', {}, cfg).allowed).toBe(true)
+  })
 })

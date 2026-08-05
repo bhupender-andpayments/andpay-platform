@@ -4,10 +4,12 @@ import {
   readIntakeExceptions,
   readCourierStatusExceptions,
   listBankCompositionConfigs,
+  listBatchingConfigs,
   type VendorRow,
   type IntakeExceptionView,
   type CourierStatusExceptionView,
   type BankCompositionConfigRow,
+  type BatchingConfigRow,
 } from '@andpay/fulfillment-service'
 import { readQuarantineQueue, listDamageReasons, type QuarantineRowView, type DamageReasonRow } from '@andpay/tms-service'
 import { OpsEdgeGuard } from './guard.js'
@@ -68,5 +70,17 @@ export class OpsReadController {
   @HttpCode(200)
   async bankConfig(@Query('tenantWire') tenantWire?: string): Promise<BankCompositionConfigRow[]> {
     return listBankCompositionConfigs(this.deps.fulfillmentDb, tenantWire !== undefined ? { tenantWire } : {})
+  }
+
+  // Phase 3 Task 6 (BRD 5.3.2): the batching-parameter admin list, guard-only
+  // exactly like the reads above (no D2 authorize, no 6e; the read-only DB role
+  // scopes visibility). Returns every configured scope row (GLOBAL, per-tenant,
+  // per-(tenant,program)) for the admin UI. NOTE: this GET is guard-only, so
+  // any authenticated class-3 operator can VIEW the batching config; only the
+  // WRITE (POST) is admin/super_admin-gated (T6 differentiation).
+  @Get('batching-config')
+  @HttpCode(200)
+  async batchingConfig(): Promise<BatchingConfigRow[]> {
+    return listBatchingConfigs(this.deps.fulfillmentDb)
   }
 }

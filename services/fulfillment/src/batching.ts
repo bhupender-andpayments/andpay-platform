@@ -4,7 +4,7 @@ import { setTimer, claimAndFireDueTimers } from '@andpay/engine'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 import { enterWriteScope, enterWriteRole } from './write-context.js'
-import { poolConfig } from './config/pool-config.js'
+import { resolvePoolConfig } from './config/pool-config.js'
 import { BATCH_TOPIC, batchFactEnvelope } from './events.js'
 import type { OpsActor } from './vendor.js'
 
@@ -112,11 +112,15 @@ export async function ensurePool(
         throw new PoolRaceLost()
       }
 
-      // Arm the FIRST max-wait window for the newly created pool.
+      // Arm the FIRST max-wait window for the newly created pool. The max-wait
+      // duration is resolved from batching_config (T6) under this same tx (the
+      // fulfillment_write role is already entered above and is granted SELECT on
+      // batching_config); an empty store yields the code DEFAULT.
+      const cfg = await resolvePoolConfig(tx, tenantWire, programWire)
       await setTimer(
         tx,
         pmInstanceId,
-        new Date(Date.now() + poolConfig(tenantWire, programWire).maxWaitSeconds * 1000),
+        new Date(Date.now() + cfg.maxWaitSeconds * 1000),
         'max_wait',
       )
 
@@ -301,10 +305,11 @@ export async function triggerBatchWithinTx(
             FOR UPDATE SKIP LOCKED
           )
         `
+        const cfg = await resolvePoolConfig(tx, tenantWire, programWire)
         await setTimer(
           tx,
           pmInstanceId,
-          new Date(Date.now() + poolConfig(tenantWire, programWire).maxWaitSeconds * 1000),
+          new Date(Date.now() + cfg.maxWaitSeconds * 1000),
           'max_wait',
         )
 
@@ -358,7 +363,8 @@ export async function onDemandAccrued(
     WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid AND pool_status = 'POOLED'
   `
   const count = Number(counted[0]?.n ?? 0)
-  if (count < poolConfig(tenantWire, programWire).minLotSize) {
+  const cfg = await resolvePoolConfig(db, tenantWire, programWire)
+  if (count < cfg.minLotSize) {
     return { triggered: false }
   }
 

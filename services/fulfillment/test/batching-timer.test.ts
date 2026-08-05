@@ -13,7 +13,7 @@ const db = new PrismaClient({ datasourceUrl: url })
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE pending_pool_entry, batch, batch_pool, saga_timer, saga_step, saga_instance, outbox, inbox CASCADE',
+    'TRUNCATE pending_pool_entry, batch, batch_pool, saga_timer, saga_step, saga_instance, outbox, inbox, batching_config CASCADE',
   )
 })
 afterAll(async () => {

@@ -14,7 +14,7 @@ const url =
 const db = new PrismaClient({ datasourceUrl: url })
 
 const TABLES =
-  'pending_pool_entry, batch, batch_pool, saga_timer, saga_step, saga_instance, outbox, inbox'
+  'pending_pool_entry, batch, batch_pool, saga_timer, saga_step, saga_instance, outbox, inbox, batching_config'
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(`TRUNCATE ${TABLES} CASCADE`)

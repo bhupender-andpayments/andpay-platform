@@ -204,7 +204,8 @@ model Batch {
 /// The per-(tenant, program) pool anchor (implementation of "one PM instance per
 /// pool"). Maps a pool to its saga_instance so the engine's setTimer (which needs
 /// a saga_instance FK) can anchor the pool's max-wait timer. PROGRAM-SCOPED.
-/// Lot-size/max-wait config is code (src/config/pool-config.ts), not here (S23).
+/// Lot-size/max-wait config is the DB-backed batching_config store (Phase 3 Task
+/// 6, revising S23's code-as-config), resolved by src/config/resolvePoolConfig.
 model BatchPool {
   id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId      String   @map("tenant_id") @db.Uuid
@@ -355,6 +356,28 @@ model BankCompositionConfig {
 
   @@unique([tenantId, bankCode, branchCode])
   @@map("bank_composition_config")
+}
+
+/// Admin-writable batching parameters (Phase 3 Task 6, BRD 5.3.2), revising
+/// S23's code-as-config. minLotSize + maxWaitSeconds for one scope. The scope
+/// key is (tenantWire, programWire) with the '' empty-string sentinel (NEVER
+/// NULL, mirroring bank_composition_config's branch_code / T5a): a GLOBAL
+/// default row is ('', ''); a per-tenant default is (tenantWire, ''); a
+/// per-(tenant, program) override is (tenantWire, programWire). Wire ids
+/// (public form). An EMPTY table reproduces the code DEFAULT (50 / 7 days) for
+/// every pool via resolvePoolConfig's fallback. Platform master data;
+/// permissive FORCE RLS (v1), write-gated by the fulfillment_write GRANT.
+model BatchingConfig {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantWire     String   @default("") @map("tenant_wire")
+  programWire    String   @default("") @map("program_wire")
+  minLotSize     Int      @map("min_lot_size")
+  maxWaitSeconds Int      @map("max_wait_seconds")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([tenantWire, programWire])
+  @@map("batching_config")
 }
 
 /// Append-only carrier-status trail (BRD FR-06: each update is timestamped and

@@ -9,6 +9,7 @@ import { enterWriteScope, enterWriteRole } from './write-context.js'
 import { advanceShipmentStatus, type AdvanceOutcome } from './courier-status.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
 import { holdEntryWithinTx, triggerBatchWithinTx } from './batching.js'
+import { DEFAULT_POOL_CFG } from './config/pool-config.js'
 import { ingestIntakeSheetWithinTx, isSheetStructurallyValid, type IntakeSheet, type IntakeResult } from './intake.js'
 import { createVendorWithinTx, updateVendorWithinTx } from './vendor.js'
 import type { AssetStore } from './storage/asset-store.js'
@@ -1116,4 +1117,123 @@ export async function setBankLogo(
     reference: ran ? reference : null,
     version: ran ? version : null,
   }
+}
+
+// Phase 3 Task 6 (BRD 5.3.2): the admin-writable batching-parameter store
+// (Minimum Lot Size + Maximum Wait Time), revising S23's code-as-config.
+// batching_config is platform master data (permissive FORCE RLS, unscoped by
+// program -- see its "batching_config_v1" policy), so this enters the write
+// role BARE (enterWriteRole, no program to set), exactly like
+// upsertBankCompositionConfig / createVendorOps. The scope key is
+// (tenantWire, programWire) with the '' sentinel: both omitted -> the GLOBAL
+// default row; tenantWire only -> a per-tenant default; both -> a
+// per-(tenant, program) override.
+export interface UpsertBatchingConfigInput {
+  // Both omitted -> GLOBAL default; tenantWire only -> per-tenant default;
+  // both -> per-(tenant, program) override. A programWire without a tenantWire
+  // is invalid (there is no program-only batching scope). These scope-key
+  // fields ARE legitimate request inputs (platform master data an AndPayments
+  // admin configures, not principal-scoped tenant data, unlike M7/S16); the
+  // actor / traceId / idempotency-key still come from the gate, never here.
+  tenantWire?: string
+  programWire?: string
+  minLotSize: number
+  maxWaitSeconds: number
+  clientKey: string
+  actorId: string
+  traceId: string
+}
+
+/**
+ * Upsert the batching parameters for one scope, co-committing the ALLOW 6e WITH
+ * the OLD and NEW values (BRD 271). A true upsert on the scope's natural key:
+ * INSERT ... ON CONFLICT (tenant_wire, program_wire) DO UPDATE, so create and
+ * edit are the SAME call (mirrors upsertBankCompositionConfig, not the separate
+ * create/edit pair vndr uses). Because the ON CONFLICT target IS the table's
+ * only unique constraint, this can never itself raise a 23505 (no
+ * isRawUniqueViolation catch is needed).
+ *
+ * VALIDATION (BRD 5.3.2): both minLotSize and maxWaitSeconds must be integers
+ * >= 1; an invalid value throws OpsClientError('invalid') (a 4xx at the edge)
+ * BEFORE any transaction opens, so an invalid request never burns a clientKey.
+ *
+ * AUDIT (BRD 271): the co-committed ALLOW 6e carries the row id, the scope
+ * (an enum-like token plus the wire ids, when present), and the OLD and NEW
+ * values as enum-like integer tokens (S7/S10.5 IDs-and-enums only, the same
+ * technique setBankLogo uses for logo-version). The OLD value for a
+ * first-time write on a scope is the code DEFAULT (an EMPTY batching_config
+ * reproduces 50 / 7 days, so that DEFAULT is the value that was effectively in
+ * force). The actor (principalId) and the record's own committed timestamp
+ * complete the BRD-mandated (user, timestamp, old value, new value) tuple. The
+ * free-form values never ride the record as free text; they are short numeric
+ * tokens only.
+ */
+export async function upsertBatchingConfig(
+  db: FulfillmentDb,
+  args: UpsertBatchingConfigInput,
+): Promise<{ deduped: boolean; id: string | null }> {
+  if (args.programWire !== undefined && args.tenantWire === undefined) {
+    throw new OpsClientError('invalid', 'programWire requires tenantWire (there is no program-only batching scope)')
+  }
+  if (!Number.isInteger(args.minLotSize) || args.minLotSize < 1) {
+    throw new OpsClientError('invalid', 'minLotSize must be an integer >= 1')
+  }
+  if (!Number.isInteger(args.maxWaitSeconds) || args.maxWaitSeconds < 1) {
+    throw new OpsClientError('invalid', 'maxWaitSeconds must be an integer >= 1')
+  }
+
+  const tenantWire = args.tenantWire ?? ''
+  const programWire = args.programWire ?? ''
+  const scopeResourceIds =
+    tenantWire === ''
+      ? ['scope:global']
+      : programWire === ''
+        ? ['scope:tenant', tenantWire]
+        : ['scope:tenant-program', tenantWire, programWire]
+
+  let id: string | null = null
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:batching-config-set'), async () => {
+      // Capture the OLD values for this exact scope (BRD 271). A scope with no
+      // explicit row was effectively running on the code DEFAULT, so that
+      // DEFAULT is the correct "old value" to audit for a first-time write.
+      const prior = await tx.$queryRaw<{ min_lot_size: number; max_wait_seconds: number }[]>`
+        SELECT min_lot_size, max_wait_seconds FROM batching_config
+        WHERE tenant_wire = ${tenantWire} AND program_wire = ${programWire}
+      `
+      const oldMin = prior[0] !== undefined ? Number(prior[0].min_lot_size) : DEFAULT_POOL_CFG.minLotSize
+      const oldMax = prior[0] !== undefined ? Number(prior[0].max_wait_seconds) : DEFAULT_POOL_CFG.maxWaitSeconds
+
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO batching_config (id, tenant_wire, program_wire, min_lot_size, max_wait_seconds, updated_at)
+        VALUES (gen_random_uuid(), ${tenantWire}, ${programWire}, ${args.minLotSize}, ${args.maxWaitSeconds}, now())
+        ON CONFLICT (tenant_wire, program_wire)
+        DO UPDATE SET min_lot_size = EXCLUDED.min_lot_size, max_wait_seconds = EXCLUDED.max_wait_seconds, updated_at = now()
+        RETURNING id::text AS id
+      `
+      id = rows[0]!.id
+
+      // Co-commit the ALLOW 6e (S15/T2 ruling) in the SAME tx as the upsert,
+      // carrying old + new (BRD 271) as enum-like integer tokens.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:batching-config-set',
+            principalId: args.actorId,
+            resourceIds: [
+              id,
+              ...scopeResourceIds,
+              `min-lot-size:old=${oldMin}:new=${args.minLotSize}`,
+              `max-wait-seconds:old=${oldMax}:new=${args.maxWaitSeconds}`,
+            ],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return { deduped: !ran, id: ran ? id : null }
 }

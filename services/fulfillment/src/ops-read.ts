@@ -264,3 +264,57 @@ export async function listBankCompositionConfigs(
   })
   return rows.map(toBankCompositionConfigDto)
 }
+
+// Phase 3 Task 6 (BRD 5.3.2): the batching-parameter admin list, guard-only
+// exactly like the reads above (no D2 authorize, no 6e; the read-only DB role
+// scopes visibility -- see the T6 migration's GRANT SELECT on batching_config
+// to fulfillment_ops_read). No aggregate here (a later guard scans this file):
+// a plain row-list SELECT only. The '' scope sentinels are mapped back to a
+// discriminated scope + nullable wire ids for the admin UI.
+export interface BatchingConfigRow {
+  id: string
+  scope: 'GLOBAL' | 'TENANT' | 'TENANT_PROGRAM'
+  tenantWire: string | null
+  programWire: string | null
+  minLotSize: number
+  maxWaitSeconds: number
+  createdAt: Date
+  updatedAt: Date
+}
+
+interface BatchingConfigDbRow {
+  id: string
+  tenant_wire: string
+  program_wire: string
+  min_lot_size: number
+  max_wait_seconds: number
+  created_at: Date
+  updated_at: Date
+}
+
+function toBatchingConfigDto(r: BatchingConfigDbRow): BatchingConfigRow {
+  const scope: BatchingConfigRow['scope'] =
+    r.tenant_wire === '' ? 'GLOBAL' : r.program_wire === '' ? 'TENANT' : 'TENANT_PROGRAM'
+  return {
+    id: r.id,
+    scope,
+    tenantWire: r.tenant_wire === '' ? null : r.tenant_wire,
+    programWire: r.program_wire === '' ? null : r.program_wire,
+    minLotSize: Number(r.min_lot_size),
+    maxWaitSeconds: Number(r.max_wait_seconds),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}
+
+export async function listBatchingConfigs(db: FulfillmentDb): Promise<BatchingConfigRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<BatchingConfigDbRow[]>`
+      SELECT id::text AS id, tenant_wire, program_wire, min_lot_size, max_wait_seconds, created_at, updated_at
+      FROM batching_config
+      ORDER BY tenant_wire, program_wire
+    `
+  })
+  return rows.map(toBatchingConfigDto)
+}

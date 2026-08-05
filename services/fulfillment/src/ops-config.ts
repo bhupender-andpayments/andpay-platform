@@ -50,6 +50,18 @@ const OPS_PERMISSIONS = [
   'ops:bank-logo-set',
 ]
 
+// Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role permission differentiation.
+// The batching-parameter admin write (Minimum Lot Size / Maximum Wait Time) is
+// an admin-tier operation: Bhupender ratified it goes to the `admin` and
+// `super_admin` roles ONLY, NOT into the shared OPS_PERMISSIONS bundle (so the
+// baseline `ops` / `ops_portal` operator does NOT get it). No read permission
+// is listed: the list route (`GET /ops/batching-config`) is guard-only at the
+// edge (no D2 authorize, no 6e), so a read-side string here would be dead, the
+// same reasoning as the absent `ops:vendor-list` / `ops:bank-config-list`. No
+// step-up is added (step-up for batching config is TBD per the ratification;
+// this deliberately introduces no OPS_STEP_UP_CATALOG / S15 entry).
+const ADMIN_TIER_PERMISSIONS = ['ops:batching-config-set']
+
 export const OPS_ROLES: RoleConfig['roles'] = {
   // Retained legacy alias (Task 2, D-B): no real login mints role:ops_portal
   // (only tests do); kept unchanged so those tests keep passing.
@@ -58,21 +70,25 @@ export const OPS_ROLES: RoleConfig['roles'] = {
     ceiling: 'all-programs',
     requiredAcr: 'AAL2',
   }),
-  // The real AndPayments human operator roles (Task 2, D-B). Each gets the
-  // same full ops bundle as ops_portal; support_readonly is deliberately
-  // absent (read-only, no OPS_ROLES entry needed).
+  // The real AndPayments human operator roles (Task 2, D-B). `ops` gets the
+  // shared ops bundle exactly like ops_portal; `admin` / `super_admin` get the
+  // shared bundle PLUS the admin-tier permissions (T6). support_readonly is
+  // deliberately absent (read-only, no OPS_ROLES entry needed).
   ops: humanRole({
     permissions: OPS_PERMISSIONS,
     ceiling: 'all-programs',
     requiredAcr: 'AAL2',
   }),
+  // admin / super_admin additionally carry the admin-tier permissions (the
+  // batching-config write), the first per-role differentiation (T6). ops /
+  // ops_portal above stay on the shared bundle only.
   admin: humanRole({
-    permissions: OPS_PERMISSIONS,
+    permissions: [...OPS_PERMISSIONS, ...ADMIN_TIER_PERMISSIONS],
     ceiling: 'all-programs',
     requiredAcr: 'AAL2',
   }),
   super_admin: humanRole({
-    permissions: OPS_PERMISSIONS,
+    permissions: [...OPS_PERMISSIONS, ...ADMIN_TIER_PERMISSIONS],
     ceiling: 'all-programs',
     requiredAcr: 'AAL2',
   }),

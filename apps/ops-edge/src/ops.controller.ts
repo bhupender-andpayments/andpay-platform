@@ -30,6 +30,7 @@ import {
   isKnownStatus,
   upsertBankCompositionConfig,
   setBankLogo,
+  upsertBatchingConfig,
   type IntakeSheet,
 } from '@andpay/fulfillment-service'
 import {
@@ -108,6 +109,17 @@ interface BankConfigUpsertBody {
   branchCode?: string
   brandingParams: unknown
   imageTemplates: unknown
+}
+// Phase 3 Task 6 (BRD 5.3.2): the batching-parameter admin write body. The
+// scope-key fields (tenantWire/programWire) ARE legitimate request inputs
+// (platform master data an AndPayments admin configures, not principal-scoped
+// tenant data, unlike M7/S16); both optional (omitted -> GLOBAL default). The
+// actor/traceId/idempotency-key still come from the gate, never here.
+interface BatchingConfigSetBody {
+  tenantWire?: string
+  programWire?: string
+  minLotSize: number
+  maxWaitSeconds: number
 }
 // The minimal multer file shape the upload routes read (mirrors vendor-edge's
 // UploadedJson, extended with originalname): the raw bytes plus the client
@@ -701,6 +713,33 @@ export class OpsController {
       bytes: file.buffer,
       contentType: file.mimetype,
       filename: file.originalname,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // Phase 3 Task 6 (BRD 5.3.2): the batching-parameter admin write. Same
+  // gate/idempotency/co-committed-6e posture as every other ops mutation; NOT
+  // step-up-gated (not in OPS_STEP_UP_CATALOG, per the ratification). The
+  // 'ops:batching-config-set' operation is granted ONLY to the admin /
+  // super_admin roles (ops-config.ts), so a baseline `ops` operator is DENIED
+  // here by the D2 authorize in the gate (the first per-role differentiation).
+  // Domain-side validation (min/max >= 1) throws OpsClientError('invalid'),
+  // which the app-wide OpsErrorFilter maps to a 400.
+  @Post('batching-config')
+  @HttpCode(200)
+  async setBatchingConfigRoute(
+    @Req() req: EdgeRequest,
+    @Body() body: BatchingConfigSetBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; id: string | null }> {
+    const g = await this.gate(req, 'ops:batching-config-set', idem, [])
+    return upsertBatchingConfig(this.deps.fulfillmentDb, {
+      ...(body.tenantWire !== undefined ? { tenantWire: body.tenantWire } : {}),
+      ...(body.programWire !== undefined ? { programWire: body.programWire } : {}),
+      minLotSize: body.minLotSize,
+      maxWaitSeconds: body.maxWaitSeconds,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
