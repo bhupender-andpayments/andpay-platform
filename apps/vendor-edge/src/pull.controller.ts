@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { Controller, ForbiddenException, Get, Inject, Param, Req, Res, UseGuards } from '@nestjs/common'
-import { pullDispatchPackageXlsx, PullDeniedError } from '@andpay/fulfillment-service'
+import { Controller, ForbiddenException, Get, Inject, NotFoundException, Param, Req, Res, UseGuards } from '@nestjs/common'
+import { pullDispatchPackageXlsx, pullTypePdf, PullDeniedError } from '@andpay/fulfillment-service'
 import { EdgeCredentialGuard } from './guard.js'
 import { EDGE_DEPS, type EdgeDeps } from './deps.js'
 import type { EdgeRequest } from './request.js'
@@ -33,6 +33,31 @@ export class PullController {
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
       res.setHeader('Content-Disposition', `attachment; filename="dispatch-${btchId}.xlsx"`)
       res.status(200).send(xlsx)
+    } catch (err) {
+      if (err instanceof PullDeniedError) throw new ForbiddenException()
+      throw err
+    }
+  }
+
+  // GET vendor/batch/:btchId/collateral/:artifactType: the FR-04 per-type merged
+  // collateral PDF (SOUNDBOX_IMG = the soundbox-only view). Same D104 authz as
+  // the xlsx pull (own-batch, ALLOW/DENY 6e). 404 when the batch has no artifact
+  // of that type; the PDF is streamed and NEVER persisted or logged.
+  @Get('batch/:btchId/collateral/:artifactType')
+  @UseGuards(EdgeCredentialGuard)
+  async collateral(
+    @Param('btchId') btchId: string,
+    @Param('artifactType') artifactType: string,
+    @Req() req: EdgeRequest,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
+    const traceId = randomUUID()
+    try {
+      const { pdf } = await pullTypePdf(this.deps.fulfillmentDb, this.deps.assetStore, req.claim, btchId, artifactType, traceId)
+      if (pdf === null) throw new NotFoundException()
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader('Content-Disposition', `attachment; filename="${artifactType}-${btchId}.pdf"`)
+      res.status(200).send(pdf)
     } catch (err) {
       if (err instanceof PullDeniedError) throw new ForbiddenException()
       throw err

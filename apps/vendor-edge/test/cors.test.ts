@@ -2,7 +2,7 @@ import 'reflect-metadata'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import request from 'supertest'
 import type { INestApplication } from '@nestjs/common'
-import { PrismaClient as FulfillmentClient } from '@andpay/fulfillment-service'
+import { PrismaClient as FulfillmentClient, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { buildEdgeApp, type EdgeDeps } from '../src/index.js'
 
 // Check 6 (D6, spec 14a task 15): drives the REAL CORS behavior on
@@ -23,7 +23,7 @@ const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 
 let app: INestApplication
 beforeAll(async () => {
-  const deps: EdgeDeps = { fulfillmentDb, pepper: PEPPER, expectedMode: 'test', vendorPortalOrigin: ALLOWED_ORIGIN }
+  const deps: EdgeDeps = { fulfillmentDb, pepper: PEPPER, expectedMode: 'test', vendorPortalOrigin: ALLOWED_ORIGIN, assetStore: new InMemoryAssetStore() }
   app = await buildEdgeApp(deps)
   await app.init()
 })

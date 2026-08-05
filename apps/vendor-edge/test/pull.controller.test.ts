@@ -5,7 +5,7 @@ import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
-import { PrismaClient as FulfillmentClient } from '@andpay/fulfillment-service'
+import { PrismaClient as FulfillmentClient, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { buildEdgeApp, type EdgeDeps } from '../src/index.js'
 
 // Spec 14b task 7: the FR-04 dispatch-package pull route. Mirrors
@@ -102,6 +102,7 @@ beforeAll(async () => {
     jwks,
     expectedIss: EXPECTED_ISS,
     vendorPortalOrigin: 'https://vendor.andpay.test',
+    assetStore: new InMemoryAssetStore(),
   }
   app = await buildEdgeApp(deps)
   await app.init()
@@ -186,5 +187,36 @@ describe('GET /vendor/batch/:btchId/package (spec 14b task 7, FR-04 pull)', () =
       warnSpy.mockRestore()
       expect(allCalls).not.toMatch(/Sherlock|Baker Street|9999999999/)
     }
+  })
+})
+
+describe('GET /vendor/batch/:btchId/collateral/:artifactType (Phase 4 Task 4b, FR-04)', () => {
+  it('an own-vndr pull is authorized (not 403): 404 here because the seeded artifact refs are not real stored PDFs', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const { btchWire } = await seedBatch(vndrWire)
+    const token = await mint({ scope: { vndr: vndrWire } })
+
+    const res = await request(app.getHttpServer())
+      .get(`/vendor/batch/${btchWire}/collateral/SOUNDBOX_IMG`)
+      .set('Authorization', `Bearer ${token}`)
+
+    // authorized (would be 403 if not own-vndr); the batch's seeded artifact
+    // references are placeholders not present in the asset store, so the merge
+    // yields nothing -> 404. Real-PDF streaming is covered by the fulfillment
+    // assembleTypePdf unit test.
+    expect(res.status).toBe(404)
+  })
+
+  it('a cross-vndr collateral pull is rejected 403', async () => {
+    const ownerVndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const otherVndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const { btchWire } = await seedBatch(ownerVndrWire)
+    const token = await mint({ scope: { vndr: otherVndrWire } })
+
+    const res = await request(app.getHttpServer())
+      .get(`/vendor/batch/${btchWire}/collateral/SOUNDBOX_IMG`)
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(res.status).toBe(403)
   })
 })

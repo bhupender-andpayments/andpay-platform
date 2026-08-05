@@ -5,7 +5,7 @@ import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
-import { PrismaClient as FulfillmentClient } from '@andpay/fulfillment-service'
+import { PrismaClient as FulfillmentClient, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { buildEdgeApp, type EdgeDeps } from '../src/index.js'
 
 // Spec 14b task 6: the class-7 vendor-operator GET reads (work-queue,
@@ -102,6 +102,7 @@ beforeAll(async () => {
     jwks,
     expectedIss: EXPECTED_ISS,
     vendorPortalOrigin: 'https://vendor.andpay.test',
+    assetStore: new InMemoryAssetStore(),
   }
   app = await buildEdgeApp(deps)
   await app.init()

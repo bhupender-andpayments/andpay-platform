@@ -7,6 +7,7 @@ import type { INestApplication } from '@nestjs/common'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import {
   PrismaClient as FulfillmentClient,
+  InMemoryAssetStore,
   ingestStatusWebhook,
   ingestIntakeSheet,
   ingestReturnSheet,
@@ -27,7 +28,7 @@ const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 let app: INestApplication
 
 beforeAll(async () => {
-  const deps: EdgeDeps = { fulfillmentDb, pepper: PEPPER, expectedMode: 'test', vendorPortalOrigin: 'https://vendor.andpay.test' }
+  const deps: EdgeDeps = { fulfillmentDb, pepper: PEPPER, expectedMode: 'test', vendorPortalOrigin: 'https://vendor.andpay.test', assetStore: new InMemoryAssetStore() }
   app = await buildEdgeApp(deps)
   await app.init()
 })

@@ -2,7 +2,8 @@ import { toUuid, fromUuid } from '@andpay/ids'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { enterVendorReadScope } from './vendor-read-context.js'
-import { buildDispatchPackage, dispatchXlsx } from './package.js'
+import { buildDispatchPackage, dispatchXlsx, assembleTypePdf } from './package.js'
+import type { AssetStore } from './storage/asset-store.js'
 import { emitVendorAuthzAudit } from './vendor-audit.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 
@@ -79,4 +80,56 @@ export async function pullDispatchPackageXlsx(
   const lines = await buildDispatchPackage(db, btchIdWire, 'ship')
   const xlsx = await dispatchXlsx(lines)
   return { xlsx, btchId: btchIdWire }
+}
+
+export interface PullPdfResult {
+  pdf: Buffer | null
+  btchId: string
+}
+
+// Phase 4 (FR-04, P4-D6): the per-product-type merged collateral PDF pull, the
+// image half of the dispatch-package disclosure surface. Same D104 authz as the
+// xlsx pull -- resolve print_vndr under the vendor-read role (RLS own-only),
+// authorize batch:pull-artifacts binding the RESOLVED print_vndr, emit the
+// ALLOW/DENY 6e durable-BEFORE returning -- then assemble the PDF under the
+// NORMAL connection (fulfillment_vendor_read has no composed_artifact grant, and
+// isolation is already guaranteed by the own-only resolve + authorize above,
+// exactly as pullDispatchPackageXlsx documents). pdf is null when the batch has
+// no artifact of that type (the caller maps it to 404).
+export async function pullTypePdf(
+  db: FulfillmentDb,
+  assetStore: AssetStore,
+  claim: LeanClaim,
+  btchIdWire: string,
+  artifactType: string,
+  traceId: string,
+): Promise<PullPdfResult> {
+  const btchUuid = toUuid(btchIdWire)
+  const vndrUuid = toUuid(claim.scope.vndr!)
+
+  const printVndrWire = await db.$transaction(async (tx) => {
+    await enterVendorReadScope(tx, vndrUuid)
+    const rows = await tx.$queryRaw<{ print_vndr: string | null }[]>`
+      SELECT print_vndr::text AS print_vndr FROM batch WHERE id = ${btchUuid}::uuid
+    `
+    const pv = rows[0]?.print_vndr
+    return pv ? fromUuid('vndr', pv) : null
+  })
+
+  const decision = authorize(claim, PULL_OPERATION, { vndrId: printVndrWire ?? '__none__' }, loadFulfillmentConfig())
+  await emitVendorAuthzAudit(db, {
+    principalId: claim.sub,
+    cls: claim.cls,
+    operation: PULL_OPERATION,
+    decision: decision.allowed ? 'ALLOW' : 'DENY',
+    outcome: decision.allowed ? 'authorized' : 'denied',
+    reasonCode: decision.allowed ? undefined : (decision.reason ?? 'denied'),
+    resourceIds: [claim.scope.vndr!, btchIdWire],
+    actorChannel: 'vendor-edge',
+    traceId,
+  })
+  if (!decision.allowed) throw new PullDeniedError(decision.reason ?? 'denied')
+
+  const bytes = await assembleTypePdf(db, assetStore, btchIdWire, artifactType)
+  return { pdf: bytes === null ? null : Buffer.from(bytes), btchId: btchIdWire }
 }

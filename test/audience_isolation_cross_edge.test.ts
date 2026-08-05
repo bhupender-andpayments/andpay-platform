@@ -218,6 +218,7 @@ beforeAll(async () => {
     jwks: sharedJwks,
     expectedIss: SHARED_ISS,
     vendorPortalOrigin: 'https://vendor.andpay.test',
+    assetStore: new InMemoryAssetStore(),
   }
   vendorIntakeEdgeApp = await buildVendorIntakeEdgeApp(vendorIntakeEdgeDeps)
   await vendorIntakeEdgeApp.init()
