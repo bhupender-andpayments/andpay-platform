@@ -31,7 +31,9 @@ import {
   upsertBankCompositionConfig,
   setBankLogo,
   upsertBatchingConfig,
+  ingestOpsDeviceInventory,
   type IntakeSheet,
+  type OpsDeviceInventoryResult,
 } from '@andpay/fulfillment-service'
 import {
   previewBankFile,
@@ -179,6 +181,16 @@ interface UploadedLogoFile {
   originalname: string
   mimetype: string
 }
+// Phase 5 Task 1 (D-G, FR-01a): the device-inventory upload's non-file field.
+// manufacturerVndrId is a RATIFIED VALIDATED BODY REFERENCE (a vndr_ wire id),
+// NOT a principal scope (D99, M7/S16 do not apply): the class-3 all-programs
+// ops principal has no vendor scope of its own to pin against, so the target
+// manufacturer travels in the request and the fulfillment service validates
+// it server-side (type='MANUFACTURER') before any write.
+interface DeviceInventoryUploadBody {
+  manufacturerVndrId: string
+}
+
 interface ResolveQuarantineBody {
   correctedRow: BankRequestRow
 }
@@ -392,6 +404,36 @@ export class OpsController {
     return commitDamageFile(this.deps.tmsDb, {
       fileBytes: file.buffer,
       filename: file.originalname,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // Phase 5 Task 1 (D-G, FR-01a): the ops device-inventory upload, the ops
+  // analog of the vendor-channel manufacturer intake. Mirrors commitBank's
+  // multipart/gate/re-parse posture exactly (mandatory Idempotency-Key, D2
+  // authorize, co-committed ALLOW 6e); the SERVER-SIDE re-parse and the
+  // manufacturer-vndr validation both happen inside the fulfillment service
+  // function (ingestOpsDeviceInventory), never trusting client-sent rows. A
+  // structural parse failure or an invalid/missing manufacturerVndrId surfaces
+  // as the fulfillment domain's OpsClientError, which the app-wide
+  // OpsErrorFilter maps to a 4xx.
+  @Post('uploads/device-inventory')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async uploadDeviceInventory(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+    @Body() body: DeviceInventoryUploadBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<OpsDeviceInventoryResult> {
+    const g = await this.gate(req, 'ops:upload-device-inventory', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+    return ingestOpsDeviceInventory(this.deps.fulfillmentDb, {
+      fileBytes: file.buffer,
+      filename: file.originalname,
+      manufacturerVndrId: body.manufacturerVndrId,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
