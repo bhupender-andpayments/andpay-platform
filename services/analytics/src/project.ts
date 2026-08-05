@@ -179,6 +179,10 @@ export function applyFact(
     case T.ACTIVATED: {
       const p = payload as ActivatedFactView
       s.activationStatus = 'ACTIVATED'
+      // Phase-1 manual, device+SIM activate together on the single CWD confirmation,
+      // so sim_activation_status mirrors activation_status; a distinct SIM signal is
+      // the deferred Phase-2 contract.
+      s.simActivationStatus = 'ACTIVATED'
       s.activationDate = new Date(p.activatedAt)
       s.pipelineState = advance(s.pipelineState, 'ACTIVATED')
       return s

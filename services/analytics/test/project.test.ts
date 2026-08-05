@@ -301,8 +301,12 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
       merchantDisplayName: 'Acme', billable: true,
     }, new Date('2026-07-01T00:00:00Z'))
     expect(base.activationStatus).toBeNull()
+    expect(base.simActivationStatus).toBeNull()
     const activated = applyFact(base, 'fct.tms.assignment.activated.v1', { asgnId: 'asgn_x', activatedAt: '2026-07-05T00:00:00Z' }, new Date('2026-07-05T00:00:00Z'))
     expect(activated.activationStatus).toBe('ACTIVATED')
+    // Phase-1 manual flow: device+SIM activate together on a single CWD confirmation,
+    // so sim_activation_status mirrors activation_status (distinct SIM signal is Phase-2).
+    expect(activated.simActivationStatus).toBe('ACTIVATED')
     expect(activated.activationDate).toEqual(new Date('2026-07-05T00:00:00Z'))
     expect(activated.pipelineState).toBe('ACTIVATED')
   })
