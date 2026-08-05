@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { readFileSync } from 'node:fs'
-import path from 'node:path'
+import { fileURLToPath, URL as NodeURL } from 'node:url'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { AppShell } from '../../src/ui/AppShell.js'
 import { DataGrid, type GridColumn } from '../../src/ui/DataGrid.js'
@@ -34,7 +34,11 @@ describe('design-system foundation (Task 1)', () => {
   })
 
   it('the ported token CSS layer resolves a custom property on :root', () => {
-    const cssPath = path.resolve(process.cwd(), 'src/index.css')
+    // NodeURL (node:url's URL), not the jsdom-polyfilled global URL: under the
+    // jsdom test environment the global URL resolves relative references
+    // against the document's mock location (http://localhost:3000/) instead
+    // of honoring a file: base, which silently produces the wrong path.
+    const cssPath = fileURLToPath(new NodeURL('../../src/index.css', import.meta.url))
     const css = readFileSync(cssPath, 'utf8').replace(/@tailwind[^;]+;/g, '')
     const style = document.createElement('style')
     style.textContent = css
