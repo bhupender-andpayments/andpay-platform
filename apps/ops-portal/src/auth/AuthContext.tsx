@@ -84,12 +84,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // POST /session/rehydrate (never /session/refresh, which requires the
   // in-memory bearer this cold start does not have) and, on success, sets the
   // access token + principal exactly as login() does, without a login call.
-  // The useRef guard (not the effect's dependency array) is what prevents a
-  // second real attempt under React StrictMode's dev-only double-invoke: the
-  // ref survives the mount -> unmount -> mount cycle for the life of this
-  // provider instance, so only the first invocation's body ever runs. Any
-  // failure (non-2xx, a thrown network error, or a malformed/missing token)
-  // falls through cleanly to the unauthenticated state; there is no retry.
+  // Any failure (non-2xx, a thrown network error, or a malformed/missing
+  // token) falls through cleanly to the unauthenticated state; there is no
+  // retry.
+  //
+  // Ref-alone, NOT the repo's cancelled-flag "house pattern": /session/
+  // rehydrate ROTATES a one-time-use refresh token with reuse detection
+  // (services/auth/src/refresh.ts), it is not an idempotent read. Under React
+  // 18 StrictMode (dev only, main.tsx), an effect runs setup1 -> cleanup1 ->
+  // setup2. A cancelled-flag cleanup would only suppress applying setup1's
+  // result; it would NOT stop setup2 from firing a second /session/rehydrate
+  // presenting the SAME refresh cookie, which rotateRefresh treats as reuse
+  // and revokes the entire family, logging the user out. The ref is set to
+  // true synchronously before any async work, so setup2 sees it already true
+  // and never fires at all: exactly one call, full stop, and its 2xx result
+  // is applied (not discarded). A genuine remount (a fresh provider instance)
+  // gets a fresh ref and correctly re-attempts. The theoretical post-unmount
+  // setState warning is accepted: the root AuthProvider never unmounts in
+  // practice, and a cancelled flag here is unsafe, not merely unnecessary.
   const rehydrateAttempted = useRef(false)
   useEffect(() => {
     if (rehydrateAttempted.current) return
@@ -99,11 +111,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // rehydrate would be redundant and could only ever downgrade the session.
     if (getAccessToken() !== null) return
 
-    let cancelled = false
     void (async () => {
       try {
         const res = await sendOnce(clientDeps, { method: 'POST', path: '/session/rehydrate', base: 'auth', withCookie: true })
-        if (cancelled) return
         if (res.status < 200 || res.status >= 300) return
         const tok = (res.data as { accessToken?: string }).accessToken
         if (typeof tok !== 'string') return
@@ -115,11 +125,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // a malformed token: fall through to unauthenticated, single attempt.
       }
     })()
-    return () => { cancelled = true }
-    // Deliberately mount-once: clientDeps is stable across the life of this
-    // provider (its own inputs are a useCallback and the imported
-    // promptStepUpTotp), and the ref guard is the actual single-fire control.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const login = useCallback(async (body: { handle: string; password: string; totp: string }) => {

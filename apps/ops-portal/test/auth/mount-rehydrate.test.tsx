@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import { AuthProvider, useAuth } from '../../src/auth/AuthContext.js'
@@ -52,6 +53,35 @@ describe('AuthProvider mount-time rehydrate', () => {
     expect(getAccessToken()).toBeNull()
 
     // Give any accidental retry a chance to fire, then confirm it never did.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  // Guards the StrictMode bug class specifically: React 18 StrictMode (dev
+  // only, active via main.tsx) runs setup1 -> cleanup1 -> setup2 on mount.
+  // /session/rehydrate rotates a one-time-use refresh token with reuse
+  // detection (services/auth/src/refresh.ts); a second real fire under
+  // StrictMode would present the SAME refresh cookie twice, which the
+  // rotation treats as reuse and revokes the entire family, logging the
+  // operator out. The fix must fire the fetch exactly once AND apply its
+  // 2xx result (a cancelled-flag cleanup that discards the result instead of
+  // preventing the second fire is the exact regression this guards against).
+  it('(c) under StrictMode, exactly ONE /session/rehydrate fires and its 2xx result authenticates', async () => {
+    const fakeToken = makeFakeJwt({ sub: 'u-1', psr: 'role:ops' })
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ accessToken: fakeToken }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(
+      <StrictMode>
+        <AuthProvider><MountHarness /></AuthProvider>
+      </StrictMode>,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('principal').textContent).toBe('u-1'))
+    expect(getAccessToken()).toBe(fakeToken)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // Give a would-be second fire a chance to land, then confirm it never did.
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
