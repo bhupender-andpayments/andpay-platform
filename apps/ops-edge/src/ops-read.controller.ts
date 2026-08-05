@@ -1,10 +1,13 @@
-import { Controller, Get, HttpCode, Inject, Query, UseGuards } from '@nestjs/common'
+import { Controller, Get, HttpCode, Inject, Param, Query, Res, UseGuards } from '@nestjs/common'
 import {
   listVendors,
   readIntakeExceptions,
   readCourierStatusExceptions,
   listBankCompositionConfigs,
   listBatchingConfigs,
+  buildDispatchPackage,
+  dispatchXlsx,
+  assembleTypePdf,
   type VendorRow,
   type IntakeExceptionView,
   type CourierStatusExceptionView,
@@ -22,6 +25,16 @@ import {
 import { listBankMasters, type BankMasterRow } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
+
+// The minimal response shape the binary download routes write to (same
+// structural typing the vendor-edge PullController and the ReportsController
+// use: this repo does not depend on @types/express). A binary body needs
+// setHeader + status + send.
+interface EdgeResponse {
+  setHeader(name: string, value: string): void
+  status(code: number): EdgeResponse
+  send(body: Buffer): void
+}
 
 // The class-3 ops READ edge (spec 10c, Task 9). Guard-only (an authenticated
 // class-3 operator): reads are NOT mutations (check 3), so there is NO per-op
@@ -109,5 +122,37 @@ export class OpsReadController {
   @HttpCode(200)
   async bankMasters(): Promise<BankMasterRow[]> {
     return listBankMasters(this.deps.identityDb)
+  }
+
+  // Phase 4 (BRD 5.3 FR-03 / FR-04, P4-D6): the Phase-1 dispatch-package hand-off
+  // surface -- the AndPayments ops team downloads the package to send to the
+  // print vendor. Guard-only like every read here (no D2 authorize, no 6e); the
+  // ship-view PII an entitled operator sees mirrors the accepted internal-read
+  // posture (A.2). The Excel is the bank+branch-sorted dispatch sheet.
+  @Get('batches/:btchId/dispatch-excel')
+  async dispatchExcel(@Param('btchId') btchId: string, @Res() res: EdgeResponse): Promise<void> {
+    const lines = await buildDispatchPackage(this.deps.fulfillmentDb, btchId, 'ship')
+    const xlsx = await dispatchXlsx(lines)
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="dispatch-${btchId}.xlsx"`)
+    res.status(200).send(xlsx)
+  }
+
+  // The per-product-type merged collateral PDF (SOUNDBOX_IMG is the FR-04
+  // soundbox-only view). 404 when the batch has no artifact of that type.
+  @Get('batches/:btchId/collateral/:artifactType')
+  async collateral(
+    @Param('btchId') btchId: string,
+    @Param('artifactType') artifactType: string,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
+    const pdf = await assembleTypePdf(this.deps.fulfillmentDb, this.deps.assetStore, btchId, artifactType)
+    if (pdf === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename="${artifactType}-${btchId}.pdf"`)
+    res.status(200).send(Buffer.from(pdf))
   }
 }

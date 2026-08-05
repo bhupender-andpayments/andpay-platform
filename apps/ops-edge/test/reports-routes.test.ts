@@ -9,6 +9,7 @@ import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '../src/index.js'
+import { newId } from '@andpay/ids'
 
 // The REAL app, real in-process HTTP via supertest, no bound port. This suite
 // exercises the Task-8 class-3 reporting routes: the class-3 ops actor derived
@@ -225,6 +226,27 @@ describe('ops reports edge: GET /ops/reports/:name with the ?bank= filter (G3)',
     const token = await mint()
     const res = await request(app.getHttpServer())
       .get('/ops/reports/not-a-real-report')
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(404)
+  })
+})
+
+describe('ops-edge FR-03/FR-04 dispatch-package download (Phase 4 Task 4a, P4-D6)', () => {
+  it('GET dispatch-excel for a batch returns a sorted .xlsx (PK zip)', async () => {
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get(`/ops/batches/${newId('btch')}/dispatch-excel`)
+      .set('Authorization', `Bearer ${token}`)
+      .buffer(true)
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toContain('spreadsheetml')
+    expect(res.headers['content-disposition']).toContain('.xlsx')
+  })
+
+  it('GET collateral/:type for a batch with no such artifact -> 404', async () => {
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get(`/ops/batches/${newId('btch')}/collateral/SOUNDBOX_IMG`)
       .set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(404)
   })
