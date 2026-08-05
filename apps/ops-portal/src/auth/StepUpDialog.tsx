@@ -37,7 +37,11 @@ export function StepUpDialog() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-ink/40 backdrop-blur-sm" onClick={onCancel} aria-hidden="true" />
+      {/* Presentation-only dim/focus overlay. Deliberately NOT clickable: a
+          step-up prompt can gate a destructive action, so the only ways to
+          dismiss it are the explicit Cancel/Confirm controls, exactly as
+          before this task. */}
+      <div className="absolute inset-0 bg-ink/40 backdrop-blur-sm" aria-hidden="true" />
       <div
         role="dialog"
         aria-modal="true"

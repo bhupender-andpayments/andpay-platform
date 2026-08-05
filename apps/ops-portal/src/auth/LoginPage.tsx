@@ -148,16 +148,17 @@ export function LoginPage() {
                 <Button type="submit" loading={submitting} className="w-full">
                   Sign in
                 </Button>
-                <button
+                <Button
                   type="button"
-                  className="w-full text-center text-[13px] font-medium text-muted hover:text-ink"
+                  variant="ghost"
+                  className="w-full"
                   onClick={() => {
                     setError(null)
                     setStep('credentials')
                   }}
                 >
                   Back
-                </button>
+                </Button>
               </form>
             </>
           )}
