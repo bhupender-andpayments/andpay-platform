@@ -135,6 +135,23 @@ export function getReportCsv(c: Client, name: ReportName, filters: ReportFilters
   })
 }
 
+/**
+ * The wire `shpt_` id a `soundbox-delivery` report row may carry (G-SHPT,
+ * services/analytics/src/mediation.ts's soundboxDeliveryRow, commit
+ * 354aa76): `shptId: r.shpt_id` copied verbatim off `dispatch_row`, already
+ * wire end to end (no `fromUuid` needed there per the grounding trace in
+ * docs/plan/phase7_grounding/G_SHPT_backend_spec.md section 2b). `null`
+ * until a shipment fact has folded for that dispatch (a real, faithful
+ * null, not an error). `ReportRow` is a generic `Record<string, ReportCell>`
+ * (every report has its own column set), so this is a typed narrow-read
+ * helper rather than a new named DTO field, matching the existing dynamic
+ * report-row convention (ReportPage/DispatchHistoryPage's buildColumns).
+ */
+export function reportRowShptId(row: ReportRow): string | null {
+  const value = row.shptId
+  return typeof value === 'string' ? value : null
+}
+
 // -----------------------------------------------------------------------
 // Exception and quarantine queues (Task 11). The confirmed ops-edge contract
 // (apps/ops-edge/src/ops-read.controller.ts for the three reads,
@@ -671,6 +688,63 @@ export function holdRecord(c: Client, asgnId: string, idempotencyKey: string) {
     path: `/ops/records/${asgnId}/hold`,
     idempotencyKey,
   })
+}
+
+// -----------------------------------------------------------------------
+// Dispatch package downloads (Task 9, Phase 7). The two ops-edge routes
+// (apps/ops-edge/src/ops-read.controller.ts's dispatchExcel/collateral) are
+// guard-only reads (no D2 authorize, no 6e, no Idempotency-Key) that return
+// a BINARY body (xlsx / pdf), never JSON - so they cannot go through the
+// typed `client.request` (JSON/text only; client.ts is a SPINE_FILE this
+// task does not touch). Mirrors postFile's raw-fetch-with-Bearer pattern
+// above instead. `:btchId` is the wire `btch_...` id BatchPage's own trigger
+// response already returns (`{ btchId }`); no ops-edge read exposes a batch
+// id at all (confirmed against every DTO in ops-read.ts and mediation.ts),
+// so that trigger response - or a previously known batch id the operator
+// already has - is the only real, non-fabricated source for it, exactly
+// like BatchPage's own tenantWire/programWire free-text inputs (also
+// unblocked, also with no discovery read).
+// -----------------------------------------------------------------------
+
+export interface DownloadedFile {
+  blob: Blob
+  filename: string
+}
+
+function filenameFromContentDisposition(res: Response, fallback: string): string {
+  const header = res.headers.get('Content-Disposition')
+  if (header === null) return fallback
+  const match = /filename="([^"]+)"/.exec(header)
+  return match?.[1] ?? fallback
+}
+
+export async function downloadDispatchExcel(btchId: string): Promise<DownloadedFile> {
+  const res = await fetch(`${opsBaseUrl()}/ops/batches/${btchId}/dispatch-excel`, {
+    headers: { Authorization: `Bearer ${getAccessToken()}` },
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+  }
+  const blob = await res.blob()
+  return { blob, filename: filenameFromContentDisposition(res, `dispatch-${btchId}.xlsx`) }
+}
+
+// 404 (no artifact of that type for the batch) is a real, non-error outcome
+// - the edge itself returns 404 deliberately (ops-read.controller.ts's
+// collateral route) rather than an empty/500 - so it is surfaced as `null`,
+// not thrown.
+export async function downloadCollateral(btchId: string, artifactType: string): Promise<DownloadedFile | null> {
+  const res = await fetch(`${opsBaseUrl()}/ops/batches/${btchId}/collateral/${artifactType}`, {
+    headers: { Authorization: `Bearer ${getAccessToken()}` },
+  })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const text = await res.text()
+    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+  }
+  const blob = await res.blob()
+  return { blob, filename: filenameFromContentDisposition(res, `${artifactType}-${btchId}.pdf`) }
 }
 
 // -----------------------------------------------------------------------

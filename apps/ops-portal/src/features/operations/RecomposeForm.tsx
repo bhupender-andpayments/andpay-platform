@@ -2,19 +2,22 @@ import { useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { recompose } from '../../api/endpoints.js'
+import { Card, CardHeader, Field, Input, Select, Button, ErrorNote } from '../../ui/primitives.js'
 
-// Artifact recompose (spec 13 task 14, check 6). The confirmed ops-edge
-// contract (apps/ops-edge/src/ops.controller.ts's recompose, grounded
-// against services/fulfillment/src/ops.ts's recomposeArtifact and
-// dispatch.ts's artifactTypesFor): posts
-// { asgnId, artifactType, requestedShipTo? } to /ops/artifacts/recompose
-// with a fresh Idempotency-Key, NOT step-up-gated (`ops:recompose-artifact`
-// is absent from OPS_STEP_UP_GATED_OPERATIONS).
+// Artifact recompose (Phase 7 Task 9). The confirmed ops-edge contract
+// (apps/ops-edge/src/ops.controller.ts's recompose, grounded against
+// services/fulfillment/src/ops.ts's recomposeArtifact and dispatch.ts's
+// artifactTypesFor): posts { asgnId, artifactType, requestedShipTo? } to
+// /ops/artifacts/recompose with a fresh Idempotency-Key, NOT step-up-gated
+// (`ops:recompose-artifact` is absent from OPS_STEP_UP_GATED_OPERATIONS).
 //
 // The artifact type dropdown is grounded in dispatch.ts's artifactTypesFor:
 // the only three artifact types the platform ever composes are SOUNDBOX_IMG,
 // STANDEE_IMG, and STICKER_IMG (one per fulfillable line item), so a closed
-// dropdown is used rather than a free-text field.
+// dropdown is used rather than a free-text field. asgnId is free text: it is
+// wire-shape-matched to a real read (GET ops/damage-cases emits asgnId,
+// per B_edge_contracts) but no dedicated shipment-assignment picker exists
+// on this surface, matching the same reality as HoldButton's asgnId input.
 const ARTIFACT_TYPES = ['SOUNDBOX_IMG', 'STANDEE_IMG', 'STICKER_IMG'] as const
 
 export function RecomposeForm() {
@@ -51,74 +54,50 @@ export function RecomposeForm() {
   }
 
   return (
-    <div className="space-y-4 rounded border border-slate-200 p-4">
-      <h2 className="text-sm font-semibold text-slate-800">Recompose artifact</h2>
+    <Card>
+      <CardHeader title="Recompose artifact" subtitle="Regenerate a QR label or collateral artifact for an assignment." />
       <form
         onSubmit={(e) => {
           void handleSubmit(e)
         }}
-        className="flex flex-wrap items-end gap-3"
+        className="flex flex-wrap items-end gap-3 p-5 pt-4"
       >
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="recompose-asgnId">
-            Assignment ID
-          </label>
-          <input
-            id="recompose-asgnId"
-            value={asgnId}
-            onChange={(e) => setAsgnId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="recompose-artifactType">
-            Artifact type
-          </label>
-          <select
-            id="recompose-artifactType"
-            value={artifactType}
-            onChange={(e) => setArtifactType(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          >
+        <Field label="Assignment ID" htmlFor="recompose-asgnId">
+          <Input id="recompose-asgnId" value={asgnId} onChange={(e) => setAsgnId(e.target.value)} placeholder="asgn_..." />
+        </Field>
+        <Field label="Artifact type" htmlFor="recompose-artifactType">
+          <Select id="recompose-artifactType" value={artifactType} onChange={(e) => setArtifactType(e.target.value)}>
             {ARTIFACT_TYPES.map((t) => (
               <option key={t} value={t}>
                 {t}
               </option>
             ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="recompose-requestedShipTo">
-            Requested ship-to (optional)
-          </label>
-          <input
+          </Select>
+        </Field>
+        <Field label="Requested ship-to (optional)" htmlFor="recompose-requestedShipTo">
+          <Input
             id="recompose-requestedShipTo"
             value={requestedShipTo}
             onChange={(e) => setRequestedShipTo(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           />
-        </div>
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-40"
-        >
+        </Field>
+        <Button type="submit" disabled={busy} loading={busy}>
           Recompose
-        </button>
+        </Button>
       </form>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
+        <div className="px-5 pb-5">
+          <ErrorNote>{error}</ErrorNote>
+        </div>
       )}
 
       {result !== null && (
-        <p className="text-sm text-slate-800">
+        <div className="px-5 pb-5 text-sm text-ink">
           {result.deduped ? 'Already applied (deduped). ' : ''}
           Artifact: <span className="font-mono">{result.artifactId ?? 'none'}</span>
-        </p>
+        </div>
       )}
-    </div>
+    </Card>
   )
 }

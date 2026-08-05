@@ -1,13 +1,24 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { getReport, type ReportCell, type ReportFilters, type ReportRow } from '../../api/endpoints.js'
+import { getReport, reportRowShptId, type ReportCell, type ReportFilters, type ReportRow } from '../../api/endpoints.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { Card, CardHeader, Field, Input, Button, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
 
-// Dispatch history (spec 13 task 14, check 6). REUSES the existing
-// getReport('soundbox-delivery', filters) endpoint from Task 10 (the
-// Soundbox Delivery Report IS the dispatch_row list): no new route is added
-// here. Filter inputs mirror ReportPage's shape (from/to/bank/status).
+// Dispatch history (Phase 7 Task 9). REUSES the existing
+// getReport('soundbox-delivery', filters) endpoint (the Soundbox Delivery
+// Report IS the dispatch_row list): no new route is added here. Filter
+// inputs mirror ReportPage's shape (from/to/bank/status).
+//
+// G-SHPT (docs/plan/phase7_grounding/G_SHPT_backend_spec.md): the backend
+// slice (commit 354aa76) added `shptId: r.shpt_id` to this exact report's
+// rows (services/analytics/src/mediation.ts soundboxDeliveryRow) - already a
+// wire `shpt_...` string end to end, no re-encoding needed. This is what
+// makes a "Correct status" action possible here: an operator picks a REAL
+// row to drive StatusCorrectionForm's shptId, rather than hand-typing one.
+// A row with a null shptId (no shipment fact folded yet for that dispatch)
+// has its action permanently disabled - it must never become correctable
+// via a fabricated or looked-up-elsewhere id.
 
 function cellText(cell: ReportCell | undefined): string {
   const value = cell ?? null
@@ -17,11 +28,13 @@ function cellText(cell: ReportCell | undefined): string {
   return String(value)
 }
 
-// Columns are the union of every row's keys, in first-seen order: the
-// soundbox-delivery report's own column set is fixed at the backend, so this
-// renders whatever it actually returns rather than a column list invented
-// here (mirrors ReportPage's buildColumns, Task 10).
-function buildColumns(rows: ReportRow[]): DataTableColumn<ReportRow>[] {
+const GATED_TITLE = 'No verified wire shipment id for this row yet; status correction is unavailable.'
+
+// Columns are the union of every row's keys, in first-seen order, plus one
+// synthetic Actions column: the soundbox-delivery report's own column set is
+// fixed at the backend, so this renders whatever it actually returns rather
+// than a column list invented here (mirrors ReportPage's buildColumns).
+function buildColumns(rows: ReportRow[], onCorrectStatus: (row: ReportRow) => void): DataTableColumn<ReportRow>[] {
   const keys: string[] = []
   const seen = new Set<string>()
   for (const row of rows) {
@@ -32,10 +45,33 @@ function buildColumns(rows: ReportRow[]): DataTableColumn<ReportRow>[] {
       }
     }
   }
-  return keys.map((key) => ({ key, header: key, cell: (row: ReportRow) => cellText(row[key]) }))
+  const dataColumns = keys.map((key) => ({ key, header: key, cell: (row: ReportRow) => cellText(row[key]) }))
+  const actionsColumn: DataTableColumn<ReportRow> = {
+    key: '__actions',
+    header: 'Actions',
+    cell: (row: ReportRow) => {
+      const shptId = reportRowShptId(row)
+      return (
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={shptId === null}
+          title={shptId === null ? GATED_TITLE : undefined}
+          onClick={() => onCorrectStatus(row)}
+        >
+          Correct status
+        </Button>
+      )
+    },
+  }
+  return [...dataColumns, actionsColumn]
 }
 
-export function DispatchHistoryPage() {
+export interface DispatchHistoryPageProps {
+  onCorrectStatus: (row: ReportRow) => void
+}
+
+export function DispatchHistoryPage({ onCorrectStatus }: DispatchHistoryPageProps) {
   const { client } = useAuth()
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -74,80 +110,48 @@ export function DispatchHistoryPage() {
   }, [])
 
   return (
-    <div className="space-y-4 rounded border border-slate-200 p-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-800">Dispatch history</h2>
-        <WatermarkBadge watermark={watermark} />
-      </div>
+    <Card>
+      <CardHeader title="Dispatch history" actions={<WatermarkBadge watermark={watermark} />} />
 
-      <div className="flex flex-wrap items-end gap-4">
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="dispatch-from">
-            From
-          </label>
-          <input
-            id="dispatch-from"
-            type="date"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="dispatch-to">
-            To
-          </label>
-          <input
-            id="dispatch-to"
-            type="date"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="dispatch-bank">
-            Bank
-          </label>
-          <input
-            id="dispatch-bank"
-            type="text"
-            value={bank}
-            onChange={(e) => setBank(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="dispatch-status">
-            Status
-          </label>
-          <input
-            id="dispatch-status"
-            type="text"
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <button
-          type="button"
+      <div className="flex flex-wrap items-end gap-4 px-5 pt-4">
+        <Field label="From" htmlFor="dispatch-from">
+          <Input id="dispatch-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        </Field>
+        <Field label="To" htmlFor="dispatch-to">
+          <Input id="dispatch-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        </Field>
+        <Field label="Bank" htmlFor="dispatch-bank">
+          <Input id="dispatch-bank" type="text" value={bank} onChange={(e) => setBank(e.target.value)} />
+        </Field>
+        <Field label="Status" htmlFor="dispatch-status">
+          <Input id="dispatch-status" type="text" value={status} onChange={(e) => setStatus(e.target.value)} />
+        </Field>
+        <Button
           onClick={() => {
             void load()
           }}
-          className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
         >
           Search
-        </button>
+        </Button>
       </div>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
+        <div className="px-5 pt-4">
+          <ErrorNote>{error}</ErrorNote>
+        </div>
       )}
-      {loading && <p className="text-sm text-slate-500">Loading...</p>}
 
-      <DataTable columns={buildColumns(rows)} rows={rows} emptyMessage="No dispatch history for the current filters." />
-    </div>
+      <div className="p-5">
+        {loading ? (
+          <SkeletonRows rows={6} cols={5} />
+        ) : (
+          <DataTable
+            columns={buildColumns(rows, onCorrectStatus)}
+            rows={rows}
+            emptyMessage="No dispatch history for the current filters."
+          />
+        )}
+      </div>
+    </Card>
   )
 }

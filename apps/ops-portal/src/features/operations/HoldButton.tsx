@@ -2,15 +2,16 @@ import { useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { holdRecord } from '../../api/endpoints.js'
+import { Card, CardHeader, Field, Input, Button, ErrorNote } from '../../ui/primitives.js'
 
-// Record hold (spec 13 task 14, check 6). The confirmed ops-edge contract
+// Record hold (Phase 7 Task 9). The confirmed ops-edge contract
 // (apps/ops-edge/src/ops.controller.ts's hold, grounded against
 // services/fulfillment/src/ops.ts's holdRecord): posts to
 // /ops/records/:asgnId/hold with NO body, only a fresh Idempotency-Key, NOT
 // step-up-gated (`ops:record-hold` is absent from
 // OPS_STEP_UP_GATED_OPERATIONS). Its counterpart release IS step-up-gated
-// (`ops:record-release` / 'hold-release') and belongs to Task 15; it is
-// deliberately not built here.
+// (`ops:record-release` / 'hold-release') and lives in the Destructive tab
+// (Task 10's scope); it is deliberately not built here.
 export function HoldButton() {
   const { client } = useAuth()
   const [asgnId, setAsgnId] = useState('')
@@ -38,45 +39,33 @@ export function HoldButton() {
   }
 
   return (
-    <div className="space-y-4 rounded border border-slate-200 p-4">
-      <h2 className="text-sm font-semibold text-slate-800">Hold record</h2>
+    <Card>
+      <CardHeader title="Hold record" subtitle="Place an operational hold on an assignment." />
       <form
         onSubmit={(e) => {
           void handleSubmit(e)
         }}
-        className="flex flex-wrap items-end gap-3"
+        className="flex flex-wrap items-end gap-3 p-5 pt-4"
       >
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="hold-asgnId">
-            Assignment ID
-          </label>
-          <input
-            id="hold-asgnId"
-            value={asgnId}
-            onChange={(e) => setAsgnId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-40"
-        >
+        <Field label="Assignment ID" htmlFor="hold-asgnId">
+          <Input id="hold-asgnId" value={asgnId} onChange={(e) => setAsgnId(e.target.value)} placeholder="asgn_..." />
+        </Field>
+        <Button type="submit" disabled={busy} loading={busy}>
           Hold
-        </button>
+        </Button>
       </form>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
+        <div className="px-5 pb-5">
+          <ErrorNote>{error}</ErrorNote>
+        </div>
       )}
 
       {result !== null && (
-        <p className="text-sm text-slate-800">
+        <div className="px-5 pb-5 text-sm text-ink">
           {result.deduped ? 'Already held (deduped). ' : 'Hold recorded.'}
-        </p>
+        </div>
       )}
-    </div>
+    </Card>
   )
 }
