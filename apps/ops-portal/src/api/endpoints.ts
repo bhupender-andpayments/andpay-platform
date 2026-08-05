@@ -187,8 +187,10 @@ export interface CourierStatusExceptionView {
 }
 
 // services/tms/src/ingest.ts BankRequestRow: the full field list, including
-// the spec 06a mandatory recipient contact columns (contactName, mobile) and
-// the optional vpaHint the brief's flattened list omitted.
+// the spec 06a mandatory recipient contact columns (contactName, mobile), the
+// Phase 3 Task 4 mandatory branchCode (BRD 5.1b; requestRowRejectReason now
+// rejects an empty branchCode as 'missing_branch_code', fail-closed at
+// ingest), and the optional vpaHint the brief's flattened list omitted.
 export interface BankRequestRow {
   fileId: string
   rowNo: number
@@ -207,6 +209,7 @@ export interface BankRequestRow {
   shipToAddress: string
   contactName: string
   mobile: string
+  branchCode: string
   vpaHint?: string
 }
 
@@ -276,6 +279,17 @@ export function resolveIntakeException(c: Client, id: string, correctedSheet: In
   })
 }
 
+// G-SHPT (docs/plan/phase7_grounding/B_edge_contracts.md gap 2): body.shptId
+// must be a WIRE shpt id (the domain op `toUuid`s it), but no ops-edge read
+// exposes one for this queue. GET /ops/exceptions/status emits `subjectRef`,
+// an opaque courier-side reference string, not a `shpt_` wire id; the only
+// other shpt-shaped value anywhere is the analytics report rail's projected
+// `shptId`, whose wire-ness the grounding doc explicitly flags UNVERIFIED for
+// this purpose. This function still mirrors the real edge contract 1:1 (kept
+// for when G-SHPT is resolved with a real read), but QueuesPage.tsx does NOT
+// call it: the status-exception resolve control is gated (disabled, with an
+// explanatory note) rather than sending a subjectRef or a raw exception id in
+// place of a wire shptId.
 export interface StatusExceptionResolveBody {
   shptId: string
   status: string

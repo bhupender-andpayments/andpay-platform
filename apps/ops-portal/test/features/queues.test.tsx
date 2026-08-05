@@ -10,9 +10,17 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 //   GET  /ops/quarantine[?includeResolved=true]        -> QuarantineRowView[]
 //   GET  /ops/exceptions/intake[?includeResolved=true]  -> IntakeExceptionView[]
 //   GET  /ops/exceptions/status[?includeResolved=true]  -> CourierStatusExceptionView[]
-//   POST /ops/quarantine/:id/resolve         { correctedRow: BankRequestRow }
-//   POST /ops/intake-exceptions/:id/resolve  { correctedSheet: IntakeSheet }
-//   POST /ops/status-exceptions/:id/resolve  { shptId, status, courierTimestamp }
+//   POST /ops/quarantine/:id/resolve         { correctedRow: BankRequestRow }  (BankRequestRow.branchCode
+//     is now MANDATORY at ingest, services/tms/src/ingest.ts requestRowRejectReason
+//     'missing_branch_code'; resolveQuarantineRow re-drives the same ingest, so a
+//     re-keyed correction MUST carry it or the row bounces straight back to
+//     quarantine)
+//   POST /ops/intake-exceptions/:id/resolve  { correctedSheet: IntakeSheet }   (raw exceptionId, unblocked)
+//   POST /ops/status-exceptions/:id/resolve  { shptId, status, courierTimestamp } (body.shptId needs a
+//     WIRE shpt id; no read on this queue emits one - GET /ops/exceptions/status emits `subjectRef`, an
+//     opaque courier reference, not a `shpt_` wire id, and the analytics `shptId` projection is
+//     unverified wire-ness per docs/plan/phase7_grounding/B_edge_contracts.md gap 2 - so this leg is
+//     GATED: no resolve control, no id ever sent)
 // (apps/ops-edge/src/ops-read.controller.ts, apps/ops-edge/src/ops.controller.ts).
 // Every resolve test asserts the CORRECTED payload shape and an
 // Idempotency-Key header, not just an id, per the task's real edge contract.
@@ -45,7 +53,7 @@ describe('QueuesPage', () => {
     cleanup()
   })
 
-  it('renders the quarantine queue, includeResolved toggles the request, and resolve posts the corrected row with an Idempotency-Key', async () => {
+  it('renders the quarantine queue, includeResolved toggles the request, and resolve posts the corrected row (with branchCode) and an Idempotency-Key', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
@@ -60,7 +68,7 @@ describe('QueuesPage', () => {
               id: 'qr-1',
               fileId: 'file-1',
               rowNo: 3,
-              reasonCode: 'invalid_qr_vpa_format',
+              reasonCode: 'missing_branch_code',
               createdAt: '2026-07-01T00:00:00.000Z',
               resolvedAt: null,
               resolvedByActor: null,
@@ -80,7 +88,7 @@ describe('QueuesPage', () => {
     )
 
     expect(await screen.findByText('file-1')).toBeTruthy()
-    expect(screen.getByText('invalid_qr_vpa_format')).toBeTruthy()
+    expect(screen.getByText('Missing Branch Code')).toBeTruthy()
 
     // includeResolved toggle changes the request.
     const getCallsBefore = calls.filter((c) => c.url.includes('/ops/quarantine') && !c.url.includes('resolve')).length
@@ -91,8 +99,9 @@ describe('QueuesPage', () => {
     const getCallsAfterToggle = calls.filter((c) => c.url.includes('/ops/quarantine') && !c.url.includes('resolve')).length
     expect(getCallsAfterToggle).toBeGreaterThan(getCallsBefore)
 
-    // Resolve: fill a handful of the correction fields, submit, and assert
-    // the real BankRequestRow shape rode the POST body (not a bare id).
+    // Resolve: fill every correction field including the now-mandatory branch
+    // code, submit, and assert the real BankRequestRow shape (with branchCode)
+    // rode the POST body, not a bare id.
     await userEvent.click(screen.getByRole('button', { name: /resolve quarantine row qr-1/i }))
     await userEvent.type(screen.getByLabelText(/bank merchant reference/i), 'BMR-1')
     await userEvent.type(screen.getByLabelText(/display name/i), 'Acme Store')
@@ -106,6 +115,7 @@ describe('QueuesPage', () => {
     await userEvent.type(screen.getByLabelText(/ship-to address/i), '2 Ship Ln')
     await userEvent.type(screen.getByLabelText(/contact name/i), 'Jane Doe')
     await userEvent.type(screen.getByLabelText(/mobile/i), '9999999999')
+    await userEvent.type(screen.getByLabelText(/branch code/i), 'BR-100')
     await userEvent.click(screen.getByLabelText(/soundbox/i))
 
     const getCallsBeforeResolve = calls.filter((c) => c.url.includes('/ops/quarantine') && !c.url.includes('resolve')).length
@@ -133,6 +143,7 @@ describe('QueuesPage', () => {
     expect(correctedRow.shipToAddress).toBe('2 Ship Ln')
     expect(correctedRow.contactName).toBe('Jane Doe')
     expect(correctedRow.mobile).toBe('9999999999')
+    expect(correctedRow.branchCode).toBe('BR-100')
     expect(correctedRow.soundbox).toBe(true)
     expect(correctedRow.standeeCount).toBe(0)
     expect(correctedRow.stickerCount).toBe(0)
@@ -144,7 +155,7 @@ describe('QueuesPage', () => {
     })
   })
 
-  it('renders intake exceptions and resolves with a correctedSheet including a dynamically added row', async () => {
+  it('renders intake exceptions and resolves with a correctedSheet including a dynamically added row (raw exceptionId, unblocked)', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
@@ -180,8 +191,7 @@ describe('QueuesPage', () => {
     )
 
     await userEvent.click(screen.getByRole('button', { name: /intake exceptions/i }))
-    expect(await screen.findByText('vndr-1')).toBeTruthy()
-    expect(screen.getByText('row-5')).toBeTruthy()
+    expect(await screen.findByText('row-5')).toBeTruthy()
 
     await userEvent.click(screen.getByRole('button', { name: /resolve intake exception ie-1/i }))
     // fileId and vndrId are pre-filled from the exception row.
@@ -212,13 +222,14 @@ describe('QueuesPage', () => {
     ])
   })
 
-  it('renders status exceptions and resolves with the shptId/status/courierTimestamp body', async () => {
+  it('renders status exceptions with the Resolve control GATED (G-SHPT): no wire shpt id source exists, so it never sends a resolve request', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init: RequestInit) => {
         calls.push({ url, init })
-        if (url.includes('/ops/status-exceptions/se-1/resolve')) {
+        if (url.includes('/ops/status-exceptions/')) {
+          // Should never be hit; fail loudly if the gate is bypassed.
           return jsonResponse({ deduped: false, outcome: 'corrected' })
         }
         if (url.includes('/ops/exceptions/status')) {
@@ -254,24 +265,17 @@ describe('QueuesPage', () => {
     // A null fileId/rowRef render as a neutral marker, not "null".
     expect(screen.queryByText('null')).toBeNull()
 
-    await userEvent.click(screen.getByRole('button', { name: /resolve status exception se-1/i }))
-    await userEvent.type(screen.getByLabelText(/shipment id/i), 'shpt-1')
-    await userEvent.type(screen.getByLabelText(/^status$/i), 'DELIVERED')
-    await userEvent.type(screen.getByLabelText(/courier timestamp/i), '2026-08-01T00:00:00.000Z')
+    // The gating note explaining WHY is visible (no silent omission).
+    expect(screen.getByText(/no verified.*shipment id/i)).toBeTruthy()
 
-    await userEvent.click(screen.getByRole('button', { name: /submit correction/i }))
+    // The Resolve control is present but disabled, and carries no working
+    // click handler that could ever open a form capable of sending a bad id.
+    const resolveButton = screen.getByRole('button', { name: /resolve status exception se-1/i }) as HTMLButtonElement
+    expect(resolveButton.disabled).toBe(true)
+    await userEvent.click(resolveButton)
 
-    await waitFor(() => {
-      expect(calls.some((c) => c.url.includes('/ops/status-exceptions/se-1/resolve'))).toBe(true)
-    })
-    const resolveCall = calls.find((c) => c.url.includes('/ops/status-exceptions/se-1/resolve'))
-    expect(resolveCall).toBeTruthy()
-    expect(headerValue(resolveCall!, 'Idempotency-Key')).toBeTruthy()
-    const body = parseBody(resolveCall!)
-    expect(body).toEqual({
-      shptId: 'shpt-1',
-      status: 'DELIVERED',
-      courierTimestamp: '2026-08-01T00:00:00.000Z',
-    })
+    // No form ever appears, and above all: no resolve request is ever sent.
+    expect(screen.queryByRole('button', { name: /submit correction/i })).toBeNull()
+    expect(calls.some((c) => c.url.includes('/ops/status-exceptions/'))).toBe(false)
   })
 })

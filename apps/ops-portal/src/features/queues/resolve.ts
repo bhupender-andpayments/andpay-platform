@@ -30,6 +30,13 @@ export interface BankRequestRowForm {
   shipToAddress: string
   contactName: string
   mobile: string
+  // Phase 3 Task 4 (BRD 5.1b): now mandatory at ingest. resolveQuarantineRow
+  // re-drives the same ingest path (services/tms/src/ops.ts), so a corrected
+  // row missing this bounces straight back into quarantine as
+  // 'missing_branch_code' rather than actually resolving. The quarantine row
+  // view never carried the original branchCode (S8 reject path persists no
+  // more than fileId/rowNo/reasonCode), so this is always a fresh re-key.
+  branchCode: string
   vpaHint: string
 }
 
@@ -55,6 +62,7 @@ export function emptyBankRequestRowForm(fileId: string, rowNo: number): BankRequ
     shipToAddress: '',
     contactName: '',
     mobile: '',
+    branchCode: '',
     vpaHint: '',
   }
 }
@@ -84,24 +92,19 @@ export function toBankRequestRow(form: BankRequestRowForm): BankRequestRow | nul
     shipToAddress: form.shipToAddress,
     contactName: form.contactName,
     mobile: form.mobile,
+    branchCode: form.branchCode,
   }
   return form.vpaHint.trim() === '' ? base : { ...base, vpaHint: form.vpaHint }
 }
 
 // ---------------------------------------------------------------------------
-// Status exception: the resolve body IS the form (three plain strings), so no
-// separate wire type or conversion is needed beyond the empty-state builder.
-// ---------------------------------------------------------------------------
-export interface StatusExceptionForm {
-  shptId: string
-  status: string
-  courierTimestamp: string
-}
-
-export function emptyStatusExceptionForm(): StatusExceptionForm {
-  return { shptId: '', status: '', courierTimestamp: '' }
-}
-
+// Status exception resolve (G-SHPT): NO form builder lives here on purpose.
+// The resolve body needs a WIRE shpt id (body.shptId) that no read on this
+// queue exposes (see the comment on resolveStatusException/
+// StatusExceptionResolveBody in ../../api/endpoints.js for the full
+// grounding). Re-adding a `StatusExceptionForm`/`emptyStatusExceptionForm`
+// pair here would recreate exactly the free-text-id-to-the-edge shape this
+// task's grounding ruled out; QueuesPage.tsx renders the leg gated instead.
 // ---------------------------------------------------------------------------
 // Intake exception: correctedSheet's dynamic rows editor. Each editable row is
 // one of two kinds; deviceQr is edited as a raw JSON string (the wire type is
