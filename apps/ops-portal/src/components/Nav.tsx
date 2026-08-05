@@ -1,54 +1,104 @@
+import type { ComponentType, SVGProps } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.js'
+import {
+  IconDashboard,
+  IconReports,
+  IconQueues,
+  IconMasterData,
+  IconUploads,
+  IconOperations,
+  IconLogout,
+} from '../ui/icons.js'
 
-// The six feature sections (tasks 10 to 14 fill their placeholders in). This
-// list is NOT a permission model: every ops user who can sign in sees every
-// section. Any per-action scope gating (e.g. hiding a destructive control
-// the actor cannot use) belongs to the individual feature pages (tasks 14,
-// 15), is cosmetic only, and never substitutes for the edge's own
+// The six feature sections (Phase 7 task 3 restyle onto the Task 1 token
+// layer + icons). This is NOT a permission model: every ops user who can
+// sign in sees every section. Any per-action scope gating (e.g. hiding a
+// destructive control the actor cannot use) belongs to the individual
+// feature pages, is cosmetic only, and never substitutes for the edge's own
 // authorization check (S24/T14).
-const SECTIONS = [
-  { to: '/dashboards', label: 'Dashboards' },
-  { to: '/reports', label: 'Reports' },
-  { to: '/queues', label: 'Queues' },
-  { to: '/masterdata', label: 'Master Data' },
-  { to: '/uploads', label: 'Uploads' },
-  { to: '/operations', label: 'Operations' },
-] as const
+//
+// routes.tsx's authenticated Shell renders src/ui/AppShell directly (Task 1
+// AppShell already ships its own equivalent sidebar internally, matching the
+// demo's composition), so this component is no longer mounted on the live
+// routing path. It is kept, restyled, as a standalone component because
+// test/auth/login.test.tsx mounts it directly (outside AppShell) to assert
+// the derived principal/role label and the logout control; that existing
+// test is out of this task's file list, so its exact text/role contract
+// (principal.sub, principal.roleLabel, an accessibly-named Logout button)
+// stays intact here, only the presentation changes.
+interface Section {
+  to: string
+  label: string
+  icon: ComponentType<SVGProps<SVGSVGElement>>
+}
+const SECTIONS: readonly Section[] = [
+  { to: '/dashboards', label: 'Dashboards', icon: IconDashboard },
+  { to: '/reports', label: 'Reports', icon: IconReports },
+  { to: '/queues', label: 'Queues', icon: IconQueues },
+  { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
+  { to: '/uploads', label: 'Uploads', icon: IconUploads },
+  { to: '/operations', label: 'Operations', icon: IconOperations },
+]
+
+function initials(sub: string | undefined): string {
+  if (!sub) return 'OP'
+  const clean = sub.replace(/[^a-zA-Z0-9]/g, '')
+  return clean.slice(0, 2).toUpperCase() || 'OP'
+}
 
 export function Nav() {
   const { principal, logout } = useAuth()
 
   return (
-    <nav aria-label="Main" className="flex h-full w-56 shrink-0 flex-col justify-between border-r border-slate-200 bg-slate-50 p-4">
-      <ul className="space-y-1">
-        {SECTIONS.map((section) => (
-          <li key={section.to}>
-            <NavLink
-              to={section.to}
-              className={({ isActive }) =>
-                `block rounded px-3 py-2 text-sm font-medium ${
-                  isActive ? 'bg-slate-200 text-slate-900' : 'text-slate-600 hover:bg-slate-100'
-                }`
-              }
-            >
-              {section.label}
-            </NavLink>
-          </li>
-        ))}
+    <nav aria-label="Main" className="flex h-full w-60 shrink-0 flex-col justify-between border-r border-line bg-surface p-3">
+      <ul className="space-y-0.5">
+        {SECTIONS.map((section) => {
+          const Icon = section.icon
+          return (
+            <li key={section.to}>
+              <NavLink
+                to={section.to}
+                className={({ isActive }) =>
+                  `group flex items-center gap-3 rounded-md px-3 py-2 text-[13px] font-medium transition-colors ${
+                    isActive ? 'bg-brand-weak text-brand-strong' : 'text-muted hover:bg-surface-2 hover:text-ink'
+                  }`
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <Icon width={18} height={18} className={isActive ? 'text-brand' : 'text-subtle group-hover:text-muted'} />
+                    {section.label}
+                  </>
+                )}
+              </NavLink>
+            </li>
+          )
+        })}
       </ul>
-      <div className="border-t border-slate-200 pt-4">
-        <p className="truncate text-sm text-slate-500">{principal?.sub ?? ''}</p>
-        {principal?.roleLabel !== undefined && (
-          <p className="truncate text-xs text-slate-400">{principal.roleLabel}</p>
-        )}
-        <button
-          type="button"
-          onClick={() => { void logout() }}
-          className="mt-2 w-full rounded bg-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-300"
-        >
-          Logout
-        </button>
+      <div className="border-t border-line pt-3">
+        <div className="flex items-center gap-3 rounded-md px-2 py-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-weak text-[12px] font-semibold text-brand-strong">
+            {initials(principal?.sub)}
+          </span>
+          <span className="min-w-0 flex-1 leading-tight">
+            <span className="block truncate text-[13px] font-medium text-ink" title={principal?.sub}>
+              {principal?.sub ?? ''}
+            </span>
+            {principal?.roleLabel !== undefined && (
+              <span className="block truncate text-[11px] text-subtle">{principal.roleLabel}</span>
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => { void logout() }}
+            title="Logout"
+            aria-label="Logout"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-subtle hover:bg-surface-2 hover:text-ink"
+          >
+            <IconLogout width={17} height={17} />
+          </button>
+        </div>
       </div>
     </nav>
   )

@@ -2,21 +2,19 @@ import { BrowserRouter } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext.js'
 import { AppRoutes } from './routes.js'
 
-// The real app shell (spec 13 task 9): AuthProvider (spec 13 task 7) wraps a
-// real BrowserRouter over the router-agnostic route tree in routes.tsx. The
-// header stays outside RequireAuth/the router so it renders on every route,
-// unauthenticated or not (it also keeps the original Task-2 smoke test,
-// which renders <App/> with no route or auth setup, passing unchanged).
+// The real app shell (Phase 7 task 3): AuthProvider wraps a real
+// BrowserRouter over the router-agnostic route tree in routes.tsx. The
+// branded frame now lives entirely inside the authenticated Shell
+// (src/ui/AppShell.tsx, routes.tsx); the login route renders full-bleed with
+// its own form, so there is no always-on header here. This matches the
+// demo's composition (demo/ops-portal-skin App.tsx) and the AppShell brand
+// mark (Sidebar's "AndPayments" / "Ops Console") is now the single source of
+// branding, not a second header stacked above it.
 export function App() {
   return (
     <AuthProvider>
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <div className="flex min-h-screen flex-col bg-white">
-          <header className="border-b border-slate-200 px-4 py-3">
-            <h1 className="text-lg font-semibold text-slate-900">AndPayments Ops</h1>
-          </header>
-          <AppRoutes />
-        </div>
+        <AppRoutes />
       </BrowserRouter>
     </AuthProvider>
   )

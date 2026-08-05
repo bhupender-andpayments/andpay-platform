@@ -1,8 +1,8 @@
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth/AuthContext.js'
 import { LoginPage } from './auth/LoginPage.js'
-import { Nav } from './components/Nav.js'
 import { RequireAuth } from './components/RequireAuth.js'
+import { AppShell } from './ui/AppShell.js'
 import { TilesPage } from './features/dashboards/TilesPage.js'
 import { ReportPage } from './features/dashboards/ReportPage.js'
 import { QueuesPage } from './features/queues/QueuesPage.js'
@@ -23,15 +23,17 @@ function LoginRoute() {
   return <LoginPage />
 }
 
-// The authenticated shell: the left Nav plus whatever feature route matched.
+// The authenticated shell: the branded AppShell (Phase 7 task 3, src/ui/
+// AppShell.tsx) frame around whatever feature route matched. AppShell owns
+// its own sidebar nav + principal/logout footer internally (Task 1), so this
+// no longer composes the standalone Nav component; Nav.tsx remains a
+// restyled, standalone component (see its own file) for anything that still
+// mounts it directly.
 function Shell() {
   return (
-    <div className="flex flex-1">
-      <Nav />
-      <main className="flex-1 overflow-auto p-6">
-        <Outlet />
-      </main>
-    </div>
+    <AppShell>
+      <Outlet />
+    </AppShell>
   )
 }
 
