@@ -246,6 +246,12 @@ importers:
         specifier: ^5.4.0
         version: 5.4.21(@types/node@22.20.1)
 
+  apps/scheduler:
+    dependencies:
+      '@andpay/fulfillment-service':
+        specifier: workspace:*
+        version: link:../../services/fulfillment
+
   apps/tenant-edge:
     dependencies:
       '@andpay/analytics-service':
