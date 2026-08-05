@@ -691,6 +691,33 @@ export function holdRecord(c: Client, asgnId: string, idempotencyKey: string) {
 }
 
 // -----------------------------------------------------------------------
+// Activation (Task 11, Phase 7, FR-07/D-H.1 SUCCESS mark). The confirmed
+// ops-edge contract (apps/ops-edge/src/ops.controller.ts's
+// activateAssignmentRoute): POST /ops/assignments/activate, body
+// `{ dispatchId }`. The field is named dispatchId on the wire but IS the
+// wire asgn id - the exact same `dispatchId` string the `activation` report
+// row already emits (services/analytics/src/mediation.ts's activationRow),
+// per docs/plan/phase7_grounding/B_edge_contracts.md row #11 ("MATCH
+// (wire)"). NOT step-up-gated (`ops:mark-activated` is absent from
+// OPS_STEP_UP_GATED_OPERATIONS). The DELIVERED gate (deliveryDate IS NOT
+// NULL) is read and enforced SERVER-SIDE at the edge, off its own local
+// analyticsDb projection (never a cross-context TMS read, C4); the
+// onceWithin business key `${asgnId}|activate` is also server-side
+// (activateAssignmentWithinTx). This client function only sends the id and
+// a fresh request-level Idempotency-Key, exactly like every other gated
+// write below - it does not, and cannot, construct either server-side key.
+// -----------------------------------------------------------------------
+
+export function markActivated(c: Client, dispatchId: string, idempotencyKey: string) {
+  return c.request<{ activated: boolean }>({
+    method: 'POST',
+    path: '/ops/assignments/activate',
+    body: { dispatchId },
+    idempotencyKey,
+  })
+}
+
+// -----------------------------------------------------------------------
 // Dispatch package downloads (Task 9, Phase 7). The two ops-edge routes
 // (apps/ops-edge/src/ops-read.controller.ts's dispatchExcel/collateral) are
 // guard-only reads (no D2 authorize, no 6e, no Idempotency-Key) that return

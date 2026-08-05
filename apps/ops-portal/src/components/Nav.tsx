@@ -8,6 +8,7 @@ import {
   IconMasterData,
   IconUploads,
   IconOperations,
+  IconCheck,
   IconLogout,
 } from '../ui/icons.js'
 
@@ -32,6 +33,17 @@ interface Section {
   label: string
   icon: ComponentType<SVGProps<SVGSVGElement>>
 }
+// Phase 7 Task 11 (FR-07 live activation): added the /activation section
+// here only. AppShell.tsx (Task 1/3) is what actually renders the live
+// sidebar today (routes.tsx's Shell wraps AppShell, not this component; see
+// the Task 3 report's disclosed "Nav.tsx is no longer on the live routing
+// path" finding) and is NOT touched by this task: its own SECTIONS list
+// feeds `test/shell/nav.test.tsx`'s locked assertion of exactly the 6
+// pre-existing sections, which this task's file list does not include and
+// must not break. `/activation` is fully reachable by route (routes.tsx)
+// today; reconciling AppShell's sidebar with this list is Task 13's
+// consistency-sweep scope, exactly as Task 3 already flagged for the
+// pre-existing Nav/AppShell duplication.
 const SECTIONS: readonly Section[] = [
   { to: '/dashboards', label: 'Dashboards', icon: IconDashboard },
   { to: '/reports', label: 'Reports', icon: IconReports },
@@ -39,6 +51,7 @@ const SECTIONS: readonly Section[] = [
   { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
   { to: '/uploads', label: 'Uploads', icon: IconUploads },
   { to: '/operations', label: 'Operations', icon: IconOperations },
+  { to: '/activation', label: 'Activation', icon: IconCheck },
 ]
 
 function initials(sub: string | undefined): string {

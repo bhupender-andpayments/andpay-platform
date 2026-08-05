@@ -9,6 +9,7 @@ import { QueuesPage } from './features/queues/QueuesPage.js'
 import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
 import { UploadsPage } from './features/uploads/UploadsPage.js'
 import { OperationsPage } from './features/operations/OperationsPage.js'
+import { ActivationPage } from './features/activation/ActivationPage.js'
 
 // Router-agnostic route tree (no <BrowserRouter> here) so tests can wrap it
 // in a <MemoryRouter> with a chosen initialEntries, per Task 9's test plan.
@@ -49,6 +50,7 @@ export function AppRoutes() {
           <Route path="/masterdata" element={<MasterDataPage />} />
           <Route path="/uploads" element={<UploadsPage />} />
           <Route path="/operations" element={<OperationsPage />} />
+          <Route path="/activation" element={<ActivationPage />} />
           <Route path="/" element={<Navigate to="/dashboards" replace />} />
           <Route path="*" element={<Navigate to="/dashboards" replace />} />
         </Route>
