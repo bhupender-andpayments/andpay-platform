@@ -15,16 +15,19 @@ import type { ReportRow } from '../../api/endpoints.js'
 // batch trigger, status correction, recompose, hold, dispatch history + the
 // dispatch-package downloads. All are non-step-up-gated writes/reads.
 //
-// G-SHPT wiring: DispatchHistoryPage's "Correct status" action and
-// StatusCorrectionForm are linked here, not inside either component, so a
-// row picked on the history tab drives the correction tab with its REAL
-// wire shptId - never a hand-typed value. `selectedRow` is lifted to this
-// level because it is the one piece of state both tabs need to share.
+// G-SHPT wiring: DispatchHistoryPage's "Correct status" and "Override"
+// actions and StatusCorrectionForm/TerminalOverrideForm are linked here, not
+// inside either component, so a row picked on the history tab drives the
+// correction or destructive tab with its REAL wire shptId - never a
+// hand-typed value. `selectedRow` is lifted to this level because it is the
+// one piece of state all three tabs need to share (Phase 7 Task 10 extends
+// the Task 9 pattern from two tabs to three).
 //
 // The "Destructive" tab holds the three step-up-gated counterparts
-// (terminal override, hold release, vendor suspend): a later task (Phase 7
-// Task 10) reskins those three components themselves; this page only
-// contains their shared tab/container chrome (deliberately unchanged here).
+// (terminal override, hold release, vendor suspend). TerminalOverrideForm
+// is driven by the same lifted `selectedRow` as StatusCorrectionForm;
+// HoldReleaseButton and VendorSuspendButton are self-contained (a free-text
+// asgn id, and a self-fetched real vendor list, respectively).
 type TabKey = 'batch' | 'correction' | 'recompose' | 'hold' | 'history' | 'destructive'
 
 const TABS: ReadonlyArray<{ key: TabKey; label: string }> = [
@@ -45,6 +48,11 @@ export function OperationsPage() {
     setTab('correction')
   }
 
+  function handleOverrideTerminal(row: ReportRow): void {
+    setSelectedRow(row)
+    setTab('destructive')
+  }
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -58,7 +66,9 @@ export function OperationsPage() {
       )}
       {tab === 'recompose' && <RecomposeForm />}
       {tab === 'hold' && <HoldButton />}
-      {tab === 'history' && <DispatchHistoryPage onCorrectStatus={handleCorrectStatus} />}
+      {tab === 'history' && (
+        <DispatchHistoryPage onCorrectStatus={handleCorrectStatus} onOverrideTerminal={handleOverrideTerminal} />
+      )}
       {tab === 'destructive' && (
         <div className="space-y-4">
           <InfoNote>
@@ -68,7 +78,7 @@ export function OperationsPage() {
             </span>
             . These actions re-prompt for your authenticator code and are re-authorized at the edge.
           </InfoNote>
-          <TerminalOverrideForm />
+          <TerminalOverrideForm selectedRow={selectedRow} onClearSelection={() => setSelectedRow(null)} />
           <HoldReleaseButton />
           <VendorSuspendButton />
         </div>

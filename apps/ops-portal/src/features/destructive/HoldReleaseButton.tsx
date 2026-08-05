@@ -2,12 +2,20 @@ import { useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { releaseHold } from '../../api/endpoints.js'
+import { Card, CardHeader, Field, Input, Button, ErrorNote } from '../../ui/primitives.js'
 
-// Hold release (spec 13 task 15, checks 2 and 3). The confirmed ops-edge
-// contract (apps/ops-edge/src/ops.controller.ts's release): posts to
-// /ops/records/:asgnId/release with NO body, only a fresh Idempotency-Key
-// AND the 'hold-release' stepUpKey, the counterpart to Task 14's
-// non-gated HoldButton (../operations/HoldButton.tsx).
+// Hold release (Phase 7 Task 10, reskin of the spec-13 build). The confirmed
+// ops-edge contract (apps/ops-edge/src/ops.controller.ts's release): posts
+// to /ops/records/:asgnId/release with NO body, only a fresh
+// Idempotency-Key AND the 'hold-release' stepUpKey (OPS_STEP_UP_GATED_OPERATIONS,
+// packages/authz/src/stepup-operations.ts, a spine file this task does not
+// touch), the step-up-gated counterpart to Task 9's non-gated HoldButton
+// (../operations/HoldButton.tsx).
+//
+// The assignment id is a WIRE asgn id (B_edge_contracts.md #9, shape-matched)
+// with no ops-edge read that discovers one anywhere - the same reality as
+// HoldButton's own free-text asgnId field and BatchPage's tenant/program
+// inputs, so free text is the only honest source here.
 //
 // This component makes NO authorization decision (S24/T14): the client
 // interceptor and StepUpDialog already own the step-up round trip; this
@@ -42,46 +50,34 @@ export function HoldReleaseButton() {
   }
 
   return (
-    <div className="space-y-4 rounded border border-red-200 p-4">
-      <h2 className="text-sm font-semibold text-slate-800">Release hold</h2>
+    <Card>
+      <CardHeader title="Release hold" subtitle="Release an operational hold on an assignment. Requires step-up." />
       <form
         onSubmit={(e) => {
           void handleSubmit(e)
         }}
-        className="flex flex-wrap items-end gap-3"
+        className="flex flex-wrap items-end gap-3 p-5 pt-4"
       >
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="release-asgnId">
-            Assignment ID
-          </label>
-          <input
-            id="release-asgnId"
-            value={asgnId}
-            onChange={(e) => setAsgnId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded bg-red-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-40"
-        >
+        <Field label="Assignment ID" htmlFor="release-asgnId">
+          <Input id="release-asgnId" value={asgnId} onChange={(e) => setAsgnId(e.target.value)} placeholder="asgn_..." />
+        </Field>
+        <Button type="submit" variant="danger" disabled={busy} loading={busy}>
           Release
-        </button>
+        </Button>
       </form>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
+        <div className="px-5 pb-5">
+          <ErrorNote>{error}</ErrorNote>
+        </div>
       )}
 
       {result !== null && (
-        <p className="text-sm text-slate-800">
+        <div className="px-5 pb-5 text-sm text-ink">
           {result.deduped ? 'Already released (deduped). ' : ''}
           {result.released ? 'Released.' : 'Not released.'}
-        </p>
+        </div>
       )}
-    </div>
+    </Card>
   )
 }

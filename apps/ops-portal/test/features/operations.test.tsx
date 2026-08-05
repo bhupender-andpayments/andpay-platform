@@ -444,7 +444,7 @@ describe('DispatchHistoryPage', () => {
       }),
     )
 
-    render(withProviders(<DispatchHistoryPage onCorrectStatus={() => {}} />))
+    render(withProviders(<DispatchHistoryPage onCorrectStatus={() => {}} onOverrideTerminal={() => {}} />))
 
     expect(await screen.findByText('AWB-1')).toBeTruthy()
     expect(screen.getByText('shpt_1')).toBeTruthy()
@@ -464,7 +464,7 @@ describe('DispatchHistoryPage', () => {
       ),
     )
     const onCorrectStatus = vi.fn()
-    render(withProviders(<DispatchHistoryPage onCorrectStatus={onCorrectStatus} />))
+    render(withProviders(<DispatchHistoryPage onCorrectStatus={onCorrectStatus} onOverrideTerminal={() => {}} />))
 
     const row = (await screen.findByText('AWB-1')).closest('tr')!
     const button = within(row).getByRole('button', { name: /correct status/i }) as HTMLButtonElement
@@ -487,7 +487,7 @@ describe('DispatchHistoryPage', () => {
       ),
     )
     const onCorrectStatus = vi.fn()
-    render(withProviders(<DispatchHistoryPage onCorrectStatus={onCorrectStatus} />))
+    render(withProviders(<DispatchHistoryPage onCorrectStatus={onCorrectStatus} onOverrideTerminal={() => {}} />))
 
     const row = (await screen.findByText('AWB-2')).closest('tr')!
     const button = within(row).getByRole('button', { name: /correct status/i }) as HTMLButtonElement

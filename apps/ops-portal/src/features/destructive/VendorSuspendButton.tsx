@@ -1,87 +1,128 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { suspendVendor } from '../../api/endpoints.js'
+import { getVendors, suspendVendor, type VendorRow } from '../../api/endpoints.js'
+import { Card, CardHeader, Button, ErrorNote, StatusPill, CodeChip, SkeletonRows } from '../../ui/primitives.js'
+import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 
-// Vendor suspend (spec 13 task 15, checks 2 and 3). The confirmed ops-edge
-// contract (apps/ops-edge/src/ops.controller.ts's suspend): posts to
-// /ops/vendors/:id/suspend with NO body, only a fresh Idempotency-Key AND
-// the 'vendor-suspend' stepUpKey. The read-only vendor registry
-// (../masterdata/VendorRegistryPage.tsx, Task 12) deliberately did not
-// build this action; it lives here as its own standalone control (YAGNI:
-// exactly the three destructive actions, no row-level wiring).
+// Vendor suspend (Phase 7 Task 10, reskin of the spec-13 build). The
+// confirmed ops-edge contract (apps/ops-edge/src/ops.controller.ts's
+// suspend): posts to /ops/vendors/:id/suspend with NO body, only a fresh
+// Idempotency-Key AND the 'vendor-suspend' stepUpKey
+// (OPS_STEP_UP_GATED_OPERATIONS, packages/authz/src/stepup-operations.ts, a
+// spine file this task does not touch).
+//
+// id encoding: GET /ops/vendors (getVendors, ../masterdata/VendorRegistryPage.tsx's
+// read) already emits a WIRE vndr id (B_edge_contracts.md #14, "MATCH
+// (wire)") that round-trips directly into suspendVendor's toUuid decode.
+// This component fetches that same real vendor list itself and suspends
+// whichever row the operator picks, using that row's own `id` verbatim -
+// never a hand-typed value, and never the OBSOLETE ops-edge raw-uuid demo
+// bridge (A_demo_screens.md BRIDGE-1, which wire-encoded a raw uuid on the
+// edge because no wire id existed at demo time; it does now, so this
+// component does not import or recreate that bridge).
 //
 // This component makes NO authorization decision (S24/T14): it does not
-// re-implement step-up, and it renders enabled regardless of any
-// client-side notion of permission, because the display principal carries
-// no permission claim to gate on. Even a persistently-denying edge (a 403
-// both before and after step-up) is surfaced here, never silently granted.
+// re-implement step-up, and it renders each row's action enabled regardless
+// of any client-side notion of permission, because the display principal
+// carries no permission claim to gate on. Even a persistently-denying edge
+// (a 403 both before and after step-up) is surfaced here, never silently
+// granted.
 export function VendorSuspendButton() {
   const { client } = useAuth()
-  const [vendorId, setVendorId] = useState('')
-  const [result, setResult] = useState<{ deduped: boolean } | null>(null)
+  const [rows, setRows] = useState<VendorRow[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ id: string; deduped: boolean } | null>(null)
 
-  async function handleSubmit(e: FormEvent): Promise<void> {
-    e.preventDefault()
+  useEffect(() => {
+    let cancelled = false
+    getVendors(client)
+      .then((res) => {
+        if (cancelled) return
+        setRows(res)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setLoadError(err instanceof Error ? err.message : 'Failed to load vendors.')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client])
+
+  async function handleSuspend(vendorId: string): Promise<void> {
     setError(null)
     setResult(null)
-    if (vendorId.trim() === '') {
-      setError('Vendor ID is required.')
-      return
-    }
-    setBusy(true)
+    setBusyId(vendorId)
     try {
       const res = await suspendVendor(client, vendorId, newIdempotencyKey())
-      setResult(res)
+      setResult({ id: vendorId, deduped: res.deduped })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to suspend the vendor.')
     } finally {
-      setBusy(false)
+      setBusyId(null)
     }
   }
 
-  return (
-    <div className="space-y-4 rounded border border-red-200 p-4">
-      <h2 className="text-sm font-semibold text-slate-800">Suspend vendor</h2>
-      <form
-        onSubmit={(e) => {
-          void handleSubmit(e)
-        }}
-        className="flex flex-wrap items-end gap-3"
-      >
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="suspend-vendorId">
-            Vendor ID
-          </label>
-          <input
-            id="suspend-vendorId"
-            value={vendorId}
-            onChange={(e) => setVendorId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded bg-red-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-40"
+  const columns: ReadonlyArray<DataTableColumn<VendorRow>> = [
+    { key: 'type', header: 'Type', cell: (r) => <CodeChip>{r.type}</CodeChip> },
+    {
+      key: 'displayName',
+      header: 'Display name',
+      cell: (r) => <span className="font-medium text-ink">{r.displayName}</span>,
+    },
+    { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
+    {
+      key: '__actions',
+      header: 'Actions',
+      cell: (r) => (
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={busyId === r.id}
+          loading={busyId === r.id}
+          onClick={() => {
+            void handleSuspend(r.id)
+          }}
         >
           Suspend
-        </button>
-      </form>
+        </Button>
+      ),
+    },
+  ]
+
+  return (
+    <Card>
+      <CardHeader title="Suspend vendor" subtitle="Suspend a vendor from the registry. Requires step-up." />
+
+      {loadError !== null && (
+        <div className="px-5 pt-4">
+          <ErrorNote>{loadError}</ErrorNote>
+        </div>
+      )}
+
+      {rows === null ? (
+        <SkeletonRows rows={4} cols={4} />
+      ) : (
+        <div className="p-5 pt-4">
+          <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No vendors." />
+        </div>
+      )}
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
+        <div className="px-5 pb-5">
+          <ErrorNote>{error}</ErrorNote>
+        </div>
       )}
 
       {result !== null && (
-        <p className="text-sm text-slate-800">
-          {result.deduped ? 'Already suspended (deduped). ' : 'Suspended.'}
-        </p>
+        <div className="px-5 pb-5 text-sm text-ink">
+          {result.deduped ? 'Already suspended (deduped). ' : 'Suspended. '}
+          <CodeChip>{result.id}</CodeChip>
+        </div>
       )}
-    </div>
+    </Card>
   )
 }

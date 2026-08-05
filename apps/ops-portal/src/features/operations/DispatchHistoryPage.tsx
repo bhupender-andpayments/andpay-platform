@@ -19,6 +19,11 @@ import { Card, CardHeader, Field, Input, Button, ErrorNote, SkeletonRows } from 
 // A row with a null shptId (no shipment fact folded yet for that dispatch)
 // has its action permanently disabled - it must never become correctable
 // via a fabricated or looked-up-elsewhere id.
+//
+// Phase 7 Task 10 adds a second row action, "Override" (Terminal Override,
+// the step-up-gated counterpart in ../destructive/TerminalOverrideForm.tsx),
+// gated by the exact same real-shptId guard as "Correct status" - a row
+// without a verified wire shptId must not be overridable either.
 
 function cellText(cell: ReportCell | undefined): string {
   const value = cell ?? null
@@ -29,12 +34,17 @@ function cellText(cell: ReportCell | undefined): string {
 }
 
 const GATED_TITLE = 'No verified wire shipment id for this row yet; status correction is unavailable.'
+const GATED_OVERRIDE_TITLE = 'No verified wire shipment id for this row yet; terminal override is unavailable.'
 
 // Columns are the union of every row's keys, in first-seen order, plus one
 // synthetic Actions column: the soundbox-delivery report's own column set is
 // fixed at the backend, so this renders whatever it actually returns rather
 // than a column list invented here (mirrors ReportPage's buildColumns).
-function buildColumns(rows: ReportRow[], onCorrectStatus: (row: ReportRow) => void): DataTableColumn<ReportRow>[] {
+function buildColumns(
+  rows: ReportRow[],
+  onCorrectStatus: (row: ReportRow) => void,
+  onOverrideTerminal: (row: ReportRow) => void,
+): DataTableColumn<ReportRow>[] {
   const keys: string[] = []
   const seen = new Set<string>()
   for (const row of rows) {
@@ -52,15 +62,26 @@ function buildColumns(rows: ReportRow[], onCorrectStatus: (row: ReportRow) => vo
     cell: (row: ReportRow) => {
       const shptId = reportRowShptId(row)
       return (
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={shptId === null}
-          title={shptId === null ? GATED_TITLE : undefined}
-          onClick={() => onCorrectStatus(row)}
-        >
-          Correct status
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={shptId === null}
+            title={shptId === null ? GATED_TITLE : undefined}
+            onClick={() => onCorrectStatus(row)}
+          >
+            Correct status
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={shptId === null}
+            title={shptId === null ? GATED_OVERRIDE_TITLE : undefined}
+            onClick={() => onOverrideTerminal(row)}
+          >
+            Override
+          </Button>
+        </div>
       )
     },
   }
@@ -69,9 +90,10 @@ function buildColumns(rows: ReportRow[], onCorrectStatus: (row: ReportRow) => vo
 
 export interface DispatchHistoryPageProps {
   onCorrectStatus: (row: ReportRow) => void
+  onOverrideTerminal: (row: ReportRow) => void
 }
 
-export function DispatchHistoryPage({ onCorrectStatus }: DispatchHistoryPageProps) {
+export function DispatchHistoryPage({ onCorrectStatus, onOverrideTerminal }: DispatchHistoryPageProps) {
   const { client } = useAuth()
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -146,7 +168,7 @@ export function DispatchHistoryPage({ onCorrectStatus }: DispatchHistoryPageProp
           <SkeletonRows rows={6} cols={5} />
         ) : (
           <DataTable
-            columns={buildColumns(rows, onCorrectStatus)}
+            columns={buildColumns(rows, onCorrectStatus, onOverrideTerminal)}
             rows={rows}
             emptyMessage="No dispatch history for the current filters."
           />

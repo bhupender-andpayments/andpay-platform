@@ -1,26 +1,36 @@
 import { useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { overrideTerminal } from '../../api/endpoints.js'
+import { overrideTerminal, reportRowShptId, type ReportRow } from '../../api/endpoints.js'
+import { Card, CardHeader, Field, Select, Input, Button, ErrorNote, InfoNote, CodeChip } from '../../ui/primitives.js'
 
-// Terminal override (spec 13 task 15, checks 2 and 3). The confirmed
-// ops-edge contract (apps/ops-edge/src/ops.controller.ts's override):
-// posts { status, courierTimestamp, overrideReason } to
+// Terminal override (Phase 7 Task 10, reskin + un-gate of the spec-13
+// build). The confirmed ops-edge contract (apps/ops-edge/src/ops.controller.ts's
+// override): posts { status, courierTimestamp, overrideReason } to
 // /ops/shipments/:id/override with a fresh Idempotency-Key AND the
-// 'terminal-override' stepUpKey, so a 403 drives the real TOTP dialog
-// (../../auth/StepUpDialog.tsx via ../../api/client.ts's interceptor) and
-// retries ONCE with the SAME idempotency key.
+// 'terminal-override' stepUpKey (OPS_STEP_UP_GATED_OPERATIONS,
+// packages/authz/src/stepup-operations.ts, a spine file this task does not
+// touch), so a 403 drives the real TOTP dialog (../../auth/StepUpDialog.tsx
+// via ../../api/client.ts's interceptor, also spine and unchanged) and
+// retries ONCE with the SAME idempotency key. This component makes NO
+// authorization decision and does not re-implement step-up (S24/T14).
 //
-// The status dropdown reuses Task 14's exact KNOWN_STATUSES set
-// (../operations/StatusCorrectionForm.tsx), the set the edge's
-// isKnownStatus() accepts. overrideReason is free text and required.
+// G-SHPT (docs/plan/phase7_grounding/G_SHPT_backend_spec.md): the backend
+// slice (commit 354aa76) added `shptId: r.shpt_id` to the soundbox-delivery
+// report row (services/analytics/src/mediation.ts soundboxDeliveryRow),
+// already a wire `shpt_...` string end to end. This is the SAME column
+// Task 9's StatusCorrectionForm consumes via reportRowShptId(), so this form
+// is un-gated the identical way: it takes NO shptId input of any kind and is
+// driven ENTIRELY by `selectedRow`, a real row the operator picked on
+// Dispatch History (DispatchHistoryPage's "Override" action, wired via
+// OperationsPage). A row without a real shptId (null - no shipment fact
+// folded yet for that dispatch) is refused here as a defense-in-depth
+// guard, even though DispatchHistoryPage already disables the action for
+// such rows.
 //
-// This component makes NO authorization decision (S24/T14): it does not
-// re-implement step-up (the client + dialog already handle it) and it does
-// not gate itself on any client-side notion of scope, because the display
-// principal (useAuth().principal) carries no permission claim to gate on.
-// The edge is the sole authority and re-checks on every call, regardless of
-// whether this control renders enabled or disabled.
+// The status dropdown reuses the exact KNOWN_STATUSES set StatusCorrectionForm
+// uses, the set the edge's isKnownStatus() accepts. overrideReason is free
+// text and required (there is no ratified enum for it).
 const KNOWN_STATUSES = [
   'DISPATCHED_BY_VENDOR',
   'PICKED_UP',
@@ -31,9 +41,13 @@ const KNOWN_STATUSES = [
   'RETURNED',
 ] as const
 
-export function TerminalOverrideForm() {
+export interface TerminalOverrideFormProps {
+  selectedRow: ReportRow | null
+  onClearSelection?: () => void
+}
+
+export function TerminalOverrideForm({ selectedRow, onClearSelection }: TerminalOverrideFormProps) {
   const { client } = useAuth()
-  const [shptId, setShptId] = useState('')
   const [status, setStatus] = useState<string>(KNOWN_STATUSES[0])
   const [courierTimestamp, setCourierTimestamp] = useState('')
   const [overrideReason, setOverrideReason] = useState('')
@@ -41,12 +55,21 @@ export function TerminalOverrideForm() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
+  const shptId = selectedRow !== null ? reportRowShptId(selectedRow) : null
+
   async function handleSubmit(e: FormEvent): Promise<void> {
     e.preventDefault()
     setError(null)
     setResult(null)
-    if (shptId.trim() === '' || courierTimestamp.trim() === '' || overrideReason.trim() === '') {
-      setError('Shipment ID, courier timestamp, and override reason are all required.')
+    if (shptId === null) {
+      // Unreachable via the UI (the form below only renders once shptId is
+      // confirmed non-null), kept as a defense-in-depth guard: never send a
+      // fabricated id even if this component were reused incorrectly.
+      setError('No verified shipment id is selected.')
+      return
+    }
+    if (courierTimestamp.trim() === '' || overrideReason.trim() === '') {
+      setError('Courier timestamp and override reason are both required.')
       return
     }
     setBusy(true)
@@ -60,87 +83,94 @@ export function TerminalOverrideForm() {
     }
   }
 
+  if (selectedRow === null) {
+    return (
+      <Card>
+        <CardHeader
+          title="Terminal override"
+          subtitle="Select a shipment from Dispatch History to override its status."
+        />
+        <div className="px-5 pb-5">
+          <InfoNote>
+            No shipment selected. Open Dispatch History and choose a row&apos;s Override action.
+          </InfoNote>
+        </div>
+      </Card>
+    )
+  }
+
+  if (shptId === null) {
+    return (
+      <Card>
+        <CardHeader title="Terminal override" />
+        <div className="px-5 pb-5">
+          <ErrorNote>
+            The selected row has no verified wire shipment id and cannot be overridden.
+          </ErrorNote>
+        </div>
+      </Card>
+    )
+  }
+
   return (
-    <div className="space-y-4 rounded border border-red-200 p-4">
-      <h2 className="text-sm font-semibold text-slate-800">Terminal override</h2>
+    <Card>
+      <CardHeader
+        title="Terminal override"
+        subtitle="Force-set the terminal status of the selected shipment. Requires step-up."
+        actions={
+          onClearSelection !== undefined ? (
+            <Button variant="ghost" size="sm" onClick={onClearSelection}>
+              Change shipment
+            </Button>
+          ) : undefined
+        }
+      />
       <form
         onSubmit={(e) => {
           void handleSubmit(e)
         }}
-        className="flex flex-wrap items-end gap-3"
+        className="flex flex-wrap items-end gap-3 p-5 pt-4"
       >
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="override-shptId">
-            Shipment ID
-          </label>
-          <input
-            id="override-shptId"
-            value={shptId}
-            onChange={(e) => setShptId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="override-status">
-            Status
-          </label>
-          <select
-            id="override-status"
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          >
+        <Field label="Shipment">
+          <CodeChip>{shptId}</CodeChip>
+        </Field>
+        <Field label="Status" htmlFor="override-status">
+          <Select id="override-status" value={status} onChange={(e) => setStatus(e.target.value)}>
             {KNOWN_STATUSES.map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
             ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="override-courierTimestamp">
-            Courier timestamp
-          </label>
-          <input
+          </Select>
+        </Field>
+        <Field label="Courier timestamp" htmlFor="override-courierTimestamp">
+          <Input
             id="override-courierTimestamp"
             value={courierTimestamp}
             onChange={(e) => setCourierTimestamp(e.target.value)}
             placeholder="2026-08-01T10:00"
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="override-reason">
-            Override reason
-          </label>
-          <input
-            id="override-reason"
-            value={overrideReason}
-            onChange={(e) => setOverrideReason(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded bg-red-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-40"
-        >
+        </Field>
+        <Field label="Override reason" htmlFor="override-reason">
+          <Input id="override-reason" value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} />
+        </Field>
+        <Button type="submit" variant="danger" disabled={busy} loading={busy}>
           Override
-        </button>
+        </Button>
       </form>
 
       {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
+        <div className="px-5 pb-5">
+          <ErrorNote>{error}</ErrorNote>
+        </div>
       )}
 
       {result !== null && (
-        <p className="text-sm text-slate-800">
+        <div className="px-5 pb-5 text-sm text-ink">
           {result.deduped ? 'Already applied (deduped). ' : ''}
           {result.overridden ? 'Overridden.' : 'Not overridden.'}
-        </p>
+        </div>
       )}
-    </div>
+    </Card>
   )
 }
