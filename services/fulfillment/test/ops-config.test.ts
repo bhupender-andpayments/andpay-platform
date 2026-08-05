@@ -40,6 +40,7 @@ describe('class-3 ops RoleConfig', () => {
       expect(authorize(claim(`role:${role}`), 'ops:damage-reason-create', {}, cfg).allowed).toBe(true)
       expect(authorize(claim(`role:${role}`), 'ops:damage-reason-activate', {}, cfg).allowed).toBe(true)
       expect(authorize(claim(`role:${role}`), 'ops:damage-reason-deactivate', {}, cfg).allowed).toBe(true)
+      expect(authorize(claim(`role:${role}`), 'ops:update-damage-case', {}, cfg).allowed).toBe(true)
     },
   )
 

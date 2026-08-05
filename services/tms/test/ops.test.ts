@@ -8,9 +8,11 @@ import {
   commitBankFile,
   commitDamageFile,
   resolveQuarantineRow,
+  updateDamageCaseStatusOps,
+  OpsClientError,
   BankFileParseError,
 } from '../src/ops.js'
-import { readQuarantineQueue } from '../src/ops-read.js'
+import { readQuarantineQueue, readDamageCases } from '../src/ops-read.js'
 import { DEFAULT_REQUEST_COLUMN_MAPPING, DEFAULT_DAMAGE_COLUMN_MAPPING } from '../src/bank-file-adapter.js'
 import type { BankRequestRow } from '../src/ingest.js'
 
@@ -129,7 +131,7 @@ async function seedOriginalAssignment(vpa: string, bank: string): Promise<string
   ) VALUES (
     ${asgnUuid}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
     'Acme', 'Acme Pvt Ltd', '5814', ${bank}, 'HDFC Bank', 'Old Addr', 'upi://pay', ${vpa}, true, 1, 2,
-    true, 'pooled-for-fulfillment', 'ops-seed|1', now()
+    true, 'pooled-for-fulfillment', ${'ops-seed|' + vpa}, now()
   )`
   return fromUuid('asgn', asgnUuid)
 }
@@ -296,6 +298,80 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     expect(replay.replaced).toBe(0)
     expect(replay.quarantined).toBe(0)
     expect(replay.duplicate).toBe(0)
+  })
+})
+
+describe('FR08-2: damage case-status transition + ops-read working list', () => {
+  // Seed an original, then commit a damage row so exactly one replacement
+  // (case_status Open) exists; return its WIRE asgn id (what the edge passes).
+  async function seedOneReplacement(vpa = 'acme@hdfcbank'): Promise<string> {
+    await seedOriginalAssignment(vpa, 'HDFC')
+    const csv = toCsv(DAMAGE_HEADERS, [damageCells({ vpaValue: vpa })])
+    await commitDamageFile(db, { fileBytes: csv, filename: 'damage.csv', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-seed' })
+    const repl = await db.$queryRaw<{ id: string }[]>`SELECT id FROM assignment WHERE replacement_of IS NOT NULL AND vpa_value = ${vpa}`
+    return fromUuid('asgn', repl[0]!.id)
+  }
+
+  it('transitions case_status Open -> Closed and co-commits an ALLOW 6e (wire id only)', async () => {
+    const asgnId = await seedOneReplacement()
+    const actorId = randomUUID()
+    const r = await updateDamageCaseStatusOps(db, { asgnId, newStatus: 'Closed', clientKey: randomUUID(), actorId, traceId: 't-tr' })
+    expect(r.deduped).toBe(false)
+    const row = await db.$queryRaw<{ case_status: string }[]>`SELECT case_status FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+    expect(row[0]!.case_status).toBe('Closed')
+    // the co-committed 6e (authz.audit) is ALLOW and carries the WIRE asgn id
+    // (never a raw uuid, never PII), with actor = the principal.
+    const audit = await db.$queryRaw<{ payload: { decision: string; operation: string; resourceIds?: string[]; principalId: string } }[]>`
+      SELECT payload FROM outbox WHERE event_type = 'authz.audit' ORDER BY created_at ASC`
+    const found = audit.map((a) => a.payload).find((p) => p.operation === 'ops:update-damage-case')
+    expect(found).toBeTruthy()
+    expect(found!.decision).toBe('ALLOW')
+    expect(found!.resourceIds).toEqual([asgnId])
+    expect(found!.principalId).toBe(actorId)
+  })
+
+  it('rejects an invalid status with a client error, writing nothing', async () => {
+    const asgnId = await seedOneReplacement()
+    await expect(
+      updateDamageCaseStatusOps(db, { asgnId, newStatus: 'Bogus', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-bad' }),
+    ).rejects.toBeInstanceOf(OpsClientError)
+    const row = await db.$queryRaw<{ case_status: string }[]>`SELECT case_status FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+    expect(row[0]!.case_status).toBe('Open')
+  })
+
+  it('rejects a target that is not a replacement (client error)', async () => {
+    // the ORIGINAL assignment is not a replacement (replacement_of IS NULL)
+    await seedOriginalAssignment('solo@hdfcbank', 'HDFC')
+    const orig = await db.$queryRaw<{ id: string }[]>`SELECT id FROM assignment WHERE vpa_value = 'solo@hdfcbank' AND replacement_of IS NULL`
+    const origWire = fromUuid('asgn', orig[0]!.id)
+    await expect(
+      updateDamageCaseStatusOps(db, { asgnId: origWire, newStatus: 'Closed', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-no' }),
+    ).rejects.toBeInstanceOf(OpsClientError)
+  })
+
+  it('is idempotent on the client key (replay is a no-op)', async () => {
+    const asgnId = await seedOneReplacement()
+    const clientKey = randomUUID()
+    const first = await updateDamageCaseStatusOps(db, { asgnId, newStatus: 'In-Progress', clientKey, actorId: randomUUID(), traceId: 't-i' })
+    const replay = await updateDamageCaseStatusOps(db, { asgnId, newStatus: 'In-Progress', clientKey, actorId: randomUUID(), traceId: 't-i' })
+    expect(first.deduped).toBe(false)
+    expect(replay.deduped).toBe(true)
+  })
+
+  it('readDamageCases emits wire ids and excludes Closed by default, includeClosed shows all', async () => {
+    const openAsgn = await seedOneReplacement('open@hdfcbank')
+    const closedAsgn = await seedOneReplacement('closed@hdfcbank')
+    await updateDamageCaseStatusOps(db, { asgnId: closedAsgn, newStatus: 'Closed', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-c' })
+
+    const openOnly = await readDamageCases(db, { includeClosed: false })
+    const openIds = openOnly.map((c) => c.asgnId)
+    expect(openIds).toContain(openAsgn)
+    expect(openIds).not.toContain(closedAsgn)
+    // wire-id shape (asgn_ prefix), and the original is exposed as a wire id too
+    expect(openOnly.every((c) => c.asgnId.startsWith('asgn_') && c.replacementOf.startsWith('asgn_'))).toBe(true)
+
+    const all = await readDamageCases(db, { includeClosed: true })
+    expect(all.map((c) => c.asgnId)).toContain(closedAsgn)
   })
 })
 

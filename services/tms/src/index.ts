@@ -42,12 +42,19 @@ export {
   createDamageReasonOps,
   activateDamageReasonOps,
   deactivateDamageReasonOps,
+  updateDamageCaseStatusOps,
   BankFileParseError,
   OpsClientError,
   type BankPreviewResult,
   type PreviewRowResult,
 } from './ops.js'
-export { readQuarantineQueue, listDamageReasons, type QuarantineRowView } from './ops-read.js'
+export {
+  readQuarantineQueue,
+  listDamageReasons,
+  readDamageCases,
+  type QuarantineRowView,
+  type DamageCaseView,
+} from './ops-read.js'
 export {
   createDamageReasonWithinTx,
   setDamageReasonActiveWithinTx,

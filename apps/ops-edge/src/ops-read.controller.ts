@@ -11,7 +11,14 @@ import {
   type BankCompositionConfigRow,
   type BatchingConfigRow,
 } from '@andpay/fulfillment-service'
-import { readQuarantineQueue, listDamageReasons, type QuarantineRowView, type DamageReasonRow } from '@andpay/tms-service'
+import {
+  readQuarantineQueue,
+  listDamageReasons,
+  readDamageCases,
+  type QuarantineRowView,
+  type DamageReasonRow,
+  type DamageCaseView,
+} from '@andpay/tms-service'
 import { listBankMasters, type BankMasterRow } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
@@ -49,6 +56,14 @@ export class OpsReadController {
   @HttpCode(200)
   async quarantine(@Query('includeResolved') includeResolved?: string): Promise<QuarantineRowView[]> {
     return readQuarantineQueue(this.deps.tmsDb, { includeResolved: includeResolved === 'true' })
+  }
+
+  // FR08-2 (BRD 5.8): the ops damage-case working list. Defaults to open cases;
+  // ?includeClosed=true shows all. Emits wire asgn ids for the transition write.
+  @Get('damage-cases')
+  @HttpCode(200)
+  async damageCases(@Query('includeClosed') includeClosed?: string): Promise<DamageCaseView[]> {
+    return readDamageCases(this.deps.tmsDb, { includeClosed: includeClosed === 'true' })
   }
 
   @Get('exceptions/intake')

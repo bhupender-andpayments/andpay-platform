@@ -41,6 +41,7 @@ import {
   createDamageReasonOps,
   activateDamageReasonOps,
   deactivateDamageReasonOps,
+  updateDamageCaseStatusOps,
   type BankRequestRow,
   type BankPreviewResult,
   type DamageReasonRow,
@@ -75,6 +76,9 @@ interface RecomposeBody {
   asgnId: string
   artifactType: string
   requestedShipTo?: string
+}
+interface DamageCaseStatusBody {
+  status: string
 }
 interface BatchTriggerBody {
   tenantWire: string
@@ -499,6 +503,27 @@ export class OpsController {
       traceId: g.traceId,
     })
     return result
+  }
+
+  // FR08-2 (BRD 5.8): transition a replacement's damage case_status. Target
+  // asgnId is a wire id in the path; the service decodes it (toUuid) and the
+  // body carries only the new status (D99, M7/S16: no actor/scope in the body).
+  @Post('records/:asgnId/damage-case-status')
+  @HttpCode(200)
+  async updateDamageCase(
+    @Req() req: EdgeRequest,
+    @Param('asgnId') asgnId: string,
+    @Body() body: DamageCaseStatusBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean }> {
+    const g = await this.gate(req, 'ops:update-damage-case', idem, [asgnId])
+    return updateDamageCaseStatusOps(this.deps.tmsDb, {
+      asgnId,
+      newStatus: body.status,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
   }
 
   @Post('batches/trigger')

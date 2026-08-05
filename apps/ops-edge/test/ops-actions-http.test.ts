@@ -221,6 +221,27 @@ beforeEach(async () => {
   )
 })
 
+describe('ops-edge FR08-2 damage case-status routes (wiring + gate)', () => {
+  // A 400 here (not 403) proves BOTH that ops:update-damage-case is granted to
+  // role:ops_portal (authz passes) AND that the route is mounted and the client-
+  // action-key gate fires on a missing Idempotency-Key, before any domain write.
+  it('POST damage-case-status without an Idempotency-Key -> 400 (authz passed, gate rejects), no 6e', async () => {
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .post(`/ops/records/${newId('asgn')}/damage-case-status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'Closed' })
+    expect(res.status).toBe(400)
+  })
+
+  it('GET damage-cases with a fresh AAL2 claim -> 200 and an array body', async () => {
+    const token = await mint()
+    const res = await request(app.getHttpServer()).get('/ops/damage-cases').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    expect(Array.isArray(res.body)).toBe(true)
+  })
+})
+
 describe('ops-edge actions: the per-action step-up gate (check 1)', () => {
   it('POST override with a STALE auth_time -> 403 + one step-up-required 6e DENY, no domain op', async () => {
     const now = Math.floor(Date.now() / 1000)

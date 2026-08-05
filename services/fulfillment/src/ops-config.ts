@@ -40,6 +40,11 @@ const OPS_PERMISSIONS = [
   'ops:damage-reason-create',
   'ops:damage-reason-activate',
   'ops:damage-reason-deactivate',
+  // FR08-2 (BRD 5.8): transition a replacement's damage case_status
+  // (Open/In-Progress/Closed). Shared ops bundle, not admin-tier. No
+  // `ops:damage-case-list` entry, same reasoning as the other absent -list
+  // permissions above (the list route authorizes without its own permission).
+  'ops:update-damage-case',
   // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
   // admin write pair (branding/template upsert, logo upload). No
   // `ops:bank-config-list` entry, same reasoning as the absent

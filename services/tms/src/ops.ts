@@ -1,15 +1,17 @@
 import { onceWithin, enqueue } from '@andpay/outbox'
 import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
 import { instanceKey } from '@andpay/keys'
+import { toUuid } from '@andpay/ids'
 import type { TmsDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
+import { enterWriteRole, enterWriteScope } from './write-context.js'
 import {
   ingestRequestRowWithinTx,
   requestRowRejectReason,
   type BankRequestRow,
   type RequestRowRejectReason,
 } from './ingest.js'
-import { ingestDamageRowWithinTx } from './damage.js'
+import { ingestDamageRowWithinTx, CASE_STATUS_VALUES } from './damage.js'
 import {
   parseBankRequestFile,
   parseBankDamageFile,
@@ -395,4 +397,62 @@ export async function deactivateDamageReasonOps(
   args: { id: string; clientKey: string; actorId: string; traceId: string },
 ): Promise<{ deduped: boolean }> {
   return setDamageReasonActiveOps(db, 'ops:damage-reason-deactivate', false, args)
+}
+
+// FR08-2 (BRD 5.8): transition a replacement's damage case_status through the
+// Open -> In-Progress -> Closed lifecycle. Any valid target is accepted (no
+// transition graph is enforced: ops may legitimately reopen a Closed case).
+// `assignment` is RLS-scoped (assignment_scoped: USING(true) WITH CHECK
+// program_id = app.program_id), so unlike the platform-only damage_reason
+// writes this must look the target's program up first (the USING(true) SELECT
+// works before any program is bound) then enterWriteScope so the UPDATE's
+// WITH CHECK passes. Role entry is FIRST (spec 10d landmine), the existence
+// check throws BEFORE onceWithin (matching the create-path idiom of validating
+// a client condition outside the deduped effect), and the ALLOW 6e co-commits
+// in the SAME tx (spec 10c CC-1), wire ids only. Idempotent on the client key.
+// Deliberately emits NO fact: projecting case_status into the analytics report/
+// dashboard needs a new transition topic, a corpus decision deferred to a
+// follow-up (see docs/plan/FR08_COMPLETION_DECISIONS.md).
+export async function updateDamageCaseStatusOps(
+  db: TmsDb,
+  args: { asgnId: string; newStatus: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean }> {
+  const target = CASE_STATUS_VALUES.find((v) => v === args.newStatus)
+  if (target === undefined) {
+    throw new OpsClientError('invalid', `case_status must be one of: ${CASE_STATUS_VALUES.join(', ')}`)
+  }
+  const asgnUuid = toUuid(args.asgnId)
+
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'tms_write')
+    const rows = await tx.$queryRaw<{ program_id: string }[]>`
+      SELECT program_id FROM assignment WHERE id = ${asgnUuid}::uuid AND replacement_of IS NOT NULL
+    `
+    if (rows.length !== 1) {
+      throw new OpsClientError('invalid', 'no such damage case (target must be a replacement assignment)')
+    }
+    const programId = rows[0]!.program_id
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:update-damage-case'), async () => {
+      // enterWriteScope is deliberately INSIDE onceWithin (holdRecord scopes
+      // before it): the onceWithin inbox INSERT runs with app.program_id unset,
+      // which is fine because inbox/outbox are not program-gated (proven by
+      // createDamageReasonOps, which never binds a program at all). Binding the
+      // scope here, right before the UPDATE, keeps the WITH-CHECK program next
+      // to the write it guards.
+      await enterWriteScope(tx, 'tms_write', programId)
+      await tx.$executeRaw`UPDATE assignment SET case_status = ${target}, updated_at = now() WHERE id = ${asgnUuid}::uuid`
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:update-damage-case',
+            principalId: args.actorId,
+            resourceIds: [args.asgnId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+  return { deduped: !ran }
 }
