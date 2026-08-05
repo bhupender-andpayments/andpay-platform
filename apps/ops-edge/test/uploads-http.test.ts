@@ -345,10 +345,16 @@ describe('ops-edge uploads: damage PREVIEW (multipart, persists nothing)', () =>
     expect(res.body.rows[1].valid).toBe(false)
     expect(res.body.rows[1].reasonCode).toBe('no_match')
 
-    // Persist-nothing: no replacement created, no outbox event, no
+    // Persist-nothing: no replacement created, and none of the tables the
+    // real commit path would touch on these SAME two outcomes gained a row
+    // (a no_match row would INSERT quarantine_row on commit, damage.ts:81-84;
+    // matches the bank-preview sibling test's exact table set above), no
     // Idempotency-Key was ever required or consumed.
     const repl = await tmsDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
     expect(Number(repl[0]!.n)).toBe(0)
+    expect(await tmsCount('pending_row')).toBe(0)
+    expect(await tmsCount('quarantine_row')).toBe(0)
+    expect(await tmsCount('ingest_file')).toBe(0)
     expect(await tmsCount('outbox')).toBe(0)
     expect(await fulfillmentOutboxAuthz()).toHaveLength(0)
   })
@@ -364,8 +370,16 @@ describe('ops-edge uploads: damage PREVIEW (multipart, persists nothing)', () =>
     expect(res.status).toBe(200)
     expect(res.body.rows[0].valid).toBe(false)
     expect(res.body.rows[0].reasonCode).toBe('invalid_damage_reason')
+    // Same persist-nothing bar as the sibling test above: an
+    // invalid_damage_reason row would ALSO INSERT quarantine_row on commit
+    // (damage.ts:117-120), so this is the specific table this outcome must
+    // prove it never touched.
     const repl = await tmsDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
     expect(Number(repl[0]!.n)).toBe(0)
+    expect(await tmsCount('pending_row')).toBe(0)
+    expect(await tmsCount('quarantine_row')).toBe(0)
+    expect(await tmsCount('ingest_file')).toBe(0)
+    expect(await tmsCount('outbox')).toBe(0)
   })
 
   it('rejects an unauthorized role with 403 and emits NO 6e (persist-nothing on DENY too)', async () => {
