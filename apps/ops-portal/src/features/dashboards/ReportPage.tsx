@@ -15,12 +15,22 @@ import {
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { downloadCsv } from './exportCsv.js'
+import { PageHeader, Card, CardHeader, Field, Select, Input, Button, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
+import { IconSearch, IconDownload } from '../../ui/icons.js'
 
 // The six FR-10 reports. The Activation Report renders as the
 // delivered-not-activated worklist (services/analytics/src/mediation.ts's
 // activationRow): a real worklist of delivered dispatches, whose activation
-// columns render null until FR-07 lands a write path. That is a faithful
-// null, not a fabricated tile count, so it is rendered like any other cell.
+// columns (activationStatus, simActivationStatus, activationDate,
+// activationFailureReason) render null until FR-07 lands a write path (C3
+// fence). That is a faithful null, not a fabricated value, so it is rendered
+// like any other cell. Note there is no distinct SIM-serial-number column on
+// this row: the only SIM-related field the endpoint returns is
+// simActivationStatus (an activation-status mirror of the device, per
+// project.ts's "device+SIM activate together on the single CWD confirmation"
+// comment), not a SIM number; a real SIM serial lives in the fulfillment
+// device-inventory domain and is not projected into this report (C4, no
+// cross-context join) - see the task report for this documented gap.
 const REPORT_DEFS: ReadonlyArray<{ value: ReportName; label: string }> = [
   { value: 'soundbox-delivery', label: 'Soundbox delivery' },
   { value: 'activation', label: 'Activation (delivered, not activated worklist)' },
@@ -52,6 +62,18 @@ function cellText(cell: ReportCell | undefined): string {
   return String(value)
 }
 
+// Humane column headers derived from the real backend keys (a text
+// transform of the actual field name, never an invented label); unknown keys
+// fall back to a title-cased version of the key itself. Numeric-ish columns
+// are right-aligned and rendered with tabular figures.
+const NUMERIC_KEYS = new Set(['ageingDays', 'poolSize', 'oldestRecordAgeDays'])
+function humanHeader(key: string): string {
+  return key
+    .replace(/([A-Z])/g, ' $1')
+    .replace(/^./, (c) => c.toUpperCase())
+    .trim()
+}
+
 // Columns are the union of every row's keys, in first-seen order: the six
 // reports (and the seven drilldowns) each have a different, fixed column set
 // per call, so this renders whatever the backend actually returned rather
@@ -68,7 +90,15 @@ function buildColumns(rows: ReportRow[]): DataTableColumn<ReportRow>[] {
       }
     }
   }
-  return keys.map((key) => ({ key, header: key, cell: (row: ReportRow) => cellText(row[key]) }))
+  return keys.map((key) => ({
+    key,
+    header: humanHeader(key),
+    cell: (row: ReportRow) => {
+      const text = cellText(row[key])
+      if (text === '') return <span className="text-subtle">-</span>
+      return <span className={NUMERIC_KEYS.has(key) ? 'num' : undefined}>{text}</span>
+    },
+  }))
 }
 
 export function ReportPage() {
@@ -86,7 +116,7 @@ export function ReportPage() {
   const [status, setStatus] = useState('')
   const [rows, setRows] = useState<ReportRow[]>([])
   const [watermark, setWatermark] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   function currentFilters(): ReportFilters {
@@ -132,144 +162,96 @@ export function ReportPage() {
     downloadCsv(filename, csv)
   }
 
+  const activeLabel =
+    mode === 'report'
+      ? REPORT_DEFS.find((d) => d.value === reportName)?.label
+      : TILE_DEFS.find((d) => d.value === tileName)?.label
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-slate-900">Reports</h1>
-        <WatermarkBadge watermark={watermark} />
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Reports"
+        description="Operational reports and tile drill-downs across all programs."
+        actions={<WatermarkBadge watermark={watermark} />}
+      />
 
-      <div className="flex flex-wrap items-end gap-4">
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="report-mode">
-            View
-          </label>
-          <select
-            id="report-mode"
-            value={mode}
-            onChange={(e) => setMode(e.target.value === 'drilldown' ? 'drilldown' : 'report')}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
+      <Card>
+        <div className="grid grid-cols-2 gap-4 p-5 sm:grid-cols-3 lg:grid-cols-6">
+          <Field label="View" htmlFor="report-mode">
+            <Select
+              id="report-mode"
+              value={mode}
+              onChange={(e) => setMode(e.target.value === 'drilldown' ? 'drilldown' : 'report')}
+            >
+              <option value="report">Report</option>
+              <option value="drilldown">Tile drilldown</option>
+            </Select>
+          </Field>
+          {mode === 'report' ? (
+            <Field label="Report" htmlFor="report-name">
+              <Select id="report-name" value={reportName} onChange={(e) => setReportName(e.target.value as ReportName)}>
+                {REPORT_DEFS.map((d) => (
+                  <option key={d.value} value={d.value}>
+                    {d.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          ) : (
+            <Field label="Tile" htmlFor="tile-name">
+              <Select id="tile-name" value={tileName} onChange={(e) => setTileName(e.target.value as TileName)}>
+                {TILE_DEFS.map((d) => (
+                  <option key={d.value} value={d.value}>
+                    {d.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+          <Field label="From" htmlFor="filter-from">
+            <Input id="filter-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </Field>
+          <Field label="To" htmlFor="filter-to">
+            <Input id="filter-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          </Field>
+          <Field label="Bank" htmlFor="filter-bank">
+            <Input id="filter-bank" value={bank} onChange={(e) => setBank(e.target.value)} placeholder="e.g. HDFC" />
+          </Field>
+          <Field label="Status" htmlFor="filter-status">
+            <Input id="filter-status" value={status} onChange={(e) => setStatus(e.target.value)} placeholder="e.g. DELIVERED" />
+          </Field>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
+          <Button
+            variant="secondary"
+            onClick={() => {
+              void handleExport()
+            }}
           >
-            <option value="report">Report</option>
-            <option value="drilldown">Tile drilldown</option>
-          </select>
+            <IconDownload width={16} height={16} />
+            Export CSV
+          </Button>
+          <Button
+            onClick={() => {
+              void load()
+            }}
+          >
+            <IconSearch width={16} height={16} />
+            Search
+          </Button>
         </div>
+      </Card>
 
-        {mode === 'report' ? (
-          <div>
-            <label className="block text-xs font-medium text-slate-600" htmlFor="report-name">
-              Report
-            </label>
-            <select
-              id="report-name"
-              value={reportName}
-              onChange={(e) => setReportName(e.target.value as ReportName)}
-              className="rounded border border-slate-300 px-2 py-1 text-sm"
-            >
-              {REPORT_DEFS.map((d) => (
-                <option key={d.value} value={d.value}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
-          </div>
+      {error !== null && <ErrorNote>{error}</ErrorNote>}
+
+      <Card>
+        <CardHeader title={activeLabel ?? 'Results'} subtitle={`${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`} />
+        {loading ? (
+          <SkeletonRows rows={6} cols={6} />
         ) : (
-          <div>
-            <label className="block text-xs font-medium text-slate-600" htmlFor="tile-name">
-              Tile
-            </label>
-            <select
-              id="tile-name"
-              value={tileName}
-              onChange={(e) => setTileName(e.target.value as TileName)}
-              className="rounded border border-slate-300 px-2 py-1 text-sm"
-            >
-              {TILE_DEFS.map((d) => (
-                <option key={d.value} value={d.value}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          <DataTable columns={buildColumns(rows)} rows={rows} emptyMessage="No rows for the current filters." />
         )}
-
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="filter-from">
-            From
-          </label>
-          <input
-            id="filter-from"
-            type="date"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="filter-to">
-            To
-          </label>
-          <input
-            id="filter-to"
-            type="date"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="filter-bank">
-            Bank
-          </label>
-          <input
-            id="filter-bank"
-            type="text"
-            value={bank}
-            onChange={(e) => setBank(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-slate-600" htmlFor="filter-status">
-            Status
-          </label>
-          <input
-            id="filter-status"
-            type="text"
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-        </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            void load()
-          }}
-          className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
-        >
-          Search
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            void handleExport()
-          }}
-          className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
-        >
-          Export CSV
-        </button>
-      </div>
-
-      {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
-      )}
-      {loading && <p className="text-sm text-slate-500">Loading...</p>}
-
-      <DataTable columns={buildColumns(rows)} rows={rows} emptyMessage="No rows for the current filters." />
+      </Card>
     </div>
   )
 }
