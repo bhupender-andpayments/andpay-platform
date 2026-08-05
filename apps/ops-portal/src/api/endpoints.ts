@@ -189,7 +189,13 @@ export interface IntakeExceptionView {
 
 // services/fulfillment/src/ops-read.ts CourierStatusExceptionView: fileId and
 // rowRef are nullable on the wire (a status exception is not always tied to a
-// specific ingest file/row), unlike the brief's flattened summary.
+// specific ingest file/row), unlike the brief's flattened summary. G-SHPT
+// (commit 354aa76): shptId is a LEFT JOIN against shpt.awb = subjectRef, so it
+// is null for reason codes with no matching shipment (unknown_awb, and a
+// webhook-channel unknown_status whose AWB was never looked up) and a real
+// wire `shpt_` id otherwise (courier_unassigned, wrong_courier, file-channel
+// unknown_status). Only a non-null shptId is safe to send to
+// resolveStatusException below.
 export interface CourierStatusExceptionView {
   id: string
   vndrId: string
@@ -201,6 +207,7 @@ export interface CourierStatusExceptionView {
   createdAt: string
   resolvedAt: string | null
   resolvedByActor: string | null
+  shptId: string | null
 }
 
 // services/tms/src/ingest.ts BankRequestRow: the full field list, including
@@ -296,17 +303,15 @@ export function resolveIntakeException(c: Client, id: string, correctedSheet: In
   })
 }
 
-// G-SHPT (docs/plan/phase7_grounding/B_edge_contracts.md gap 2): body.shptId
-// must be a WIRE shpt id (the domain op `toUuid`s it), but no ops-edge read
-// exposes one for this queue. GET /ops/exceptions/status emits `subjectRef`,
-// an opaque courier-side reference string, not a `shpt_` wire id; the only
-// other shpt-shaped value anywhere is the analytics report rail's projected
-// `shptId`, whose wire-ness the grounding doc explicitly flags UNVERIFIED for
-// this purpose. This function still mirrors the real edge contract 1:1 (kept
-// for when G-SHPT is resolved with a real read), but QueuesPage.tsx does NOT
-// call it: the status-exception resolve control is gated (disabled, with an
-// explanatory note) rather than sending a subjectRef or a raw exception id in
-// place of a wire shptId.
+// G-SHPT (docs/plan/phase7_grounding/B_edge_contracts.md gap 2, resolved by
+// commit 354aa76 / docs/plan/phase7_grounding/G_SHPT_backend_spec.md): body.shptId
+// must be a WIRE shpt id (the domain op `toUuid`s it). GET /ops/exceptions/status
+// now LEFT JOINs to shpt.awb = subjectRef and exposes that as
+// CourierStatusExceptionView.shptId (string | null). QueuesPage.tsx sources
+// body.shptId ONLY from a row's own non-null shptId (never subjectRef, never
+// the raw exception id, never hand-typed): rows with a null shptId
+// (unknown_awb, and any webhook-channel unknown_status whose AWB was never
+// looked up) have no matching shipment to correct and stay permanently gated.
 export interface StatusExceptionResolveBody {
   shptId: string
   status: string

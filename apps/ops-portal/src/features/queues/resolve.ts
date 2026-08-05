@@ -98,14 +98,23 @@ export function toBankRequestRow(form: BankRequestRowForm): BankRequestRow | nul
 }
 
 // ---------------------------------------------------------------------------
-// Status exception resolve (G-SHPT): NO form builder lives here on purpose.
-// The resolve body needs a WIRE shpt id (body.shptId) that no read on this
-// queue exposes (see the comment on resolveStatusException/
-// StatusExceptionResolveBody in ../../api/endpoints.js for the full
-// grounding). Re-adding a `StatusExceptionForm`/`emptyStatusExceptionForm`
-// pair here would recreate exactly the free-text-id-to-the-edge shape this
-// task's grounding ruled out; QueuesPage.tsx renders the leg gated instead.
+// Status exception resolve (G-SHPT resolved, commit 354aa76 /
+// docs/plan/phase7_grounding/G_SHPT_backend_spec.md): the operator picks a
+// target status and courier timestamp only. The resolve body's `shptId` is
+// NEVER part of this form and is never typed by an operator; QueuesPage.tsx
+// sources it exclusively from the row's own CourierStatusExceptionView.shptId
+// (already a verified wire id, or null when there is no matching shipment).
+// Reintroducing a free-text shptId field here would recreate exactly the
+// fabricated-id shape this task's grounding forbids.
 // ---------------------------------------------------------------------------
+export interface StatusExceptionForm {
+  status: string
+  courierTimestamp: string
+}
+
+export function emptyStatusExceptionForm(defaultStatus: string): StatusExceptionForm {
+  return { status: defaultStatus, courierTimestamp: '' }
+}
 // Intake exception: correctedSheet's dynamic rows editor. Each editable row is
 // one of two kinds; deviceQr is edited as a raw JSON string (the wire type is
 // an opaque `object`, services/fulfillment/src/intake.ts's isStructurallyValid

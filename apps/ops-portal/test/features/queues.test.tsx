@@ -16,11 +16,11 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 //     re-keyed correction MUST carry it or the row bounces straight back to
 //     quarantine)
 //   POST /ops/intake-exceptions/:id/resolve  { correctedSheet: IntakeSheet }   (raw exceptionId, unblocked)
-//   POST /ops/status-exceptions/:id/resolve  { shptId, status, courierTimestamp } (body.shptId needs a
-//     WIRE shpt id; no read on this queue emits one - GET /ops/exceptions/status emits `subjectRef`, an
-//     opaque courier reference, not a `shpt_` wire id, and the analytics `shptId` projection is
-//     unverified wire-ness per docs/plan/phase7_grounding/B_edge_contracts.md gap 2 - so this leg is
-//     GATED: no resolve control, no id ever sent)
+//   POST /ops/status-exceptions/:id/resolve  { shptId, status, courierTimestamp } (G-SHPT resolved by
+//     commit 354aa76: GET /ops/exceptions/status now LEFT JOINs shpt.awb = subjectRef and returns
+//     shptId: string | null. A row with a non-null shptId is resolvable (the operator picks a status +
+//     courier timestamp; shptId itself comes ONLY from the row, never typed). A row with a null shptId
+//     (unknown_awb, no matching shipment) stays permanently gated: disabled control, no id ever sent)
 // (apps/ops-edge/src/ops-read.controller.ts, apps/ops-edge/src/ops.controller.ts).
 // Every resolve test asserts the CORRECTED payload shape and an
 // Idempotency-Key header, not just an id, per the task's real edge contract.
@@ -222,7 +222,7 @@ describe('QueuesPage', () => {
     ])
   })
 
-  it('renders status exceptions with the Resolve control GATED (G-SHPT): no wire shpt id source exists, so it never sends a resolve request', async () => {
+  it('renders status exceptions with an unknown_awb row (null shptId) GATED: no matching shipment, so it never sends a resolve request', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
@@ -241,10 +241,11 @@ describe('QueuesPage', () => {
               subjectRef: 'subj-1',
               fileId: null,
               rowRef: null,
-              reasonCode: 'unknown_status',
+              reasonCode: 'unknown_awb',
               createdAt: '2026-07-01T00:00:00.000Z',
               resolvedAt: null,
               resolvedByActor: null,
+              shptId: null,
             },
           ])
         }
@@ -265,17 +266,88 @@ describe('QueuesPage', () => {
     // A null fileId/rowRef render as a neutral marker, not "null".
     expect(screen.queryByText('null')).toBeNull()
 
-    // The gating note explaining WHY is visible (no silent omission).
-    expect(screen.getByText(/no verified.*shipment id/i)).toBeTruthy()
-
-    // The Resolve control is present but disabled, and carries no working
-    // click handler that could ever open a form capable of sending a bad id.
+    // The Resolve control is present but disabled, with a title explaining
+    // why (no matching shipment), and carries no working click handler that
+    // could ever open a form capable of sending a bad id.
     const resolveButton = screen.getByRole('button', { name: /resolve status exception se-1/i }) as HTMLButtonElement
     expect(resolveButton.disabled).toBe(true)
+    expect(resolveButton.title).toMatch(/no matching shipment/i)
     await userEvent.click(resolveButton)
 
     // No form ever appears, and above all: no resolve request is ever sent.
     expect(screen.queryByRole('button', { name: /submit correction/i })).toBeNull()
     expect(calls.some((c) => c.url.includes('/ops/status-exceptions/'))).toBe(false)
+  })
+
+  it('resolves a matched status exception (non-null shptId): the Resolve control is enabled and posts the raw exceptionId + the row wire shptId', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init })
+        if (url.includes('/ops/status-exceptions/se-2/resolve')) {
+          return jsonResponse({ deduped: false, outcome: 'corrected' })
+        }
+        if (url.includes('/ops/exceptions/status')) {
+          return jsonResponse([
+            {
+              id: 'se-2',
+              vndrId: 'vndr-1',
+              channel: 'WEBHOOK',
+              subjectRef: 'AWB-999',
+              fileId: null,
+              rowRef: null,
+              reasonCode: 'courier_unassigned',
+              createdAt: '2026-07-01T00:00:00.000Z',
+              resolvedAt: null,
+              resolvedByActor: null,
+              shptId: 'shpt_abc123',
+            },
+          ])
+        }
+        return jsonResponse([])
+      }),
+    )
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <QueuesPage />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /status exceptions/i }))
+    expect(await screen.findByText('AWB-999')).toBeTruthy()
+
+    const resolveButton = screen.getByRole('button', { name: /resolve status exception se-2/i }) as HTMLButtonElement
+    expect(resolveButton.disabled).toBe(false)
+    await userEvent.click(resolveButton)
+
+    // A status + courier-timestamp form appears; no shptId input exists
+    // anywhere (it is never typed).
+    expect(screen.queryByLabelText(/shipment id/i)).toBeNull()
+    await userEvent.selectOptions(screen.getByLabelText(/^status$/i), 'DELIVERED')
+    await userEvent.type(screen.getByLabelText(/courier timestamp/i), '2026-08-05T10:00')
+
+    const getCallsBeforeResolve = calls.filter((c) => c.url.includes('/ops/exceptions/status')).length
+    await userEvent.click(screen.getByRole('button', { name: /submit correction/i }))
+
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/status-exceptions/se-2/resolve'))).toBe(true)
+    })
+    const resolveCall = calls.find((c) => c.url.includes('/ops/status-exceptions/se-2/resolve'))
+    expect(resolveCall).toBeTruthy()
+    expect(headerValue(resolveCall!, 'Idempotency-Key')).toBeTruthy()
+    const body = parseBody(resolveCall!)
+    expect(body.shptId).toBe('shpt_abc123')
+    expect(body.status).toBe('DELIVERED')
+    expect(body.courierTimestamp).toBe('2026-08-05T10:00')
+
+    // The list refreshes after a successful resolve.
+    await waitFor(() => {
+      const after = calls.filter((c) => c.url.includes('/ops/exceptions/status')).length
+      expect(after).toBeGreaterThan(getCallsBeforeResolve)
+    })
   })
 })

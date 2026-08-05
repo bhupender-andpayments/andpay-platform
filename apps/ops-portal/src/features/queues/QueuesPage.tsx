@@ -8,6 +8,7 @@ import {
   getStatusExceptions,
   resolveQuarantine,
   resolveIntakeException,
+  resolveStatusException,
   type QuarantineRowView,
   type IntakeExceptionView,
   type CourierStatusExceptionView,
@@ -21,8 +22,10 @@ import {
   type IntakeSheetForm,
   emptySerializedRowForm,
   emptyQuantityLineRowForm,
+  emptyStatusExceptionForm,
+  type StatusExceptionForm,
 } from './resolve.js'
-import { PageHeader, Card, CardHeader, Tabs, Field, Input, Button, ErrorNote, InfoNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { PageHeader, Card, CardHeader, Tabs, Field, Input, Select, Button, ErrorNote, InfoNote, StatusPill, CodeChip } from '../../ui/primitives.js'
 import { fmtDateTime, shortId } from '../../ui/format.js'
 
 // The three queues (quarantine, intake exceptions, status exceptions),
@@ -37,20 +40,20 @@ import { fmtDateTime, shortId } from '../../ui/format.js'
 // signed-in actor's scope actually covers the resolve is re-checked at the
 // edge on every submit (S24/T14), never decided in this client.
 //
-// G-SHPT (docs/plan/phase7_grounding/B_edge_contracts.md gap 2): the
-// status-exception resolve route requires body.shptId to be a WIRE shpt id,
-// but no read on this queue (or anywhere on the ops-edge fulfillment/tms
-// rail) exposes one. GET /ops/exceptions/status emits `subjectRef`, an
-// opaque courier-side reference, not a `shpt_` wire id, and the only other
-// shpt-shaped value on any ops-edge read is the analytics report rail's
-// projected `shptId`, whose wire-ness the grounding doc explicitly flags
-// UNVERIFIED for this purpose. Sending `subjectRef`, the raw exception id, or
-// a hand-typed string in its place would be exactly the kind of fabricated id
-// the corpus-discipline constraint forbids, so the status-exception Resolve
-// control below is permanently disabled with an explanatory note instead of
-// opening a correction form. Intake exceptions and quarantine both resolve on
-// a RAW id that matches their own read (shape-matched, unblocked) and are
-// wired normally.
+// G-SHPT (docs/plan/phase7_grounding/B_edge_contracts.md gap 2), resolved by
+// commit 354aa76 (Task 13b, docs/plan/phase7_grounding/G_SHPT_backend_spec.md):
+// GET /ops/exceptions/status now LEFT JOINs shpt.awb = subjectRef and returns
+// CourierStatusExceptionView.shptId (string | null) - a real wire `shpt_` id
+// when the AWB matched a shipment, null when it did not (unknown_awb, and any
+// webhook-channel unknown_status whose AWB was never looked up). The
+// status-exception Resolve control below is enabled ONLY for a row whose
+// shptId is non-null, and the resolve body's shptId is sourced EXCLUSIVELY
+// from that field - never subjectRef, never the raw exceptionId, never a
+// hand-typed value. A row with a null shptId has no matching shipment to
+// correct and stays permanently gated (disabled control + an explanatory
+// title), because resolveStatusException requires a real target shpt.
+// Intake exceptions and quarantine both resolve on a RAW id that matches
+// their own read (shape-matched, unblocked) and are wired normally.
 
 type TabKey = 'quarantine' | 'intake' | 'status'
 
@@ -495,11 +498,36 @@ function IntakeExceptionsTab() {
   )
 }
 
+// The 5 target statuses an operator may re-drive a status-exception onto,
+// matching services/fulfillment/src/courier-status.ts's LADDER_RANK plus the
+// 2 non-ladder known statuses (FAILED, RETURNED) - the exact set isKnownStatus
+// accepts. Mirrors the identical list already used by
+// features/operations/StatusCorrectionForm.tsx for the general-purpose
+// shpt correct route, since both routes re-drive the same
+// advanceShipmentStatus ladder.
+const KNOWN_STATUSES = [
+  'DISPATCHED_BY_VENDOR',
+  'PICKED_UP',
+  'IN_TRANSIT',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+  'FAILED',
+  'RETURNED',
+] as const
+
+// A row has no matching shipment to correct (unknown_awb, and any
+// webhook-channel unknown_status whose AWB was never looked up): resolving is
+// permanently impossible for it, by construction, not merely unwired.
+const NO_MATCH_TITLE = 'No matching shipment - cannot resolve.'
+
 function StatusExceptionsTab() {
   const { client } = useAuth()
   const [includeResolved, setIncludeResolved] = useState(false)
   const [rows, setRows] = useState<CourierStatusExceptionView[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [resolvingRow, setResolvingRow] = useState<CourierStatusExceptionView | null>(null)
+  const [form, setForm] = useState<StatusExceptionForm | null>(null)
+  const [formError, setFormError] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setError(null)
@@ -517,11 +545,46 @@ function StatusExceptionsTab() {
     void load()
   }, [load])
 
-  // G-SHPT (see the file-level comment): resolving needs a wire shptId that
-  // no read on this queue provides, so the control is permanently disabled
-  // and clicking it does nothing (no form is ever constructed, no id of any
-  // shape is ever sent).
-  const GATED_TITLE = 'Resolving is disabled: no verified wire shipment id is available for this queue (G-SHPT).'
+  function startResolve(row: CourierStatusExceptionView): void {
+    if (row.shptId === null) return
+    setResolvingRow(row)
+    setForm(emptyStatusExceptionForm(KNOWN_STATUSES[0]))
+    setFormError(null)
+  }
+
+  function cancelResolve(): void {
+    setResolvingRow(null)
+    setForm(null)
+    setFormError(null)
+  }
+
+  async function submitResolve(e: FormEvent): Promise<void> {
+    e.preventDefault()
+    if (resolvingRow === null || form === null) return
+    // Defense-in-depth: the row must still carry the real shptId it was
+    // opened with (the Resolve control that opened this form is only
+    // rendered enabled for a non-null shptId in the first place).
+    if (resolvingRow.shptId === null) {
+      setFormError('No verified shipment id is available for this row.')
+      return
+    }
+    if (form.courierTimestamp.trim() === '') {
+      setFormError('Courier timestamp is required.')
+      return
+    }
+    try {
+      await resolveStatusException(
+        client,
+        resolvingRow.id,
+        { shptId: resolvingRow.shptId, status: form.status, courierTimestamp: form.courierTimestamp },
+        newIdempotencyKey(),
+      )
+      cancelResolve()
+      await load()
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Failed to submit the correction.')
+    }
+  }
 
   const columns: DataTableColumn<CourierStatusExceptionView>[] = [
     { key: 'id', header: 'ID', cell: (r) => <CodeChip>{shortId(r.id)}</CodeChip> },
@@ -537,11 +600,23 @@ function StatusExceptionsTab() {
     {
       key: 'actions',
       header: 'Actions',
-      cell: (r) => (
-        <Button type="button" size="sm" variant="secondary" disabled aria-label={`Resolve status exception ${r.id}`} title={GATED_TITLE}>
-          Resolve
-        </Button>
-      ),
+      cell: (r) =>
+        r.shptId === null ? (
+          <Button type="button" size="sm" variant="secondary" disabled aria-label={`Resolve status exception ${r.id}`} title={NO_MATCH_TITLE}>
+            Resolve
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={r.resolvedAt !== null}
+            aria-label={`Resolve status exception ${r.id}`}
+            onClick={() => startResolve(r)}
+          >
+            Resolve
+          </Button>
+        ),
     },
   ]
 
@@ -556,10 +631,58 @@ function StatusExceptionsTab() {
         )}
         <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No status exceptions." />
       </Card>
+
+      {resolvingRow !== null && form !== null && (
+        <Card className="p-5">
+          <h2 className="mb-4 text-sm font-semibold text-ink">Resolve status exception</h2>
+          <form
+            onSubmit={(e) => {
+              void submitResolve(e)
+            }}
+            className="flex flex-wrap items-end gap-3"
+          >
+            {formError !== null && <ErrorNote>{formError}</ErrorNote>}
+            <Field label="Shipment">
+              <CodeChip>{resolvingRow.shptId}</CodeChip>
+            </Field>
+            <Field label="Status" htmlFor="se-form-status">
+              <Select
+                id="se-form-status"
+                value={form.status}
+                onChange={(e) => {
+                  const value = e.target.value
+                  setForm((prev) => (prev === null ? prev : { ...prev, status: value }))
+                }}
+              >
+                {KNOWN_STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Courier timestamp" htmlFor="se-form-courierTimestamp">
+              <Input
+                id="se-form-courierTimestamp"
+                value={form.courierTimestamp}
+                onChange={(e) => {
+                  const value = e.target.value
+                  setForm((prev) => (prev === null ? prev : { ...prev, courierTimestamp: value }))
+                }}
+                placeholder="2026-08-01T10:00"
+              />
+            </Field>
+            <Button type="submit">Submit correction</Button>
+            <Button type="button" variant="secondary" onClick={cancelResolve}>
+              Cancel
+            </Button>
+          </form>
+        </Card>
+      )}
+
       <InfoNote>
-        No verified wire shipment id is available for this queue, so resolving is disabled. The subject reference
-        shown above is an opaque courier reference, not a shipment id, and the analytics projection is not verified
-        for this purpose. This action stays disabled until an ops-edge read exposes a decodable shipment id.
+        Resolving requires a matched shipment. Rows with no matching shipment (for example an unrecognized AWB) show
+        a disabled Resolve control and cannot be resolved here.
       </InfoNote>
     </div>
   )
