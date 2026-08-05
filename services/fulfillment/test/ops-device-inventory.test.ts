@@ -173,4 +173,100 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
     const allowCountAfter = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = 'authz.audit'`
     expect(Number(allowCountAfter[0]!.n)).toBe(1)
   })
+
+  // Fix round 1, Finding A: the header check must run BEFORE the zero-data-row
+  // early return, so a wrong/missing header is REJECTED (not silently treated
+  // as a benign empty upload) regardless of how many data rows follow it.
+  it('rejects a file with a wrong/missing header as OpsClientError(invalid), with NO unit, NO ledger row, and NO 6e', async () => {
+    const manufacturerVndr = await seedVendor('MANUFACTURER')
+    const wrongHeaderCsv = Buffer.from('Serial,ICCID,QR\nDEV-1,SIM-1,QR-1\n', 'utf8')
+
+    await expect(
+      ingestOpsDeviceInventory(db, {
+        fileBytes: wrongHeaderCsv,
+        filename: 'inv.csv',
+        manufacturerVndrId: manufacturerVndr,
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't3',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+
+    expect(Number((await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`)[0]!.n)).toBe(0)
+    expect(Number((await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM device_inventory_upload`)[0]!.n)).toBe(0)
+    expect(Number((await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = 'authz.audit'`)[0]!.n)).toBe(0)
+  })
+
+  // A wholly blank file (no header row at all) parses to header:[] and is
+  // ALSO a wrong-header rejection (every required column reported missing),
+  // the same path as an explicit wrong header above.
+  it('rejects a wholly blank file (no header row) the same way, as OpsClientError(invalid)', async () => {
+    const manufacturerVndr = await seedVendor('MANUFACTURER')
+    const blank = Buffer.from('', 'utf8')
+
+    await expect(
+      ingestOpsDeviceInventory(db, {
+        fileBytes: blank,
+        filename: 'inv.csv',
+        manufacturerVndrId: manufacturerVndr,
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't4',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+
+    expect(Number((await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM device_inventory_upload`)[0]!.n)).toBe(0)
+  })
+
+  // Fix round 1, Finding A: the DEFINED, DIFFERENT case - a CORRECT header
+  // with zero data rows is a legitimate empty upload (e.g. an operator
+  // uploads the bare template), not a client error. It still burns the
+  // clientKey, writes an all-zero-count ledger row, and co-commits the ALLOW
+  // 6e (an authorized attempt that happened to carry no rows).
+  it('a correct header with ZERO data rows is a legitimate 0-row upload: succeeds, writes an all-zero ledger row, and co-commits ONE ALLOW 6e', async () => {
+    const manufacturerVndr = await seedVendor('MANUFACTURER')
+    const emptyCsv = toCsv([])
+    const clientKey = randomUUID()
+    const actorId = randomUUID()
+
+    const res = await ingestOpsDeviceInventory(db, {
+      fileBytes: emptyCsv,
+      filename: 'inv.csv',
+      manufacturerVndrId: manufacturerVndr,
+      clientKey,
+      actorId,
+      traceId: 't5',
+    })
+
+    expect(res.deduped).toBe(false)
+    expect(res.accepted).toBe(0)
+    expect(res.flagged).toBe(0)
+    expect(res.invalid).toBe(0)
+    expect(res.createdUnitIds).toHaveLength(0)
+    expect(res.invalidRows).toHaveLength(0)
+
+    const ledger = await db.$queryRaw<
+      { row_total: number; row_accepted: number; row_flagged: number; row_invalid: number; status: string }[]
+    >`SELECT row_total, row_accepted, row_flagged, row_invalid, status FROM device_inventory_upload`
+    expect(ledger).toEqual([{ row_total: 0, row_accepted: 0, row_flagged: 0, row_invalid: 0, status: 'processed' }])
+
+    const allow = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = 'authz.audit'`
+    expect(Number(allow[0]!.n)).toBe(1)
+  })
+
+  // Fix round 1, Finding B: a malformed manufacturerVndrId must be a client
+  // error (OpsClientError), never an uncaught InvalidIdError.
+  it('rejects a malformed manufacturerVndrId as OpsClientError(invalid), not a raw throw', async () => {
+    const csv = toCsv([['DEV-1', 'SIM-1', 'QR-1']])
+    await expect(
+      ingestOpsDeviceInventory(db, {
+        fileBytes: csv,
+        filename: 'inv.csv',
+        manufacturerVndrId: 'not-a-valid-id',
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't6',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+  })
 })

@@ -213,4 +213,41 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
     expect(await unitCount()).toBe(0)
     expect(await fulfillmentOutboxAuthz()).toHaveLength(0)
   })
+
+  // Fix round 1, Finding A: a wrong/missing header must be REJECTED at the
+  // edge as a 400 (via the fulfillment domain's OpsClientError -> the
+  // app-wide OpsErrorFilter), never a silent 200, and it must burn no
+  // ledger row and emit no 6e.
+  it('a file with the wrong header -> 400 via OpsErrorFilter, NO ledger row, NO 6e', async () => {
+    const manufacturerVndr = await seedVendor('MANUFACTURER')
+    const wrongHeaderCsv = Buffer.from('Serial,ICCID,QR\nDEV-1,SIM-1,QR-1\n', 'utf8')
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post('/ops/uploads/device-inventory')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .field('manufacturerVndrId', manufacturerVndr)
+      .attach('file', wrongHeaderCsv, 'inventory.csv')
+    expect(res.status).toBe(400)
+    expect(await unitCount()).toBe(0)
+    expect(await ledgerRows()).toHaveLength(0)
+    expect(await fulfillmentOutboxAuthz()).toHaveLength(0)
+  })
+
+  // Fix round 1, Finding B: a malformed manufacturerVndrId must be a clean
+  // 400 (OpsClientError, via the SAME OpsErrorFilter mapping), never an
+  // uncaught InvalidIdError surfacing as a 500.
+  it('a malformed manufacturerVndrId -> 400, not 500', async () => {
+    const csv = toCsv([['DEV-1', 'SIM-1', 'QR-1']])
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post('/ops/uploads/device-inventory')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .field('manufacturerVndrId', 'not-a-valid-id')
+      .attach('file', csv, 'inventory.csv')
+    expect(res.status).toBe(400)
+    expect(await unitCount()).toBe(0)
+    expect(await ledgerRows()).toHaveLength(0)
+  })
 })

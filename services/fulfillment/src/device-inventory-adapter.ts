@@ -183,15 +183,21 @@ async function parseGrid(file: Uint8Array, filename: string): Promise<ParsedGrid
 // No/Device QR strings, splitting rows into validRows (all three mandatory
 // fields present) and invalidRows (missing at least one, reported by rowNo
 // plus which field(s) were missing; NOT ingested). A missing required COLUMN
-// in the header is a whole-file structural failure (structuralErrors); an
-// empty file (no data rows) returns empty validRows/invalidRows with no
-// error, never a crash.
+// in the header is a whole-file structural failure (structuralErrors) - this
+// check runs BEFORE the zero-data-row check (fix round 1, Finding A: it
+// previously ran after, so a headerless or no-data file returned a silent
+// empty success instead of a rejection; a wholly blank file parses to
+// `header: []` from parseGrid, which now also fails this check, all three
+// columns reported missing). A file with a CORRECT header but zero data rows
+// is a DELIBERATE, DIFFERENT case (an operator uploads the template with no
+// rows yet): it is a legitimate empty upload, not a client error, so it
+// returns empty validRows/invalidRows with NO structural error and the
+// caller processes it as a genuine 0-row upload.
 export async function parseDeviceInventoryFile(file: Uint8Array, filename: string): Promise<DeviceInventoryParseResult> {
   const parsed = await parseGrid(file, filename)
   if ('code' in parsed) return { validRows: [], invalidRows: [], structuralErrors: [parsed] }
 
   const { header, dataRows } = parsed
-  if (dataRows.length === 0) return { validRows: [], invalidRows: [], structuralErrors: [] }
 
   const missing = (Object.keys(HEADERS) as (keyof typeof HEADERS)[])
     .filter((field) => !header.includes(HEADERS[field]))
@@ -200,6 +206,8 @@ export async function parseDeviceInventoryFile(file: Uint8Array, filename: strin
       message: `Missing required column "${HEADERS[field]}".`,
     }))
   if (missing.length > 0) return { validRows: [], invalidRows: [], structuralErrors: missing }
+
+  if (dataRows.length === 0) return { validRows: [], invalidRows: [], structuralErrors: [] }
 
   const deviceIdIdx = header.indexOf(HEADERS.deviceId)
   const simNoIdx = header.indexOf(HEADERS.simNo)

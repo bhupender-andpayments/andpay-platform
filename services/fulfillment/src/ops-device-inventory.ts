@@ -1,4 +1,4 @@
-import { toUuid } from '@andpay/ids'
+import { toUuid, InvalidIdError } from '@andpay/ids'
 import { onceWithin, enqueue } from '@andpay/outbox'
 import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
 import { instanceKey } from '@andpay/keys'
@@ -74,7 +74,21 @@ export async function ingestOpsDeviceInventory(
     traceId: string
   },
 ): Promise<OpsDeviceInventoryResult> {
-  const manufacturerUuid = toUuid(args.manufacturerVndrId)
+  // Fix round 1, Finding B: manufacturerVndrId is caller-supplied (a class-3
+  // ops principal's request body), so a malformed value must NOT crash out
+  // as an uncaught InvalidIdError (a 500). Decode it defensively BEFORE the
+  // file parse and map a bad id to the SAME OpsClientError('invalid', ...)
+  // client-error shape every other bad-input path here already uses (the
+  // app-wide OpsErrorFilter maps it to a 400).
+  let manufacturerUuid: string
+  try {
+    manufacturerUuid = toUuid(args.manufacturerVndrId)
+  } catch (err) {
+    if (err instanceof InvalidIdError) {
+      throw new OpsClientError('invalid', 'manufacturerVndrId is not a valid id')
+    }
+    throw err
+  }
 
   // Server-side parse BEFORE any transaction opens (never trust client rows;
   // mirrors ingestIntakeSheet's STEP B ordering). A structural failure (bad
@@ -140,6 +154,16 @@ export async function ingestOpsDeviceInventory(
       // wire-form andpay id, matching every other actor column in this
       // context (held_by_actor, released_by_actor, resolved_by_actor,
       // triggered_by_actor all cast the raw actor id directly, no toUuid).
+      //
+      // Fix round 1, Finding C: row_accepted and row_flagged are NOT a
+      // partition of row_total. A row can be BOTH created and flagged (the
+      // duplicate-ICCID-vs-existing-unit case, Confirm 3 in intake.ts: the
+      // conflicting device is still created with sim_no null AND a
+      // duplicate_sim_no_existing_unit intake_exception is raised for the
+      // SAME row), so row_accepted + row_flagged can exceed row_total minus
+      // row_invalid. This is accurate to the domain, not a bug: do not
+      // "fix" these counts to sum cleanly, and do not assume elsewhere that
+      // they do.
       await tx.$executeRaw`
         INSERT INTO device_inventory_upload
           (id, file_id, uploader, manufacturer_vndr, row_total, row_accepted, row_flagged, row_invalid, status, created_at)
