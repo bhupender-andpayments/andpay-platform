@@ -33,7 +33,10 @@ const REQUEST_DATA_ROW = [
   'acme@hdfcbank',
 ]
 
-const DAMAGE_DATA_ROW = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'unit cracked in transit', '221B Baker Street']
+// Aligned to DAMAGE_HEADERS: the trailing 4 (soundbox, standeeCount, stickerCount,
+// deliveryStatus) are the OPTIONAL FR08-1/FR08-2 columns, left blank here so the
+// canonical parse stays a 5-field clone row (populated variants tested below).
+const DAMAGE_DATA_ROW = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'unit cracked in transit', '221B Baker Street', '', '', '', '']
 
 function toCsv(header: string[], rows: string[][]): Uint8Array {
   const lines = [header, ...rows].map((r) => r.map((f) => (f.includes(',') ? `"${f}"` : f)).join(','))
@@ -191,5 +194,29 @@ describe('parseBankDamageFile (phase 2 task 1, D-C core)', () => {
     expect(result.errors).toEqual([
       { code: 'missing_required_column', message: 'Missing required column "damageReason" (field "damageReason").' },
     ])
+  })
+
+  it('the FR08-1/FR08-2 columns are OPTIONAL: a file omitting them entirely still parses (no structural error)', async () => {
+    const baseHeaders = ['tenantReference', 'vpaValue', 'damageReason', 'bankRemarks', 'shipToAddress']
+    const csv = toCsv(baseHeaders, [['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr']])
+    const result = await parseBankDamageFile(csv, 'damage.csv', 'file-2')
+    expect(result.errors).toEqual([])
+    expect(result.rows[0]).not.toHaveProperty('items')
+    expect(result.rows[0]).not.toHaveProperty('deliveryStatus')
+  })
+
+  it('FR08-1: when the row supplies item columns, they are parsed as the item group (authoritative spec)', async () => {
+    // positions 5..8 = soundbox, standeeCount, stickerCount, deliveryStatus
+    const row = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', 'false', '3', '0', 'In-Progress']
+    const result = await parseBankDamageFile(toCsv(DAMAGE_HEADERS, [row]), 'damage.csv', 'file-2')
+    expect(result.errors).toEqual([])
+    expect(result.rows[0]).toMatchObject({ items: { soundbox: false, standeeCount: 3, stickerCount: 0 }, deliveryStatus: 'In-Progress' })
+  })
+
+  it('FR08-1: item group is ALL-OR-NOTHING: one populated cell sets the whole group (blanks -> false/0)', async () => {
+    const row = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', '', '', '4', '']
+    const result = await parseBankDamageFile(toCsv(DAMAGE_HEADERS, [row]), 'damage.csv', 'file-2')
+    expect(result.rows[0]).toMatchObject({ items: { soundbox: false, standeeCount: 0, stickerCount: 4 } })
+    expect(result.rows[0]).not.toHaveProperty('deliveryStatus')
   })
 })

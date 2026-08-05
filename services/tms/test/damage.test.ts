@@ -109,6 +109,38 @@ describe('damage ingest and replacement (check 6, D116)', () => {
   })
 })
 
+describe('FR08-1 per-row item replacement + FR08-2 case-status seed', () => {
+  // seedOriginal creates the original with soundbox=true, standee_count=1, sticker_count=2.
+  it('clones the original item counts when the damage row supplies no item columns (backward compatible)', async () => {
+    await seedOriginal('acme@hdfcbank', 'HDFC')
+    const r = await ingestDamageRow(db, { fileId: 'dmg-i1', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank', damageReason: 'battery issue', bankRemarks: '', shipToAddress: 'A' }, 't')
+    expect(r).toBe('replaced')
+    const repl = await db.$queryRaw<{ soundbox: boolean; standee_count: number; sticker_count: number }[]>`
+      SELECT soundbox, standee_count, sticker_count FROM assignment WHERE replacement_of IS NOT NULL`
+    expect(repl[0]).toMatchObject({ soundbox: true, standee_count: 1, sticker_count: 2 })
+  })
+
+  it('honors the row item spec when supplied (does not clone the original)', async () => {
+    await seedOriginal('acme@hdfcbank', 'HDFC')
+    const r = await ingestDamageRow(db, { fileId: 'dmg-i2', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank', damageReason: 'battery issue', bankRemarks: '', shipToAddress: 'A', items: { soundbox: false, standeeCount: 5, stickerCount: 0 } }, 't')
+    expect(r).toBe('replaced')
+    const repl = await db.$queryRaw<{ soundbox: boolean; standee_count: number; sticker_count: number }[]>`
+      SELECT soundbox, standee_count, sticker_count FROM assignment WHERE replacement_of IS NOT NULL`
+    expect(repl[0]).toMatchObject({ soundbox: false, standee_count: 5, sticker_count: 0 })
+  })
+
+  it('seeds case_status from a valid file Delivery Status, else defaults to Open', async () => {
+    await seedOriginal('acme@hdfcbank', 'HDFC')
+    await ingestDamageRow(db, { fileId: 'dmg-i3', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank', damageReason: 'battery issue', bankRemarks: '', shipToAddress: 'A', deliveryStatus: 'In-Progress' }, 't')
+    await seedOriginal('acme2@hdfcbank', 'HDFC', 'req-2|1')
+    await ingestDamageRow(db, { fileId: 'dmg-i4', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme2@hdfcbank', damageReason: 'battery issue', bankRemarks: '', shipToAddress: 'A', deliveryStatus: 'garbage-status' }, 't')
+    const rows = await db.$queryRaw<{ vpa_value: string; case_status: string }[]>`
+      SELECT vpa_value, case_status FROM assignment WHERE replacement_of IS NOT NULL ORDER BY vpa_value`
+    expect(rows.find((x) => x.vpa_value === 'acme@hdfcbank')!.case_status).toBe('In-Progress')
+    expect(rows.find((x) => x.vpa_value === 'acme2@hdfcbank')!.case_status).toBe('Open')
+  })
+})
+
 describe('damage reason master validation (Phase 3 Task 1, BRD FR-08/FR-11)', () => {
   it('a matched row whose damage reason is NOT in the active master quarantines (invalid_damage_reason), creating no replacement', async () => {
     await seedOriginal('acme@hdfcbank', 'HDFC')

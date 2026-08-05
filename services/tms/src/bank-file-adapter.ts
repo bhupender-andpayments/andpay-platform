@@ -52,12 +52,26 @@ export const DEFAULT_DAMAGE_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
   damageReason: 'damageReason',
   bankRemarks: 'bankRemarks',
   shipToAddress: 'shipToAddress',
+  // FR08-1 / FR08-2 (BRD 5.8 + Annexure C): the "Conditional Quantity of each
+  // item to be replaced" columns and the file-side "Delivery Status" seed. All
+  // OPTIONAL (see OPTIONAL_DAMAGE_FIELDS) so existing damage files without them
+  // keep parsing.
+  soundbox: 'soundbox',
+  standeeCount: 'standeeCount',
+  stickerCount: 'stickerCount',
+  deliveryStatus: 'deliveryStatus',
 })
+
+// Damage columns that are OPTIONAL (not structurally required). Same mechanism
+// the request mapping uses to make `vpaHint` optional.
+const OPTIONAL_DAMAGE_FIELDS = ['soundbox', 'standeeCount', 'stickerCount', 'deliveryStatus']
 
 // vpaHint is the only optional field on BankRequestRow (see ingest.ts); every
 // other canonical field on both row shapes is required.
 const REQUEST_REQUIRED_FIELDS = Object.keys(DEFAULT_REQUEST_COLUMN_MAPPING).filter((f) => f !== 'vpaHint')
-const DAMAGE_REQUIRED_FIELDS = Object.keys(DEFAULT_DAMAGE_COLUMN_MAPPING)
+const DAMAGE_REQUIRED_FIELDS = Object.keys(DEFAULT_DAMAGE_COLUMN_MAPPING).filter(
+  (f) => !OPTIONAL_DAMAGE_FIELDS.includes(f),
+)
 
 export type StructuralParseErrorCode = 'unsupported_extension' | 'unreadable_file' | 'missing_required_column'
 
@@ -281,7 +295,7 @@ function normalizeDamageRow(
   rowNo: number,
 ): BankDamageRow {
   const get = (field: string) => rec[mapping[field] ?? field] ?? ''
-  return {
+  const row: BankDamageRow = {
     fileId,
     rowNo,
     tenantReference: get('tenantReference'),
@@ -290,6 +304,26 @@ function normalizeDamageRow(
     bankRemarks: get('bankRemarks'),
     shipToAddress: get('shipToAddress'),
   }
+  // FR08-1: item columns are all-or-nothing per row. If the row supplies ANY of
+  // the three item cells, the row's spec is authoritative for all three (a blank
+  // among them means "not replaced": false / 0); if it supplies NONE, the fields
+  // stay undefined and the ingest clones the original like-for-like (backward
+  // compatible with damage files that omit the columns entirely).
+  const rawSoundbox = get('soundbox')
+  const rawStandee = get('standeeCount')
+  const rawSticker = get('stickerCount')
+  if (rawSoundbox !== '' || rawStandee !== '' || rawSticker !== '') {
+    row.items = {
+      soundbox: parseBoolean(rawSoundbox),
+      standeeCount: parseCount(rawStandee),
+      stickerCount: parseCount(rawSticker),
+    }
+  }
+  // FR08-2 seed: the file-side Delivery Status seeds the initial case_status when
+  // present; the ingest validates it and otherwise defaults to 'Open'.
+  const rawStatus = get('deliveryStatus')
+  if (rawStatus !== '') row.deliveryStatus = rawStatus
+  return row
 }
 
 async function parseBankFile<T>(

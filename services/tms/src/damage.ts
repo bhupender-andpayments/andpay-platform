@@ -15,6 +15,26 @@ export interface BankDamageRow {
   damageReason: string
   bankRemarks: string
   shipToAddress: string
+  // FR08-1: per-row items to replace, as a SINGLE optional group so the
+  // all-or-nothing invariant is unrepresentable: either the row supplies the
+  // full item trio (authoritative) or it omits `items` entirely and the ingest
+  // clones the matched original like-for-like. Parsed in normalizeDamageRow.
+  items?: { soundbox: boolean; standeeCount: number; stickerCount: number }
+  // FR08-2: optional file-side Delivery Status seeding the initial case_status.
+  deliveryStatus?: string
+}
+
+// FR08-2: the valid replacement case-status lifecycle values. The file's
+// Delivery Status only seeds the initial state when it matches one of these
+// (case- and whitespace-insensitive); anything else falls back to 'Open'.
+export const CASE_STATUS_VALUES = ['Open', 'In-Progress', 'Closed'] as const
+export type CaseStatus = (typeof CASE_STATUS_VALUES)[number]
+
+function seedCaseStatus(raw: string | undefined): CaseStatus {
+  if (raw === undefined) return 'Open'
+  const norm = raw.trim().toLowerCase().replace(/\s+/g, '-')
+  const match = CASE_STATUS_VALUES.find((v) => v.toLowerCase() === norm)
+  return match ?? 'Open'
 }
 
 interface OriginalRow {
@@ -104,6 +124,15 @@ export async function ingestDamageRowWithinTx(
 
   await enterWriteScope(tx, 'tms_write', o.program_id)
 
+  // FR08-1: honor the file's per-row item spec when supplied (all-or-nothing:
+  // normalizeDamageRow sets all three together or none), else clone the matched
+  // original like-for-like.
+  const replSoundbox = row.items?.soundbox ?? o.soundbox
+  const replStandee = row.items?.standeeCount ?? o.standee_count
+  const replSticker = row.items?.stickerCount ?? o.sticker_count
+  // FR08-2: seed the initial case_status from the file's Delivery Status, else Open.
+  const initialCaseStatus = seedCaseStatus(row.deliveryStatus)
+
   const replUuid = toUuid(newId('asgn'))
   // updated_at is @updatedAt in the Prisma schema, which is client-API
   // middleware only (it does not run for $queryRaw/$executeRaw) and the
@@ -121,8 +150,8 @@ export async function ingestDamageRowWithinTx(
       ${replUuid}::uuid, ${o.merchant_id}::uuid, ${o.program_id}::uuid, ${o.tenant_id}::uuid,
       ${o.merchant_display_name}, ${o.merchant_legal_name}, ${o.merchant_mcc},
       ${o.bank_reference_code}, ${o.bank_display_name}, ${row.shipToAddress},
-      ${o.qr_value}, ${o.vpa_value}, ${o.soundbox}, ${o.standee_count}, ${o.sticker_count},
-      ${false}, ${o.id}::uuid, ${row.damageReason}, ${row.bankRemarks}, ${'Open'},
+      ${o.qr_value}, ${o.vpa_value}, ${replSoundbox}, ${replStandee}, ${replSticker},
+      ${false}, ${o.id}::uuid, ${row.damageReason}, ${row.bankRemarks}, ${initialCaseStatus},
       ${'received'}, ${correlationId}, ${o.contact_name}, ${o.mobile}, ${o.branch_code}, now()
     )
     ON CONFLICT (source_event_id) DO NOTHING
