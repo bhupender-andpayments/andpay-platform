@@ -55,7 +55,15 @@ describe('auth surfaces styling (Task 12, presentation only)', () => {
   it('(c) the two-step UI still fires exactly ONE login() call, same body shape, in order', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = []
     const fakeToken = makeFakeJwt({ sub: 'u-1', psr: 'role:ops' })
+    // URL-discriminating: AuthProvider now also fires a mount-time
+    // POST /session/rehydrate (Phase 7 GATE 2), which a non-discriminating
+    // mock would answer with the same token, adding an extra untracked call
+    // ahead of login() and breaking the "exactly one call" assertion below.
+    // The rehydrate call is answered (401, cold-start, no cookie) but kept
+    // OUT of `calls`, which exists solely to track the login flow this test
+    // exercises.
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes('/session/rehydrate')) return new Response(null, { status: 401 })
       calls.push({ url, init })
       return new Response(JSON.stringify({ accessToken: fakeToken }), { status: 200, headers: { 'content-type': 'application/json' } })
     }))

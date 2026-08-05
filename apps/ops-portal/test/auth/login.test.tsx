@@ -38,7 +38,16 @@ describe('auth login', () => {
 
   it('login stores the access token in memory (not storage), sets the principal, and the Nav shows the derived role label', async () => {
     const fakeToken = makeFakeJwt({ sub: 'u-1', psr: 'role:ops' })
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ accessToken: fakeToken }), { status: 200, headers: { 'content-type': 'application/json' } })))
+    // URL-discriminating: AuthProvider now also fires a mount-time
+    // POST /session/rehydrate (Phase 7 GATE 2). A non-discriminating mock
+    // would answer that call with the same token and auto-authenticate
+    // before the test acts, pre-empting the login flow under test here. The
+    // rehydrate call gets a 401 (as a cold-start SPA with no refresh cookie
+    // would), leaving the credentials step to actually exercise login().
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/session/rehydrate')) return new Response(null, { status: 401 })
+      return new Response(JSON.stringify({ accessToken: fakeToken }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
     await userEvent.type(screen.getByLabelText(/username/i), 'alice')
     await userEvent.type(screen.getByLabelText(/password/i), 'pw')
