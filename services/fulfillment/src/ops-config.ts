@@ -69,6 +69,13 @@ const OPS_PERMISSIONS = [
   // admin-tier. No list permission is needed (no new list route is added by
   // this task).
   'ops:upload-device-inventory',
+  // Phase 5 Task 2 (D-H.1, BRD Phase-1 MANUAL activation flow): ops marks a
+  // DELIVERED assignment activated (CWD already activated the device+SIM out
+  // of band). Shared ops bundle, same tier as every other ops action here;
+  // not admin-tier (batching-config-set is the deliberate admin-only
+  // exception, T6). No list permission is needed (no new list route is added
+  // by this task).
+  'ops:mark-activated',
 ]
 
 // Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role permission differentiation.
