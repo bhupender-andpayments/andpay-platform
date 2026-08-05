@@ -284,6 +284,55 @@ export async function amendShipTo(
 // redelivered activation call does not re-run the effect. Device identity and
 // activation facts are identical across adapter families (C6/T11 applied to
 // devices).
+//
+// Phase 5 Task 2 (D-H.1): the transaction BODY is extracted into
+// activateAssignmentWithinTx below so the class-3 ops trigger
+// (activateAssignmentOps, ops.ts) can co-commit its ALLOW 6e INSIDE the same
+// onceWithin as the UPDATE+fact, without duplicating the write logic. This
+// function's own signature, behaviour, and error message are UNCHANGED: it
+// still resolves the port result OUTSIDE the tx, then opens its own
+// transaction with no onAudit callback.
+export async function activateAssignmentWithinTx(
+  tx: Tx,
+  asgnId: string,
+  activatedAt: string,
+  traceId: string,
+  opts?: { onAudit?: (tx: Tx) => Promise<void> },
+): Promise<{ activated: boolean }> {
+  const asgnUuid = toUuid(asgnId)
+  const dedupKey = `${asgnId}|activate`
+  // Fork-E named exception (spec 10d Task 3, check 1/8): activateAssignment
+  // carries NO program on the wire at all, so program_id is resolved
+  // SERVER-SIDE from the target assignment row itself (D99: never a caller
+  // param), then the write scope is entered BEFORE the onceWithin dedup
+  // insert and the UPDATE, exactly like amendShipTo above.
+  const target = await tx.$queryRaw<{ program_id: string }[]>`
+    SELECT program_id FROM assignment WHERE id = ${asgnUuid}::uuid
+  `
+  if (target.length === 0) throw new Error(`activateAssignment: assignment ${asgnId} not found`)
+  await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
+
+  const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
+    await tx.$executeRaw`UPDATE assignment SET activated_at = ${activatedAt}::timestamptz, demand_state = 'activated', updated_at = now() WHERE id = ${asgnUuid}::uuid`
+    await enqueue(tx, {
+      aggregateType: 'assignment',
+      aggregateId: asgnId,
+      eventType: TMS_ACTIVATED_TOPIC,
+      partitionKey: asgnId,
+      payload: activatedFactEnvelope({
+        payload: { asgnId, activatedAt },
+        dedupKey: eventKey(dedupKey, 'tms.assignment.activated'),
+        traceId,
+      }),
+    })
+    // The 6e ALLOW co-commits INSIDE this same onceWithin (spec 10c CC-1,
+    // activateAssignmentOps only): a redelivered/duplicate activation is a
+    // no-op for BOTH the domain effect and the audit, exactly like holdRecord.
+    if (opts?.onAudit) await opts.onAudit(tx)
+  })
+  return { activated: ran }
+}
+
 export async function activateAssignment(
   db: TmsDb,
   asgnId: string,
@@ -292,36 +341,5 @@ export async function activateAssignment(
   traceId: string,
 ): Promise<{ activated: boolean }> {
   const result = await port.activate({ asgnId, deviceRef }) // through the device port (Fork C)
-  const asgnUuid = toUuid(asgnId)
-  const dedupKey = `${asgnId}|activate`
-  let activated = false
-  await db.$transaction(async (tx: Tx) => {
-    // Fork-E named exception (spec 10d Task 3, check 1/8): activateAssignment
-    // carries NO program on the wire at all, so program_id is resolved
-    // SERVER-SIDE from the target assignment row itself (D99: never a caller
-    // param), then the write scope is entered BEFORE the onceWithin dedup
-    // insert and the UPDATE, exactly like amendShipTo above.
-    const target = await tx.$queryRaw<{ program_id: string }[]>`
-      SELECT program_id FROM assignment WHERE id = ${asgnUuid}::uuid
-    `
-    if (target.length === 0) throw new Error(`activateAssignment: assignment ${asgnId} not found`)
-    await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
-
-    const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
-      await tx.$executeRaw`UPDATE assignment SET activated_at = ${result.activatedAt}::timestamptz, demand_state = 'activated', updated_at = now() WHERE id = ${asgnUuid}::uuid`
-      await enqueue(tx, {
-        aggregateType: 'assignment',
-        aggregateId: asgnId,
-        eventType: TMS_ACTIVATED_TOPIC,
-        partitionKey: asgnId,
-        payload: activatedFactEnvelope({
-          payload: { asgnId, activatedAt: result.activatedAt },
-          dedupKey: eventKey(dedupKey, 'tms.assignment.activated'),
-          traceId,
-        }),
-      })
-    })
-    activated = ran
-  })
-  return { activated }
+  return db.$transaction((tx: Tx) => activateAssignmentWithinTx(tx, asgnId, result.activatedAt, traceId))
 }

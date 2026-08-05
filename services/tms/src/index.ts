@@ -27,10 +27,17 @@ export {
   emitDemandFact,
   amendShipTo,
   activateAssignment,
+  activateAssignmentWithinTx,
   type EnrollmentFactView,
 } from './assignment.js'
 export { ingestDamageRow, ingestDamageRowWithinTx, type BankDamageRow } from './damage.js'
-export { UnwiredDevicePort, type DevicePort, type ActivationCommand, type ActivationResult } from './device-port.js'
+export {
+  UnwiredDevicePort,
+  ManualDevicePort,
+  type DevicePort,
+  type ActivationCommand,
+  type ActivationResult,
+} from './device-port.js'
 export { enterReadScope } from './read-context.js'
 export { enterWriteScope, enterWriteRole } from './write-context.js'
 export { readAssignments, readAssignmentById, type AssignmentReadRow } from './read.js'
@@ -43,6 +50,7 @@ export {
   activateDamageReasonOps,
   deactivateDamageReasonOps,
   updateDamageCaseStatusOps,
+  activateAssignmentOps,
   BankFileParseError,
   OpsClientError,
   type BankPreviewResult,

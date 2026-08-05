@@ -18,6 +18,8 @@ import {
   type StructuralParseError,
 } from './bank-file-adapter.js'
 import { createDamageReasonWithinTx, setDamageReasonActiveWithinTx, type DamageReasonRow } from './damage-reason.js'
+import { activateAssignmentWithinTx } from './assignment.js'
+import type { DevicePort } from './device-port.js'
 
 // Fix wave 1 (fulfillment/src/ops.ts, Task 9 review, Important 1) equivalent
 // for TMS: a discriminated client-error for an expected client condition (a
@@ -455,4 +457,48 @@ export async function updateDamageCaseStatusOps(
     })
   })
   return { deduped: !ran }
+}
+
+// Phase 5 Task 2 (D-H.1, BRD Phase-1 MANUAL activation): the class-3 ops
+// trigger for the TMS activation effect, the ops-edge counterpart to
+// activateAssignment (the direct, non-audited entry point that stays test-
+// only, section 2 of the grounding). Unlike updateDamageCaseStatusOps this
+// does NOT duplicate the write body: it reuses activateAssignmentWithinTx
+// (assignment.ts) and passes an onAudit callback so the 6e ALLOW co-commits
+// INSIDE the same onceWithin as the UPDATE+fact. A redelivered/duplicate
+// activation (already-activated assignment) is therefore a no-op for BOTH the
+// domain effect and the audit, exactly like holdRecord; idempotency is the
+// business key `${asgnId}|activate` (activateAssignmentWithinTx), NOT the
+// caller's clientKey, so a double-activation is impossible regardless of the
+// Idempotency-Key used.
+//
+// The DELIVERED gate is enforced by the CALLER (ops-edge, which holds the
+// analyticsDb local projection, D-H.1's binding decision): this function
+// trusts asgnId unconditionally and never reads analyticsDb itself (no
+// cross-context DB read, C4).
+export async function activateAssignmentOps(
+  db: TmsDb,
+  args: { asgnId: string; port: DevicePort; clientKey: string; actorId: string; traceId: string },
+): Promise<{ activated: boolean }> {
+  // Phase-1 manual flow: the device+SIM were already activated out of band by
+  // the CWD; there is no separate device reference to carry here, so asgnId
+  // doubles as the port command's deviceRef. ManualDevicePort ignores both
+  // fields anyway (device-port.ts).
+  const result = await args.port.activate({ asgnId: args.asgnId, deviceRef: args.asgnId })
+  return db.$transaction((tx: Tx) =>
+    activateAssignmentWithinTx(tx, args.asgnId, result.activatedAt, args.traceId, {
+      onAudit: (tx2) =>
+        enqueue(
+          tx2,
+          buildAuthzAuditEvent(
+            opsAllow({
+              operation: 'ops:mark-activated',
+              principalId: args.actorId,
+              resourceIds: [args.asgnId],
+              traceId: args.traceId,
+            }),
+          ),
+        ),
+    }),
+  )
 }

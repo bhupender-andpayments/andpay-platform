@@ -21,3 +21,15 @@ export class UnwiredDevicePort implements DevicePort {
     return Promise.reject(new Error('device port not wired: CWD and AWS IoT adapters are deferred (Fork C)'))
   }
 }
+
+// Phase 5 Task 2 (D-H.1, BRD Phase-1 MANUAL activation): the CWD already
+// activated the device and SIM out of band; ops just records it in the
+// system. This adapter does no I/O at all (no DB, no network) and ignores
+// both command fields, it only stamps the wall-clock moment ops records the
+// activation. The real CWD-API / AWS IoT ports stay the Phase-2 seam
+// (UnwiredDevicePort above, untouched).
+export class ManualDevicePort implements DevicePort {
+  activate(_cmd: ActivationCommand): Promise<ActivationResult> {
+    return Promise.resolve({ activatedAt: new Date().toISOString() })
+  }
+}
