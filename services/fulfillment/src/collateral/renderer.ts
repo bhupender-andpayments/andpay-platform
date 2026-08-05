@@ -74,11 +74,15 @@ function readNumber(obj: unknown, key: string): number | undefined {
 
 // Resolve the effective template from the (lenient) per-type imageTemplate blob
 // and the branding params, applying defaults for everything absent.
+// A sane minimum page size (2 inch) so a stray tiny override cannot push the
+// layout off-page. Real configs are sparse/trusted; this is defense-in-depth.
+const MIN_SIDE_PT = 144
+
 export function resolveTemplate(input: CollateralInput): ImageTemplate {
   const size = DEFAULT_SIZES[input.artifactType]
   return {
-    widthPt: readNumber(input.imageTemplate, 'widthPt') ?? size.widthPt,
-    heightPt: readNumber(input.imageTemplate, 'heightPt') ?? size.heightPt,
+    widthPt: Math.max(MIN_SIDE_PT, readNumber(input.imageTemplate, 'widthPt') ?? size.widthPt),
+    heightPt: Math.max(MIN_SIDE_PT, readNumber(input.imageTemplate, 'heightPt') ?? size.heightPt),
     headline:
       readString(input.imageTemplate, 'headline') ?? readString(input.brandingParams, 'headline') ?? DEFAULTS.headline,
     bgColorHex: readString(input.brandingParams, 'bgColor') ?? DEFAULTS.bgColorHex,
@@ -109,20 +113,34 @@ function drawClamped(
   text: string,
   opts: { x: number; y: number; size: number; font: PDFFont; color: ReturnType<typeof rgb>; maxWidth: number },
 ): void {
+  const t = clampText(text, opts.size, opts.font, opts.maxWidth)
+  page.drawText(t, { x: opts.x, y: opts.y, size: opts.size, font: opts.font, color: opts.color })
+}
+
+// Truncate text so it fits maxWidth at the given size (WinAnsi-safe, ellipsized),
+// returning the drawable string. Shared by the clamped draws.
+function clampText(text: string, size: number, font: PDFFont, maxWidth: number): string {
   let t = winAnsiSafe(text)
   const ell = '...'
-  if (opts.font.widthOfTextAtSize(t, opts.size) > opts.maxWidth) {
-    while (t.length > 1 && opts.font.widthOfTextAtSize(t + ell, opts.size) > opts.maxWidth) {
+  if (font.widthOfTextAtSize(t, size) > maxWidth) {
+    while (t.length > 1 && font.widthOfTextAtSize(t + ell, size) > maxWidth) {
       t = t.slice(0, -1)
     }
     t = t + ell
   }
-  page.drawText(t, { x: opts.x, y: opts.y, size: opts.size, font: opts.font, color: opts.color })
+  return t
 }
 
-function centeredX(page: PDFPage, text: string, size: number, font: PDFFont): number {
-  const w = font.widthOfTextAtSize(winAnsiSafe(text), size)
-  return (page.getWidth() - w) / 2
+// Draw text horizontally centered on the page, clamped to the content width so a
+// long headline / VPA / marks line can never run off the left or right edge.
+function drawCenteredClamped(
+  page: PDFPage,
+  text: string,
+  opts: { y: number; size: number; font: PDFFont; color: ReturnType<typeof rgb>; maxWidth: number },
+): void {
+  const t = clampText(text, opts.size, opts.font, opts.maxWidth)
+  const w = opts.font.widthOfTextAtSize(t, opts.size)
+  page.drawText(t, { x: (page.getWidth() - w) / 2, y: opts.y, size: opts.size, font: opts.font, color: opts.color })
 }
 
 // Render ONE collateral artifact to a single-page PDF. Deterministic.
@@ -143,13 +161,30 @@ export async function renderCollateralPdf(input: CollateralInput): Promise<Uint8
   const bold = await doc.embedFont(StandardFonts.HelveticaBold)
   const ink = hexToRgb(tpl.textColorHex)
   const accent = hexToRgb(tpl.accentColorHex)
-  const margin = Math.max(8, W * 0.06)
+  const margin = Math.max(10, W * 0.06)
+  const contentW = W - 2 * margin
+  const gap = Math.max(4, H * 0.02)
 
   // background
   page.drawRectangle({ x: 0, y: 0, width: W, height: H, color: hexToRgb(tpl.bgColorHex) })
 
-  // --- top strip: bank logo (or name placeholder) + bank name ---
-  const topY = H - margin - 28
+  // Element sizes, floored so the smallest (sticker) type stays legible.
+  const headlineSize = Math.min(20, Math.max(11, W * 0.07))
+  const bankNameSize = Math.max(9, W * 0.045)
+  const vpaSize = Math.max(8, W * 0.038)
+  const nameSize = Math.max(9, W * 0.045)
+  const legalSize = Math.max(7, nameSize - 2)
+  const marksSize = Math.max(6, W * 0.028)
+  // The legal name is dropped on the smallest (sticker-sized) collateral, where
+  // there is not enough vertical room for it without colliding with the marks.
+  const includeLegal =
+    input.merchantLegalName !== undefined &&
+    input.merchantLegalName !== '' &&
+    input.merchantLegalName !== input.merchantDisplayName &&
+    H >= 288
+
+  // --- TOP: bank logo (or a bank-name placeholder); bank name under a logo ---
+  let topCursor = H - margin
   let logoDrawn = false
   if (input.logo && input.logo.bytes.length > 0) {
     const ct = input.logo.contentType.toLowerCase()
@@ -160,9 +195,10 @@ export async function renderCollateralPdf(input: CollateralInput): Promise<Uint8
           ? await doc.embedJpg(input.logo.bytes)
           : null
       if (img !== null) {
-        const boxH = 28
+        const boxH = Math.min(30, H * 0.09)
         const scale = boxH / img.height
-        page.drawImage(img, { x: margin, y: topY, width: img.width * scale, height: boxH })
+        page.drawImage(img, { x: margin, y: topCursor - boxH, width: Math.min(contentW, img.width * scale), height: boxH })
+        topCursor -= boxH + 3
         logoDrawn = true
       }
     } catch {
@@ -171,80 +207,52 @@ export async function renderCollateralPdf(input: CollateralInput): Promise<Uint8
     }
   }
   if (!logoDrawn) {
-    drawClamped(page, input.bankName, { x: margin, y: topY + 8, size: 13, font: bold, color: accent, maxWidth: W - 2 * margin })
+    drawClamped(page, input.bankName, { x: margin, y: topCursor - bankNameSize, size: bankNameSize, font: bold, color: accent, maxWidth: contentW })
+    topCursor -= bankNameSize + 2
   } else {
-    drawClamped(page, input.bankName, { x: margin, y: topY - 14, size: 9, font, color: ink, maxWidth: W - 2 * margin })
+    drawClamped(page, input.bankName, { x: margin, y: topCursor - (bankNameSize - 2), size: bankNameSize - 2, font, color: ink, maxWidth: contentW })
+    topCursor -= bankNameSize
   }
 
-  // --- headline ---
-  const headlineSize = Math.max(12, W * 0.06)
-  page.drawText(winAnsiSafe(tpl.headline), {
-    x: centeredX(page, tpl.headline, headlineSize, bold),
-    y: topY - 36,
-    size: headlineSize,
-    font: bold,
-    color: ink,
-  })
+  // --- headline (centered, below the top strip) ---
+  const headlineY = topCursor - gap - headlineSize
+  drawCenteredClamped(page, tpl.headline, { y: headlineY, size: headlineSize, font: bold, color: ink, maxWidth: contentW })
 
-  // --- QR code (center) ---
-  const qrBoxSide = Math.min(W - 2 * margin, H * 0.42)
+  // --- BOTTOM stack, built from the page bottom up: marks, [legal], name, vpa ---
+  const marksY = margin
+  let bottomCursor = marksY + marksSize + gap
+  let legalY = 0
+  if (includeLegal) {
+    legalY = bottomCursor
+    bottomCursor += legalSize + gap
+  }
+  const nameY = bottomCursor
+  bottomCursor += nameSize + gap
+  const vpaY = bottomCursor
+  bottomCursor += vpaSize + gap
+
+  // --- QR fills (and is centered within) the band between the headline and the
+  // bottom stack, so it can never overlap either even on the smallest type ---
+  const bandTop = headlineY - gap
+  const bandBot = bottomCursor
+  const qrSide = Math.max(40, Math.min(contentW, bandTop - bandBot))
+  const qrX = (W - qrSide) / 2
+  const qrY = bandBot + (bandTop - bandBot - qrSide) / 2
   const qrPng = await QRCode.toBuffer(input.qrValue, { type: 'png', margin: 1, width: 600, errorCorrectionLevel: 'M' })
   const qrImg = await doc.embedPng(qrPng)
-  const qrX = (W - qrBoxSide) / 2
-  const qrY = (H - qrBoxSide) / 2 - 6
-  page.drawImage(qrImg, { x: qrX, y: qrY, width: qrBoxSide, height: qrBoxSide })
+  page.drawImage(qrImg, { x: qrX, y: qrY, width: qrSide, height: qrSide })
 
-  // --- bank code as small vertical text to the RIGHT of the QR box (BRD 5.3) ---
-  page.drawText(winAnsiSafe(input.bankCode), {
-    x: qrX + qrBoxSide + 6,
-    y: qrY,
-    size: 8,
-    font,
-    color: ink,
-    rotate: degrees(90),
-  })
+  // bank code as small vertical text to the RIGHT of the QR box (BRD 5.3)
+  page.drawText(winAnsiSafe(input.bankCode), { x: qrX + qrSide + 4, y: qrY, size: 8, font, color: ink, rotate: degrees(90) })
 
-  // --- VPA text under the QR ---
-  const vpaSize = Math.max(8, W * 0.035)
-  page.drawText(winAnsiSafe(input.vpa), {
-    x: centeredX(page, input.vpa, vpaSize, font),
-    y: qrY - 16,
-    size: vpaSize,
-    font,
-    color: ink,
-  })
-
-  // --- merchant business + legal name ---
-  const nameSize = Math.max(9, W * 0.04)
-  drawClamped(page, input.merchantDisplayName, {
-    x: margin,
-    y: qrY - 36,
-    size: nameSize,
-    font: bold,
-    color: ink,
-    maxWidth: W - 2 * margin,
-  })
-  if (input.merchantLegalName && input.merchantLegalName !== input.merchantDisplayName) {
-    drawClamped(page, input.merchantLegalName, {
-      x: margin,
-      y: qrY - 36 - nameSize - 3,
-      size: Math.max(7, nameSize - 2),
-      font,
-      color: ink,
-      maxWidth: W - 2 * margin,
-    })
+  // --- bottom texts (all clamped to the content width) ---
+  drawCenteredClamped(page, input.vpa, { y: vpaY, size: vpaSize, font, color: ink, maxWidth: contentW })
+  drawClamped(page, input.merchantDisplayName, { x: margin, y: nameY, size: nameSize, font: bold, color: ink, maxWidth: contentW })
+  if (includeLegal && input.merchantLegalName !== undefined) {
+    drawClamped(page, input.merchantLegalName, { x: margin, y: legalY, size: legalSize, font, color: ink, maxWidth: contentW })
   }
-
-  // --- acceptance marks (text placeholder; real brand artwork is a supplied-asset enhancement) ---
   const marks = 'BHIM UPI  |  GPay  |  PhonePe  |  Paytm'
-  const marksSize = Math.max(6, W * 0.026)
-  page.drawText(winAnsiSafe(marks), {
-    x: centeredX(page, marks, marksSize, font),
-    y: margin,
-    size: marksSize,
-    font,
-    color: accent,
-  })
+  drawCenteredClamped(page, marks, { y: marksY, size: marksSize, font, color: accent, maxWidth: contentW })
 
   return await doc.save()
 }

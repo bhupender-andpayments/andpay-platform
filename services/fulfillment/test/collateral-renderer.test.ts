@@ -91,4 +91,19 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
     })
     expect(isPdf(corrupt)).toBe(true)
   })
+
+  it('input flows into output: a different QR value / VPA yields different bytes', async () => {
+    const one = await renderCollateralPdf(base)
+    const two = await renderCollateralPdf({ ...base, qrValue: 'upi://pay?pa=other@icici', vpa: 'other@icici' })
+    expect(Buffer.from(one).equals(Buffer.from(two))).toBe(false)
+  })
+
+  it('logo path runs: a logo-present render differs from the logo-absent placeholder render', async () => {
+    const pngLogo = await QRCode.toBuffer('logo', { type: 'png', width: 64 })
+    const noLogo = await renderCollateralPdf({ ...base, logo: null })
+    const withLogo = await renderCollateralPdf({ ...base, logo: { bytes: new Uint8Array(pngLogo), contentType: 'image/png' } })
+    expect(Buffer.from(noLogo).equals(Buffer.from(withLogo))).toBe(false)
+    // embedding an image adds an XObject, so the logo variant is larger
+    expect(withLogo.length).toBeGreaterThan(noLogo.length)
+  })
 })
