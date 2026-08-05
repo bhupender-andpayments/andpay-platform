@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   ForbiddenException,
   Headers,
@@ -44,10 +45,13 @@ import {
   activateDamageReasonOps,
   deactivateDamageReasonOps,
   updateDamageCaseStatusOps,
+  activateAssignmentOps,
+  ManualDevicePort,
   type BankRequestRow,
   type BankPreviewResult,
   type DamageReasonRow,
 } from '@andpay/tms-service'
+import { readDispatchActivationStatus } from '@andpay/analytics-service'
 import { createBankMaster, editBankMaster } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
@@ -81,6 +85,14 @@ interface RecomposeBody {
 }
 interface DamageCaseStatusBody {
   status: string
+}
+// Phase 5 Task 2 (D-H.1): the target rides in the BODY, not a route param
+// (unlike hold/release/damage-case-status), because this is the FIRST caller
+// of the TMS activation path (grounding section 2) and there is no existing
+// `:asgnId`-scoped route shape to preserve here; dispatchId is the asgn_ wire
+// id (the BRD Dispatch ID), decoded server-side by TMS, never here (D99).
+interface ActivateAssignmentBody {
+  dispatchId: string
 }
 interface BatchTriggerBody {
   tenantWire: string
@@ -562,6 +574,40 @@ export class OpsController {
     return updateDamageCaseStatusOps(this.deps.tmsDb, {
       asgnId,
       newStatus: body.status,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // Phase 5 Task 2 (D-H.1, BRD Phase-1 MANUAL activation flow): CWD activates
+  // the device+SIM out of band; ops marks it here. The DELIVERED gate READ
+  // happens HERE, at the edge (this.deps.analyticsDb, the LOCAL projection),
+  // never inside TMS (no cross-context DB read, C4). Gate predicate is
+  // deliveryDate IS NOT NULL, not a pipelineState equality check
+  // (pipelineState advances to 'ACTIVATED' once the fact this triggers folds,
+  // so an equality check would wrongly reject a second activation attempt).
+  // A missing or not-yet-delivered row is a normal business-rule 409, not an
+  // authz DENY: the D2 authorize already ALLOWed inside gate() above, and
+  // since the domain op never runs, no 6e (ALLOW or DENY) is emitted for this
+  // rejection. Only on a delivered row does this call activateAssignmentOps
+  // with a fresh ManualDevicePort (R4: Phase-1 has no CWD-API adapter wired,
+  // C6/T11 seam preserved).
+  @Post('assignments/activate')
+  @HttpCode(200)
+  async activateAssignmentRoute(
+    @Req() req: EdgeRequest,
+    @Body() body: ActivateAssignmentBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ activated: boolean }> {
+    const g = await this.gate(req, 'ops:mark-activated', idem, [])
+    const status = await readDispatchActivationStatus(this.deps.analyticsDb, body.dispatchId)
+    if (status === null || status.deliveryDate === null) {
+      throw new ConflictException('not-delivered')
+    }
+    return activateAssignmentOps(this.deps.tmsDb, {
+      asgnId: body.dispatchId,
+      port: new ManualDevicePort(),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
