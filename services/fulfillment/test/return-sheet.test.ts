@@ -6,6 +6,7 @@ import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { ingestReturnSheet, type ReturnSheet, type ReturnRow } from '../src/return-sheet.js'
 import { consumeBatchFact } from '../src/dispatch.js'
+import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 import { CONSUMER, setProgramContext } from '../src/internal.js'
 import {
   PRINT_FOR_TOPIC,
@@ -22,6 +23,7 @@ const url =
   process.env.FULFILLMENT_DATABASE_URL ??
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 const db = new PrismaClient({ datasourceUrl: url })
+const assetStore = new InMemoryAssetStore()
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
@@ -742,7 +744,7 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
       dedupKey: btchWire,
       traceId: 'trace-batch-mono',
     })
-    const composeRes = await consumeBatchFact(db, env)
+    const composeRes = await consumeBatchFact(db, env, assetStore)
     expect(composeRes.deduped).toBe(false)
 
     const entryAfterCompose = await db.$queryRaw<{ dispatch_state: string | null }[]>`

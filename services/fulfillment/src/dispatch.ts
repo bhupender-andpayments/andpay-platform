@@ -6,14 +6,26 @@ import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope } from './write-context.js'
 import { DISPATCH_TOPIC, dispatchFactEnvelope, type BatchFactPayload } from './events.js'
+import { renderCollateralPdf, type ArtifactType } from './collateral/renderer.js'
+import type { AssetStore } from './storage/asset-store.js'
 
 // which artifacts a snapshot entry gets (from the snapshot alone, C4-safe)
-function artifactTypesFor(e: { soundbox: boolean; standee_count: number; sticker_count: number }): string[] {
-  const t: string[] = []
+function artifactTypesFor(e: { soundbox: boolean; standee_count: number; sticker_count: number }): ArtifactType[] {
+  const t: ArtifactType[] = []
   if (e.soundbox) t.push('SOUNDBOX_IMG')
   if (e.standee_count > 0) t.push('STANDEE_IMG')
   if (e.sticker_count > 0) t.push('STICKER_IMG')
   return t
+}
+
+// The per-type key into imageTemplates JSONB (SOUNDBOX/STANDEE/STICKER) from the
+// artifact type (SOUNDBOX_IMG/...). Reads the per-type sub-object leniently.
+function templateFor(imageTemplates: unknown, artifactType: ArtifactType): unknown {
+  const key = artifactType.replace('_IMG', '')
+  if (imageTemplates !== null && typeof imageTemplates === 'object' && key in imageTemplates) {
+    return (imageTemplates as Record<string, unknown>)[key]
+  }
+  return undefined
 }
 
 /**
@@ -47,6 +59,7 @@ function artifactTypesFor(e: { soundbox: boolean; standee_count: number; sticker
 export async function consumeBatchFact(
   db: FulfillmentDb,
   env: Envelope<BatchFactPayload>,
+  assetStore: AssetStore,
 ): Promise<{ deduped: boolean; composed: number }> {
   const p = env.payload
   const btchUuid = toUuid(p.btchId)
@@ -80,6 +93,9 @@ export async function consumeBatchFact(
           {
             asgn_id: string
             merchant_display_name: string
+            merchant_legal_name: string
+            bank_display_name: string
+            vpa_value: string
             qr_value: string
             bank_reference_code: string
             branch_code: string | null
@@ -88,8 +104,8 @@ export async function consumeBatchFact(
             sticker_count: number
           }[]
         >`
-          SELECT asgn_id::text AS asgn_id, merchant_display_name, qr_value,
-                 bank_reference_code, branch_code, soundbox, standee_count, sticker_count
+          SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name, bank_display_name,
+                 vpa_value, qr_value, bank_reference_code, branch_code, soundbox, standee_count, sticker_count
           FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
         `
 
@@ -102,40 +118,84 @@ export async function consumeBatchFact(
         // the NULL-distinct unique-index gotcha) -> null (current no-branding
         // behavior). Cached per (bank_code, branch_code) to avoid repeat
         // queries within one batch.
-        const bankConfigCache = new Map<string, string | null>()
-        async function bankConfigRefFor(bankCode: string, branchCode: string | null): Promise<string | null> {
+        interface BankConfigRow {
+          id: string
+          branding_params: unknown
+          image_templates: unknown
+          logo_master_ref: string | null
+        }
+        const bankConfigCache = new Map<string, BankConfigRow | null>()
+        async function bankConfigFor(bankCode: string, branchCode: string | null): Promise<BankConfigRow | null> {
           const cacheKey = `${bankCode}|${branchCode ?? ''}`
           if (bankConfigCache.has(cacheKey)) return bankConfigCache.get(cacheKey) ?? null
-          let ref: string | null = null
+          let row: BankConfigRow | null = null
           if (branchCode) {
-            const exact = await tx.$queryRaw<{ id: string }[]>`
-              SELECT id::text AS id FROM bank_composition_config
+            const exact = await tx.$queryRaw<BankConfigRow[]>`
+              SELECT id::text AS id, branding_params, image_templates, logo_master_ref FROM bank_composition_config
               WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${bankCode} AND branch_code = ${branchCode}
             `
-            ref = exact[0]?.id ?? null
+            row = exact[0] ?? null
           }
-          if (ref === null) {
-            const fallback = await tx.$queryRaw<{ id: string }[]>`
-              SELECT id::text AS id FROM bank_composition_config
+          if (row === null) {
+            const fallback = await tx.$queryRaw<BankConfigRow[]>`
+              SELECT id::text AS id, branding_params, image_templates, logo_master_ref FROM bank_composition_config
               WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${bankCode} AND branch_code = ''
             `
-            ref = fallback[0]?.id ?? null
+            row = fallback[0] ?? null
           }
-          bankConfigCache.set(cacheKey, ref)
-          return ref
+          bankConfigCache.set(cacheKey, row)
+          return row
+        }
+
+        // The bank logo bytes, fetched once per master reference via the
+        // AssetStore. renderCollateralPdf embeds a PNG/JPG and degrades a
+        // non-embeddable (.ai) master to a text placeholder itself (P4-D3).
+        const logoCache = new Map<string, { bytes: Uint8Array; contentType: string } | null>()
+        async function logoFor(ref: string | null): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+          if (ref === null) return null
+          if (logoCache.has(ref)) return logoCache.get(ref) ?? null
+          const rec = await assetStore.getByReference(ref)
+          const val = rec === null ? null : { bytes: rec.bytes, contentType: rec.meta.contentType }
+          logoCache.set(ref, val)
+          return val
         }
 
         for (const e of entries) {
-          const bankConfigRef = await bankConfigRefFor(e.bank_reference_code, e.branch_code)
+          const cfg = await bankConfigFor(e.bank_reference_code, e.branch_code)
+          const bankConfigRef = cfg?.id ?? null
+          const logo = await logoFor(cfg?.logo_master_ref ?? null)
           for (const artifactType of artifactTypesFor(e)) {
-            const assetRef = `s3://ap-south-1/fulfillment/artifacts/${p.btchId}/${e.asgn_id}/${artifactType}` // rasterization deferred
+            // Phase 4 (P4-D4): render the real collateral PDF and store its bytes
+            // via the AssetStore, then persist the returned OPAQUE reference on
+            // composed_artifact.asset_reference (replacing the old placeholder
+            // string). Render + put run INSIDE the onceWithin-guarded compose
+            // step, so they execute exactly once per batch even under retry; the
+            // in-tx duration is fine for the in-memory adapter, noted as a seam
+            // to revisit for the S3 adapter (a batch's worth of renders per tx).
+            const pdfBytes = await renderCollateralPdf({
+              artifactType,
+              qrValue: e.qr_value,
+              vpa: e.vpa_value,
+              merchantDisplayName: e.merchant_display_name,
+              merchantLegalName: e.merchant_legal_name,
+              bankName: e.bank_display_name,
+              bankCode: e.bank_reference_code,
+              imageTemplate: templateFor(cfg?.image_templates, artifactType),
+              brandingParams: cfg?.branding_params,
+              logo,
+            })
+            const assetKey = `artifact/${p.btchId}/${e.asgn_id}/${artifactType}`
+            const put = await assetStore.put(assetKey, pdfBytes, {
+              contentType: 'application/pdf',
+              filename: `${artifactType}.pdf`,
+            })
             // e.asgn_id is already the native uuid (selected as `::text` off a
             // uuid column, not a wire id), so it is used directly here, NOT
             // re-decoded via toUuid (which expects a wire-form id or a bare
             // 26-char payload and throws on a 36-char uuid string).
             await tx.$executeRaw`
               INSERT INTO composed_artifact (id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr, bank_config_ref)
-              VALUES (gen_random_uuid(), ${e.asgn_id}::uuid, ${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${artifactType}, ${assetRef}, ${e.merchant_display_name}, ${e.qr_value}, ${bankConfigRef}::uuid)
+              VALUES (gen_random_uuid(), ${e.asgn_id}::uuid, ${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${artifactType}, ${put.reference}, ${e.merchant_display_name}, ${e.qr_value}, ${bankConfigRef}::uuid)
             `
             composed++
           }

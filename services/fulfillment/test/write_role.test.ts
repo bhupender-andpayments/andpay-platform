@@ -7,6 +7,7 @@ import { projectDemandFact } from '../src/pool.js'
 import { projectShipToAmended } from '../src/ship-to.js'
 import { ensurePool, triggerBatch } from '../src/batching.js'
 import { consumeBatchFact } from '../src/dispatch.js'
+import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 import { createVendor } from '../src/vendor.js'
 import { ingestReturnSheet, type ReturnSheet } from '../src/return-sheet.js'
 import { ingestStatusFile, type StatusFile } from '../src/status-file.js'
@@ -31,6 +32,7 @@ const url =
   process.env.FULFILLMENT_DATABASE_URL ??
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 const db = new PrismaClient({ datasourceUrl: url })
+const assetStore = new InMemoryAssetStore()
 
 // A SEPARATE client dedicated to the UNSET-GUC block: once any session has
 // called set_config on app.program_id (even under SET LOCAL that rolled back),
@@ -341,7 +343,7 @@ describe('(2) automatic M-pred writers run under fulfillment_write (non-vacuous,
     })
     await installGuard('composed_artifact', 'BEFORE INSERT')
     try {
-      const res = await consumeBatchFact(db, env)
+      const res = await consumeBatchFact(db, env, assetStore)
       expect(res.composed).toBeGreaterThan(0)
     } finally {
       await dropGuard('composed_artifact')
@@ -645,7 +647,7 @@ describe('(6) fix wave: the leading inbox/saga_instance write now runs under ful
     await installGuard('inbox', 'BEFORE INSERT')
     await installGuard('saga_instance', 'BEFORE INSERT')
     try {
-      const res = await consumeBatchFact(db, env)
+      const res = await consumeBatchFact(db, env, assetStore)
       expect(res.composed).toBeGreaterThan(0)
     } finally {
       await dropGuard('inbox')

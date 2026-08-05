@@ -5,6 +5,7 @@ import { stepKey } from '@andpay/keys'
 import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { consumeBatchFact } from '../src/dispatch.js'
+import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 import { CONSUMER, setProgramContext } from '../src/internal.js'
 import {
   DISPATCH_TOPIC,
@@ -17,6 +18,7 @@ const url =
   process.env.FULFILLMENT_DATABASE_URL ??
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 const db = new PrismaClient({ datasourceUrl: url })
+const assetStore = new InMemoryAssetStore()
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
@@ -131,7 +133,7 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       traceId: 'trace-batch-1',
     })
 
-    const res = await consumeBatchFact(db, env)
+    const res = await consumeBatchFact(db, env, assetStore)
     expect(res.deduped).toBe(false)
     expect(res.composed).toBe(4) // 2 entries x (SOUNDBOX_IMG + STANDEE_IMG)
 
@@ -222,7 +224,7 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     expect(dispatchStep[0]!.idempotency_key).toBe(stepKey(btchWire, 'dispatch'))
 
     // redelivery of the SAME envelope (same dedupKey) is a no-op.
-    const res2 = await consumeBatchFact(db, env)
+    const res2 = await consumeBatchFact(db, env, assetStore)
     expect(res2.deduped).toBe(true)
 
     const artifactsAfter = await db.$queryRaw<{ n: bigint }[]>`
@@ -332,7 +334,7 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       dedupKey,
       traceId: 'trace-batch-e1-real',
     })
-    const res = await consumeBatchFact(db, env)
+    const res = await consumeBatchFact(db, env, assetStore)
     expect(res.deduped).toBe(false)
     expect(res.composed).toBe(2) // soundbox + standee
 
@@ -386,7 +388,7 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       traceId: 'trace-batch-5a',
     })
 
-    const res = await consumeBatchFact(db, env)
+    const res = await consumeBatchFact(db, env, assetStore)
     expect(res.deduped).toBe(false)
 
     const artifacts = await db.$queryRaw<{ asgn_id: string; bank_config_ref: string | null }[]>`
@@ -397,5 +399,38 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     expect(byAsgn.get(a.asgnUuid)).toBe(hdfcBranchConfigId) // exact branch match
     expect(byAsgn.get(b.asgnUuid)).toBe(hdfcDefaultConfigId) // falls back to the bank-level default
     expect(byAsgn.get(c.asgnUuid)).toBeNull() // neither exists -> null (no-branding)
+  })
+
+  it('P4-2: composition stores a real PDF per artifact via the AssetStore and persists its reference (not the placeholder)', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+    await seedBankConfig(tenantUuid, 'HDFC')
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-a', 'HDFC')
+    const env = batchFactEnvelope({
+      payload: { btchId: btchWire, tenantId: tenantWire, programId: programWire, triggerReason: 'LOT_SIZE', unitCount: 1, asgnIds: [a.asgnWire] },
+      dedupKey: btchWire,
+      traceId: 'trace-batch-p42',
+    })
+
+    const res = await consumeBatchFact(db, env, assetStore)
+    expect(res.composed).toBe(2) // soundbox=true + standee_count=1 -> SOUNDBOX_IMG + STANDEE_IMG
+
+    const arts = await db.$queryRaw<{ asset_reference: string }[]>`
+      SELECT asset_reference FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
+    `
+    expect(arts).toHaveLength(2)
+    for (const art of arts) {
+      // the old synthetic placeholder is gone; the reference resolves to real PDF bytes
+      expect(art.asset_reference.startsWith('s3://')).toBe(false)
+      const rec = await assetStore.getByReference(art.asset_reference)
+      expect(rec).not.toBeNull()
+      const bytes = rec!.bytes
+      expect(bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d).toBe(true) // %PDF-
+      expect(rec!.meta.contentType).toBe('application/pdf')
+    }
   })
 })

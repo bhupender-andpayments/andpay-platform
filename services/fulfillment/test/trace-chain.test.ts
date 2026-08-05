@@ -4,6 +4,7 @@ import type { LeanClaim } from '@andpay/authz'
 import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { consumeBatchFact } from '../src/dispatch.js'
+import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 import { ingestReturnSheet, type ReturnSheet } from '../src/return-sheet.js'
 import { batchFactEnvelope } from '../src/events.js'
 
@@ -11,6 +12,7 @@ const url =
   process.env.FULFILLMENT_DATABASE_URL ??
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 const db = new PrismaClient({ datasourceUrl: url })
+const assetStore = new InMemoryAssetStore()
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
@@ -141,7 +143,7 @@ describe('end-to-end trace chain (check 9): the consumed batch fact trace_id pro
       dedupKey: btchWire,
       traceId: TRACE,
     })
-    const dispatchRes = await consumeBatchFact(db, env)
+    const dispatchRes = await consumeBatchFact(db, env, assetStore)
     expect(dispatchRes.deduped).toBe(false)
     expect(dispatchRes.composed).toBe(4) // 2 entries x (SOUNDBOX_IMG + STANDEE_IMG)
 
