@@ -19,9 +19,12 @@
     "@andpay/ids": "workspace:*",
     "@andpay/keys": "workspace:*",
     "@andpay/outbox": "workspace:*",
-    "exceljs": "^4.4.0"
+    "exceljs": "^4.4.0",
+    "pdf-lib": "^1.17.1",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@andpay/bus": "workspace:*"
+    "@andpay/bus": "workspace:*",
+    "@types/qrcode": "^1.5.6"
   }
 }
