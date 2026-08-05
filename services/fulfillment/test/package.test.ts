@@ -121,7 +121,7 @@ describe('buildDispatchPackage (per-adapter dispatch package projection, D104 ch
     expect(printLines).toHaveLength(1)
     const line = printLines[0]!
     expect(line.asgnId).toBe(entry.asgnWire)
-    expect(new Set(line.artifactRefs)).toEqual(new Set(['ref-soundbox', 'ref-standee']))
+    expect(new Set(line.artifacts.map((a) => a.assetReference))).toEqual(new Set(['ref-soundbox', 'ref-standee']))
     expect(line.labelDisplayName).toBe(entry.merchantDisplayName)
     expect(line.labelQr).toBe(entry.qrValue)
 
@@ -160,7 +160,8 @@ describe('buildDispatchPackage (per-adapter dispatch package projection, D104 ch
 
     // print-view fields still present (ship is print-plus, not a replacement).
     expect(line.asgnId).toBe(entry.asgnWire)
-    expect(line.artifactRefs).toEqual(['ref-soundbox'])
+    expect(line.artifacts.map((a) => a.assetReference)).toEqual(['ref-soundbox'])
+    expect(line.artifacts[0]!.artifactType).toBe('SOUNDBOX_IMG')
     expect(line.labelDisplayName).toBe(entry.merchantDisplayName)
     expect(line.labelQr).toBe(entry.qrValue)
 

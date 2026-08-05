@@ -169,9 +169,12 @@ export async function consumeBatchFact(
             // via the AssetStore, then persist the returned OPAQUE reference on
             // composed_artifact.asset_reference (replacing the old placeholder
             // string). Render + put run INSIDE the onceWithin-guarded compose
-            // step, so they execute exactly once per batch even under retry; the
-            // in-tx duration is fine for the in-memory adapter, noted as a seam
-            // to revisit for the S3 adapter (a batch's worth of renders per tx).
+            // step, so they execute exactly once per batch even under retry.
+            // Two seams for the future S3 adapter: (1) a batch's worth of renders
+            // + network puts holds the tx open longer; (2) put is not
+            // transactional, so a tx that rolls back after a put (or a retried
+            // batch) leaves an orphaned object version (harmless here since no
+            // reference is persisted on rollback, but S3 would accumulate).
             const pdfBytes = await renderCollateralPdf({
               artifactType,
               qrValue: e.qr_value,

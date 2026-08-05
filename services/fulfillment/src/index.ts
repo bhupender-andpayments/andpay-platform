@@ -38,7 +38,14 @@ export {
   isSheetStructurallyValid,
 } from './intake.js'
 export { consumeBatchFact } from './dispatch.js'
-export { type AdapterFunction, type PackageLine, buildDispatchPackage } from './package.js'
+export {
+  type AdapterFunction,
+  type PackageLine,
+  type ArtifactRef,
+  buildDispatchPackage,
+  dispatchXlsx,
+  assembleTypePdf,
+} from './package.js'
 export {
   type ReturnRow,
   type ReturnSheet,

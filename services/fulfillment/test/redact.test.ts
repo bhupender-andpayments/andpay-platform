@@ -111,7 +111,7 @@ describe('redactPackageLineForLog (S7, D104)', () => {
   it('keeps asgnId and artifactRefs; drops labelDisplayName/labelQr and the ship view recipient PII, even for the entitled print+ship line', () => {
     const log = redactPackageLineForLog({
       asgnId: 'asgn_w',
-      artifactRefs: ['s3://ap-south-1/fulfillment/artifacts/btch_1/asgn_w/SOUNDBOX_IMG'],
+      artifacts: [{ artifactType: 'SOUNDBOX_IMG', assetReference: 's3://ap-south-1/fulfillment/artifacts/btch_1/asgn_w/SOUNDBOX_IMG' }],
       labelDisplayName: 'Acme',
       labelQr: 'upi://pay?pa=acme@hdfcbank',
       shipToAddress: '221B Baker Street',

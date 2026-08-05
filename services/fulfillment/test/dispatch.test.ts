@@ -6,6 +6,9 @@ import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { consumeBatchFact } from '../src/dispatch.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
+import { buildDispatchPackage, assembleTypePdf, dispatchXlsx } from '../src/package.js'
+import { PDFDocument } from 'pdf-lib'
+import QRCode from 'qrcode'
 import { CONSUMER, setProgramContext } from '../src/internal.js'
 import {
   DISPATCH_TOPIC,
@@ -432,5 +435,71 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       expect(bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d).toBe(true) // %PDF-
       expect(rec!.meta.contentType).toBe('application/pdf')
     }
+  })
+
+  it('P4-2: a real PNG logo master is fetched and embedded, the reference chain still resolves to a valid PDF', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+    // put a real PNG under a master ref, then point a bank config at it
+    const pngLogo = await QRCode.toBuffer('logo', { type: 'png', width: 64 })
+    const put = await assetStore.put('logo/HDFC', new Uint8Array(pngLogo), { contentType: 'image/png', filename: 'hdfc.png' })
+    await db.$executeRaw`
+      INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at)
+      VALUES (gen_random_uuid(), ${tenantUuid}::uuid, 'HDFC', '', ${put.reference}, NULL, '{}'::jsonb, '{}'::jsonb, now())
+    `
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-logo', 'HDFC')
+    const env = batchFactEnvelope({
+      payload: { btchId: btchWire, tenantId: tenantWire, programId: programWire, triggerReason: 'LOT_SIZE', unitCount: 1, asgnIds: [a.asgnWire] },
+      dedupKey: btchWire,
+      traceId: 'trace-logo',
+    })
+    await consumeBatchFact(db, env, assetStore)
+    const arts = await db.$queryRaw<{ asset_reference: string }[]>`SELECT asset_reference FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid`
+    expect(arts.length).toBeGreaterThan(0)
+    for (const art of arts) {
+      const rec = await assetStore.getByReference(art.asset_reference)
+      expect(rec).not.toBeNull()
+      expect(rec!.bytes[0]).toBe(0x25) // %  -> valid PDF even with the logo embedded
+    }
+  })
+
+  it('P4-3: dispatch package is bank+branch sorted; assembleTypePdf merges stored PDFs per type (soundbox-only), null when absent', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+    // two banks in ONE batch, seeded out of order, to prove the sort
+    await seedBankConfig(tenantUuid, 'ZBANK')
+    await seedBankConfig(tenantUuid, 'ABANK')
+    const z = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-z', 'ZBANK')
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-a', 'ABANK')
+    const env = batchFactEnvelope({
+      payload: { btchId: btchWire, tenantId: tenantWire, programId: programWire, triggerReason: 'LOT_SIZE', unitCount: 2, asgnIds: [z.asgnWire, a.asgnWire] },
+      dedupKey: btchWire,
+      traceId: 'trace-p43',
+    })
+    await consumeBatchFact(db, env, assetStore)
+
+    // sorted: ABANK before ZBANK
+    const lines = await buildDispatchPackage(db, btchWire, 'print')
+    expect(lines.map((l) => l.bankReferenceCode)).toEqual(['ABANK', 'ZBANK'])
+
+    // soundbox-only merged PDF = one page per entry (both entries have SOUNDBOX_IMG)
+    const soundboxPdf = await assembleTypePdf(db, assetStore, btchWire, 'SOUNDBOX_IMG')
+    expect(soundboxPdf).not.toBeNull()
+    expect((await PDFDocument.load(soundboxPdf!)).getPageCount()).toBe(2)
+
+    // sticker_count is 0 in the seed, so there is no STICKER_IMG artifact -> null
+    expect(await assembleTypePdf(db, assetStore, btchWire, 'STICKER_IMG')).toBeNull()
+
+    // the sorted dispatch Excel is a real PK zip
+    const xlsx = await dispatchXlsx(lines)
+    expect(xlsx.subarray(0, 2).toString('latin1')).toBe('PK')
   })
 })

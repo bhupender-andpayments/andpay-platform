@@ -96,7 +96,7 @@ export interface LoggablePackageLine {
 }
 export function redactPackageLineForLog(line: {
   asgnId: string
-  artifactRefs: string[]
+  artifacts: { artifactType: string; assetReference: string }[]
   labelDisplayName: string
   labelQr: string
   shipToAddress?: string
@@ -105,7 +105,7 @@ export function redactPackageLineForLog(line: {
 }): LoggablePackageLine {
   return {
     asgnId: line.asgnId,
-    artifactRefs: line.artifactRefs,
+    artifactRefs: line.artifacts.map((a) => a.assetReference),
   }
 }
 

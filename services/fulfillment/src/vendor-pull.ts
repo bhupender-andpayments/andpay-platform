@@ -1,9 +1,8 @@
-import ExcelJS from 'exceljs'
 import { toUuid, fromUuid } from '@andpay/ids'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { enterVendorReadScope } from './vendor-read-context.js'
-import { buildDispatchPackage } from './package.js'
+import { buildDispatchPackage, dispatchXlsx } from './package.js'
 import { emitVendorAuthzAudit } from './vendor-audit.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 
@@ -75,22 +74,9 @@ export async function pullDispatchPackageXlsx(
   // null and we denied above), and the authorize confirmed batch.print_vndr ==
   // scope.vndr. buildDispatchPackage is btchId-scoped, so building it under the
   // normal connection leaks nothing.
+  // Phase 4 (P4-D5): the ship view, now returned bank+branch-sorted, serialized
+  // by the shared dispatchXlsx builder (same sheet the ops download produces).
   const lines = await buildDispatchPackage(db, btchIdWire, 'ship')
-
-  const wb = new ExcelJS.Workbook()
-  const ws = wb.addWorksheet('dispatch')
-  ws.columns = [
-    { header: 'Assignment', key: 'asgnId' },
-    { header: 'Merchant', key: 'labelDisplayName' },
-    { header: 'QR', key: 'labelQr' },
-    { header: 'Ship To', key: 'shipToAddress' },
-    { header: 'Contact', key: 'contactName' },
-    { header: 'Mobile', key: 'mobile' },
-    { header: 'Artifact Refs', key: 'artifactRefs' },
-  ]
-  for (const l of lines) {
-    ws.addRow({ ...l, artifactRefs: l.artifactRefs.join(' ') })
-  }
-  const arrayBuf = await wb.xlsx.writeBuffer()
-  return { xlsx: Buffer.from(arrayBuf), btchId: btchIdWire }
+  const xlsx = await dispatchXlsx(lines)
+  return { xlsx, btchId: btchIdWire }
 }
