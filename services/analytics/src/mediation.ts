@@ -554,3 +554,49 @@ export async function readReport(
   const rows = computeReport(report, narrowed, filters)
   return { rows, watermark }
 }
+
+/** The single-dispatch-row activation-gate signal (D-H.1, Phase 5 Task 2). */
+export interface DispatchActivationStatus {
+  deliveryDate: string | null
+  activationStatus: string | null
+  activationDate: string | null
+}
+
+/**
+ * Phase 5 Task 2 (D-H.1): a single-row-by-id read of the delivery/activation
+ * signal for one dispatch, for the class-3 ops "mark activated" DELIVERED
+ * gate. This is a LOCAL analytics projection read (no cross-context DB read,
+ * C4): ops-edge already holds analyticsDb and calls this in-process, exactly
+ * like readTiles/readReport above. Always enters the crossTenant scope
+ * (ops-edge never constructs an 'own' scope, guardrail G1), so this returns
+ * the row regardless of program.
+ *
+ * The gate predicate is `deliveryDate IS NOT NULL`, NOT a `pipelineState`
+ * equality check (pipelineState advances past 'DELIVERED' to 'ACTIVATED' once
+ * the SAME fct.tms.assignment.activated.v1 fact this task emits is folded, so
+ * an equality check would wrongly reject a second activation attempt after
+ * the first already succeeded). deliveryDate is set once when DELIVERED is
+ * folded (project.ts) and never cleared afterward, so the caller compares it
+ * directly; this function does no gating itself, it only surfaces the signal.
+ *
+ * Returns null when no dispatch_row exists yet for this id (the assignment
+ * has not yet been projected, or was never dispatched at all).
+ */
+export async function readDispatchActivationStatus(
+  db: AnalyticsDb,
+  dispatchId: string,
+): Promise<DispatchActivationStatus | null> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await enterAnalyticsReadScope(tx, { kind: 'crossTenant' })
+    return tx.$queryRaw<{ delivery_date: Date | null; activation_status: string | null; activation_date: Date | null }[]>`
+      SELECT delivery_date, activation_status, activation_date FROM dispatch_row WHERE dispatch_id = ${dispatchId}
+    `
+  })
+  if (rows.length === 0) return null
+  const r = rows[0]!
+  return {
+    deliveryDate: iso(r.delivery_date),
+    activationStatus: r.activation_status,
+    activationDate: iso(r.activation_date),
+  }
+}

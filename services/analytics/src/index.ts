@@ -11,12 +11,14 @@ export {
   readTiles,
   readTileDrilldown,
   readReport,
+  readDispatchActivationStatus,
   type TileSet,
   type TileName,
   type ReportName,
   type ReportRow,
   type ReportCell,
   type ReportFilters,
+  type DispatchActivationStatus,
 } from './mediation.js'
 export type {
   AssignmentFactView,
