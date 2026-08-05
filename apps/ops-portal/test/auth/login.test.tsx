@@ -42,7 +42,8 @@ describe('auth login', () => {
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
     await userEvent.type(screen.getByLabelText(/username/i), 'alice')
     await userEvent.type(screen.getByLabelText(/password/i), 'pw')
-    await userEvent.type(screen.getByLabelText(/totp/i), '123456')
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }))
+    await userEvent.type(await screen.findByLabelText(/totp/i), '123456')
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
     expect(await screen.findByText('u-1')).toBeTruthy()
     // The psr claim (`role:ops`) is derived into the display label with the
@@ -58,7 +59,8 @@ describe('auth login', () => {
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
     await userEvent.type(screen.getByLabelText(/username/i), 'alice')
     await userEvent.type(screen.getByLabelText(/password/i), 'wrong')
-    await userEvent.type(screen.getByLabelText(/totp/i), '000000')
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }))
+    await userEvent.type(await screen.findByLabelText(/totp/i), '000000')
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
     expect(await screen.findByRole('alert')).toBeTruthy()
     expect(getAccessToken()).toBeNull()
@@ -73,11 +75,16 @@ describe('auth login', () => {
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
     await userEvent.type(screen.getByLabelText(/username/i), 'alice')
     await userEvent.type(screen.getByLabelText(/password/i), 'pw')
-    await userEvent.type(screen.getByLabelText(/totp/i), '123456')
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }))
+    await userEvent.type(await screen.findByLabelText(/totp/i), '123456')
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
     expect(await screen.findByRole('alert')).toBeTruthy()
     expect(getAccessToken()).toBeNull()
     expect(screen.queryByText('u-1')).toBeNull()
+    // A failed login (a uniform 401) returns to the credentials step, per
+    // AuthContext/LoginPage's unchanged error handling, so the username field
+    // is reachable again (not the totp field, which the credentials step does
+    // not render).
     expect(screen.getByLabelText(/username/i)).toBeTruthy()
   })
 
@@ -94,7 +101,8 @@ describe('auth login', () => {
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
     await userEvent.type(screen.getByLabelText(/username/i), 'alice')
     await userEvent.type(screen.getByLabelText(/password/i), 'pw')
-    await userEvent.type(screen.getByLabelText(/totp/i), '123456')
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }))
+    await userEvent.type(await screen.findByLabelText(/totp/i), '123456')
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
     expect(await screen.findByText('u-1')).toBeTruthy()
 
