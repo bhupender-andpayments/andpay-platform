@@ -137,6 +137,7 @@ export interface CourierStatusExceptionView {
   createdAt: Date
   resolvedAt: Date | null
   resolvedByActor: string | null
+  shptId: string | null
 }
 
 interface CourierStatusExceptionDbRow {
@@ -150,6 +151,7 @@ interface CourierStatusExceptionDbRow {
   created_at: Date
   resolved_at: Date | null
   resolved_by_actor: string | null
+  shpt_id: string | null
 }
 
 function toCourierStatusExceptionDto(r: CourierStatusExceptionDbRow): CourierStatusExceptionView {
@@ -164,9 +166,20 @@ function toCourierStatusExceptionDto(r: CourierStatusExceptionDbRow): CourierSta
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
     resolvedByActor: r.resolved_by_actor,
+    shptId: r.shpt_id !== null ? fromUuid('shpt', r.shpt_id) : null,
   }
 }
 
+// G-SHPT: the LEFT JOIN back to shpt on the exception's own subject_ref (the
+// courier-reported AWB, an already-unique join key via shpt.awb @unique) lets
+// an operator resolve a status exception without cross-referencing a separate
+// shipment-list screen. LEFT (not INNER) is required: unknown_awb rows have
+// no matching shpt row by construction (see G_SHPT_backend_spec.md section 1)
+// and must still surface in the queue, with a null shptId, rather than
+// disappearing. Both tables live in the fulfillment schema (intra-context,
+// not a cross-context join, C4) and fulfillment_ops_read already has SELECT +
+// a permissive USING(true) policy on both (see the T5b/T8 migrations), so no
+// new grant/migration is needed.
 export async function readCourierStatusExceptions(
   db: FulfillmentDb,
   { includeResolved }: { includeResolved: boolean },
@@ -175,18 +188,22 @@ export async function readCourierStatusExceptions(
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     if (includeResolved) {
       return tx.$queryRaw<CourierStatusExceptionDbRow[]>`
-        SELECT id::text AS id, vndr_id::text AS vndr_id, channel, subject_ref, file_id, row_ref,
-               reason_code, created_at, resolved_at, resolved_by_actor::text AS resolved_by_actor
-        FROM courier_status_exception
-        ORDER BY created_at
+        SELECT e.id::text AS id, e.vndr_id::text AS vndr_id, e.channel, e.subject_ref, e.file_id, e.row_ref,
+               e.reason_code, e.created_at, e.resolved_at, e.resolved_by_actor::text AS resolved_by_actor,
+               s.id::text AS shpt_id
+        FROM courier_status_exception e
+        LEFT JOIN shpt s ON s.awb = e.subject_ref
+        ORDER BY e.created_at
       `
     }
     return tx.$queryRaw<CourierStatusExceptionDbRow[]>`
-      SELECT id::text AS id, vndr_id::text AS vndr_id, channel, subject_ref, file_id, row_ref,
-             reason_code, created_at, resolved_at, resolved_by_actor::text AS resolved_by_actor
-      FROM courier_status_exception
-      WHERE resolved_at IS NULL
-      ORDER BY created_at
+      SELECT e.id::text AS id, e.vndr_id::text AS vndr_id, e.channel, e.subject_ref, e.file_id, e.row_ref,
+             e.reason_code, e.created_at, e.resolved_at, e.resolved_by_actor::text AS resolved_by_actor,
+             s.id::text AS shpt_id
+      FROM courier_status_exception e
+      LEFT JOIN shpt s ON s.awb = e.subject_ref
+      WHERE e.resolved_at IS NULL
+      ORDER BY e.created_at
     `
   })
   return rows.map(toCourierStatusExceptionDto)

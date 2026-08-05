@@ -376,6 +376,13 @@ function withinReportWindow(d: Date | null, filters: ReportFilters): boolean {
 // aggregate) shape with NO dispatchId at all.
 // ---------------------------------------------------------------------------
 
+// G-SHPT: shptId is emitted AS-IS, no fromUuid wrap. dispatch_row.shpt_id is
+// already a wire `shpt_` string end to end (project.ts copies the folded
+// fact's shptId verbatim, and every producer of that fact -- courier-status.ts,
+// ops.ts's overrideTerminal -- emits it in wire form already; see
+// G_SHPT_backend_spec.md section 2b for the full trace). Wrapping it in
+// fromUuid('shpt', ...) here would double-encode a value that is not a raw
+// uuid and would throw.
 function soundboxDeliveryRow(r: DispatchDbRow): ReportRow {
   return {
     dispatchId: r.dispatch_id,
@@ -383,6 +390,7 @@ function soundboxDeliveryRow(r: DispatchDbRow): ReportRow {
     bankCode: r.bank_code,
     merchantDisplay: r.merchant_display,
     awb: r.awb,
+    shptId: r.shpt_id,
     dispatchDate: iso(r.dispatch_date),
     courierStatus: r.courier_status,
     deliveryDate: iso(r.delivery_date),

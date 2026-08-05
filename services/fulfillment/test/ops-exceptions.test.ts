@@ -291,6 +291,33 @@ describe('resolveIntakeException (spec 10c Task 8): re-drives the intake ingest 
   })
 })
 
+describe('G-SHPT: readCourierStatusExceptions carries the wire shpt id via the AWB LEFT JOIN', () => {
+  it('an AWB-matched exception (e.g. courier_unassigned) emits shptId as the fromUuid wire form of the matching shpt row', async () => {
+    const seeded = await seedShipment('IN_TRANSIT', 'AWB-MATCHED-1')
+    const { exceptionId } = await seedCourierStatusException({
+      subjectRef: 'AWB-MATCHED-1',
+      reasonCode: 'courier_unassigned',
+    })
+
+    const rows = await readCourierStatusExceptions(db, { includeResolved: false })
+    const row = rows.find((r) => r.id === exceptionId)
+    expect(row).toBeDefined()
+    expect(row!.shptId).toBe(seeded.shptWire)
+  })
+
+  it('an unknown_awb exception (no matching shpt.awb) still appears in the queue with shptId null (LEFT JOIN, not filtered out)', async () => {
+    const { exceptionId } = await seedCourierStatusException({
+      subjectRef: `no-such-awb-${randomUUID()}`,
+      reasonCode: 'unknown_awb',
+    })
+
+    const rows = await readCourierStatusExceptions(db, { includeResolved: false })
+    const row = rows.find((r) => r.id === exceptionId)
+    expect(row).toBeDefined()
+    expect(row!.shptId).toBeNull()
+  })
+})
+
 describe('ops-read exception surfaces and CHECK-9 tenant-read exclusion', () => {
   it('readIntakeExceptions/readCourierStatusExceptions (fulfillment_ops_read) return unresolved rows by default and all rows with includeResolved', async () => {
     const { exceptionId: intakeId } = await seedIntakeException()

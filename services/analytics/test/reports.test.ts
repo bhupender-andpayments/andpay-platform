@@ -32,6 +32,7 @@ interface Row {
   pipelineState: string
   receivedAt: Date
   awb?: string | null
+  shptId?: string | null
   dispatchDate?: Date | null
   courierStatus?: string | null
   sentToVendorAt?: Date | null
@@ -49,11 +50,11 @@ async function insertRow(r: Row): Promise<void> {
   await db.$executeRaw`
     INSERT INTO dispatch_row
       (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
-       awb, dispatch_date, courier_status, pipeline_state, is_replacement, original_dispatch_id,
+       awb, shpt_id, dispatch_date, courier_status, pipeline_state, is_replacement, original_dispatch_id,
        damage_reason, replacement_dispatch_id, replacement_status, billable_flag, received_at,
        sent_to_vendor_at, dispatched_at, delivery_date, activation_status, updated_at)
     VALUES (${r.dispatchId}, ${r.programId}::uuid, ${r.bankCode ?? 'HDFC'}, 'HDFC Bank', 'Acme',
-            ARRAY['DEV1']::text[], ${r.awb ?? null}, ${r.dispatchDate ?? null}, ${r.courierStatus ?? null},
+            ARRAY['DEV1']::text[], ${r.awb ?? null}, ${r.shptId ?? null}, ${r.dispatchDate ?? null}, ${r.courierStatus ?? null},
             ${r.pipelineState}, ${r.isReplacement ?? false}, ${r.originalDispatchId ?? null},
             ${r.damageReason ?? null}, ${r.replacementDispatchId ?? null}, ${r.replacementStatus ?? null},
             true, ${r.receivedAt}, ${r.sentToVendorAt ?? null}, ${r.dispatchedAt ?? null},
@@ -66,12 +67,14 @@ describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
     const p2 = toUuid(newId('prog'))
     const now = new Date()
     const dispatched = newId('asgn')
+    const shptWire = newId('shpt')
     await insertRow({
       dispatchId: dispatched,
       programId: p1,
       pipelineState: 'DISPATCHED',
       receivedAt: now,
       awb: 'AWB123',
+      shptId: shptWire,
       dispatchDate: now,
       courierStatus: 'IN_TRANSIT',
       dispatchedAt: now,
@@ -96,7 +99,34 @@ describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
     expect(rows[0]!.awb).toBe('AWB123')
     expect(rows[0]!.courierStatus).toBe('IN_TRANSIT')
     expect(rows[0]!.dispatchDate).not.toBeNull()
+    // G-SHPT: shptId is emitted verbatim (already a wire shpt_ string end to
+    // end, see G_SHPT_backend_spec.md section 2b) and round-trips through
+    // toUuid without throwing, locking in the wire-format guarantee.
+    expect(rows[0]!.shptId).toBe(shptWire)
+    expect(() => toUuid(rows[0]!.shptId as string)).not.toThrow()
     expect(watermark).toBeDefined()
+  })
+
+  it('soundbox-delivery: shptId is null when no shipment fact has been folded yet', async () => {
+    const p1 = toUuid(newId('prog'))
+    const now = new Date()
+    const dispatched = newId('asgn')
+    await insertRow({
+      dispatchId: dispatched,
+      programId: p1,
+      pipelineState: 'DISPATCHED',
+      receivedAt: now,
+      awb: 'AWB456',
+      shptId: null,
+      dispatchDate: now,
+      dispatchedAt: now,
+    })
+
+    const scope: ReadScope = { kind: 'own', programIds: [p1] }
+    const { rows } = await readReport(db, scope, 'soundbox-delivery', {})
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.shptId).toBeNull()
   })
 
   it('soundbox-delivery: crossTenant scope sees the union across programs', async () => {
