@@ -39,6 +39,7 @@ import {
 import {
   previewBankFile,
   commitBankFile,
+  previewDamageFile,
   commitDamageFile,
   resolveQuarantineRow,
   createDamageReasonOps,
@@ -49,6 +50,7 @@ import {
   ManualDevicePort,
   type BankRequestRow,
   type BankPreviewResult,
+  type DamagePreviewResult,
   type DamageReasonRow,
 } from '@andpay/tms-service'
 import { readDispatchActivationStatus } from '@andpay/analytics-service'
@@ -399,10 +401,32 @@ export class OpsController {
     })
   }
 
-  // The damage-file commit (D-K). Multipart raw file, server-parsed; no
-  // separate preview in v1 (damage validation is a DB match by tenant+vpa,
-  // which a pure preview cannot do). Same gate and partial-accept as the bank
-  // commit.
+  // The damage-file preview (Phase 7 Task 7, L11/FR08-3 decision item 11):
+  // the preview-parity counterpart to previewBank above, so the portal's
+  // damage upload gets the same preview-then-commit UX. Same persist-nothing
+  // posture as previewBank: NO Idempotency-Key, NO mutation gate, NO
+  // co-committed ALLOW 6e, NO durable DENY 6e (a DENY 6e is itself an outbox
+  // write, forbidden on a route that persists nothing). previewDamageFile
+  // reads (never writes) the assignment/damage_reason match the commit path
+  // would use, under the read-only tms_ops_read role. The response carries
+  // decoded bank/damage PII exactly like the bank preview, so the same
+  // direct D2 authorize (authorizePreview) still gates access.
+  @Post('uploads/damage/preview')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async previewDamage(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+  ): Promise<DamagePreviewResult> {
+    this.authorizePreview(req, 'ops:upload-damage-file')
+    if (!file) throw new BadRequestException('missing file')
+    return previewDamageFile(this.deps.tmsDb, file.buffer, file.originalname)
+  }
+
+  // The damage-file commit (D-K). Multipart raw file, server-parsed. Same
+  // gate and partial-accept as the bank commit. (Preview parity landed above
+  // as of Phase 7 Task 7; this route's own re-parse and match logic is
+  // otherwise unchanged.)
   @Post('uploads/damage/commit')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   @HttpCode(200)

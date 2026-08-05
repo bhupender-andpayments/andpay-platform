@@ -326,6 +326,60 @@ describe('ops-edge uploads: bank COMMIT (multipart, partial-accept)', () => {
   })
 })
 
+describe('ops-edge uploads: damage PREVIEW (multipart, persists nothing)', () => {
+  it('projects a matched row as valid and an unmatched row as no_match, writing ZERO rows', async () => {
+    await seedOriginalAssignment('acme@hdfcbank', 'HDFC')
+    const csv = toCsv(DAMAGE_HEADERS, [
+      damageCells(),
+      damageCells({ vpaValue: 'unknown@hdfcbank', damageReason: 'x', bankRemarks: '', shipToAddress: 'A' }),
+    ])
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post('/ops/uploads/damage/preview')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', csv, 'damage.csv')
+    expect(res.status).toBe(200)
+    expect(res.body.summary).toEqual({ total: 2, valid: 1, invalid: 1 })
+    expect(res.body.rows[0].valid).toBe(true)
+    expect(res.body.rows[0].reasonCode).toBeUndefined()
+    expect(res.body.rows[1].valid).toBe(false)
+    expect(res.body.rows[1].reasonCode).toBe('no_match')
+
+    // Persist-nothing: no replacement created, no outbox event, no
+    // Idempotency-Key was ever required or consumed.
+    const repl = await tmsDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
+    expect(Number(repl[0]!.n)).toBe(0)
+    expect(await tmsCount('outbox')).toBe(0)
+    expect(await fulfillmentOutboxAuthz()).toHaveLength(0)
+  })
+
+  it('projects invalid_damage_reason for a matched row whose reason is not in the active master', async () => {
+    await seedOriginalAssignment('acme@hdfcbank', 'HDFC')
+    const csv = toCsv(DAMAGE_HEADERS, [damageCells({ damageReason: 'not a real reason' })])
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post('/ops/uploads/damage/preview')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', csv, 'damage.csv')
+    expect(res.status).toBe(200)
+    expect(res.body.rows[0].valid).toBe(false)
+    expect(res.body.rows[0].reasonCode).toBe('invalid_damage_reason')
+    const repl = await tmsDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
+    expect(Number(repl[0]!.n)).toBe(0)
+  })
+
+  it('rejects an unauthorized role with 403 and emits NO 6e (persist-nothing on DENY too)', async () => {
+    const csv = toCsv(DAMAGE_HEADERS, [damageCells()])
+    const token = await mint({ psr: 'role:not_ops' })
+    const res = await request(app.getHttpServer())
+      .post('/ops/uploads/damage/preview')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', csv, 'damage.csv')
+    expect(res.status).toBe(403)
+    expect(await fulfillmentOutboxAuthz()).toHaveLength(0)
+  })
+})
+
 describe('ops-edge uploads: damage COMMIT (multipart)', () => {
   it('partial-accepts a .csv: a matched row replaces, an unmatched row quarantines', async () => {
     await seedOriginalAssignment('acme@hdfcbank', 'HDFC')

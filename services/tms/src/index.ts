@@ -44,6 +44,7 @@ export { readAssignments, readAssignmentById, type AssignmentReadRow } from './r
 export {
   previewBankFile,
   commitBankFile,
+  previewDamageFile,
   commitDamageFile,
   resolveQuarantineRow,
   createDamageReasonOps,
@@ -55,6 +56,8 @@ export {
   OpsClientError,
   type BankPreviewResult,
   type PreviewRowResult,
+  type DamagePreviewResult,
+  type DamagePreviewRowResult,
 } from './ops.js'
 export {
   readQuarantineQueue,

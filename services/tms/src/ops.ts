@@ -11,7 +11,7 @@ import {
   type BankRequestRow,
   type RequestRowRejectReason,
 } from './ingest.js'
-import { ingestDamageRowWithinTx, CASE_STATUS_VALUES } from './damage.js'
+import { ingestDamageRowWithinTx, CASE_STATUS_VALUES, type BankDamageRow } from './damage.js'
 import {
   parseBankRequestFile,
   parseBankDamageFile,
@@ -206,6 +206,72 @@ export async function commitBankFile(
     })
   })
   return { ...tally, fileId }
+}
+
+// Phase 7 Task 7 (L11, FR08-3 decision item 11): the damage-file PREVIEW,
+// built to give the damage upload the same preview-then-commit UX the bank
+// upload already has. UNLIKE previewBankFile (a pure in-memory re-validate,
+// zero DB touch), damage validation is a DB match by (bank_reference_code,
+// vpa_value) against `assignment` plus an ACTIVE `damage_reason` label match
+// (ingestDamageRowWithinTx's own two SELECTs) - a "pure preview cannot do
+// this" per the ops.ts damage-commit comment above, so this function reads
+// (never writes) those SAME two SELECTs under the read-only tms_ops_read
+// role (the same role listDamageReasons/readDamageCases already use) and
+// projects the identical outcome the commit path would reach. It opens NO
+// write role, INSERTs no quarantine_row, and enqueues no 6e: a dry run in
+// the strongest sense the domain allows. Duplicate detection is
+// DELIBERATELY not projected (same omission previewBankFile makes): a
+// duplicate is decided by the real Idempotency-Key-derived correlationId,
+// which does not exist until commit.
+export interface DamagePreviewRowResult {
+  rowNo: number
+  valid: boolean
+  reasonCode?: 'no_match' | 'ambiguous_match' | 'invalid_damage_reason' | 'ambiguous_damage_reason'
+  row: BankDamageRow
+}
+
+export interface DamagePreviewResult {
+  rows: DamagePreviewRowResult[]
+  summary: { total: number; valid: number; invalid: number }
+  structuralErrors: StructuralParseError[]
+}
+
+export async function previewDamageFile(db: TmsDb, fileBytes: Uint8Array, filename: string): Promise<DamagePreviewResult> {
+  const parsed = await parseBankDamageFile(fileBytes, filename, 'preview')
+  if (parsed.errors.length > 0) {
+    return { rows: [], summary: { total: 0, valid: 0, invalid: 0 }, structuralErrors: parsed.errors }
+  }
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    const out: DamagePreviewRowResult[] = []
+    for (const row of parsed.rows) {
+      const matches = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM assignment
+        WHERE bank_reference_code = ${row.tenantReference} AND vpa_value = ${row.vpaValue} AND replacement_of IS NULL
+      `
+      if (matches.length !== 1) {
+        out.push({ rowNo: row.rowNo, valid: false, reasonCode: matches.length === 0 ? 'no_match' : 'ambiguous_match', row })
+        continue
+      }
+      const reasonMatches = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM damage_reason
+        WHERE active = true AND LOWER(TRIM(label)) = LOWER(TRIM(${row.damageReason}))
+      `
+      if (reasonMatches.length !== 1) {
+        out.push({
+          rowNo: row.rowNo,
+          valid: false,
+          reasonCode: reasonMatches.length === 0 ? 'invalid_damage_reason' : 'ambiguous_damage_reason',
+          row,
+        })
+        continue
+      }
+      out.push({ rowNo: row.rowNo, valid: true, row })
+    }
+    return out
+  })
+  const valid = rows.reduce((n, r) => n + (r.valid ? 1 : 0), 0)
+  return { rows, summary: { total: rows.length, valid, invalid: rows.length - valid }, structuralErrors: [] }
 }
 
 // Phase 2 Task 2 (D-K): the damage-file COMMIT. Same server-side re-parse and

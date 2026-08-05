@@ -1,14 +1,22 @@
 import { Link } from 'react-router-dom'
 
-// The per-row outcome breakdown returned by the two ops upload endpoints:
-// POST /ops/uploads/bank -> {accepted,quarantined,duplicate}
-// POST /ops/uploads/damage -> {replaced,quarantined,duplicate}
-// Both share `quarantined`; only one of `accepted`/`replaced` applies per
-// upload kind, so both are optional here.
+// The per-row outcome breakdown returned by the ops upload endpoints:
+// POST /ops/uploads/bank/commit             -> {accepted,quarantined,duplicate}
+// POST /ops/uploads/damage/commit           -> {replaced,quarantined,duplicate}
+// POST /ops/uploads/device-inventory        -> {accepted,flagged,invalid}
+// `quarantined` (bank/damage) and `flagged` (device-inventory) both name a
+// count of rows that landed in a review queue rather than committing clean;
+// they route to different queues (quarantine vs intake exceptions, both
+// under task 11's /queues route) so each renders its own labeled link.
+// `invalid` (device-inventory only) never lands in any queue: FR-01a rows
+// missing a mandatory field are reported directly in the response and never
+// ingested at all, so it renders as a plain count, no link.
 export interface UploadResultBreakdown {
   accepted?: number
   replaced?: number
-  quarantined: number
+  quarantined?: number
+  flagged?: number
+  invalid?: number
   duplicate?: number
 }
 
@@ -30,20 +38,44 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
           <dd className="text-lg font-semibold text-slate-900">{result.replaced}</dd>
         </div>
       )}
-      <div>
-        <dt className="text-slate-500">Quarantined</dt>
-        <dd className="text-lg font-semibold text-amber-700">
-          {result.quarantined}
-          {result.quarantined > 0 && (
-            <>
-              {' '}
-              <Link to="/queues" className="text-sm font-medium text-blue-600 underline hover:text-blue-800">
-                view in quarantine queue
-              </Link>
-            </>
-          )}
-        </dd>
-      </div>
+      {result.quarantined !== undefined && (
+        <div>
+          <dt className="text-slate-500">Quarantined</dt>
+          <dd className="text-lg font-semibold text-amber-700">
+            {result.quarantined}
+            {result.quarantined > 0 && (
+              <>
+                {' '}
+                <Link to="/queues" className="text-sm font-medium text-blue-600 underline hover:text-blue-800">
+                  view in quarantine queue
+                </Link>
+              </>
+            )}
+          </dd>
+        </div>
+      )}
+      {result.flagged !== undefined && (
+        <div>
+          <dt className="text-slate-500">Flagged</dt>
+          <dd className="text-lg font-semibold text-amber-700">
+            {result.flagged}
+            {result.flagged > 0 && (
+              <>
+                {' '}
+                <Link to="/queues" className="text-sm font-medium text-blue-600 underline hover:text-blue-800">
+                  view in intake exceptions
+                </Link>
+              </>
+            )}
+          </dd>
+        </div>
+      )}
+      {result.invalid !== undefined && (
+        <div>
+          <dt className="text-slate-500">Invalid</dt>
+          <dd className="text-lg font-semibold text-slate-900">{result.invalid}</dd>
+        </div>
+      )}
       {result.duplicate !== undefined && (
         <div>
           <dt className="text-slate-500">Duplicate</dt>

@@ -343,22 +343,26 @@ export function getVendors(c: Client) {
 }
 
 // -----------------------------------------------------------------------
-// Bank and damage uploads (Phase 2 Task 4). The confirmed ops-edge contract
-// (apps/ops-edge/src/ops.controller.ts's previewBank/commitBank/commitDamage,
-// grounded against services/tms/src/ops.ts and bank-file-adapter.ts): the
-// upload surface is MULTIPART raw-file routes with server-side parsing
-// (D-K); no client-side parsing of the picked file remains authoritative.
-//   POST /ops/uploads/bank/preview   multipart `file`, no Idempotency-Key,
+// Bank and damage uploads (Phase 2 Task 4; damage preview added Phase 7 Task
+// 7, L11/FR08-3). The confirmed ops-edge contract
+// (apps/ops-edge/src/ops.controller.ts's previewBank/commitBank/
+// previewDamage/commitDamage, grounded against services/tms/src/ops.ts and
+// bank-file-adapter.ts): the upload surface is MULTIPART raw-file routes
+// with server-side parsing (D-K); no client-side parsing of the picked file
+// remains authoritative.
+//   POST /ops/uploads/bank/preview     multipart `file`, no Idempotency-Key,
 //     writes nothing -> BankPreviewResult { rows, summary, structuralErrors }
-//   POST /ops/uploads/bank/commit    multipart `file`, Idempotency-Key
+//   POST /ops/uploads/bank/commit      multipart `file`, Idempotency-Key
 //     -> { accepted, quarantined, duplicate, fileId }
-//   POST /ops/uploads/damage/commit  multipart `file`, Idempotency-Key
+//   POST /ops/uploads/damage/preview   multipart `file`, no Idempotency-Key,
+//     writes nothing -> DamagePreviewResult { rows, summary, structuralErrors }
+//   POST /ops/uploads/damage/commit    multipart `file`, Idempotency-Key
 //     -> { replaced, quarantined, duplicate, fileId }
 // This is a raw `fetch`, not the JSON api client (createApiClient/
 // client.request), which only ever sends application/json bodies: it mirrors
 // apps/vendor-portal ReturnUploadPage.tsx's multipart-from-SPA pattern
 // (FormData with a `file` part + a Bearer header read straight off
-// tokenStore). None of the three routes is step-up-gated.
+// tokenStore). None of these routes is step-up-gated.
 // -----------------------------------------------------------------------
 
 /** services/tms/src/ingest.ts RequestRowRejectReason. */
@@ -400,6 +404,74 @@ export interface DamageCommitResult {
   fileId: string
 }
 
+/** services/tms/src/damage.ts BankDamageRow (the decoded row shape a damage preview/commit carries). */
+export interface BankDamageRow {
+  fileId: string
+  rowNo: number
+  tenantReference: string
+  vpaValue: string
+  damageReason: string
+  bankRemarks: string
+  shipToAddress: string
+  items?: { soundbox: boolean; standeeCount: number; stickerCount: number }
+  deliveryStatus?: string
+}
+
+/**
+ * Phase 7 Task 7 (L11, FR08-3 decision item 11): services/tms/src/ops.ts
+ * DamagePreviewRowResult / DamagePreviewResult, the preview-parity
+ * counterpart to BankPreviewResult above. `reasonCode` is present only when
+ * `valid` is false: a matched row with a recognized damage reason has no
+ * reason code (mirrors bank preview's `errors: []` on a valid row).
+ */
+export type DamagePreviewReasonCode = 'no_match' | 'ambiguous_match' | 'invalid_damage_reason' | 'ambiguous_damage_reason'
+
+export interface DamagePreviewRowResult {
+  rowNo: number
+  valid: boolean
+  reasonCode?: DamagePreviewReasonCode
+  row: BankDamageRow
+}
+
+export interface DamagePreviewResult {
+  rows: DamagePreviewRowResult[]
+  summary: { total: number; valid: number; invalid: number }
+  structuralErrors: StructuralParseError[]
+}
+
+// -----------------------------------------------------------------------
+// Device-inventory upload (Phase 7 Task 7; edge built Phase-5 Task 1, D-G,
+// FR-01a). The confirmed ops-edge contract (apps/ops-edge/src/ops.controller.ts's
+// uploadDeviceInventory, grounded against services/fulfillment/src/ops-device-inventory.ts):
+//   POST /ops/uploads/device-inventory   multipart `file` + a `manufacturerVndrId`
+//     form field, Idempotency-Key required -> OpsDeviceInventoryResult
+// FR-01a mandates ALL THREE sheet columns (Device ID, SIM No, Device QR) be
+// present on every row; a row missing any of them is reported per-row here
+// (invalidRows) and never ingested, WITHOUT failing the whole file.
+// manufacturerVndrId is a WIRE vndr id (B_edge_contracts.md item 4), the SAME
+// shape GET /ops/vendors emits, so the SPA sources it from getVendors filtered
+// to type === 'MANUFACTURER' (never a raw uuid, never hand-typed).
+// -----------------------------------------------------------------------
+
+/** services/fulfillment/src/device-inventory-adapter.ts DeviceInventoryRowErrorCode. */
+export type DeviceInventoryRowErrorCode = 'missing_device_id' | 'missing_sim_no' | 'missing_device_qr'
+
+export interface DeviceInventoryRowError {
+  rowNo: number
+  errors: DeviceInventoryRowErrorCode[]
+}
+
+/** services/fulfillment/src/ops-device-inventory.ts OpsDeviceInventoryResult. */
+export interface DeviceInventoryUploadResult {
+  fileId: string
+  accepted: number
+  flagged: number
+  invalid: number
+  createdUnitIds: string[]
+  invalidRows: DeviceInventoryRowError[]
+  deduped: boolean
+}
+
 // The 5 MiB multipart cap the ops-edge FileInterceptor enforces
 // (apps/ops-edge/src/deps.ts MAX_UPLOAD_BYTES). Checked client-side against
 // File.size BEFORE any network call, so an oversized file never posts.
@@ -410,13 +482,23 @@ function opsBaseUrl(): string {
 }
 
 // The shared raw multipart POST (mirrors ReturnUploadPage's fetch): a
-// FormData `file` part, a Bearer header read straight off tokenStore (never
-// the JSON client, which always sets Content-Type: application/json), and an
-// optional Idempotency-Key header for the two commit routes (the preview
-// route never sends one; it is a pure read).
-async function postFile<T>(path: string, file: File, idempotencyKey?: string): Promise<T> {
+// FormData `file` part, an optional set of additional plain-string form
+// fields (device-inventory's `manufacturerVndrId`), a Bearer header read
+// straight off tokenStore (never the JSON client, which always sets
+// Content-Type: application/json), and an optional Idempotency-Key header
+// for the commit routes (a preview route never sends one; it is a pure
+// read).
+async function postFile<T>(
+  path: string,
+  file: File,
+  idempotencyKey?: string,
+  extraFields?: Record<string, string>,
+): Promise<T> {
   const form = new FormData()
   form.append('file', file, file.name)
+  if (extraFields !== undefined) {
+    for (const [key, value] of Object.entries(extraFields)) form.append(key, value)
+  }
   const headers: Record<string, string> = { Authorization: `Bearer ${getAccessToken()}` }
   if (idempotencyKey !== undefined) headers['Idempotency-Key'] = idempotencyKey
   const res = await fetch(`${opsBaseUrl()}${path}`, { method: 'POST', headers, body: form })
@@ -435,8 +517,22 @@ export function commitBank(file: File, idempotencyKey: string): Promise<BankComm
   return postFile<BankCommitResult>('/ops/uploads/bank/commit', file, idempotencyKey)
 }
 
+export function previewDamage(file: File): Promise<DamagePreviewResult> {
+  return postFile<DamagePreviewResult>('/ops/uploads/damage/preview', file)
+}
+
 export function commitDamage(file: File, idempotencyKey: string): Promise<DamageCommitResult> {
   return postFile<DamageCommitResult>('/ops/uploads/damage/commit', file, idempotencyKey)
+}
+
+export function commitDeviceInventory(
+  file: File,
+  manufacturerVndrId: string,
+  idempotencyKey: string,
+): Promise<DeviceInventoryUploadResult> {
+  return postFile<DeviceInventoryUploadResult>('/ops/uploads/device-inventory', file, idempotencyKey, {
+    manufacturerVndrId,
+  })
 }
 
 // -----------------------------------------------------------------------
