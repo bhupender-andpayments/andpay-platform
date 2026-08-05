@@ -111,6 +111,16 @@ export {
 } from './ops.js'
 export { OPS_ROLES, loadOpsConfig } from './ops-config.js'
 export {
+  type DeviceInventoryStructuralErrorCode,
+  type DeviceInventoryStructuralError,
+  type DeviceInventoryRow,
+  type DeviceInventoryRowErrorCode,
+  type DeviceInventoryRowError,
+  type DeviceInventoryParseResult,
+  parseDeviceInventoryFile,
+} from './device-inventory-adapter.js'
+export { type OpsDeviceInventoryResult, ingestOpsDeviceInventory } from './ops-device-inventory.js'
+export {
   listVendors,
   type VendorRow,
   readIntakeExceptions,

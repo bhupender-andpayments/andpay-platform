@@ -63,6 +63,12 @@ const OPS_PERMISSIONS = [
   // dead. No step-up (master-data maintenance, not a destructive action).
   'ops:bank-master-create',
   'ops:bank-master-edit',
+  // Phase 5 Task 1 (D-G, FR-01a): the ops device-inventory upload, the ops
+  // analog of the vendor-channel manufacturer intake. Same tier as every
+  // other upload (ops:upload-bank-file, ops:upload-damage-file), not
+  // admin-tier. No list permission is needed (no new list route is added by
+  // this task).
+  'ops:upload-device-inventory',
 ]
 
 // Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role permission differentiation.

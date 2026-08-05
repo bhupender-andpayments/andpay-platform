@@ -235,6 +235,25 @@ model IntakeException {
   @@map("intake_exception")
 }
 
+/// Phase 5 Task 1 (D-G, FR-01a V2): the ops device-inventory upload-audit
+/// ledger, distinct from the 6e authz audit. One row per upload attempt:
+/// uploader, timestamp, row counts, status. Modeled on TMS's IngestFile plus
+/// the uploader column that lacks. PLATFORM-ONLY, permissive FORCE RLS in v1.
+model DeviceInventoryUpload {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fileId           String   @map("file_id")
+  uploader         String   @db.Uuid
+  manufacturerVndr String   @map("manufacturer_vndr") @db.Uuid
+  rowTotal         Int      @map("row_total")
+  rowAccepted      Int      @map("row_accepted")
+  rowFlagged       Int      @map("row_flagged")
+  rowInvalid       Int      @map("row_invalid")
+  status           String
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("device_inventory_upload")
+}
+
 /// The D77 engine state tables, copied VERBATIM from the orchestrator engine DDL
 /// (the engine is schema-agnostic; these live in the fulfillment schema so the
 /// fulfillment-context PM never touches another schema, C4/D107b). Permissive RLS.
