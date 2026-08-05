@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider, useAuth } from '../../src/auth/AuthContext.js'
 import { LoginPage } from '../../src/auth/LoginPage.js'
-import { Nav } from '../../src/components/Nav.js'
+import { AppShell } from '../../src/ui/AppShell.js'
 import { getAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
 // The real auth-edge /session/login contract (verified in
@@ -23,9 +23,24 @@ function makeFakeJwt(claims: Record<string, unknown>): string {
   return `header.${base64url}.signature`
 }
 
+// Phase 7 Task 13a: mounts AppShell instead of the removed src/components/
+// Nav.tsx. AppShell (src/ui/AppShell.tsx) is the sidebar the live app
+// actually renders (routes.tsx's Shell wraps AppShell, not a standalone Nav
+// component; see the Task 3 report's disclosed Nav/AppShell duplication
+// finding) and its own Sidebar renders the identical principal.sub /
+// principal.roleLabel footer text and an accessibly-named Logout button that
+// Nav.tsx used to, so every assertion below is unchanged in meaning, only
+// the mounted component differs. AppShell needs a Router (NavLink/
+// useLocation), already supplied by the surrounding MemoryRouter below.
 function LoginHarness() {
   const { principal } = useAuth()
-  return principal ? <Nav /> : <LoginPage />
+  return principal ? (
+    <AppShell>
+      <div />
+    </AppShell>
+  ) : (
+    <LoginPage />
+  )
 }
 
 describe('auth login', () => {
@@ -36,7 +51,7 @@ describe('auth login', () => {
   // render leaks into the next one (multiple "Sign in" buttons found).
   afterEach(() => { cleanup() })
 
-  it('login stores the access token in memory (not storage), sets the principal, and the Nav shows the derived role label', async () => {
+  it('login stores the access token in memory (not storage), sets the principal, and the shell shows the derived role label', async () => {
     const fakeToken = makeFakeJwt({ sub: 'u-1', psr: 'role:ops' })
     // URL-discriminating: AuthProvider now also fires a mount-time
     // POST /session/rehydrate (Phase 7 GATE 2). A non-discriminating mock

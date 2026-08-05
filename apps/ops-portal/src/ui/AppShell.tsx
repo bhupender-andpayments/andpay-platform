@@ -8,6 +8,7 @@ import {
   IconMasterData,
   IconUploads,
   IconOperations,
+  IconCheck,
   IconLogout,
 } from './icons.js'
 
@@ -15,6 +16,13 @@ import {
 // top bar, and a scrolling content region. Nav labels + routes are unchanged
 // from the spine so routing behavior (and its tests) are identical; only the
 // presentation is new.
+//
+// Phase 7 Task 13a (consistency sweep): added the /activation section (Task
+// 11, FR-07 live activation success mark) so it is reachable from the live
+// sidebar. This is the ONE place that actually renders the app's navigation
+// (routes.tsx's Shell wraps AppShell, not the standalone src/components/
+// Nav.tsx, see the Task 3 report's disclosed duplication finding); Nav.tsx
+// itself is removed in this same task since it had become dead code.
 interface Section {
   to: string
   label: string
@@ -27,6 +35,7 @@ const SECTIONS: readonly Section[] = [
   { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
   { to: '/uploads', label: 'Uploads', icon: IconUploads },
   { to: '/operations', label: 'Operations', icon: IconOperations },
+  { to: '/activation', label: 'Activation', icon: IconCheck },
 ]
 
 function BrandMark() {

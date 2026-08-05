@@ -75,14 +75,16 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 6 real sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 7 real sections (incl. Activation), no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
     const names = links.map((link) => link.textContent?.trim())
     // Master-data is READ-ONLY (FR-11 deferred): the surface set is exactly
-    // the 6 real sections, in the routes.tsx order, no extra admin/CRUD entry.
-    expect(names).toEqual(['Dashboards', 'Reports', 'Queues', 'Master Data', 'Uploads', 'Operations'])
+    // the 7 real sections (Task 13a added Activation, FR-07 live activation
+    // success mark, reachable from the live sidebar), in routes.tsx order,
+    // no extra admin/CRUD entry.
+    expect(names).toEqual(['Dashboards', 'Reports', 'Queues', 'Master Data', 'Uploads', 'Operations', 'Activation'])
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })
 
