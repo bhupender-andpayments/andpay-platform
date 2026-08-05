@@ -23,6 +23,7 @@ export * from "./issue.js";
 export * from "./assurance.js";
 export * from "./stepup.js";
 export * from "./refresh.js";
+export * from "./rehydrate.js";
 export * from "./login.js";
 export * from "./secret.js";
 export * from "./events.js";

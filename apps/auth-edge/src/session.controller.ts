@@ -2,6 +2,7 @@ import { Controller, Headers, HttpCode, Inject, Post, Res, UnauthorizedException
 import { randomUUID } from 'node:crypto'
 import {
   rotateRefresh,
+  rehydrateSession,
   logoutByRefreshToken,
   issueAccessToken,
   INTERNAL_ADMIN_PLANE,
@@ -187,6 +188,74 @@ export class SessionController {
     // Max-Age is intentionally the full absolute lifetime again (the server-side
     // absoluteExpires, unchanged by rotateRefresh, is the real bound; the cookie
     // Max-Age is only the browser's retention hint).
+    res.setHeader('Set-Cookie', serializeRefreshCookie(refreshToken, this.deps.absoluteSec))
+    return { accessToken }
+  }
+
+  // Cookie-only session rehydrate (Phase 7, GATE 2). A cold browser reload has
+  // ALREADY lost its in-memory access token, so unlike /session/refresh this
+  // route takes NO Authorization header and NO bearer: the HttpOnly SameSite=
+  // Strict andpay_rt cookie is the SOLE credential. CSRF posture is CSRF-A
+  // (ratified): SameSite=Strict ALONE is the control here (the cookie is
+  // Path=/session-scoped and never rides a cross-site request), with NO bearer
+  // bind and NO double-submit token on this path. A missing cookie 401s before
+  // any work, exactly like refresh's primary control.
+  @Post('rehydrate')
+  @HttpCode(200)
+  async rehydrate(
+    @Headers('cookie') cookieHeader: string | undefined,
+    @Res({ passthrough: true }) res: EdgeResponse,
+  ): Promise<{ accessToken: string }> {
+    const presented = readRefreshCookie(cookieHeader)
+    if (!presented) throw new UnauthorizedException()
+
+    const now = Math.floor(Date.now() / 1000)
+    const traceId = randomUUID()
+
+    // rehydrateSession resolves the family principal C4-internally (the edge
+    // stays token-blind: it never hashes the token or reads refresh_token),
+    // enforces principal-ACTIVE + role BEFORE spending the rotation, then
+    // rotates. A reused/revoked/idle/absolute-expired token, or a deactivated/
+    // absent/unknown-role principal, throws an AuthzError the app-wide
+    // AuthErrorFilter maps to a generic 401. The refresh-ALLOW and reuse-revoke
+    // DENY audits co-commit INSIDE the rotation/revoke tx with principalId = the
+    // family's own principal, so a deactivated principal produces NO false
+    // refresh-ALLOW audit and NO burned rotation. acr/role are re-derived inside
+    // the service and returned here, so the edge does not re-read the principal.
+    const { refreshToken, principalId, role, acr } = await rehydrateSession(presented, {
+      db: this.deps.authDb,
+      roleConfig: this.deps.roleConfig,
+      idleSec: this.deps.idleSec,
+      now,
+      traceId,
+    })
+
+    // Mint the successor access token via the SAME issuer/claims path login and
+    // refresh use (cls 3, live, internal-admin, scope {}, psr role:<role>, epoch
+    // 1, acr, amr). auth_time is DELIBERATELY OMITTED, identical to refresh: a
+    // reload is NOT a re-authentication, so it must not reset the step-up
+    // freshness clock (requireStepUp gates on auth_time). Omitting it keeps
+    // step-up required after a reload, which is correct and safe: the original
+    // auth_time is not persisted anywhere this path can read it, and stamping now
+    // would falsely grant indefinite step-up freshness across silent reloads.
+    const accessToken = await issueAccessToken(
+      {
+        principalId,
+        cls: 3,
+        mode: this.deps.expectedMode,
+        scope: {},
+        psr: `role:${role}`,
+        epoch: 1,
+        aud: INTERNAL_ADMIN_PLANE,
+        acr,
+        amr: amrForAcr(acr),
+      },
+      { signer: this.deps.signer, iss: this.deps.expectedIss, ttlSec: this.deps.accessTtlSec, now },
+    )
+
+    // Rotate the cookie: a FRESH andpay_rt with the same security flags and the
+    // full absolute lifetime as the browser retention hint (the server-side
+    // absoluteExpires, unchanged by rotation, is the real bound).
     res.setHeader('Set-Cookie', serializeRefreshCookie(refreshToken, this.deps.absoluteSec))
     return { accessToken }
   }
