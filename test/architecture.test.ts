@@ -503,17 +503,28 @@ describe('no-central-PDP DO-NOT: apps/ops-edge never calls Auth on the request p
   })
 })
 
-// The no-cross-context-Identity-read DO-NOT (spec 10c, check 10), mirroring
-// the apps/tenant-edge guard above: apps/ops-edge composes tms + fulfillment
-// only (the ops portal's merchant view rides the same tms.assignment/
-// ops-read projection, never a live Identity query). apps/ops-edge must never
-// read or import services/identity or @andpay/identity (C4, T1, T7).
+// The no-cross-context-DEEP-SOURCE-import DO-NOT for Identity (spec 10c check
+// 10, NARROWED by Phase 3 Task 7). ORIGINALLY apps/ops-edge composed tms +
+// fulfillment only, and the ops portal's merchant VIEW rode the tms.assignment
+// / ops-read projection rather than a live Identity query, so ops-edge referenced
+// Identity in no form at all. Phase 3 Task 7 (BRD Annexure D, ratified) adds the
+// Bank Master admin write surface: the Bank Master IS identity.tenant, so
+// apps/ops-edge now composes @andpay/identity-service IN-PROCESS, exactly as it
+// already composes @andpay/tms-service / @andpay/fulfillment-service /
+// @andpay/analytics-service. That is C4-safe: the edge calls identity's OWN
+// exported functions (createBankMaster/editBankMaster/listBankMasters) with
+// deps.identityDb, a client pinned to the identity schema; the edge never issues
+// a raw cross-schema query itself, and identity's code touches only identity's
+// schema. What stays forbidden is a DEEP relative import into another context's
+// source tree ('services/identity'): contexts integrate through their published
+// @andpay/* package boundary, never a deep source path (T1, T7), mirroring the
+// apps/ops-edge auth guard above which bans the 'services/auth' deep path.
 //
 // Plant-and-remove recipe: temporarily add a comment containing the literal
 // string 'services/identity' to any file under apps/ops-edge/src. Run
 // `pnpm exec vitest run test/architecture.test.ts`: this describe block
 // fails. Remove the planted line: it passes again.
-describe('no-cross-context-Identity DO-NOT: apps/ops-edge never reads Identity (check 10, spec 10c)', () => {
+describe('no-cross-context-Identity-deep-import DO-NOT: apps/ops-edge composes @andpay/identity-service only via its package boundary (check 10, spec 10c, narrowed by P3 Task 7)', () => {
   const opsEdgeFiles = filesUnder(join('apps', 'ops-edge', 'src'))
     .filter((p) => p.endsWith('.ts'))
     .map((file) => ({ file, text: readFileSync(join(root, file), 'utf8') }))
@@ -522,10 +533,9 @@ describe('no-cross-context-Identity DO-NOT: apps/ops-edge never reads Identity (
     expect(opsEdgeFiles.length).toBeGreaterThan(0)
   })
 
-  it('no file under apps/ops-edge/src references services/identity or @andpay/identity', () => {
+  it('no file under apps/ops-edge/src deep-imports services/identity (the package boundary @andpay/identity-service is allowed, P3 Task 7)', () => {
     for (const { file, text } of opsEdgeFiles) {
-      expect(text.includes('services/identity'), `${file} must not reference services/identity`).toBe(false)
-      expect(text.includes('@andpay/identity'), `${file} must not reference @andpay/identity`).toBe(false)
+      expect(text.includes('services/identity'), `${file} must not deep-import services/identity`).toBe(false)
     }
   })
 })

@@ -45,6 +45,7 @@ import {
   type BankPreviewResult,
   type DamageReasonRow,
 } from '@andpay/tms-service'
+import { createBankMaster, editBankMaster } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAuthzAudit } from './audit.js'
@@ -120,6 +121,42 @@ interface BatchingConfigSetBody {
   programWire?: string
   minLotSize: number
   maxWaitSeconds: number
+}
+// Phase 3 Task 7 (BRD Annexure D): the Bank Master create body. bankReferenceCode
+// (the immutable ingest resolver key) is set ONCE here at create time and is a
+// legitimate request input (platform master data an AndPayments admin
+// configures, not principal-scoped tenant data, unlike M7/S16); the actor/
+// traceId/idempotency-key still come from the gate, never the body. address2/
+// address3 are the only optional fields (BRD D.1).
+interface BankMasterCreateBody {
+  bankReferenceCode: string
+  displayName: string
+  address1: string
+  address2?: string
+  address3?: string
+  city: string
+  district: string
+  country: string
+  pin: string
+  mobile: string
+  email: string
+}
+// The Bank Master edit body. bankReferenceCode is DELIBERATELY ABSENT: it is
+// the immutable ingest resolver key and can neither be accepted nor mutated by
+// the edit path. Every content field is optional (a partial edit); the target
+// tnnt is the route param, never here.
+interface BankMasterEditBody {
+  displayName?: string
+  address1?: string
+  address2?: string
+  address3?: string
+  city?: string
+  district?: string
+  country?: string
+  pin?: string
+  mobile?: string
+  email?: string
+  status?: string
 }
 // The minimal multer file shape the upload routes read (mirrors vendor-edge's
 // UploadedJson, extended with originalname): the raw bytes plus the client
@@ -740,6 +777,68 @@ export class OpsController {
       ...(body.programWire !== undefined ? { programWire: body.programWire } : {}),
       minLotSize: body.minLotSize,
       maxWaitSeconds: body.maxWaitSeconds,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // Phase 3 Task 7 (BRD Annexure D): the Bank Master (identity.tenant) admin
+  // create/edit. Same gate/idempotency/co-committed-6e posture as every other
+  // ops mutation above; NOT step-up-gated (not in OPS_STEP_UP_CATALOG), matching
+  // vendor-create/damage-reason-create's own no-step-up posture (master-data
+  // maintenance, not a destructive action). The write is an IDENTITY-context
+  // function called with deps.identityDb, so the edge never does a cross-context
+  // DB write (C4); a duplicate bankReferenceCode / not-found target surfaces as
+  // identity's OpsClientError, which the app-wide OpsErrorFilter maps to a 4xx.
+  @Post('bank-masters')
+  @HttpCode(200)
+  async createBankMasterRoute(
+    @Req() req: EdgeRequest,
+    @Body() body: BankMasterCreateBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; tnntId: string | null }> {
+    const g = await this.gate(req, 'ops:bank-master-create', idem, [])
+    return createBankMaster(this.deps.identityDb, {
+      bankReferenceCode: body.bankReferenceCode,
+      displayName: body.displayName,
+      address1: body.address1,
+      ...(body.address2 !== undefined ? { address2: body.address2 } : {}),
+      ...(body.address3 !== undefined ? { address3: body.address3 } : {}),
+      city: body.city,
+      district: body.district,
+      country: body.country,
+      pin: body.pin,
+      mobile: body.mobile,
+      email: body.email,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  @Post('bank-masters/:id/edit')
+  @HttpCode(200)
+  async editBankMasterRoute(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @Body() body: BankMasterEditBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; changedFields: string[] }> {
+    const g = await this.gate(req, 'ops:bank-master-edit', idem, [id])
+    return editBankMaster(this.deps.identityDb, {
+      tnntId: id,
+      ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
+      ...(body.address1 !== undefined ? { address1: body.address1 } : {}),
+      ...(body.address2 !== undefined ? { address2: body.address2 } : {}),
+      ...(body.address3 !== undefined ? { address3: body.address3 } : {}),
+      ...(body.city !== undefined ? { city: body.city } : {}),
+      ...(body.district !== undefined ? { district: body.district } : {}),
+      ...(body.country !== undefined ? { country: body.country } : {}),
+      ...(body.pin !== undefined ? { pin: body.pin } : {}),
+      ...(body.mobile !== undefined ? { mobile: body.mobile } : {}),
+      ...(body.email !== undefined ? { email: body.email } : {}),
+      ...(body.status !== undefined ? { status: body.status } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

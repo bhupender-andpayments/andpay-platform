@@ -48,6 +48,16 @@ const OPS_PERMISSIONS = [
   // 6e), so a read-side permission string here would be dead.
   'ops:template-config-set',
   'ops:bank-logo-set',
+  // Phase 3 Task 7 (BRD Annexure D): the Bank Master (identity.tenant)
+  // admin create/edit pair, mirroring the vendor-create/vendor-edit and
+  // damage-reason master CRUD exactly (shared bundle, NOT admin-tier: batching
+  // was the deliberate admin-only exception). No `ops:bank-master-list` entry,
+  // same reasoning as the absent `ops:vendor-list`/`ops:bank-config-list`
+  // above: the list route (`GET /ops/bank-masters`) is guard-only at the edge
+  // (no D2 authorize, no 6e), so a read-side permission string here would be
+  // dead. No step-up (master-data maintenance, not a destructive action).
+  'ops:bank-master-create',
+  'ops:bank-master-edit',
 ]
 
 // Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role permission differentiation.

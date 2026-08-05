@@ -80,7 +80,22 @@ model Tenant {
   displayName       String   @map("display_name")
   bankReferenceCode String   @unique @map("bank_reference_code")
   status            String
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  // BRD Annexure D.1 Bank Master address/contact, admin-owned (createBankMaster
+  // /editBankMaster). ALL nullable at the DB level even though BRD D.1 marks
+  // most mandatory: the ingest auto-mint (resolveTenant) inserts a tenant with
+  // NONE of these set and must keep working, so the mandatory/optional rule is
+  // enforced in the admin-write application layer, never as a DB NOT NULL that
+  // would break the ingest INSERT. bankReferenceCode above stays the immutable
+  // ingest resolver key; these columns are never written by ingest.
+  address1          String?  @map("address1")
+  address2          String?  @map("address2")
+  address3          String?  @map("address3")
+  city              String?
+  district          String?
+  country           String?
+  pin               String?
+  mobile            String?
+  email             String?
 
   @@map("tenant")
 }

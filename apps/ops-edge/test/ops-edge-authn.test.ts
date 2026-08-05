@@ -7,6 +7,7 @@ import type { INestApplication } from '@nestjs/common'
 import { PrismaClient as FulfillmentClient, loadOpsConfig, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
+import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '../src/index.js'
 
 // The REAL app, real in-process HTTP via supertest against app.getHttpServer(),
@@ -30,6 +31,9 @@ const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
 // ADDITIVE (spec 11 task 8): OpsEdgeDeps now requires an analyticsDb; wired for
 // construction only (this authn suite never exercises the reporting routes).
 const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
+const identityDb = new IdentityClient({
+  datasourceUrl: process.env.IDENTITY_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity',
+})
 
 let app: INestApplication
 let jwks: JSONWebKeySet
@@ -167,6 +171,7 @@ beforeAll(async () => {
     tmsDb,
     fulfillmentDb,
     analyticsDb,
+    identityDb,
     jwks,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',

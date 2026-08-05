@@ -12,6 +12,7 @@ import {
   type BatchingConfigRow,
 } from '@andpay/fulfillment-service'
 import { readQuarantineQueue, listDamageReasons, type QuarantineRowView, type DamageReasonRow } from '@andpay/tms-service'
+import { listBankMasters, type BankMasterRow } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 
@@ -82,5 +83,16 @@ export class OpsReadController {
   @HttpCode(200)
   async batchingConfig(): Promise<BatchingConfigRow[]> {
     return listBatchingConfigs(this.deps.fulfillmentDb)
+  }
+
+  // Phase 3 Task 7 (BRD Annexure D): the Bank Master (identity.tenant) list,
+  // guard-only exactly like the reads above (no D2 authorize, no 6e). Calls
+  // identity's own listBankMasters with deps.identityDb (no cross-context DB
+  // read, C4). Returns every Bank Master (admin-created rows carry the full
+  // address/contact; ingest auto-minted rows carry nulls) for the admin UI.
+  @Get('bank-masters')
+  @HttpCode(200)
+  async bankMasters(): Promise<BankMasterRow[]> {
+    return listBankMasters(this.deps.identityDb)
   }
 }

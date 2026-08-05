@@ -5,3 +5,13 @@ export * from './redact.js'
 export { projectRowFact, type ProjectResult } from './project.js'
 export { IDENTITY_FACT_SCHEMAS } from './fact-schemas.js'
 export { enterWriteScope, enterWriteRole } from './write-context.js'
+export {
+  createBankMaster,
+  editBankMaster,
+  listBankMasters,
+  OpsClientError,
+  type CreateBankMasterInput,
+  type EditBankMasterInput,
+  type BankMasterAddressContact,
+  type BankMasterRow,
+} from './ops.js'

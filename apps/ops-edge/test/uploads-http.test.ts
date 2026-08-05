@@ -11,6 +11,7 @@ import {
   DEFAULT_DAMAGE_COLUMN_MAPPING,
 } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
+import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { newId, toUuid } from '@andpay/ids'
 import { buildOpsEdgeApp, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from '../src/index.js'
 import { bankRequestXlsx } from './xlsx-fixture.js'
@@ -31,6 +32,9 @@ const analyticsUrl =
 const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
 const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
+const identityDb = new IdentityClient({
+  datasourceUrl: process.env.IDENTITY_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity',
+})
 
 let app: INestApplication
 let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
@@ -153,6 +157,7 @@ beforeAll(async () => {
     tmsDb,
     fulfillmentDb,
     analyticsDb,
+    identityDb,
     jwks,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',

@@ -8,6 +8,7 @@ import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient as FulfillmentClient, loadOpsConfig, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
+import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '../src/index.js'
 
 // The REAL app, real in-process HTTP via supertest against app.getHttpServer(),
@@ -32,6 +33,9 @@ const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
 // deps. This suite does not exercise them, but OpsEdgeDeps now requires the
 // field, so it is wired here for construction (never queried by this suite).
 const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
+const identityDb = new IdentityClient({
+  datasourceUrl: process.env.IDENTITY_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity',
+})
 
 let app: INestApplication
 let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
@@ -192,6 +196,7 @@ beforeAll(async () => {
     tmsDb,
     fulfillmentDb,
     analyticsDb,
+    identityDb,
     jwks,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',

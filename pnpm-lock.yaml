@@ -559,6 +559,9 @@ importers:
 
   services/identity:
     dependencies:
+      '@andpay/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
       '@andpay/envelope':
         specifier: workspace:*
         version: link:../../packages/envelope

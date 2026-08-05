@@ -12,6 +12,7 @@ import {
 } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
+import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { buildOpsEdgeApp, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from '../src/index.js'
 
 // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
@@ -31,6 +32,9 @@ const analyticsUrl =
 const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
 const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
+const identityDb = new IdentityClient({
+  datasourceUrl: process.env.IDENTITY_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity',
+})
 
 let app: INestApplication
 let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
@@ -103,6 +107,7 @@ beforeAll(async () => {
     tmsDb,
     fulfillmentDb,
     analyticsDb,
+    identityDb,
     jwks,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',

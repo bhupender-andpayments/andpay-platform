@@ -7,6 +7,7 @@ import type { INestApplication } from '@nestjs/common'
 import { loadOpsConfig, PrismaClient as FulfillmentClient, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
+import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '../src/index.js'
 
 // The REAL app, real in-process HTTP via supertest, no bound port. This suite
@@ -28,6 +29,9 @@ const analyticsUrl =
 const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
 const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
+const identityDb = new IdentityClient({
+  datasourceUrl: process.env.IDENTITY_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity',
+})
 
 let app: INestApplication
 let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
@@ -137,6 +141,7 @@ beforeAll(async () => {
     tmsDb,
     fulfillmentDb,
     analyticsDb,
+    identityDb,
     jwks,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',

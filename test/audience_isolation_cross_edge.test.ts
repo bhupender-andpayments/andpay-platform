@@ -19,6 +19,7 @@ import {
 import { PrismaClient as FulfillmentClient, loadOpsConfig, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
+import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { buildAuthEdgeApp, type AuthEdgeDeps, NoThrottle as AuthNoThrottle } from '@andpay/auth-edge'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '@andpay/ops-edge'
 import { buildTenantEdgeApp, type TenantEdgeDeps } from '@andpay/tenant-edge'
@@ -59,6 +60,9 @@ const authDb: AuthDb = new AuthClient({ datasourceUrl: authUrl })
 const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
 const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
+const identityDb = new IdentityClient({
+  datasourceUrl: process.env.IDENTITY_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity',
+})
 
 let sharedSigner: KmsSigningPort
 let sharedJwks: JSONWebKeySet
@@ -164,6 +168,7 @@ beforeAll(async () => {
     tmsDb,
     fulfillmentDb,
     analyticsDb,
+    identityDb,
     jwks: sharedJwks,
     expectedIss: SHARED_ISS,
     expectedMode: 'live',

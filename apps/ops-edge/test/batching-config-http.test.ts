@@ -7,6 +7,7 @@ import type { INestApplication } from '@nestjs/common'
 import { PrismaClient as FulfillmentClient, loadOpsConfig, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
+import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '../src/index.js'
 
 // Phase 3 Task 6 (BRD 5.3.2): the batching-parameter admin CRUD HTTP surface.
@@ -25,6 +26,9 @@ const analyticsUrl =
 const fulfillmentDb = new FulfillmentClient({ datasourceUrl: fulfillmentUrl })
 const tmsDb = new TmsClient({ datasourceUrl: tmsUrl })
 const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
+const identityDb = new IdentityClient({
+  datasourceUrl: process.env.IDENTITY_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity',
+})
 
 let app: INestApplication
 let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
@@ -89,6 +93,7 @@ beforeAll(async () => {
     tmsDb,
     fulfillmentDb,
     analyticsDb,
+    identityDb,
     jwks,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',

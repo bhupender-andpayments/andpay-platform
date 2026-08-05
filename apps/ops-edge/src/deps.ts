@@ -7,6 +7,7 @@ import {
 } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient, type TmsDb } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient, type AnalyticsDb } from '@andpay/analytics-service'
+import { PrismaClient as IdentityClient, type IdentityDb } from '@andpay/identity-service'
 import type { Mode, RoleConfig } from '@andpay/authz'
 import type { JSONWebKeySet } from 'jose'
 
@@ -22,6 +23,12 @@ export interface OpsEdgeDeps {
   // authn-DENY fact commits into fulfillment's own outbox so the existing
   // consumer drains it, ZERO new consumer wiring); Part-B ops actions use it too.
   fulfillmentDb: FulfillmentDb
+  // The identity context DB (Phase 3 Task 7, ADDITIVE). Used by the Bank Master
+  // admin routes to call identity's own createBankMaster/editBankMaster/
+  // listBankMasters in-process; the identity function uses THIS db, so the edge
+  // never does a cross-context DB write (C4). Injected once at process start,
+  // never opened per request.
+  identityDb: IdentityDb
   // The analytics context DB (spec 11 task 8, ADDITIVE). Used by the class-3
   // reporting routes to fan in-process to the analytics mediation API and to
   // emit BOTH the per-read analytics 6e AND the D99 cross-tenant-access entry
@@ -69,6 +76,8 @@ export const DEFAULT_FULFILLMENT_DATABASE_URL =
 export const DEFAULT_TMS_DATABASE_URL = 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'
 export const DEFAULT_ANALYTICS_DATABASE_URL =
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics'
+export const DEFAULT_IDENTITY_DATABASE_URL =
+  'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity'
 
 // The real bootstrap's deps (main.ts only; never exercised by a test, which
 // builds its own OpsEdgeDeps with a jose-generated JWKS and test-scoped
@@ -96,12 +105,14 @@ export function buildOpsEdgeDepsFromEnv(): OpsEdgeDeps {
   const fulfillmentUrl = process.env.FULFILLMENT_DATABASE_URL ?? DEFAULT_FULFILLMENT_DATABASE_URL
   const tmsUrl = process.env.TMS_DATABASE_URL ?? DEFAULT_TMS_DATABASE_URL
   const analyticsUrl = process.env.ANALYTICS_DATABASE_URL ?? DEFAULT_ANALYTICS_DATABASE_URL
+  const identityUrl = process.env.IDENTITY_DATABASE_URL ?? DEFAULT_IDENTITY_DATABASE_URL
 
   const jwks = JSON.parse(rawJwks) as JSONWebKeySet
   return {
     tmsDb: new TmsClient({ datasourceUrl: tmsUrl }),
     fulfillmentDb: new FulfillmentClient({ datasourceUrl: fulfillmentUrl }),
     analyticsDb: new AnalyticsClient({ datasourceUrl: analyticsUrl }),
+    identityDb: new IdentityClient({ datasourceUrl: identityUrl }),
     jwks,
     expectedIss,
     expectedMode,
