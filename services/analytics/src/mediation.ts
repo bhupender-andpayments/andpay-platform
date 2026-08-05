@@ -392,13 +392,17 @@ function soundboxDeliveryRow(r: DispatchDbRow): ReportRow {
 // The FR-07 Phase-1 delivered-not-activated worklist. Activation columns
 // render null under ACTIVATION-EMPTY (no activation write path exists yet in
 // live v1 data); the predicate itself is the real, general worklist
-// definition (correct once an activation write path exists).
+// definition (correct once an activation write path exists). deviceIds
+// mirrors the same generic device_ids exposure toReportRow already uses
+// (raw hardware serials, no encode/decode; @andpay/ids has no registered
+// device id kind), added per the BRD FR-10 Activation Report column set.
 function activationRow(r: DispatchDbRow): ReportRow {
   return {
     dispatchId: r.dispatch_id,
     programId: r.program_id,
     bankCode: r.bank_code,
     merchantDisplay: r.merchant_display,
+    deviceIds: r.device_ids ?? [],
     deliveryDate: iso(r.delivery_date),
     activationStatus: r.activation_status,
     simActivationStatus: r.sim_activation_status,

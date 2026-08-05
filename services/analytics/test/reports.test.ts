@@ -142,6 +142,9 @@ describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
 
     expect(rows).toHaveLength(1)
     expect(rows[0]!.dispatchId).toBe(worklistId)
+    // Device ID(s), Task 4 (D-H.2/FR-10): insertRow seeds every row's
+    // device_ids as ARRAY['DEV1'], so the activation row must carry it too.
+    expect(rows[0]!.deviceIds).toEqual(['DEV1'])
     expect(rows[0]!.activationStatus).toBeNull()
     expect(rows[0]!.simActivationStatus).toBeNull()
     expect(rows[0]!.activationDate).toBeNull()

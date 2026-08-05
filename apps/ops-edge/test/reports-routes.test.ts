@@ -112,6 +112,19 @@ async function insertRow(dispatchId: string, programId: string, bankCode: string
             'RECEIVED', true, now(), now())`
 }
 
+// Task 4 (D-H.2/FR-10): a DELIVERED, not-yet-activated row carrying multiple
+// device ids, so the activation report route can be asserted against a row
+// that actually exercises the Device ID(s) column (the shared seed() rows are
+// all RECEIVED and never enter the activation worklist).
+async function insertDeliveredRow(dispatchId: string, programId: string, bankCode: string): Promise<void> {
+  await analyticsDb.$executeRaw`
+    INSERT INTO dispatch_row
+      (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
+       pipeline_state, billable_flag, received_at, delivery_date, updated_at)
+    VALUES (${dispatchId}, ${programId}::uuid, ${bankCode}, ${bankCode + ' Bank'}, 'Acme',
+            ARRAY['SB-DEV-1','SB-DEV-2']::text[], 'DELIVERED', true, now(), now(), now())`
+}
+
 async function seed(): Promise<Seeded> {
   const progA = randomUUID()
   const progB = randomUUID()
@@ -228,6 +241,52 @@ describe('ops reports edge: GET /ops/reports/:name with the ?bank= filter (G3)',
       .get('/ops/reports/not-a-real-report')
       .set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(404)
+  })
+})
+
+describe('ops reports edge: GET /ops/reports/activation carries Device ID(s) (Task 4, D-H.2/FR-10)', () => {
+  it('JSON returns the deviceIds column and format=csv includes it, Pattern-B audit unchanged', async () => {
+    const progA = randomUUID()
+    const worklistId = `asgn_${randomUUID()}`
+    await insertDeliveredRow(worklistId, progA, 'HDFC')
+
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get('/ops/reports/activation')
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    expect(res.body.rows).toHaveLength(1)
+    expect(res.body.rows[0].dispatchId).toBe(worklistId)
+    expect(res.body.rows[0].deviceIds).toEqual(['SB-DEV-1', 'SB-DEV-2'])
+    expect(res.body.rows[0].activationStatus).toBeNull()
+
+    // Pattern B (Decision-2, RULED): still exactly the two unconditional
+    // accounting 6e rows, no new permission, no DENY branch.
+    const auditRows = await analyticsAuditRows()
+    expect(auditRows).toHaveLength(2)
+    expect(auditRows.some((r) => r.operation === 'analytics:read-report')).toBe(true)
+    expect(auditRows.some((r) => r.operation === 'analytics:cross-tenant-read')).toBe(true)
+    expect(auditRows.every((r) => r.decision === 'ALLOW')).toBe(true)
+  })
+
+  it('?format=csv includes the deviceIds column, semicolon-joined', async () => {
+    const progA = randomUUID()
+    const worklistId = `asgn_${randomUUID()}`
+    await insertDeliveredRow(worklistId, progA, 'HDFC')
+
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get('/ops/reports/activation?format=csv')
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toContain('text/csv')
+    const lines = res.text.trim().split('\r\n')
+    expect(lines[0]).toContain('deviceIds')
+    expect(lines).toHaveLength(2)
+    expect(lines[1]).toContain('SB-DEV-1;SB-DEV-2')
+
+    const auditRows = await analyticsAuditRows()
+    expect(auditRows).toHaveLength(2)
   })
 })
 
