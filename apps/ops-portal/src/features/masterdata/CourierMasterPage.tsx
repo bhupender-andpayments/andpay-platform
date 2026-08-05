@@ -2,28 +2,33 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { getVendors, type VendorRow } from '../../api/endpoints.js'
+import { Card, CardHeader, ErrorNote, StatusPill, CodeChip, SkeletonRows } from '../../ui/primitives.js'
+import { fmtDate } from '../../ui/format.js'
 
-// The courier master (Task 12, spec 13 check 6). Per the grounded
+// The courier master (Phase 7 Task 8, spec 13 check 6). Per the grounded
 // confirmation there is NO separate /ops/couriers route: the courier master
 // is the vendor registry subset, filtered CLIENT-SIDE to type === 'COURIER'.
-// Rows of type MANUFACTURER or PRINT must never appear here. Read-only:
-// vendor create and suspend are Tasks 14/15, not this view.
-
-function orDash(value: string | null): string {
-  return value ?? '-'
-}
+// Rows of type MANUFACTURER or PRINT must never appear here. Read-only.
 
 const COURIER_COLUMNS: ReadonlyArray<DataTableColumn<VendorRow>> = [
-  { key: 'courierCode', header: 'Courier code', cell: (r) => orDash(r.courierCode) },
-  { key: 'displayName', header: 'Display name', cell: (r) => r.displayName },
-  { key: 'status', header: 'Status', cell: (r) => r.status },
-  { key: 'createdAt', header: 'Created', cell: (r) => r.createdAt },
-  { key: 'updatedAt', header: 'Updated', cell: (r) => r.updatedAt },
+  {
+    key: 'courierCode',
+    header: 'Courier code',
+    cell: (r) => (r.courierCode ? <CodeChip>{r.courierCode}</CodeChip> : <span className="text-subtle">-</span>),
+  },
+  {
+    key: 'displayName',
+    header: 'Display name',
+    cell: (r) => <span className="font-medium text-ink">{r.displayName}</span>,
+  },
+  { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
+  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted">{fmtDate(r.createdAt)}</span> },
+  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted">{fmtDate(r.updatedAt)}</span> },
 ]
 
 export function CourierMasterPage() {
   const { client } = useAuth()
-  const [rows, setRows] = useState<VendorRow[]>([])
+  const [rows, setRows] = useState<VendorRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -44,15 +49,15 @@ export function CourierMasterPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold text-slate-900">Courier Master</h1>
-
-      {error !== null && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
-      )}
-
-      <DataTable columns={COURIER_COLUMNS} rows={rows} getRowKey={(r) => r.id} emptyMessage="No couriers." />
+      {error !== null && <ErrorNote>{error}</ErrorNote>}
+      <Card>
+        <CardHeader title="Courier master" subtitle={rows !== null ? `${rows.length} couriers` : undefined} />
+        {rows === null ? (
+          <SkeletonRows rows={4} cols={5} />
+        ) : (
+          <DataTable columns={COURIER_COLUMNS} rows={rows} getRowKey={(r) => r.id} emptyMessage="No couriers." />
+        )}
+      </Card>
     </div>
   )
 }

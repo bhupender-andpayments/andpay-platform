@@ -343,6 +343,82 @@ export function getVendors(c: Client) {
 }
 
 // -----------------------------------------------------------------------
+// Bank masters, damage-reason master, batching config (Phase 7 Task 8). The
+// confirmed ops-edge contract (apps/ops-edge/src/ops-read.controller.ts's
+// bankMasters/damageReasons/batchingConfig, grounded against
+// services/identity/src/ops.ts listBankMasters/BankMasterRow,
+// services/tms/src/damage-reason.ts DamageReasonRow, and
+// services/fulfillment/src/ops-read.ts listBatchingConfigs/BatchingConfigRow):
+// all three are the SAME class-3 guard-only posture as GET /ops/vendors above
+// (no per-op D2 authorize, no 6e; check 3). READ-ONLY here: bank-master
+// create/edit, damage-reason create/activate/deactivate, and the
+// admin/super_admin-only batching-config SET (#24 in B_edge_contracts) are
+// FR-11-deferred (L9), not built by this task. `GET /ops/bank-config` (the
+// separate bank/branch COMPOSITION config, i.e. logo/branding) is a distinct
+// route this task does not surface; the brief's read-surface list names
+// bank-masters, not bank-config.
+// -----------------------------------------------------------------------
+
+/** services/identity/src/ops.ts BankMasterRow. */
+export interface BankMasterRow {
+  tnntId: string
+  displayName: string
+  bankReferenceCode: string
+  status: string
+  address1: string | null
+  address2: string | null
+  address3: string | null
+  city: string | null
+  district: string | null
+  country: string | null
+  pin: string | null
+  mobile: string | null
+  email: string | null
+}
+
+export function getBankMasters(c: Client) {
+  return c.request<BankMasterRow[]>({ method: 'GET', path: '/ops/bank-masters' })
+}
+
+/**
+ * services/tms/src/damage-reason.ts DamageReasonRow. `createdAt`/`updatedAt`
+ * are typed `Date` server-side but arrive as JSON strings over the wire,
+ * matching every other wire timestamp in this file (e.g. VendorRow above).
+ */
+export interface DamageReasonRow {
+  id: string
+  code: string
+  label: string
+  active: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export function getDamageReasons(c: Client) {
+  return c.request<DamageReasonRow[]>({ method: 'GET', path: '/ops/damage-reasons' })
+}
+
+/**
+ * services/fulfillment/src/ops-read.ts BatchingConfigRow. `tenantWire`/
+ * `programWire` are already wire-encoded strings (or null when the scope
+ * does not narrow that far, i.e. GLOBAL/TENANT), never a raw uuid.
+ */
+export interface BatchingConfigRow {
+  id: string
+  scope: 'GLOBAL' | 'TENANT' | 'TENANT_PROGRAM'
+  tenantWire: string | null
+  programWire: string | null
+  minLotSize: number
+  maxWaitSeconds: number
+  createdAt: string
+  updatedAt: string
+}
+
+export function getBatchingConfig(c: Client) {
+  return c.request<BatchingConfigRow[]>({ method: 'GET', path: '/ops/batching-config' })
+}
+
+// -----------------------------------------------------------------------
 // Bank and damage uploads (Phase 2 Task 4; damage preview added Phase 7 Task
 // 7, L11/FR08-3). The confirmed ops-edge contract
 // (apps/ops-edge/src/ops.controller.ts's previewBank/commitBank/
