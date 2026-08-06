@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { buildDispatchPackage } from '../src/package.js'
+import ExcelJS from 'exceljs'
+import { buildDispatchPackage, dispatchXlsx } from '../src/package.js'
 
 const url =
   process.env.FULFILLMENT_DATABASE_URL ??
@@ -97,6 +98,44 @@ async function seedComposedArtifact(
   `
 }
 
+describe('dispatchXlsx sheet composition (F6)', () => {
+  it('writes the print instruction columns, with Soundbox as Y/N', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+
+    const bankConfigId = await seedBankConfig(tenantUuid, 'HDFC')
+    const entry = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'HDFC')
+    await seedComposedArtifact(
+      tenantUuid, programUuid, btchUuid, entry.asgnUuid, 'SOUNDBOX_IMG', 'ref-soundbox',
+      entry.merchantDisplayName, entry.qrValue, bankConfigId,
+    )
+
+    const lines = await buildDispatchPackage(db, btchWire, 'print')
+    const buf = await dispatchXlsx(lines)
+
+    // Read the sheet back rather than trusting the column config: a header can
+    // be declared with a key that never matches a row property, which produces
+    // a titled but permanently EMPTY column.
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
+    const ws = wb.getWorksheet('dispatch')!
+    const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
+    for (const h of ['Legal Name', 'Soundbox', 'Standee Count', 'Sticker Count']) {
+      expect(headers).toContain(h)
+    }
+    const cell = (header: string): unknown => ws.getRow(2).getCell(headers.indexOf(header) + 1).value
+    expect(cell('Legal Name')).toBe('Acme Pvt Ltd')
+    // Y/N, not TRUE/FALSE: a human reads this off a printed picking sheet.
+    expect(cell('Soundbox')).toBe('Y')
+    expect(cell('Standee Count')).toBe(1)
+    expect(cell('Sticker Count')).toBe(0)
+  })
+})
+
 describe('buildDispatchPackage (per-adapter dispatch package projection, D104 check 2)', () => {
   it('print view carries QR label collateral only, NO shipping-recipient PII', async () => {
     const tenantWire = newId('tnnt')
@@ -124,6 +163,16 @@ describe('buildDispatchPackage (per-adapter dispatch package projection, D104 ch
     expect(new Set(line.artifacts.map((a) => a.assetReference))).toEqual(new Set(['ref-soundbox', 'ref-standee']))
     expect(line.labelDisplayName).toBe(entry.merchantDisplayName)
     expect(line.labelQr).toBe(entry.qrValue)
+
+    // F6: the sheet used to say WHO and WHERE but never WHAT TO PRODUCE, so the
+    // print vendor was never told what to print. The fixture is soundbox=true,
+    // 1 standee, 0 stickers.
+    expect(line.soundbox).toBe(true)
+    expect(line.standeeCount).toBe(1)
+    expect(line.stickerCount).toBe(0)
+    // Included on the print footing because the collateral renderer already
+    // draws it onto the artifacts the vendor receives.
+    expect(line.merchantLegalName).toBe('Acme Pvt Ltd')
 
     // provably NO shipping-recipient PII keys on the print view (structural,
     // not merely "happens to be falsy").

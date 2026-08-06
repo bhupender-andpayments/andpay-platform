@@ -24,6 +24,19 @@ export interface PackageLine {
   artifacts: ArtifactRef[]
   labelDisplayName: string
   labelQr: string
+  // F6: what the print vendor must actually PRODUCE. The sheet previously
+  // carried who and where but never how many of what, so the vendor was never
+  // told what to print. These live on the PRINT projection, not the ship-only
+  // block, because they are the print instruction itself.
+  //
+  // merchantLegalName is included on the same footing: the collateral renderer
+  // already draws it onto the artifacts the vendor receives
+  // (collateral/renderer.ts includeLegal), so putting it on the sheet discloses
+  // nothing the vendor does not already hold.
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  merchantLegalName: string
   // present ONLY when fn === 'ship' (the entitled shipping-recipient block).
   shipToAddress?: string
   contactName?: string | null
@@ -68,10 +81,14 @@ export async function buildDispatchPackage(
       ship_to_address: string
       ship_to_contact_name: string | null
       ship_to_mobile: string | null
+      soundbox: boolean
+      standee_count: number
+      sticker_count: number
+      merchant_legal_name: string
     }[]
   >`
-    SELECT asgn_id::text AS asgn_id, merchant_display_name, qr_value,
-           bank_reference_code, branch_code,
+    SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name, qr_value,
+           bank_reference_code, branch_code, soundbox, standee_count, sticker_count,
            ship_to_address, ship_to_contact_name, ship_to_mobile
     FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
   `
@@ -100,6 +117,10 @@ export async function buildDispatchPackage(
       artifacts: artifactsByAsgn.get(e.asgn_id) ?? [],
       labelDisplayName: e.merchant_display_name,
       labelQr: e.qr_value,
+      soundbox: e.soundbox,
+      standeeCount: e.standee_count,
+      stickerCount: e.sticker_count,
+      merchantLegalName: e.merchant_legal_name,
     }
     if (fn === 'print') return print
     return {
@@ -133,6 +154,10 @@ export async function dispatchXlsx(lines: PackageLine[]): Promise<Buffer> {
     { header: 'Branch', key: 'branch' },
     { header: 'Assignment', key: 'asgnId' },
     { header: 'Merchant', key: 'labelDisplayName' },
+    { header: 'Legal Name', key: 'merchantLegalName' },
+    { header: 'Soundbox', key: 'soundbox' },
+    { header: 'Standee Count', key: 'standeeCount' },
+    { header: 'Sticker Count', key: 'stickerCount' },
     { header: 'QR', key: 'labelQr' },
     { header: 'Ship To', key: 'shipToAddress' },
     { header: 'Contact', key: 'contactName' },
@@ -145,6 +170,12 @@ export async function dispatchXlsx(lines: PackageLine[]): Promise<Buffer> {
       branch: l.branchCode ?? '',
       asgnId: l.asgnId,
       labelDisplayName: l.labelDisplayName,
+      merchantLegalName: l.merchantLegalName,
+      // Y/N rather than TRUE/FALSE: this is read off a printed picking sheet by
+      // a human, and it is how the BRD states the column.
+      soundbox: l.soundbox ? 'Y' : 'N',
+      standeeCount: l.standeeCount,
+      stickerCount: l.stickerCount,
       labelQr: l.labelQr,
       shipToAddress: l.shipToAddress ?? '',
       contactName: l.contactName ?? '',
