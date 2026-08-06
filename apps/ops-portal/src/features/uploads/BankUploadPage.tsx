@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from 'react'
+import { useState } from 'react'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   MAX_UPLOAD_BYTES,
@@ -8,7 +8,13 @@ import {
   type BankCommitResult,
 } from '../../api/endpoints.js'
 import { PerRowErrors } from '../../components/PerRowErrors.js'
-import { Card, CardHeader, Field, Button, ErrorNote, StatusPill } from '../../ui/primitives.js'
+import { Loader2 } from 'lucide-react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ErrorNote, StatusPill } from '../../ui/primitives.js'
+import { FileDropZone } from '../../components/FileDropZone.js'
 
 // Rewired to the D-K multipart contract (Phase 2 Task 4; supersedes the Task
 // 9/13 JSON-rows flow) and reskinned onto the design system (Phase 7 Task
@@ -30,14 +36,12 @@ export function BankUploadPage() {
   const [previewing, setPreviewing] = useState(false)
   const [committing, setCommitting] = useState(false)
 
-  async function handleFile(e: ChangeEvent<HTMLInputElement>): Promise<void> {
-    const picked = e.target.files?.[0]
-    e.target.value = ''
-    if (picked === undefined) return
+  async function handleFile(picked: File | null): Promise<void> {
     setError(null)
     setFile(null)
     setPreview(null)
     setCommitResult(null)
+    if (picked === null) return
     if (picked.size > MAX_UPLOAD_BYTES) {
       setError('File exceeds the 5 MiB upload limit. Split it into smaller files and try again.')
       return
@@ -73,20 +77,15 @@ export function BankUploadPage() {
 
   return (
     <Card>
-      <CardHeader title="Bank request upload" subtitle="Preview the file, then commit once the per-row outcomes look right." />
-      <div className="space-y-4 p-5">
-        <Field label="Bank request file (CSV or XLSX, max 5 MiB)" htmlFor="bank-upload-file">
-          <input
-            id="bank-upload-file"
-            type="file"
-            accept=".csv,text/csv,.xlsx"
-            disabled={previewing || committing}
-            onChange={(e) => {
-              void handleFile(e)
-            }}
-            className="mt-1 block text-sm text-ink"
-          />
-        </Field>
+      <CardHeader>
+        <CardTitle>Bank request upload</CardTitle>
+        <CardDescription>Preview the file, then commit once the per-row outcomes look right.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="bank-upload-file">Bank request file</Label>
+          <FileDropZone id="bank-upload-file" file={file} onPick={(f) => { void handleFile(f) }} disabled={previewing || committing} />
+        </div>
 
         {error !== null && <ErrorNote>{error}</ErrorNote>}
 
@@ -102,46 +101,44 @@ export function BankUploadPage() {
 
         {preview !== null && preview.structuralErrors.length === 0 && commitResult === null && (
           <div className="space-y-3">
-            <p className="text-[13px] text-muted">
+            <p className="text-[13px] text-muted-foreground">
               {preview.summary.total} row(s) previewed: {preview.summary.valid} valid, {preview.summary.invalid} invalid.
             </p>
-            <div className="overflow-x-auto rounded-lg border border-line">
-              <table className="w-full border-collapse text-left text-sm">
-                <thead>
-                  <tr className="border-b border-line bg-surface-2">
-                    <th className="px-3 py-2 font-semibold text-ink">Row</th>
-                    <th className="px-3 py-2 font-semibold text-ink">Outcome</th>
-                    <th className="px-3 py-2 font-semibold text-ink">Errors</th>
+            <div className="overflow-x-auto rounded-lg border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Row</TableHead>
+                    <TableHead>Outcome</TableHead>
+                    <TableHead>Errors</TableHead>
                     {columns.map((c) => (
-                      <th key={c} className="px-3 py-2 font-semibold text-ink">
-                        {c}
-                      </th>
+                      <TableHead key={c}>{c}</TableHead>
                     ))}
-                  </tr>
-                </thead>
-                <tbody>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {rows.map((r) => (
-                    <tr key={r.rowNo} className="border-b border-line">
-                      <td className="num px-3 py-2 text-ink">{r.rowNo}</td>
-                      <td className="px-3 py-2">
+                    <TableRow key={r.rowNo}>
+                      <TableCell className="num">{r.rowNo}</TableCell>
+                      <TableCell>
                         <StatusPill value={r.valid ? 'valid' : 'invalid'} />
-                      </td>
-                      <td className="px-3 py-2">
+                      </TableCell>
+                      <TableCell>
                         <div className="flex flex-wrap gap-1">
                           {r.errors.map((code) => (
                             <StatusPill key={code} value={code} />
                           ))}
                         </div>
-                      </td>
+                      </TableCell>
                       {columns.map((c) => (
-                        <td key={c} className="px-3 py-2 text-ink">
+                        <TableCell key={c}>
                           {String((r.row as unknown as Record<string, unknown>)[c] ?? '')}
-                        </td>
+                        </TableCell>
                       ))}
-                    </tr>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
             <Button
               type="button"
@@ -149,15 +146,16 @@ export function BankUploadPage() {
                 void handleCommit()
               }}
               disabled={committing || rows.length === 0}
-              loading={committing}
+              className="self-start"
             >
+              {committing && <Loader2 className="animate-spin" aria-hidden="true" />}
               Commit bank request file
             </Button>
           </div>
         )}
 
         {commitResult !== null && <PerRowErrors result={commitResult} />}
-      </div>
+      </CardContent>
     </Card>
   )
 }

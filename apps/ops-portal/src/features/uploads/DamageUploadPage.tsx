@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from 'react'
+import { useState } from 'react'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   MAX_UPLOAD_BYTES,
@@ -8,7 +8,13 @@ import {
   type DamageCommitResult,
 } from '../../api/endpoints.js'
 import { PerRowErrors } from '../../components/PerRowErrors.js'
-import { Card, CardHeader, Field, Button, ErrorNote, StatusPill } from '../../ui/primitives.js'
+import { Loader2 } from 'lucide-react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ErrorNote, StatusPill } from '../../ui/primitives.js'
+import { FileDropZone } from '../../components/FileDropZone.js'
 
 // Rewired to the D-K multipart contract (Phase 2 Task 4) and given preview
 // parity with the bank upload (Phase 7 Task 7, L11/FR08-3 decision item 11):
@@ -30,14 +36,12 @@ export function DamageUploadPage() {
   const [previewing, setPreviewing] = useState(false)
   const [committing, setCommitting] = useState(false)
 
-  async function handleFile(e: ChangeEvent<HTMLInputElement>): Promise<void> {
-    const picked = e.target.files?.[0]
-    e.target.value = ''
-    if (picked === undefined) return
+  async function handleFile(picked: File | null): Promise<void> {
     setError(null)
     setFile(null)
     setPreview(null)
     setCommitResult(null)
+    if (picked === null) return
     if (picked.size > MAX_UPLOAD_BYTES) {
       setError('File exceeds the 5 MiB upload limit. Split it into smaller files and try again.')
       return
@@ -73,23 +77,15 @@ export function DamageUploadPage() {
 
   return (
     <Card>
-      <CardHeader
-        title="Damage report upload"
-        subtitle="Preview the match/reason outcome per row, then commit once it looks right."
-      />
-      <div className="space-y-4 p-5">
-        <Field label="Damage report file (CSV or XLSX, max 5 MiB)" htmlFor="damage-upload-file">
-          <input
-            id="damage-upload-file"
-            type="file"
-            accept=".csv,text/csv,.xlsx"
-            disabled={previewing || committing}
-            onChange={(e) => {
-              void handleFile(e)
-            }}
-            className="mt-1 block text-sm text-ink"
-          />
-        </Field>
+      <CardHeader>
+        <CardTitle>Damage report upload</CardTitle>
+        <CardDescription>Preview the match/reason outcome per row, then commit once it looks right.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="damage-upload-file">Damage report file</Label>
+          <FileDropZone id="damage-upload-file" file={file} onPick={(f) => { void handleFile(f) }} disabled={previewing || committing} />
+        </div>
 
         {error !== null && <ErrorNote>{error}</ErrorNote>}
 
@@ -105,41 +101,39 @@ export function DamageUploadPage() {
 
         {preview !== null && preview.structuralErrors.length === 0 && commitResult === null && (
           <div className="space-y-3">
-            <p className="text-[13px] text-muted">
+            <p className="text-[13px] text-muted-foreground">
               {preview.summary.total} row(s) previewed: {preview.summary.valid} would replace, {preview.summary.invalid}{' '}
               would quarantine.
             </p>
-            <div className="overflow-x-auto rounded-lg border border-line">
-              <table className="w-full border-collapse text-left text-sm">
-                <thead>
-                  <tr className="border-b border-line bg-surface-2">
-                    <th className="px-3 py-2 font-semibold text-ink">Row</th>
-                    <th className="px-3 py-2 font-semibold text-ink">Projected outcome</th>
-                    <th className="px-3 py-2 font-semibold text-ink">Reason</th>
+            <div className="overflow-x-auto rounded-lg border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Row</TableHead>
+                    <TableHead>Projected outcome</TableHead>
+                    <TableHead>Reason</TableHead>
                     {columns.map((c) => (
-                      <th key={c} className="px-3 py-2 font-semibold text-ink">
-                        {c}
-                      </th>
+                      <TableHead key={c}>{c}</TableHead>
                     ))}
-                  </tr>
-                </thead>
-                <tbody>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {rows.map((r) => (
-                    <tr key={r.rowNo} className="border-b border-line">
-                      <td className="num px-3 py-2 text-ink">{r.rowNo}</td>
-                      <td className="px-3 py-2">
+                    <TableRow key={r.rowNo}>
+                      <TableCell className="num">{r.rowNo}</TableCell>
+                      <TableCell>
                         <StatusPill value={r.valid ? 'would_replace' : 'would_quarantine'} />
-                      </td>
-                      <td className="px-3 py-2">{r.reasonCode !== undefined && <StatusPill value={r.reasonCode} />}</td>
+                      </TableCell>
+                      <TableCell>{r.reasonCode !== undefined && <StatusPill value={r.reasonCode} />}</TableCell>
                       {columns.map((c) => (
-                        <td key={c} className="px-3 py-2 text-ink">
+                        <TableCell key={c}>
                           {String((r.row as unknown as Record<string, unknown>)[c] ?? '')}
-                        </td>
+                        </TableCell>
                       ))}
-                    </tr>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
             <Button
               type="button"
@@ -147,15 +141,16 @@ export function DamageUploadPage() {
                 void handleCommit()
               }}
               disabled={committing || rows.length === 0}
-              loading={committing}
+              className="self-start"
             >
+              {committing && <Loader2 className="animate-spin" aria-hidden="true" />}
               Commit damage report file
             </Button>
           </div>
         )}
 
         {commitResult !== null && <PerRowErrors result={commitResult} />}
-      </div>
+      </CardContent>
     </Card>
   )
 }

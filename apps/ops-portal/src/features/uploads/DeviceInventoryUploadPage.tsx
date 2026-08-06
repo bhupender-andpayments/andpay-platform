@@ -1,14 +1,22 @@
-import { useEffect, useState, type ChangeEvent } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   MAX_UPLOAD_BYTES,
   getVendors,
   commitDeviceInventory,
+  deviceInventoryStructuralReasons,
   type VendorRow,
   type DeviceInventoryUploadResult,
+  type DeviceInventoryStructuralReason,
 } from '../../api/endpoints.js'
-import { Card, CardHeader, Field, Select, Button, ErrorNote, StatusPill } from '../../ui/primitives.js'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Loader2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ErrorNote, StatusPill } from '../../ui/primitives.js'
+import { FileDropZone } from '../../components/FileDropZone.js'
 import { PerRowErrors } from '../../components/PerRowErrors.js'
 
 // Phase 7 Task 7 (edge + permission already built Phase-5 Task 1, D-G,
@@ -37,6 +45,33 @@ import { PerRowErrors } from '../../components/PerRowErrors.js'
 // duplicate serial/ICCID) land in the intake exceptions queue (task 11's
 // /queues route); invalid rows land nowhere and are shown directly here.
 
+// The three columns FR-01a mandates, in sheet order. Shown when a file is
+// rejected structurally, because knowing what was expected is most of what an
+// operator needs to fix the file.
+// The FR-01a column contract, as the adapter's own HEADERS constant spells it.
+// One source for both the drop zone's up-front hint and the rejection copy, so
+// the two can never disagree about what a valid sheet looks like.
+const EXPECTED_COLUMN_LIST = ['Device ID', 'Sim No', 'Device QR'] as const
+const EXPECTED_COLUMNS = EXPECTED_COLUMN_LIST.join(', ')
+
+// Operator-facing wording for a structural rejection. It lives here, not on the
+// server: the edge sends only a code (plus a canonical column name), so that a
+// caller-supplied filename never rides an HTTP response (S4/5c).
+function structuralMessage(reason: DeviceInventoryStructuralReason): string {
+  switch (reason.code) {
+    case 'missing_required_column':
+      return reason.column === undefined
+        ? `A required column is missing. Expected ${EXPECTED_COLUMNS}.`
+        : `Missing required column "${reason.column}".`
+    case 'unsupported_extension':
+      return 'Unsupported file type. Upload a .csv or .xlsx file.'
+    case 'unreadable_file':
+      return 'The file could not be read. It may be corrupt, or saved in a different format than its extension suggests.'
+    default:
+      return 'The file was rejected before any row was read.'
+  }
+}
+
 export function DeviceInventoryUploadPage() {
   const { client } = useAuth()
   const [manufacturers, setManufacturers] = useState<VendorRow[]>([])
@@ -45,6 +80,7 @@ export function DeviceInventoryUploadPage() {
   const [file, setFile] = useState<File | null>(null)
   const [result, setResult] = useState<DeviceInventoryUploadResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [structuralErrors, setStructuralErrors] = useState<DeviceInventoryStructuralReason[]>([])
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -63,12 +99,14 @@ export function DeviceInventoryUploadPage() {
     }
   }, [client])
 
-  function handleFile(e: ChangeEvent<HTMLInputElement>): void {
-    const picked = e.target.files?.[0]
-    e.target.value = ''
-    if (picked === undefined) return
+  function handleFile(picked: File | null): void {
     setError(null)
     setResult(null)
+    setStructuralErrors([])
+    if (picked === null) {
+      setFile(null)
+      return
+    }
     if (picked.size > MAX_UPLOAD_BYTES) {
       setFile(null)
       setError('File exceeds the 5 MiB upload limit. Split it into smaller files and try again.')
@@ -80,12 +118,21 @@ export function DeviceInventoryUploadPage() {
   async function handleSubmit(): Promise<void> {
     if (file === null || manufacturerVndrId === '') return
     setError(null)
+    setStructuralErrors([])
     setBusy(true)
     try {
       const res = await commitDeviceInventory(file, manufacturerVndrId, newIdempotencyKey())
       setResult(res)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upload the device inventory file.')
+      // A structural rejection is reported on its own, naming the offending
+      // column. Anything else keeps the generic message. `err.message` is NOT
+      // used for the structural case: on an ApiError it is only "api 400".
+      const reasons = deviceInventoryStructuralReasons(err)
+      if (reasons.length > 0) {
+        setStructuralErrors(reasons)
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to upload the device inventory file.')
+      }
     } finally {
       setBusy(false)
     }
@@ -95,18 +142,28 @@ export function DeviceInventoryUploadPage() {
 
   return (
     <Card>
-      <CardHeader
-        title="Device inventory upload"
-        subtitle="Every row must carry a Device ID, SIM No, and Device QR; invalid rows are skipped and reported below."
-      />
-      <div className="space-y-4 p-5">
+      <CardHeader>
+        <CardTitle>Device inventory upload</CardTitle>
+        <CardDescription>
+          The file is parsed on the server. A missing column rejects the whole file; individual bad
+          rows are skipped and listed below.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
         {vendorsError !== null && <ErrorNote>{vendorsError}</ErrorNote>}
 
-        <Field label="Manufacturer" htmlFor="device-inventory-manufacturer" hint="Required before the file can be submitted.">
-          <Select
+        <div className="space-y-2">
+          <Label htmlFor="device-inventory-manufacturer">Manufacturer</Label>
+          {/* A native select, deliberately: the spec's Select (section 4.6) is a
+              Radix composite, and swapping it changes how this control is driven
+              in tests (userEvent.selectOptions stops applying). Tracked as a
+              follow-up so it lands with its test rewrite rather than as a
+              drive-by. Styled to the spec's input shape in the meantime. */}
+          <select
             id="device-inventory-manufacturer"
             value={manufacturerVndrId}
             onChange={(e) => setManufacturerVndrId(e.target.value)}
+            className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm shadow-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
           >
             <option value="">Select a manufacturer...</option>
             {manufacturers.map((m) => (
@@ -114,30 +171,46 @@ export function DeviceInventoryUploadPage() {
                 {m.displayName}
               </option>
             ))}
-          </Select>
-        </Field>
+          </select>
+          <p className="text-xs text-muted-foreground">Required before the file can be submitted.</p>
+        </div>
 
-        <Field label="Device inventory file (CSV or XLSX, max 5 MiB)" htmlFor="device-inventory-file">
-          <input
+        <div className="space-y-2">
+          <Label htmlFor="device-inventory-file">Device inventory file</Label>
+          <FileDropZone
             id="device-inventory-file"
-            type="file"
-            accept=".csv,text/csv,.xlsx"
+            file={file}
+            onPick={handleFile}
             disabled={busy}
-            onChange={handleFile}
-            className="mt-1 block text-sm text-ink"
+            expects={EXPECTED_COLUMN_LIST}
           />
-        </Field>
+        </div>
 
+        {structuralErrors.length > 0 && (
+          <div className="space-y-2">
+            {structuralErrors.map((e) => (
+              <ErrorNote key={e.code + (e.column ?? '')}>{structuralMessage(e)}</ErrorNote>
+            ))}
+            <p className="text-sm text-muted-foreground">
+              No rows were ingested. Expected columns: {EXPECTED_COLUMNS}. Column names are matched
+              ignoring case and extra spaces.
+            </p>
+          </div>
+        )}
         {error !== null && <ErrorNote>{error}</ErrorNote>}
 
+        {/* shadcn's Button has no `loading` prop (the pre-spec primitive did):
+            the spec's idiom is a spinning lucide icon inside a disabled button,
+            which its base class already sizes via [&_svg] rules. */}
         <Button
           type="button"
+          className="self-start"
           onClick={() => {
             void handleSubmit()
           }}
           disabled={!canSubmit}
-          loading={busy}
         >
+          {busy && <Loader2 className="animate-spin" aria-hidden="true" />}
           Upload device inventory file
         </Button>
 
@@ -145,34 +218,34 @@ export function DeviceInventoryUploadPage() {
           <div className="space-y-3">
             <PerRowErrors result={{ accepted: result.accepted, flagged: result.flagged, invalid: result.invalid }} />
             {result.invalidRows.length > 0 && (
-              <div className="overflow-x-auto rounded-lg border border-line">
-                <table className="w-full border-collapse text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-line bg-surface-2">
-                      <th className="px-3 py-2 font-semibold text-ink">Row</th>
-                      <th className="px-3 py-2 font-semibold text-ink">Errors</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+              <div className="overflow-x-auto rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Row</TableHead>
+                      <TableHead>Errors</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {result.invalidRows.map((r) => (
-                      <tr key={r.rowNo} className="border-b border-line">
-                        <td className="num px-3 py-2 text-ink">{r.rowNo}</td>
-                        <td className="px-3 py-2">
+                      <TableRow key={r.rowNo}>
+                        <TableCell className="num">{r.rowNo}</TableCell>
+                        <TableCell>
                           <div className="flex flex-wrap gap-1">
                             {r.errors.map((code) => (
                               <StatusPill key={code} value={code} />
                             ))}
                           </div>
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
             )}
           </div>
         )}
-      </div>
+      </CardContent>
     </Card>
   )
 }

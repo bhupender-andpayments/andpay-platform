@@ -8,12 +8,47 @@ type Client = { request<T>(req: ApiRequest): Promise<T> }
 // body is { handle, password, totp } and the response is ONLY { accessToken }.
 // There is no principal object on the wire; the caller derives a display
 // principal by decoding the token itself (see AuthContext.decodeTokenClaims).
+// `enrollmentRequired` is returned when the principal authenticated by password
+// but holds no TOTP enrollment yet. The accessToken is then an enrollment-only
+// token (one permission, short TTL, no refresh cookie was set), good only for
+// POST /enroll against the caller's own principal.
 export function login(c: Client, body: { handle: string; password: string; totp: string }) {
-  return c.request<{ accessToken: string }>({
+  // An EMPTY totp is omitted from the wire rather than sent as "". The edge
+  // treats a present totp as an attempt to verify it, so sending "" would be a
+  // guaranteed mfa-failed DENY; omitting it is the deliberate password-only
+  // request the first-login enrollment path answers.
+  const { totp, ...rest } = body
+  return c.request<{ accessToken?: string; enrollmentRequired?: boolean; mfaRequired?: boolean }>({
     method: 'POST',
     path: '/session/login',
     base: 'auth',
     withCookie: true,
+    body: totp === '' ? rest : body,
+  })
+}
+
+// POST /enroll (apps/auth-edge/src/enroll.controller.ts). On the self-enrollment
+// path the target MUST be the caller's own principal id; the edge rejects any
+// other target. Returns the otpauth:// provisioning URI ONCE, so the QR is
+// rendered from this response and never refetched.
+export function enrollSelf(c: Client, body: { targetPrincipalId: string; targetAccountLabel: string }) {
+  return c.request<{ otpauthUri: string }>({
+    method: 'POST',
+    path: '/enroll',
+    base: 'auth',
+    body,
+  })
+}
+
+// POST /enroll/confirm. The enrollment stays PENDING (no factor on the account)
+// until this succeeds, so abandoning the setup screen leaves the operator
+// exactly as they were rather than locked out against a secret they never
+// scanned.
+export function confirmEnrollment(c: Client, body: { totp: string }) {
+  return c.request<{ confirmed: true }>({
+    method: 'POST',
+    path: '/enroll/confirm',
+    base: 'auth',
     body,
   })
 }
@@ -568,6 +603,49 @@ export interface DeviceInventoryUploadResult {
   createdUnitIds: string[]
   invalidRows: DeviceInventoryRowError[]
   deduped: boolean
+}
+
+/**
+ * A whole-file (STRUCTURAL) rejection, as opposed to the per-row `invalidRows`
+ * above. A structural failure ingests nothing, so it arrives as a 400 rather
+ * than in a result body.
+ *
+ * The edge sends only the `code` and, for a missing column, its canonical
+ * `column` name. It deliberately does NOT send the server's own error text,
+ * because that text embeds the uploaded filename for two of the three codes and
+ * a caller-supplied value must not ride an HTTP response (S4/5c). The operator-
+ * facing wording therefore lives in the portal, next to the rest of the UI copy.
+ */
+export type DeviceInventoryStructuralCode =
+  | 'unsupported_extension'
+  | 'unreadable_file'
+  | 'missing_required_column'
+
+export interface DeviceInventoryStructuralReason {
+  code: DeviceInventoryStructuralCode | string
+  column?: string
+}
+
+/**
+ * Pulls the structural reasons out of a rejected upload. Returns [] for any
+ * other failure (a 500, an auth error, a network drop), so the caller can fall
+ * back to its generic message and a structural rejection is never confused
+ * with an unrelated one.
+ */
+export function deviceInventoryStructuralReasons(err: unknown): DeviceInventoryStructuralReason[] {
+  if (!(err instanceof ApiError) || err.status !== 400) return []
+  const body = err.body
+  if (typeof body !== 'object' || body === null) return []
+  const raw = (body as { reasons?: unknown }).reasons
+  if (!Array.isArray(raw)) return []
+  const out: DeviceInventoryStructuralReason[] = []
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const { code, column } = item as { code?: unknown; column?: unknown }
+    if (typeof code !== 'string' || code === '') continue
+    out.push(typeof column === 'string' && column !== '' ? { code, column } : { code })
+  }
+  return out
 }
 
 // The 5 MiB multipart cap the ops-edge FileInterceptor enforces

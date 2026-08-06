@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, waitFor, within } from '@testing-library/react'
+import { render, screen, cleanup, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -428,5 +428,125 @@ describe('uploads', () => {
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toMatch(/5 MiB/i)
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/ops/uploads/device-inventory'), expect.anything())
+  })
+
+  // Step 1 Task 3: a STRUCTURAL rejection (a wrong header) used to surface as
+  // the bare ApiError message, i.e. the literal string "api 400", so an
+  // operator could not tell which column was wrong. Per-ROW errors already
+  // rendered well; only whole-file failures were opaque. The 400 is stubbed
+  // here rather than the endpoint function, so the real decode path
+  // (postFile -> ApiError -> deviceInventoryStructuralReasons) is exercised.
+  async function submitInventory(status: number, body: unknown): Promise<void> {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
+        if (url.includes('/ops/uploads/device-inventory')) return jsonResponse(body, status)
+        return jsonResponse({})
+      }),
+    )
+    renderWithProviders(<DeviceInventoryUploadPage />)
+    const select = (await screen.findByLabelText(/manufacturer/i)) as HTMLSelectElement
+    const input = screen.getByLabelText(/device inventory file/i) as HTMLInputElement
+    await userEvent.upload(input, makeFile('Device ID,Device QR\nD1,{}\n', 'cwd-export.csv'))
+    await userEvent.selectOptions(select, 'vndr_manu1')
+    await userEvent.click(screen.getByRole('button', { name: /upload device inventory file/i }))
+  }
+
+  it('device inventory upload: names the offending column when the header is wrong', async () => {
+    await submitInventory(400, {
+      code: 'invalid',
+      message: 'invalid request',
+      reasons: [{ code: 'missing_required_column', column: 'Sim No' }],
+    })
+    expect(await screen.findByText(/Missing required column "Sim No"/)).toBeTruthy()
+    // The operator is also told what a valid file looks like, and that the
+    // whole file was rejected rather than partially ingested.
+    expect(screen.getByText(/Expected columns: Device ID, Sim No, Device QR/)).toBeTruthy()
+    expect(screen.getByText(/No rows were ingested/)).toBeTruthy()
+    // The useless raw message must be gone.
+    expect(screen.queryByText(/api 400/)).toBeNull()
+  })
+
+  it('device inventory upload: a bad extension reads as a file-type problem and never echoes the filename', async () => {
+    await submitInventory(400, {
+      code: 'invalid',
+      message: 'invalid request',
+      reasons: [{ code: 'unsupported_extension' }],
+    })
+    const note = await screen.findByText(/Upload a \.csv or \.xlsx file/)
+    // S4/5c: the edge sends a CODE only, so no server-derived text can carry the
+    // uploaded filename. The error copy is therefore built entirely client-side
+    // and never interpolates it. (That the RESPONSE omits it is asserted where
+    // it belongs, on the wire, in apps/ops-edge/test/device-inventory-http.test.ts.)
+    // The filename does still appear in the staged-file card, because that is
+    // the operator's own pick echoed back to them, not a disclosure.
+    expect(note.textContent).not.toMatch(/cwd-export\.csv/)
+  })
+
+  // The drop zone is the shared file control on all three upload tabs. A real
+  // DROP must stage the file exactly as picking it does, otherwise the affordance
+  // the zone advertises is decorative.
+  it('device inventory upload: dropping a file stages it, shows its size, and Remove clears it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
+        return jsonResponse(DEVICE_INVENTORY_RESULT)
+      }),
+    )
+    renderWithProviders(<DeviceInventoryUploadPage />)
+    await screen.findByLabelText(/device inventory file/i)
+
+    const submit = screen.getByRole('button', { name: /upload device inventory file/i }) as HTMLButtonElement
+    const zone = screen.getByText(/Drop your file here/i).closest('div')!
+    const dropped = makeFile('Device ID,Sim No,Device QR\n1,2,3\n', 'dropped-inventory.csv')
+
+    fireEvent.drop(zone, { dataTransfer: { files: [dropped] } })
+
+    // Staged: the file is named, sized, and the zone's idle prompt is gone.
+    expect(await screen.findByText('dropped-inventory.csv')).toBeTruthy()
+    expect(screen.getByText(/ready to upload/i)).toBeTruthy()
+    expect(screen.queryByText(/Drop your file here/i)).toBeNull()
+
+    // A manufacturer is still required, so a drop alone must not enable Submit.
+    expect(submit.disabled).toBe(true)
+    await userEvent.selectOptions(screen.getByLabelText(/manufacturer/i), 'vndr_manu1')
+    expect(submit.disabled).toBe(false)
+
+    await userEvent.click(screen.getByRole('button', { name: /remove file/i }))
+    expect(await screen.findByText(/Drop your file here/i)).toBeTruthy()
+    expect(submit.disabled).toBe(true)
+  })
+
+  it('device inventory upload: an oversized DROP is refused with the same limit message as a pick', async () => {
+    // The size cap lives on the page, so it must apply to the drop path too and
+    // not just to the file dialog.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
+        return jsonResponse(DEVICE_INVENTORY_RESULT)
+      }),
+    )
+    renderWithProviders(<DeviceInventoryUploadPage />)
+    await screen.findByLabelText(/device inventory file/i)
+    const zone = screen.getByText(/Drop your file here/i).closest('div')!
+
+    fireEvent.drop(zone, { dataTransfer: { files: [makeOversizedFile('huge-drop.csv')] } })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toMatch(/5 MiB/i)
+    // Refused, so nothing is staged.
+    expect(screen.queryByText('huge-drop.csv')).toBeNull()
+  })
+
+  it('device inventory upload: a 400 carrying no reasons falls back to the generic message and claims no column', async () => {
+    await submitInventory(400, { code: 'invalid', message: 'invalid request' })
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBeTruthy()
+    // Nothing may be invented about which column was at fault.
+    expect(screen.queryByText(/Missing required column/)).toBeNull()
+    expect(screen.queryByText(/No rows were ingested/)).toBeNull()
   })
 })
