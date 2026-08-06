@@ -19,8 +19,14 @@ export interface CorsCapableApp {
 // auth-edge refresh cookie is accepted on its path, minimal methods/headers.
 // This is additive middleware: it changes no handler behavior, only the
 // preflight/response headers.
+// Every write route on both portals REQUIRES an Idempotency-Key header (the
+// 06.A key grammar), so omitting it from the allow-list made the browser refuse
+// to send the actual request after a passing preflight: every upload and every
+// write failed as an opaque "Failed to fetch". The jsdom page tests could not
+// catch it because jsdom does not enforce CORS. The list must therefore stay in
+// step with what the SPA api layer actually sets, which is exactly these three.
 export function buildPortalCorsOptions(allowedOrigin: string): CorsOptions {
-  return { origin: [allowedOrigin], credentials: true, methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['authorization', 'content-type'] }
+  return { origin: [allowedOrigin], credentials: true, methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['authorization', 'content-type', 'idempotency-key'] }
 }
 
 export function applyPortalCors(app: CorsCapableApp, allowedOrigin: string): void {
@@ -34,7 +40,7 @@ export function applyPortalCors(app: CorsCapableApp, allowedOrigin: string): voi
 // ever set or read here). Allow-lists the single configured origin (never a
 // wildcard), same minimal methods/headers as the portal variant.
 export function buildBearerCorsOptions(allowedOrigin: string): CorsOptions {
-  return { origin: [allowedOrigin], credentials: false, methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['authorization', 'content-type'] }
+  return { origin: [allowedOrigin], credentials: false, methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['authorization', 'content-type', 'idempotency-key'] }
 }
 
 export function applyBearerCors(app: CorsCapableApp, allowedOrigin: string): void {
