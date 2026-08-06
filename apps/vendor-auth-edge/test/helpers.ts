@@ -65,24 +65,24 @@ export async function testJwks(): Promise<JSONWebKeySet> {
 }
 
 // The shared in-memory custody vault: BOTH `storeSecret` (the enroll-side
-// custody sink) and `mfaSecretResolver` (the login-side lookup) read/write
+// custody sink) and `resolveSecretRef` (the verification-side lookup) read/write
 // this ONE map by default, so a secret enrolled via
 // `seedVendorOperatorWithTotp` is resolvable at login through the SAME app
 // instance. Keyed by (principalId, principalType), the carry-forward-3
 // resolver shape (never principalId-only), so a vendor_operator secret never
 // collides with an internal principal sharing the same id value. Module-
 // scoped so every deps object this file builds (unless an override replaces
-// storeSecret/mfaSecretResolver) shares it.
+// storeSecret/resolveSecretRef) shares it.
 const vault = new Map<string, string>()
 
 async function defaultStoreSecret(principalId: string, secret: string, principalType = 'vendor_operator'): Promise<string> {
-  const ref = `vault://${principalType}/${principalId}`
+  const ref = `vault://${principalType}/${principalId}/${randomUUID()}`
   vault.set(ref, secret)
   return ref
 }
 
-async function defaultMfaSecretResolver(principalId: string, principalType: 'vendor_operator'): Promise<string | undefined> {
-  return vault.get(`vault://${principalType}/${principalId}`)
+async function defaultResolveSecretRef(secretRef: string): Promise<string | undefined> {
+  return vault.get(secretRef)
 }
 
 // Builds a full `VendorAuthEdgeDeps` and the real Nest app (already
@@ -98,7 +98,7 @@ export async function buildTestVendorAuthEdgeApp(overrides: Partial<VendorAuthEd
     signer,
     jwks,
     mfa: new TotpAdapter(),
-    mfaSecretResolver: defaultMfaSecretResolver,
+    resolveSecretRef: defaultResolveSecretRef,
     storeSecret: defaultStoreSecret,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',
@@ -132,7 +132,7 @@ export const SEEDED_VENDOR_PASSWORD = 'correct horse battery staple'
 // Creates a real `vendor_operator` row (via the REAL `provisionVendorOperator`
 // primitive, a known Argon2id-hashed password, ACTIVE) and enrolls a TOTP
 // factor via the REAL `enrollTotp` (principalType:'vendor_operator') against
-// the SAME vault this file's `mfaSecretResolver` reads (`defaultStoreSecret`),
+// the SAME vault this file's `resolveSecretRef` reads (`defaultStoreSecret`),
 // so the returned secret is immediately usable to drive a real AAL2 vendor
 // login through an app built by `buildTestVendorAuthEdgeApp()`. The base32
 // secret is recovered from the enroll otpauth:// URI (the only place it is
