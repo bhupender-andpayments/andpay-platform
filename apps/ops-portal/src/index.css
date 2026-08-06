@@ -60,36 +60,13 @@
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
 
-  /* ---------------------------------------------------------------- *
-   * TEMPORARY MIGRATION ALIASES. Delete each as its screens convert.
-   *
-   * The portal predates this spec and still uses its own token
-   * vocabulary in ~370 places. These aliases map the old names onto the
-   * spec's values so unconverted screens keep rendering while screens
-   * are converted one at a time. They are NOT part of the design system
-   * and nothing new should use them.
-   *
-   * Two old names collided with spec names and were renamed in code
-   * instead of aliased, because aliasing would have inverted their
-   * meaning: `accent` (was the amber, is a neutral surface here) and
-   * `muted` (was grey TEXT, is a near-white SURFACE here).
-   * ---------------------------------------------------------------- */
-  --color-bg: var(--background);
-  --color-surface: var(--card);
-  --color-surface-2: var(--muted);
-  --color-surface-3: var(--secondary);
-  --color-line: var(--border);
-  --color-line-strong: var(--ring);
-  --color-ink: var(--foreground);
-  --color-subtle: var(--muted-foreground);
-  /* Brand navy. The spec keeps navy for the wordmark and the auth headline only
-     (section 2, "Brand hex values"), so it is not a semantic token. It follows
-     the spec's own pattern anyway: the value lives on :root and is mapped to a
-     utility here, which also keeps it readable by getComputedStyle. */
+  /* Brand navy. The spec keeps navy for the wordmark and the AUTH HEADLINE only
+     (section 2, "Brand hex values"), so it is not a semantic token and there is
+     exactly one consumer left: the sign-in headline. Value lives on :root and is
+     mapped here, following the spec's own pattern.
+     The rest of the migration alias layer is GONE: every screen now uses the
+     spec's tokens directly. Do not reintroduce aliases. */
   --color-brand: var(--brand-navy);
-  --color-brand-strong: var(--brand-navy-strong);
-  --color-brand-weak: var(--brand-navy-weak);
-  --color-brand-contrast: #ffffff;
   /* No amber-tint aliases: the shades the pre-spec theme had (accent-weak /
      -strong / -contrast) are expressed with the spec's own idiom instead, as
      opacity modifiers on primary (bg-primary/10, hover:bg-primary/80) and

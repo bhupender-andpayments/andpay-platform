@@ -60,13 +60,13 @@ const BANK_MASTER_COLUMNS: ReadonlyArray<DataTableColumn<BankMasterRow>> = [
   {
     key: 'displayName',
     header: 'Display name',
-    cell: (r) => <span className="font-medium text-ink">{r.displayName}</span>,
+    cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
   },
   { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
-  { key: 'city', header: 'City', cell: (r) => r.city ?? <span className="text-subtle">-</span> },
-  { key: 'country', header: 'Country', cell: (r) => r.country ?? <span className="text-subtle">-</span> },
-  { key: 'mobile', header: 'Mobile', cell: (r) => r.mobile ?? <span className="text-subtle">-</span> },
-  { key: 'email', header: 'Email', cell: (r) => r.email ?? <span className="text-subtle">-</span> },
+  { key: 'city', header: 'City', cell: (r) => r.city ?? <span className="text-muted-foreground">-</span> },
+  { key: 'country', header: 'Country', cell: (r) => r.country ?? <span className="text-muted-foreground">-</span> },
+  { key: 'mobile', header: 'Mobile', cell: (r) => r.mobile ?? <span className="text-muted-foreground">-</span> },
+  { key: 'email', header: 'Email', cell: (r) => r.email ?? <span className="text-muted-foreground">-</span> },
   { key: 'tnntId', header: 'Tenant ID', cell: (r) => <CodeChip>{shortId(r.tnntId)}</CodeChip> },
 ]
 
@@ -115,7 +115,7 @@ function BankMastersView() {
 
 const DAMAGE_REASON_COLUMNS: ReadonlyArray<DataTableColumn<DamageReasonRow>> = [
   { key: 'code', header: 'Code', cell: (r) => <CodeChip>{r.code}</CodeChip> },
-  { key: 'label', header: 'Label', cell: (r) => <span className="font-medium text-ink">{r.label}</span> },
+  { key: 'label', header: 'Label', cell: (r) => <span className="font-medium text-foreground">{r.label}</span> },
   { key: 'active', header: 'Status', cell: (r) => <StatusPill value={r.active ? 'ACTIVE' : 'INACTIVE'} /> },
   { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
   { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
@@ -171,18 +171,18 @@ const BATCHING_CONFIG_COLUMNS: ReadonlyArray<DataTableColumn<BatchingConfigRow>>
   {
     key: 'tenantWire',
     header: 'Tenant',
-    cell: (r) => (r.tenantWire ? <CodeChip>{shortId(r.tenantWire)}</CodeChip> : <span className="text-subtle">-</span>),
+    cell: (r) => (r.tenantWire ? <CodeChip>{shortId(r.tenantWire)}</CodeChip> : <span className="text-muted-foreground">-</span>),
   },
   {
     key: 'programWire',
     header: 'Program',
-    cell: (r) => (r.programWire ? <CodeChip>{shortId(r.programWire)}</CodeChip> : <span className="text-subtle">-</span>),
+    cell: (r) => (r.programWire ? <CodeChip>{shortId(r.programWire)}</CodeChip> : <span className="text-muted-foreground">-</span>),
   },
-  { key: 'minLotSize', header: 'Min lot size', cell: (r) => <span className="num text-ink">{fmtNumber(r.minLotSize)}</span> },
+  { key: 'minLotSize', header: 'Min lot size', cell: (r) => <span className="num text-foreground">{fmtNumber(r.minLotSize)}</span> },
   {
     key: 'maxWaitSeconds',
     header: 'Max wait (s)',
-    cell: (r) => <span className="num text-ink">{fmtNumber(r.maxWaitSeconds)}</span>,
+    cell: (r) => <span className="num text-foreground">{fmtNumber(r.maxWaitSeconds)}</span>,
   },
   { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
   { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },

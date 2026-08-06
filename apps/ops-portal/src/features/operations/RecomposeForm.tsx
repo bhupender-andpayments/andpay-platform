@@ -93,7 +93,7 @@ export function RecomposeForm() {
       )}
 
       {result !== null && (
-        <div className="px-5 pb-5 text-sm text-ink">
+        <div className="px-5 pb-5 text-sm text-foreground">
           {result.deduped ? 'Already applied (deduped). ' : ''}
           Artifact: <span className="font-mono">{result.artifactId ?? 'none'}</span>
         </div>

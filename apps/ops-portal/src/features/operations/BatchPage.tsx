@@ -152,7 +152,7 @@ export function BatchPage() {
             {result === null ? (
               <InfoNote>Nothing to batch.</InfoNote>
             ) : (
-              <p className="text-sm text-ink">
+              <p className="text-sm text-foreground">
                 Batch triggered: <CodeChip>{result.btchId}</CodeChip>
               </p>
             )}
@@ -184,7 +184,7 @@ export function BatchPage() {
             </Select>
           </Field>
         </div>
-        <div className="flex flex-wrap items-center gap-2 border-t border-line px-5 py-3">
+        <div className="flex flex-wrap items-center gap-2 border-t border-border px-5 py-3">
           <Button
             variant="secondary"
             disabled={downloading}

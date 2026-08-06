@@ -21,9 +21,9 @@ export function DataTable<T>({ columns, rows, getRowKey, emptyMessage = 'No reco
   return (
     <table className="w-full border-collapse text-left text-sm">
       <thead>
-        <tr className="border-b border-line">
+        <tr className="border-b border-border">
           {columns.map((column) => (
-            <th key={column.key} scope="col" className="px-3 py-2 font-semibold text-ink">
+            <th key={column.key} scope="col" className="px-3 py-2 font-semibold text-foreground">
               {column.header}
             </th>
           ))}
@@ -32,15 +32,15 @@ export function DataTable<T>({ columns, rows, getRowKey, emptyMessage = 'No reco
       <tbody>
         {rows.length === 0 ? (
           <tr>
-            <td colSpan={columns.length} className="px-3 py-6 text-center text-subtle">
+            <td colSpan={columns.length} className="px-3 py-6 text-center text-muted-foreground">
               {emptyMessage}
             </td>
           </tr>
         ) : (
           rows.map((row, index) => (
-            <tr key={getRowKey ? getRowKey(row, index) : index} className="border-b border-line">
+            <tr key={getRowKey ? getRowKey(row, index) : index} className="border-b border-border">
               {columns.map((column) => (
-                <td key={column.key} className="px-3 py-2 text-ink">
+                <td key={column.key} className="px-3 py-2 text-foreground">
                   {column.cell(row, index)}
                 </td>
               ))}

@@ -99,7 +99,7 @@ export function FileDropZone({
 
   const zoneTone = dragging
     ? 'border-primary bg-primary/10'
-    : 'border-line-strong bg-surface-2 hover:border-brand/40 hover:bg-surface-3'
+    : 'border-border bg-muted hover:border-primary/40 hover:bg-secondary'
 
   return (
     <div>
@@ -131,8 +131,8 @@ export function FileDropZone({
           ) : (
             <>
               <div className="space-y-0.5">
-                <p className="text-sm font-medium text-ink">Drop your file here</p>
-                <p className="font-mono text-xs text-subtle">{constraint}</p>
+                <p className="text-sm font-medium text-foreground">Drop your file here</p>
+                <p className="font-mono text-xs text-muted-foreground">{constraint}</p>
               </div>
               <Button
                 type="button"
@@ -148,8 +148,8 @@ export function FileDropZone({
                   Required columns:{' '}
                   {expects.map((c, i) => (
                     <span key={c}>
-                      {i > 0 && <span className="text-subtle">, </span>}
-                      <span className="font-mono text-ink">{c}</span>
+                      {i > 0 && <span className="text-muted-foreground">, </span>}
+                      <span className="font-mono text-foreground">{c}</span>
                     </span>
                   ))}
                 </p>
@@ -158,7 +158,7 @@ export function FileDropZone({
           )}
         </div>
       ) : (
-        <div className="flex items-center gap-3 rounded-lg border border-line bg-surface px-4 py-3 shadow-sm">
+        <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-sm">
           <span
             aria-hidden="true"
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-primary/10 font-mono text-[10px] font-semibold uppercase text-primary"
@@ -166,16 +166,16 @@ export function FileDropZone({
             {fileKind(file.name)}
           </span>
           <div className="min-w-0 flex-1">
-            <p className="truncate font-mono text-[13px] text-ink" title={file.name}>
+            <p className="truncate font-mono text-[13px] text-foreground" title={file.name}>
               {file.name}
             </p>
-            <p className="text-xs text-subtle">{formatFileSize(file.size)}, ready to upload</p>
+            <p className="text-xs text-muted-foreground">{formatFileSize(file.size)}, ready to upload</p>
           </div>
           <button
             type="button"
             disabled={disabled}
             onClick={() => inputRef.current?.click()}
-            className="shrink-0 rounded-sm text-[13px] font-medium text-brand underline decoration-brand/30 underline-offset-2 hover:decoration-brand focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed"
+            className="shrink-0 rounded-sm text-[13px] font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed"
           >
             Replace
           </button>
@@ -184,7 +184,7 @@ export function FileDropZone({
             aria-label="Remove file"
             disabled={disabled}
             onClick={() => onPick(null)}
-            className="shrink-0 rounded-sm px-1 text-base leading-none text-subtle hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed"
+            className="shrink-0 rounded-sm px-1 text-base leading-none text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed"
           >
             ×
           </button>

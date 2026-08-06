@@ -118,8 +118,13 @@ describe('TilesPage', () => {
     const grid = await screen.findByTestId('tile-grid')
     const links = within(grid).getAllByRole('link')
     expect(links).toHaveLength(7)
-    const emphasized = links.filter((l) => l.className.includes('bg-brand'))
+    // Exactly ONE anchor tile, still. The mechanism moved with the design system
+    // port: section 6.4 has no solid-fill card, so emphasis is the brand amber
+    // left border on the same card shape rather than a navy fill.
+    const emphasized = links.filter((l) => l.className.includes('border-l-primary'))
     expect(emphasized).toHaveLength(1)
+    // and it must not be expressed as a filled tile any more
+    expect(links.filter((l) => l.className.includes('bg-brand'))).toHaveLength(0)
   })
 
   it('a tile click drives the real tile-drilldown fetch, and the rendered drilldown rows are consistent with the tile it came from', async () => {

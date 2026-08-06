@@ -15,13 +15,13 @@ export const VENDOR_COLUMNS: ReadonlyArray<DataTableColumn<VendorRow>> = [
   {
     key: 'displayName',
     header: 'Display name',
-    cell: (r) => <span className="font-medium text-ink">{r.displayName}</span>,
+    cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
   },
   { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
   {
     key: 'courierCode',
     header: 'Courier code',
-    cell: (r) => (r.courierCode ? <CodeChip>{r.courierCode}</CodeChip> : <span className="text-subtle">-</span>),
+    cell: (r) => (r.courierCode ? <CodeChip>{r.courierCode}</CodeChip> : <span className="text-muted-foreground">-</span>),
   },
   { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
   { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },

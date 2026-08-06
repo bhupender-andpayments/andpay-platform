@@ -41,18 +41,18 @@ export function StepUpDialog() {
           step-up prompt can gate a destructive action, so the only ways to
           dismiss it are the explicit Cancel/Confirm controls, exactly as
           before this task. */}
-      <div className="absolute inset-0 bg-ink/40 backdrop-blur-sm" aria-hidden="true" />
+      <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" aria-hidden="true" />
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Step-up authentication"
-        className="relative w-full max-w-sm rounded-lg border border-line bg-surface p-6 shadow-lg"
+        className="relative w-full max-w-sm rounded-lg border border-border bg-card p-6 shadow-lg"
       >
-        <div className="mb-1 flex items-center gap-2 text-brand">
+        <div className="mb-1 flex items-center gap-2 text-primary">
           <IconShield width={18} height={18} />
           <span className="text-[12px] font-semibold uppercase tracking-wide">Step-up required</span>
         </div>
-        <h2 className="text-lg font-semibold text-ink">Confirm your identity</h2>
+        <h2 className="text-lg font-semibold text-foreground">Confirm your identity</h2>
         <p className="mt-1 text-[13px] text-muted-foreground">
           Enter your current authentication code to continue.
         </p>

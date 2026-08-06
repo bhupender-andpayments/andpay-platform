@@ -71,7 +71,7 @@ export function VendorSuspendButton() {
     {
       key: 'displayName',
       header: 'Display name',
-      cell: (r) => <span className="font-medium text-ink">{r.displayName}</span>,
+      cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
     },
     { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
     {
@@ -118,7 +118,7 @@ export function VendorSuspendButton() {
       )}
 
       {result !== null && (
-        <div className="px-5 pb-5 text-sm text-ink">
+        <div className="px-5 pb-5 text-sm text-foreground">
           {result.deduped ? 'Already suspended (deduped). ' : 'Suspended. '}
           <CodeChip>{result.id}</CodeChip>
         </div>

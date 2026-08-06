@@ -95,7 +95,7 @@ function buildColumns(rows: ReportRow[]): DataTableColumn<ReportRow>[] {
     header: humanHeader(key),
     cell: (row: ReportRow) => {
       const text = cellText(row[key])
-      if (text === '') return <span className="text-subtle">-</span>
+      if (text === '') return <span className="text-muted-foreground">-</span>
       return <span className={NUMERIC_KEYS.has(key) ? 'num' : undefined}>{text}</span>
     },
   }))
@@ -221,7 +221,7 @@ export function ReportPage() {
             <Input id="filter-status" value={status} onChange={(e) => setStatus(e.target.value)} placeholder="e.g. DELIVERED" />
           </Field>
         </div>
-        <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
           <Button
             variant="secondary"
             onClick={() => {

@@ -10,7 +10,7 @@ export function WatermarkBadge({ watermark }: { watermark: string | null }) {
   // needs to quote it precisely.
   return (
     <span
-      className="inline-flex items-center rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
+      className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
       title={watermark ?? undefined}
     >
       {watermark === null ? 'no watermark' : `as of ${fmtDateTime(watermark)}`}

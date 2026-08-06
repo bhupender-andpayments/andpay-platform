@@ -49,12 +49,34 @@ const EMPHASIZED_TILE: TileName = 'requestsReceived'
 // which gave the eye nothing to land on.
 type Tone = 'pending' | 'info' | 'positive' | 'negative' | 'neutral'
 
-const TONE_CHIP: Record<Tone, string> = {
-  pending: 'bg-[#fbeed5] text-[#a15c07]',
-  info: 'bg-[#e6edfe] text-[#1d4ed8]',
-  positive: 'bg-[#e2f3ea] text-[#15803d]',
-  negative: 'bg-[#fbe9e9] text-[#b91c1c]',
-  neutral: 'bg-surface-2 text-subtle',
+// Design system section 6.4 (metric / KPI card): a 3px coloured LEFT BORDER plus
+// a tinted icon chip, using the spec's own palette rather than the raw hex the
+// pre-spec theme carried.
+//
+// The colour is scoped with border-l-<colour>, not border-<colour>: the card
+// already carries a 1px border-border on all four sides, and an unscoped
+// border-<colour> recolours ALL of them, which turns the whole outline amber or
+// red instead of drawing a left accent bar.
+interface ToneAccent {
+  border: string
+  iconBg: string
+  iconColor: string
+}
+const TONE_ACCENT: Record<Tone, ToneAccent> = {
+  pending: { border: 'border-l-[3px] border-l-amber-400', iconBg: 'bg-amber-100', iconColor: 'text-amber-600' },
+  info: { border: 'border-l-[3px] border-l-blue-400', iconBg: 'bg-blue-100', iconColor: 'text-blue-600' },
+  positive: { border: 'border-l-[3px] border-l-emerald-400', iconBg: 'bg-emerald-100', iconColor: 'text-emerald-600' },
+  negative: { border: 'border-l-[3px] border-l-red-400', iconBg: 'bg-red-100', iconColor: 'text-red-600' },
+  neutral: { border: 'border-l-[3px] border-l-border', iconBg: 'bg-muted', iconColor: 'text-muted-foreground' },
+}
+// The ONE emphasized tile. The pre-spec design cue was "one tile emphasized with
+// a FILLED tile", but section 6.4 has no solid-fill variant, so the emphasis is
+// carried the spec's way instead: the brand amber on the same card shape. The
+// intent (exactly one anchor tile) survives; the navy block does not.
+const EMPHASIZED_ACCENT: ToneAccent = {
+  border: 'border-l-[3px] border-l-primary',
+  iconBg: 'bg-primary/15',
+  iconColor: 'text-primary',
 }
 
 interface TileDef {
@@ -107,26 +129,20 @@ function TileCard({ def, tiles }: { def: TileDef; tiles: TileSet }) {
       ? tiles.pendingQrAwaitingBatch.oldestAgeDays
       : null
 
+  const accent = emphasized ? EMPHASIZED_ACCENT : TONE_ACCENT[def.tone]
+
   return (
     <Link
       to={`/reports?tile=${def.key}`}
-      className={
-        emphasized
-          ? 'group flex flex-col justify-between rounded-lg bg-brand p-5 text-brand-contrast shadow-sm transition-all hover:-translate-y-0.5 hover:shadow'
-          : 'group flex flex-col justify-between rounded-lg border border-line bg-surface p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-brand/40 hover:shadow'
-      }
+      className={`group flex flex-col justify-between rounded-lg border border-border bg-card p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow ${accent.border}`}
     >
       <div className="flex items-start justify-between gap-3">
-        <p className={emphasized ? 'text-[13px] font-medium text-brand-contrast/80' : 'text-[13px] font-medium text-muted-foreground'}>
-          {def.label}
-        </p>
+        <p className="text-[13px] font-medium text-muted-foreground">{def.label}</p>
         {/* A tinted icon chip carries the stage's tone, so the grid is scannable
             by colour before any number is read. The chevron still appears on
             hover to signal the drill-down. */}
         <span
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${
-            emphasized ? 'bg-brand-contrast/15 text-brand-contrast' : TONE_CHIP[def.tone]
-          }`}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${accent.iconBg} ${accent.iconColor}`}
         >
           <Icon width={15} height={15} />
         </span>
@@ -137,42 +153,18 @@ function TileCard({ def, tiles }: { def: TileDef; tiles: TileSet }) {
             lines and read louder than the real counts beside it. It renders as
             quiet body text at the same optical position instead. */}
         {isActivationEmpty ? (
-          <p
-            className={
-              emphasized
-                ? 'text-[15px] leading-tight text-brand-contrast/70'
-                : 'text-[15px] leading-tight text-subtle'
-            }
-          >
-            {ACTIVATION_EMPTY_MARKER}
-          </p>
+          <p className="text-[15px] leading-tight text-muted-foreground">{ACTIVATION_EMPTY_MARKER}</p>
         ) : (
-          <p
-            className={
-              emphasized
-                ? 'num text-[30px] font-semibold leading-none tracking-[-0.02em]'
-                : 'num text-[30px] font-semibold leading-none tracking-[-0.02em] text-ink'
-            }
-          >
+          <p className="num text-[30px] font-semibold leading-none tracking-[-0.02em] text-foreground">
             {tileDisplay(tiles, def.key)}
           </p>
         )}
-        <p
-          className={
-            emphasized
-              ? 'mt-2 flex items-center gap-1 text-[12px] text-brand-contrast/70'
-              : 'mt-2 flex items-center gap-1 text-[12px] text-subtle'
-          }
-        >
+        <p className="mt-2 flex items-center gap-1 text-[12px] text-muted-foreground">
           {oldest !== null ? `Oldest ${fmtDays(oldest)} in queue` : def.hint}
           <IconChevron
             width={13}
             height={13}
-            className={
-              emphasized
-                ? 'text-brand-contrast/70'
-                : 'text-subtle opacity-0 transition-opacity group-hover:opacity-100'
-            }
+            className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
           />
         </p>
       </div>
@@ -184,22 +176,22 @@ function LifecycleRail({ tiles }: { tiles: TileSet }) {
   return (
     <div data-testid="lifecycle-rail">
       <Card className="overflow-hidden">
-        <div className="border-b border-line px-5 py-3">
-          <h2 className="text-sm font-semibold text-ink">Dispatch pipeline</h2>
+        <div className="border-b border-border px-5 py-3">
+          <h2 className="text-sm font-semibold text-foreground">Dispatch pipeline</h2>
         </div>
         <div className="flex items-stretch gap-1 overflow-x-auto px-5 py-5">
           {RAIL.map((stage, i) => (
             <div key={stage.key} className="flex flex-1 items-center gap-1">
               <Link
                 to={`/reports?tile=${stage.key}`}
-                className="group flex flex-1 flex-col rounded-lg border border-line bg-surface-2/50 px-4 py-3 transition-colors hover:border-brand/40 hover:bg-brand-weak/40"
+                className="group flex flex-1 flex-col rounded-lg border border-border bg-muted/50 px-4 py-3 transition-colors hover:border-primary/40 hover:bg-primary/5"
               >
-                <span className="num text-[26px] font-semibold leading-none text-ink">
+                <span className="num text-[26px] font-semibold leading-none text-foreground">
                   {tileDisplay(tiles, stage.key)}
                 </span>
                 <span className="mt-2 text-[12px] font-medium text-muted-foreground">{stage.label}</span>
               </Link>
-              {i < RAIL.length - 1 && <IconChevron width={18} height={18} className="shrink-0 text-subtle/60" />}
+              {i < RAIL.length - 1 && <IconChevron width={18} height={18} className="shrink-0 text-muted-foreground/60" />}
             </div>
           ))}
         </div>

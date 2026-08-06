@@ -87,7 +87,7 @@ export function EnrollTotpPanel({ principalId, accountLabel, onDone }: Props) {
 
   return (
     <>
-      <h1 className="mt-1 text-3xl font-bold tracking-[-0.02em] text-ink">Set up your authenticator</h1>
+      <h1 className="mt-1 text-3xl font-bold tracking-[-0.02em] text-foreground">Set up your authenticator</h1>
       <p className="mt-3 text-sm text-muted-foreground">
         Your account has no authenticator yet. Scan this code with an authenticator app, then sign in with the
         6-digit code it shows.
@@ -97,7 +97,7 @@ export function EnrollTotpPanel({ principalId, accountLabel, onDone }: Props) {
 
       {error === null && (
         <div className="mt-6 space-y-5">
-          <div className="flex justify-center rounded-lg border border-line bg-surface p-5">
+          <div className="flex justify-center rounded-lg border border-border bg-card p-5">
             {qrDataUrl === null ? (
               <div className="skeleton h-[224px] w-[224px]" aria-label="Preparing your setup code" />
             ) : (
@@ -110,12 +110,12 @@ export function EnrollTotpPanel({ principalId, accountLabel, onDone }: Props) {
               <button
                 type="button"
                 onClick={() => setShowSecret((v) => !v)}
-                className="text-[13px] font-medium text-brand hover:text-brand-strong"
+                className="text-[13px] font-medium text-primary hover:text-primary/80"
               >
                 {showSecret ? 'Hide setup key' : 'Cannot scan? Enter a key instead'}
               </button>
               {showSecret && (
-                <p className="num mt-2 select-all break-all rounded border border-line bg-surface-2 px-3 py-2 text-[13px] text-ink">
+                <p className="num mt-2 select-all break-all rounded border border-border bg-muted px-3 py-2 text-[13px] text-foreground">
                   {manualKey}
                 </p>
               )}
@@ -141,7 +141,7 @@ export function EnrollTotpPanel({ principalId, accountLabel, onDone }: Props) {
                 autoComplete="one-time-code"
                 maxLength={6}
                 placeholder="000000"
-                className="num h-14 text-center text-2xl tracking-[0.5em] placeholder:text-line-strong"
+                className="num h-14 text-center text-2xl tracking-[0.5em] placeholder:text-muted-foreground/50"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
               />

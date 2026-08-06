@@ -156,7 +156,7 @@ export function StatusCorrectionForm({ selectedRow, onClearSelection }: StatusCo
       )}
 
       {result !== null && (
-        <div className="px-5 pb-5 text-sm text-ink">
+        <div className="px-5 pb-5 text-sm text-foreground">
           {result.deduped ? 'Already applied (deduped). ' : ''}
           Outcome: <span className="font-mono">{result.outcome ?? 'none'}</span>
         </div>

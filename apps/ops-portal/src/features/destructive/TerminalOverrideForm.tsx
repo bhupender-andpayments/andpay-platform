@@ -166,7 +166,7 @@ export function TerminalOverrideForm({ selectedRow, onClearSelection }: Terminal
       )}
 
       {result !== null && (
-        <div className="px-5 pb-5 text-sm text-ink">
+        <div className="px-5 pb-5 text-sm text-foreground">
           {result.deduped ? 'Already applied (deduped). ' : ''}
           {result.overridden ? 'Overridden.' : 'Not overridden.'}
         </div>

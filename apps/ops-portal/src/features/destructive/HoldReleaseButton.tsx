@@ -73,7 +73,7 @@ export function HoldReleaseButton() {
       )}
 
       {result !== null && (
-        <div className="px-5 pb-5 text-sm text-ink">
+        <div className="px-5 pb-5 text-sm text-foreground">
           {result.deduped ? 'Already released (deduped). ' : ''}
           {result.released ? 'Released.' : 'Not released.'}
         </div>

@@ -72,8 +72,8 @@ export function OperationsPage() {
       {tab === 'destructive' && (
         <div className="space-y-4">
           <InfoNote>
-            <span className="inline-flex items-center gap-1.5 font-medium text-ink">
-              <IconShield width={15} height={15} className="text-brand" />
+            <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+              <IconShield width={15} height={15} className="text-primary" />
               Step-up required
             </span>
             . These actions re-prompt for your authenticator code and are re-authorized at the edge.

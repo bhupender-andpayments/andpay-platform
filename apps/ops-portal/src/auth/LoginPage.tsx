@@ -155,7 +155,7 @@ export function LoginPage() {
   return (
     <main
       aria-label="Sign in"
-      className="min-h-screen bg-surface lg:grid lg:grid-cols-[1.15fr_0.85fr]"
+      className="min-h-screen bg-card lg:grid lg:grid-cols-[1.15fr_0.85fr]"
     >
       {/* Brand panel. Decorative and non-interactive, so it is dropped
           entirely on small screens rather than stacked and scrolled past. */}
@@ -177,7 +177,7 @@ export function LoginPage() {
           </h2>
         </div>
 
-        <p className="text-xs text-subtle">
+        <p className="text-xs text-muted-foreground">
           © 2026 AndPayments Inc. All rights reserved.
         </p>
       </aside>
@@ -193,7 +193,7 @@ export function LoginPage() {
 
           <p className="text-sm text-muted-foreground">
             Welcome to{" "}
-            <span className="font-semibold text-ink">AndPayments</span>
+            <span className="font-semibold text-foreground">AndPayments</span>
           </p>
 
           {step === "enroll" && enrollPrincipalId !== null ? (
@@ -211,7 +211,7 @@ export function LoginPage() {
             />
           ) : step === "credentials" ? (
             <>
-              <h1 className="mt-1 text-3xl font-bold tracking-[-0.02em] text-ink">
+              <h1 className="mt-1 text-3xl font-bold tracking-[-0.02em] text-foreground">
                 Sign in to your account
               </h1>
               <form
@@ -248,7 +248,7 @@ export function LoginPage() {
                       type="button"
                       onClick={() => setShowPassword((v) => !v)}
                       aria-label={showPassword ? "Hide password" : "Show password"}
-                      className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-lg text-subtle hover:text-ink"
+                      className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-lg text-muted-foreground hover:text-foreground"
                     >
                       <IconEye off={showPassword} />
                     </button>
@@ -262,12 +262,12 @@ export function LoginPage() {
             </>
           ) : (
             <>
-              <h1 className="mt-1 text-3xl font-bold tracking-[-0.02em] text-ink">
+              <h1 className="mt-1 text-3xl font-bold tracking-[-0.02em] text-foreground">
                 Enter your code
               </h1>
               <p className="mt-3 text-sm text-muted-foreground">
                 Signing in as{" "}
-                <span className="font-medium text-ink">{handle}</span>. Enter
+                <span className="font-medium text-foreground">{handle}</span>. Enter
                 the 6-digit code from your authenticator app.
               </p>
               <form
@@ -285,7 +285,7 @@ export function LoginPage() {
                     maxLength={6}
                     autoFocus
                     placeholder="000000"
-                    className="num h-14 text-center text-2xl tracking-[0.5em] placeholder:text-line-strong"
+                    className="num h-14 text-center text-2xl tracking-[0.5em] placeholder:text-muted-foreground/50"
                     value={totp}
                     onChange={(e) => setTotp(e.target.value)}
                   />

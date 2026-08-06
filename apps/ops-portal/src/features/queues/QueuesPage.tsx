@@ -208,7 +208,7 @@ function QuarantineTab() {
 
       {resolvingId !== null && form !== null && (
         <Card className="p-5">
-          <h2 className="mb-4 text-sm font-semibold text-ink">Correct and resolve quarantine row</h2>
+          <h2 className="mb-4 text-sm font-semibold text-foreground">Correct and resolve quarantine row</h2>
           <form
             onSubmit={(e) => {
               void submitResolve(e)
@@ -241,7 +241,7 @@ function QuarantineTab() {
                     setForm((prev) => (prev === null ? prev : { ...prev, soundbox: checked }))
                   }}
                 />
-                <label className="text-[13px] font-medium text-ink" htmlFor="qr-form-soundbox">
+                <label className="text-[13px] font-medium text-foreground" htmlFor="qr-form-soundbox">
                   Soundbox
                 </label>
               </div>
@@ -386,7 +386,7 @@ function IntakeExceptionsTab() {
 
       {resolvingId !== null && form !== null && (
         <Card className="p-5">
-          <h2 className="mb-4 text-sm font-semibold text-ink">Correct and resolve intake exception</h2>
+          <h2 className="mb-4 text-sm font-semibold text-foreground">Correct and resolve intake exception</h2>
           <form
             onSubmit={(e) => {
               void submitResolve(e)
@@ -433,9 +433,9 @@ function IntakeExceptionsTab() {
                 // Index as key: these editable rows have no stable id of
                 // their own until submit, and this editor never reorders
                 // rows.
-                <div key={index} className="rounded-lg border border-line bg-surface-2/40 p-4">
+                <div key={index} className="rounded-lg border border-border bg-muted/40 p-4">
                   <div className="mb-2 flex items-center justify-between">
-                    <p className="text-[12px] font-semibold uppercase tracking-wide text-subtle">
+                    <p className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
                       Row {index + 1}: {row.kind === 'SERIALIZED' ? 'Serialized' : 'Quantity line'}
                     </p>
                     <button type="button" aria-label={`Remove row ${index + 1}`} onClick={() => removeRow(index)} className="text-xs text-[#a11616] underline">
@@ -455,7 +455,7 @@ function IntakeExceptionsTab() {
                           id={`ie-row-${index}-deviceQr`}
                           value={row.deviceQrJson}
                           onChange={(e) => updateSerializedField(index, 'deviceQrJson', e.target.value)}
-                          className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25"
+                          className="w-full rounded border border-border bg-card px-3 py-2 text-sm text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/30"
                         />
                       </Field>
                     </div>
@@ -634,7 +634,7 @@ function StatusExceptionsTab() {
 
       {resolvingRow !== null && form !== null && (
         <Card className="p-5">
-          <h2 className="mb-4 text-sm font-semibold text-ink">Resolve status exception</h2>
+          <h2 className="mb-4 text-sm font-semibold text-foreground">Resolve status exception</h2>
           <form
             onSubmit={(e) => {
               void submitResolve(e)
