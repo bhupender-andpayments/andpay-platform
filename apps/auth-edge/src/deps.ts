@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import {
   PrismaClient as AuthClient,
   type AuthDb,
@@ -41,7 +42,10 @@ export interface AuthEdgeDeps {
   // Custody seam (S7): resolves the principal's enrolled factor secret from
   // Secrets Manager in production. The row holds only secret_ref, never the
   // secret.
-  mfaSecretResolver: (principalId: string) => Promise<string | undefined>
+  // Resolves a custodied secret from an enrollment row's OWN reference, never
+  // from a principal id: one key per principal meant a new secret overwrote the
+  // previous one, so an unconfirmed attempt could invalidate a live factor.
+  resolveSecretRef: (secretRef: string) => Promise<string | undefined>
   // Custody seam (S7): persists a freshly-generated secret to Secrets Manager,
   // returns only the reference. The raw secret NEVER touches the DB row or a
   // log line.
@@ -141,22 +145,25 @@ export async function buildAuthEdgeDepsFromEnv(): Promise<AuthEdgeDeps> {
   const jwks = await signer.jwks()
 
   // The custody vault: an in-process Map, scaffold-only (see the doc comment
-  // above). storeSecret and mfaSecretResolver share this ONE map so a secret
+  // above). storeSecret and resolveSecretRef share this ONE map so a secret
   // enrolled via this process is resolvable at login in the SAME process.
   const vault = new Map<string, string>()
+  // A UNIQUE reference per enrollment: two enrollments for the same principal
+  // (a live factor and a pending first-time attempt) must never share a custody
+  // key, or writing one destroys the other.
   const storeSecret = async (principalId: string, secret: string): Promise<string> => {
-    const ref = `vault://${principalId}`
+    const ref = `vault://${principalId}/${randomUUID()}`
     vault.set(ref, secret)
     return ref
   }
-  const mfaSecretResolver = async (principalId: string): Promise<string | undefined> => vault.get(`vault://${principalId}`)
+  const resolveSecretRef = async (secretRef: string): Promise<string | undefined> => vault.get(secretRef)
 
   return {
     authDb: new AuthClient({ datasourceUrl: authUrl }),
     signer,
     jwks,
     mfa: new TotpAdapter(),
-    mfaSecretResolver,
+    resolveSecretRef,
     storeSecret,
     expectedIss,
     expectedMode,

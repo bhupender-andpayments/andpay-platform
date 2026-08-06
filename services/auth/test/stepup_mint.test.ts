@@ -12,7 +12,9 @@ const principalId = randomUUID()
 const handle = `stepup-${principalId.slice(0, 8)}`
 const vault = new Map<string, string>()
 const storeSecret = async (pid: string, secret: string) => { const r = `vault://${pid}`; vault.set(r, secret); return r }
-const mfaSecretResolver = async (pid: string) => vault.get(`vault://${pid}`)
+// Custody is keyed by the REFERENCE the enrollment row carries, matching
+// production: one key per enrollment, never one per principal.
+const resolveSecretRef = async (ref: string) => vault.get(ref)
 let secret: string
 
 async function auditRows(pid: string) {
@@ -41,7 +43,7 @@ afterAll(async () => {
 })
 beforeEach(async () => { await db.$executeRawUnsafe(`DELETE FROM outbox WHERE aggregate_id='${principalId}'`) })
 
-const deps = () => ({ db, signer, mfa: new TotpAdapter(), mfaSecretResolver, iss: 'https://auth.andpay.test', accessTtlSec: 600 })
+const deps = () => ({ db, signer, mfa: new TotpAdapter(), resolveSecretRef, iss: 'https://auth.andpay.test', accessTtlSec: 600 })
 
 describe('stepUp mint (spec 12a task 1)', () => {
   it('a correct TOTP mints a claim with auth_time advanced past the presented one, and a subsequent requireStepUp PASSES where it FAILED before', async () => {

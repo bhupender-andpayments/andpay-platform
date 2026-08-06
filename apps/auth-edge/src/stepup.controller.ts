@@ -89,7 +89,7 @@ export class StepUpController {
         db: this.deps.authDb,
         signer: this.deps.signer,
         mfa: this.deps.mfa,
-        mfaSecretResolver: this.deps.mfaSecretResolver,
+        resolveSecretRef: this.deps.resolveSecretRef,
         iss: this.deps.expectedIss,
         accessTtlSec: this.deps.accessTtlSec,
         traceId: randomUUID(),

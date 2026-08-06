@@ -51,13 +51,29 @@ describe('auth-edge POST /session/login (spec 12 task 9)', () => {
     expect(payload.amr).toEqual(['pwd', 'otp'])
   })
 
-  it('password-only DENIES against the AAL2 floor (401, generic body, no token)', async () => {
+  it('password-only on an enrolled principal answers mfaRequired with NO token and NO cookie', async () => {
+    // Was a bare 401. It now reports that the second factor is outstanding, so
+    // the portal can ask for the code on the screen that collected the
+    // password instead of failing vaguely one screen later. The security
+    // outcome is identical: no token, no refresh cookie, no session.
     const res = await request(app.getHttpServer())
       .post('/session/login')
       .send({ handle, password: SEEDED_PASSWORD })
-    expect(res.status).toBe(401)
+    expect(res.status).toBe(200)
+    expect(res.body.mfaRequired).toBe(true)
     expect(res.body.accessToken).toBeUndefined()
     expect(res.headers['set-cookie']).toBeUndefined()
+  })
+
+  it('a wrong password is still a uniform 401 with no mfaRequired hint', async () => {
+    // The handle itself must stay non-enumerable: a bad password reveals
+    // nothing about whether the account exists or holds a factor.
+    const res = await request(app.getHttpServer())
+      .post('/session/login')
+      .send({ handle, password: 'definitely-wrong' })
+    expect(res.status).toBe(401)
+    expect(res.body.mfaRequired).toBeUndefined()
+    expect(res.body.accessToken).toBeUndefined()
   })
 
   it('a wrong password DENIES uniformly (401)', async () => {

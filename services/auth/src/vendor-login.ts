@@ -10,6 +10,7 @@ import { auditStandalone } from './audit.js'
 import { lookupVendorOperatorByUsername } from './vendor-operator.js'
 import { VENDOR_OPERATOR_SET_NAME } from './config/vendor-sets.js'
 import { VENDOR_PLANE } from './config/audiences.js'
+import { resolveActiveFactorSecret, type SecretRefResolver } from './factor.js'
 
 // Spec 14a Task 6: the class-7 vendor-operator login. Mirrors login.ts's
 // structure (uniform-failure DENY, synchronous-standalone 6e before the
@@ -27,7 +28,7 @@ export interface VendorLoginDeps {
   // (principalId, principalType)-keyed resolver, so a vendor_operator's secret
   // is fetched with the vendor key, distinct from any internal secret that
   // happens to share the same principalId value.
-  mfaSecretResolver: (principalId: string, principalType: 'vendor_operator') => Promise<string | undefined>
+  resolveSecretRef: SecretRefResolver
   iss: string
   accessTtlSec: number
   idleSec: number
@@ -88,7 +89,10 @@ export async function vendorLogin(
 
   const amr: Amr[] = ['pwd']
   if (totp !== undefined) {
-    const secret = await deps.mfaSecretResolver(operator.id, 'vendor_operator')
+    // Same rule as the internal login: an ACTIVE enrollment is what makes a
+    // factor exist, and its secret is read through that row's own reference.
+    // This path had the identical revocation hole before the shared helper.
+    const secret = await resolveActiveFactorSecret(deps.db, operator.id, 'vendor_operator', deps.resolveSecretRef)
     const good = secret !== undefined && (await deps.mfa.verify({ secret, token: totp }))
     if (!good) return denyThrow('mfa-failed', new AuthzError('mfa-failed'))
     amr.push('otp')

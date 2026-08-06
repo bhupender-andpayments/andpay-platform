@@ -7,16 +7,25 @@ let db: AuthDb
 const cfg = loadConfig()
 
 beforeAll(() => { db = new PrismaClient({ datasourceUrl: url }) })
-afterAll(async () => { await db.$disconnect() })
+afterAll(async () => {
+  // Scoped teardown: every principal this file seeded, and nothing else. Without
+  // it each run abandoned a dozen rh-<tag> principals in the shared dev database.
+  await db.outbox.deleteMany({ where: { aggregateId: { in: seeded } } })
+  await db.refreshToken.deleteMany({ where: { principalId: { in: seeded } } })
+  await db.internalPrincipal.deleteMany({ where: { id: { in: seeded } } })
+  await db.$disconnect()
+})
 
 // A fresh principal + its refresh family per test (random ids, so no cross-test
-// contamination and no shared cleanup needed; every query below filters by the
-// test's own principalId).
+// contamination; every query below filters by the test's own principalId). The
+// ids are recorded so afterAll can remove exactly what this file created.
+const seeded: string[] = []
 async function seedPrincipal(status = 'ACTIVE', role = 'admin'): Promise<string> {
   const id = randomUUID()
   await db.internalPrincipal.create({
     data: { id, loginHandle: `rh-${id.slice(0, 8)}`, passwordHash: 'x', status, role },
   })
+  seeded.push(id)
   return id
 }
 

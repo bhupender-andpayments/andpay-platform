@@ -39,6 +39,7 @@ afterAll(async () => {
 })
 beforeEach(async () => {
   await db.$executeRawUnsafe('TRUNCATE vendor_operator, refresh_token, outbox CASCADE')
+  await db.$executeRawUnsafe(`DELETE FROM mfa_enrollment WHERE principal_type = 'vendor_operator'`)
   vndrId = newId('vndr')
   username = `op-${randomUUID()}`
   const { id } = await provisionVendorOperator(db, {
@@ -49,6 +50,21 @@ beforeEach(async () => {
     traceId: 'trace-provision',
   })
   operatorId = id
+  // A vendor operator's factor exists only when an ACTIVE enrollment row says
+  // so, exactly as on the internal plane: the custody stub alone is not an
+  // enrollment. vendorLogin shares the same resolveActiveFactorSecret gate, so
+  // without this row a valid code correctly fails to verify.
+  await db.mfaEnrollment.create({
+    data: {
+      id: randomUUID(),
+      principalId: operatorId,
+      principalType: 'vendor_operator',
+      factor: 'totp',
+      secretRef: 'ref-vendor',
+      status: 'active',
+      enrolledByActor: randomUUID(),
+    },
+  })
 })
 
 function deps(): VendorLoginDeps {
@@ -56,8 +72,7 @@ function deps(): VendorLoginDeps {
     db,
     signer,
     mfa: new TotpAdapter(),
-    mfaSecretResolver: async (principalId: string, principalType: 'vendor_operator') =>
-      principalType === 'vendor_operator' && principalId === operatorId ? totpSecret : undefined,
+    resolveSecretRef: async (ref: string) => (ref === 'ref-vendor' ? totpSecret : undefined),
     iss: AUTH_ISS,
     accessTtlSec: 600,
     idleSec: 1800,

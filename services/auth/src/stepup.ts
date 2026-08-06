@@ -9,12 +9,13 @@ import type { KmsSigningPort } from './ports/kms-signing.js'
 import type { MfaAdapter } from './ports/mfa.js'
 import { issueAccessToken } from './issue.js'
 import { auditStandalone } from './audit.js'
+import { resolveActiveFactorSecret, type SecretRefResolver } from './factor.js'
 
 export interface StepUpDeps {
   db: AuthDb
   signer: KmsSigningPort
   mfa: MfaAdapter
-  mfaSecretResolver: (principalId: string) => Promise<string | undefined>
+  resolveSecretRef: SecretRefResolver
   iss: string
   accessTtlSec: number
   traceId: string
@@ -37,7 +38,11 @@ export async function stepUp(
   deps: StepUpDeps,
 ): Promise<{ accessToken: string }> {
   const now = deps.now ?? Math.floor(Date.now() / 1000)
-  const secret = await deps.mfaSecretResolver(presentedClaim.sub)
+  // Step-up re-presents the SAME enrolled factor, so it must honour the same
+  // rule as login: only an ACTIVE enrollment's secret is usable, read through
+  // that row's own reference. Previously this resolved by principal alone, so a
+  // revoked factor could still satisfy a step-up prompt.
+  const secret = await resolveActiveFactorSecret(deps.db, presentedClaim.sub, 'internal', deps.resolveSecretRef)
   const good = secret !== undefined && (await deps.mfa.verify({ secret, token: totp }))
   if (!good) {
     await auditStandalone(deps.db, {

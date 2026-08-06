@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { newId } from '@andpay/ids'
+import { newId, toUuid } from '@andpay/ids'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import { PrismaClient } from '../generated/client/index.js'
 import { LocalEs256Adapter } from '../src/ports/kms-signing.js'
@@ -18,6 +18,7 @@ const pepper = 'dev-pepper-not-a-real-secret'
 const pepperPort = new LocalPepperAdapter(pepper)
 const vndrId = newId('vndr')
 const operatorId = randomUUID()
+const runTag = operatorId.slice(0, 8)
 let signer: LocalEs256Adapter
 
 function opsClaim(): LeanClaim {
@@ -32,12 +33,16 @@ beforeAll(async () => {
   signer = await LocalEs256Adapter.create('dev-1')
 })
 afterAll(async () => {
+  // Leave the schema as we found it: remove this run's own credentials.
+  await db.vendorCredential.deleteMany({ where: { vndrId: toUuid(vndrId) } })
   await db.$disconnect()
 })
 beforeEach(async () => {
-  await db.vendorCredential.deleteMany({})
-  await db.denylist.deleteMany({})
-  await db.outbox.deleteMany({})
+  // Scoped to this run's vendor. This suite shares the dev database with the
+  // running ops portal, and the unfiltered deleteMany({}) it used to run wiped
+  // every credential, denylist entry and outbox row in the schema. denylist and
+  // outbox rows are keyed on per-test api_ ids, so there is nothing to clear.
+  await db.vendorCredential.deleteMany({ where: { vndrId: toUuid(vndrId) } })
 })
 
 describe('distinct planes, class 6 never a JWT (check 6, 105f)', () => {
@@ -51,7 +56,7 @@ describe('distinct planes, class 6 never a JWT (check 6, 105f)', () => {
 
   it('a resolved class-6 credential carries the vendor plane, never the internal-admin plane', async () => {
     const { secret } = await issueVendorCredential(
-      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: 'req-plane' },
+      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: `req-plane-${runTag}` },
       { operatorId, claim: opsClaim() }, { db, pepper: pepperPort, traceId: 't', now: 1000 },
     )
     const claim = await resolveVendorCredential(secret, { db, pepper, expectedMode: 'live' })
@@ -61,7 +66,7 @@ describe('distinct planes, class 6 never a JWT (check 6, 105f)', () => {
 
   it('class 6 is never minted a JWT (issue returns a single-segment apsk_ secret, not a token)', async () => {
     const { secret } = await issueVendorCredential(
-      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: 'req-nojwt' },
+      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: `req-nojwt-${runTag}` },
       { operatorId, claim: opsClaim() }, { db, pepper: pepperPort, traceId: 't', now: 1000 },
     )
     expect(secret.startsWith('apsk_')).toBe(true)
@@ -77,7 +82,7 @@ describe('scope resolves without any Identity read (check 7, D121)', () => {
 
   it('class-6 scope resolves from the credential work-queue binding referencing a seeded vndr_', async () => {
     const { secret } = await issueVendorCredential(
-      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: 'req-scope' },
+      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: `req-scope-${runTag}` },
       { operatorId, claim: opsClaim() }, { db, pepper: pepperPort, traceId: 't', now: 1000 },
     )
     const claim = await resolveVendorCredential(secret, { db, pepper, expectedMode: 'live' })

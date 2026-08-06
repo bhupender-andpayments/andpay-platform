@@ -1,6 +1,6 @@
 import { Body, Controller, ForbiddenException, HttpCode, Inject, Post, Req, UseGuards } from '@nestjs/common'
 import { authorize, requireStepUp } from '@andpay/authz'
-import { enrollTotp, STEP_UP_CATALOG, auditStandalone } from '@andpay/auth-service'
+import { enrollTotp, confirmTotpEnrollment, STEP_UP_CATALOG, auditStandalone } from '@andpay/auth-service'
 import { EDGE_DEPS, type AuthEdgeDeps } from './deps.js'
 import { AuthEdgeAdminGuard } from './admin.guard.js'
 import type { EdgeRequest } from './request.js'
@@ -73,15 +73,35 @@ export class EnrollController {
     // uniform 403: a valid admin-plane token that is either not fresh enough or
     // lacks mfa:enroll is forbidden, never a 401 (which is reserved for a failed
     // authentication at the guard).
-    const entry = STEP_UP_CATALOG['mfa:enroll']
-    if (entry === undefined) throw new ForbiddenException()
-    try {
-      requireStepUp(req.claim, entry, nowSec())
-    } catch {
-      // Step-up freshness failed (e.g. a silently-refreshed token with no
-      // auth_time). Audit the DENY, then 403. This runs BEFORE authorize, so
-      // exactly one DENY is emitted per rejected request.
-      await this.denyThrow('step-up-required', req)
+    // First-login self-enrollment (Bhupender ruling 2026-08-06). A token stamped
+    // role:enrollment_pending is the single-purpose token login mints for a
+    // principal that authenticated by password and holds no active enrollment.
+    // It is AAL1 by construction, so it can never satisfy the AAL2 step-up
+    // catalog entry; requiring step-up here would make first-login enrollment
+    // impossible, which is the block this change exists to remove.
+    //
+    // Two conditions make skipping step-up safe, and BOTH are enforced:
+    //   1. the target must be the token's own subject (no enrolling anyone else)
+    //   2. enrollTotp is called with requireNoActiveEnrollment, so this path can
+    //      create a first factor but can never rebind an existing one
+    // The D2 authorize below still runs unchanged, and the role carries exactly
+    // the one permission, so this token reaches nothing else.
+    const selfEnrollment = req.claim.psr === 'role:enrollment_pending'
+    if (selfEnrollment) {
+      if (body.targetPrincipalId !== req.claim.sub) {
+        await this.denyThrow('self-enrollment-target-mismatch', req)
+      }
+    } else {
+      const entry = STEP_UP_CATALOG['mfa:enroll']
+      if (entry === undefined) throw new ForbiddenException()
+      try {
+        requireStepUp(req.claim, entry, nowSec())
+      } catch {
+        // Step-up freshness failed (e.g. a silently-refreshed token with no
+        // auth_time). Audit the DENY, then 403. This runs BEFORE authorize, so
+        // exactly one DENY is emitted per rejected request.
+        await this.denyThrow('step-up-required', req)
+      }
     }
     const decision = authorize(req.claim, 'mfa:enroll', {}, this.deps.roleConfig)
     // A valid admin-plane token that lacks mfa:enroll (ops/support): audit the
@@ -93,11 +113,51 @@ export class EnrollController {
     const { otpauthUri } = await enrollTotp(this.deps.authDb, {
       targetPrincipalId: body.targetPrincipalId,
       targetAccountLabel: body.targetAccountLabel,
+      // Self-enrollment may only ADD a first factor. An admin re-seed still
+      // rotates, which is what mfa:reset exists for.
+      requireNoActiveEnrollment: selfEnrollment,
+      // Self-enrollment stays PENDING until the operator proves possession via
+      // /enroll/confirm. Displaying a QR must never be what enrolls an account:
+      // an unscanned code would otherwise lock the operator out permanently.
+      pendingUntilConfirmed: selfEnrollment,
       enrolledByActor: req.claim.sub,
       issuer: this.deps.totpIssuer,
       storeSecret: this.deps.storeSecret,
       traceId: req.traceId,
     })
     return { otpauthUri }
+  }
+
+  // POST /enroll/confirm: promotes the caller's PENDING enrollment to active
+  // once they present a code generated from it. Self-enrollment only, always
+  // for the token's OWN subject, so it can confirm nothing but its own pending
+  // secret. An admin re-seed does not go through here (it writes an active row
+  // directly), so this route never touches another principal's factor.
+  @Post('enroll/confirm')
+  @HttpCode(200)
+  async confirm(@Req() req: EdgeRequest, @Body() body: { totp?: string }): Promise<{ confirmed: true }> {
+    if (req.claim.psr !== 'role:enrollment_pending') {
+      await this.denyThrow('confirm-requires-enrollment-token', req)
+    }
+    const decision = authorize(req.claim, 'mfa:enroll', {}, this.deps.roleConfig)
+    if (!decision.allowed) await this.denyThrow('permission-denied', req)
+    if (typeof body?.totp !== 'string' || body.totp.length === 0) {
+      throw new ForbiddenException()
+    }
+    try {
+      await confirmTotpEnrollment(this.deps.authDb, {
+        // The subject comes from the VERIFIED claim, never the body (M7/S16).
+        principalId: req.claim.sub,
+        totp: body.totp,
+        resolveSecretRef: this.deps.resolveSecretRef,
+        verify: (args) => this.deps.mfa.verify(args),
+        traceId: req.traceId,
+      })
+    } catch {
+      // Uniform failure: a wrong code and a missing pending enrollment are
+      // indistinguishable to the caller.
+      await this.denyThrow('enrollment-confirmation-failed', req)
+    }
+    return { confirmed: true }
   }
 }

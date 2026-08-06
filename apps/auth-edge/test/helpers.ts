@@ -79,21 +79,21 @@ export async function mintRawAccessToken(input: {
 }
 
 // The shared in-memory custody vault: BOTH `storeSecret` (the enroll-side
-// custody sink) and `mfaSecretResolver` (the login-side lookup) read/write
-// this ONE map by default, so a secret enrolled via `seedPrincipalWithTotp`
-// is resolvable at login through the SAME app instance. Module-scoped so
-// every deps object this file builds (unless an override replaces
-// storeSecret/mfaSecretResolver) shares it.
+// custody sink) and `resolveSecretRef` (the verification-side lookup) read and
+// write this ONE map by default, so a secret enrolled via
+// `seedPrincipalWithTotp` is resolvable at login through the SAME app
+// instance. Keyed by the REFERENCE storeSecret returns, mirroring production
+// custody: one key per enrollment, never one per principal.
 const vault = new Map<string, string>()
 
 async function defaultStoreSecret(principalId: string, secret: string): Promise<string> {
-  const ref = `vault://${principalId}`
+  const ref = `vault://${principalId}/${randomUUID()}`
   vault.set(ref, secret)
   return ref
 }
 
-async function defaultMfaSecretResolver(principalId: string): Promise<string | undefined> {
-  return vault.get(`vault://${principalId}`)
+async function defaultResolveSecretRef(secretRef: string): Promise<string | undefined> {
+  return vault.get(secretRef)
 }
 
 // Builds a full `AuthEdgeDeps` and the real Nest app (already `.init()`'d),
@@ -109,7 +109,7 @@ export async function buildTestAuthEdgeApp(overrides: Partial<AuthEdgeDeps> = {}
     signer,
     jwks,
     mfa: new TotpAdapter(),
-    mfaSecretResolver: defaultMfaSecretResolver,
+    resolveSecretRef: defaultResolveSecretRef,
     storeSecret: defaultStoreSecret,
     expectedIss: EXPECTED_ISS,
     expectedMode: 'live',
@@ -141,7 +141,7 @@ export const SEEDED_PASSWORD = 'correct horse battery staple'
 
 // Creates a real `internal_principal` row (a known Argon2id-hashed password,
 // ACTIVE, a random loginHandle) and enrolls a TOTP factor via the REAL
-// `enrollTotp` against the SAME vault this file's `mfaSecretResolver` reads
+// `enrollTotp` against the SAME vault this file's `resolveSecretRef` reads
 // (`defaultStoreSecret`), so the returned secret is immediately usable to
 // drive a real AAL2 login through an app built by `buildTestAuthEdgeApp()`.
 // The base32 secret is recovered from the enroll otpauth:// URI (the only

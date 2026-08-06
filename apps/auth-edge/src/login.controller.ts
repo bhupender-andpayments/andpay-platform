@@ -45,7 +45,7 @@ export class LoginController {
     @Body() body: { handle?: string; password?: string; totp?: string },
     @Req() req: ThrottleRequest,
     @Res({ passthrough: true }) res: EdgeResponse,
-  ): Promise<{ accessToken: string }> {
+  ): Promise<{ accessToken?: string; enrollmentRequired?: boolean; mfaRequired?: boolean }> {
     // 6d brute-force control (spec 12 task 12), FIRST, before any argon2/DB
     // work: charge the per-SOURCE token bucket so a burst is rejected cheaply.
     // The key is the request source (origin IP), NEVER the credential, so a
@@ -74,7 +74,7 @@ export class LoginController {
         db: this.deps.authDb,
         signer: this.deps.signer,
         mfa: this.deps.mfa,
-        mfaSecretResolver: this.deps.mfaSecretResolver,
+        resolveSecretRef: this.deps.resolveSecretRef,
         iss: this.deps.expectedIss,
         accessTtlSec: this.deps.accessTtlSec,
         idleSec: this.deps.idleSec,
@@ -84,6 +84,21 @@ export class LoginController {
         clientBind: createHash('sha256').update('auth-edge').digest('hex').slice(0, 16),
         traceId: randomUUID(),
       })
+      // Password verified, enrolled factor not yet presented. No token, no
+      // cookie: the caller is told to continue to the code step.
+      if (result.mfaRequired === true) {
+        return { mfaRequired: true }
+      }
+      // First-login enrollment outcome: no refresh family was opened, so there
+      // is no cookie to set. The body flags it so the portal can route to the
+      // setup screen. The token in the body is enrollment-only (one permission,
+      // short TTL), so flagging it reveals nothing a caller could not already
+      // read from its own token.
+      if (result.enrollmentRequired === true || result.refreshToken === undefined) {
+        return { accessToken: result.accessToken!, enrollmentRequired: true }
+      }
+      // A session outcome always carries a token.
+      if (result.accessToken === undefined) throw new UnauthorizedException()
       // check 5: the refresh token rides ONLY in the HttpOnly cookie; the access
       // token rides ONLY in the JSON body. The two never cross transports.
       res.setHeader('Set-Cookie', serializeRefreshCookie(result.refreshToken, this.deps.absoluteSec))

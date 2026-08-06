@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import {
   PrismaClient as AuthClient,
   type AuthDb,
@@ -51,7 +52,9 @@ export interface VendorAuthEdgeDeps {
   // principalType)-keyed resolver, NOT a principalId-only resolver, so a
   // vendor_operator's secret is fetched distinctly from any internal
   // principal that happens to share the same principalId value.
-  mfaSecretResolver: (principalId: string, principalType: 'vendor_operator') => Promise<string | undefined>
+  // Resolves a custodied secret from an enrollment row's OWN reference (see the
+  // internal auth-edge deps for why a per-principal key was unsafe).
+  resolveSecretRef: (secretRef: string) => Promise<string | undefined>
   // Custody seam (S7): persists a freshly-generated secret to Secrets
   // Manager, returns only the reference. The raw secret NEVER touches the DB
   // row or a log line. The optional third argument mirrors enrollTotp's
@@ -172,25 +175,26 @@ export async function buildVendorAuthEdgeDepsFromEnv(): Promise<VendorAuthEdgeDe
   const jwks = await signer.jwks()
 
   // The custody vault: an in-process Map, scaffold-only (see the doc comment
-  // above). storeSecret and mfaSecretResolver share this ONE map so a secret
+  // above). storeSecret and resolveSecretRef share this ONE map so a secret
   // enrolled via this process is resolvable at login in the SAME process.
   // Keyed by (principalId, principalType) so a vendor_operator's secret never
   // collides with an internal principal sharing the same id value.
   const vault = new Map<string, string>()
+  // A UNIQUE reference per enrollment, for the same reason as the internal
+  // edge: enrollments must not share a custody key.
   const storeSecret = async (principalId: string, secret: string, principalType = 'vendor_operator'): Promise<string> => {
-    const ref = `vault://${principalType}/${principalId}`
+    const ref = `vault://${principalType}/${principalId}/${randomUUID()}`
     vault.set(ref, secret)
     return ref
   }
-  const mfaSecretResolver = async (principalId: string, principalType: 'vendor_operator'): Promise<string | undefined> =>
-    vault.get(`vault://${principalType}/${principalId}`)
+  const resolveSecretRef = async (secretRef: string): Promise<string | undefined> => vault.get(secretRef)
 
   return {
     authDb: new AuthClient({ datasourceUrl: authUrl }),
     signer,
     jwks,
     mfa: new TotpAdapter(),
-    mfaSecretResolver,
+    resolveSecretRef,
     storeSecret,
     expectedIss,
     expectedMode,

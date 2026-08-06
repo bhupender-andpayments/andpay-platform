@@ -137,19 +137,20 @@ beforeAll(async () => {
 
   const vault = new Map<string, string>()
   const storeSecret = async (principalId: string, secret: string, principalType = 'internal'): Promise<string> => {
-    const ref = `vault://${principalType}/${principalId}`
+    // One custody key per ENROLLMENT, not per principal: a shared key let a new
+    // secret destroy the previous one.
+    const ref = `vault://${principalType}/${principalId}/${randomUUID()}`
     vault.set(ref, secret)
     return ref
   }
-  const mfaSecretResolver = async (principalId: string, principalType = 'internal'): Promise<string | undefined> =>
-    vault.get(`vault://${principalType}/${principalId}`)
+  const resolveSecretRef = async (secretRef: string): Promise<string | undefined> => vault.get(secretRef)
 
   const authEdgeDeps: AuthEdgeDeps = {
     authDb,
     signer: sharedSigner,
     jwks: sharedJwks,
     mfa: new TotpAdapter(),
-    mfaSecretResolver,
+    resolveSecretRef,
     storeSecret,
     expectedIss: SHARED_ISS,
     expectedMode: 'live',
@@ -196,7 +197,7 @@ beforeAll(async () => {
     signer: sharedSigner,
     jwks: sharedJwks,
     mfa: new TotpAdapter(),
-    mfaSecretResolver: async (principalId: string, principalType: 'vendor_operator') => mfaSecretResolver(principalId, principalType),
+    resolveSecretRef,
     storeSecret: async (principalId: string, secret: string, principalType?: string) => storeSecret(principalId, secret, principalType),
     expectedIss: SHARED_ISS,
     expectedMode: 'live',

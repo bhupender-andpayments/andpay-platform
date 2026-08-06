@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { newId } from '@andpay/ids'
+import { newId, toUuid } from '@andpay/ids'
 import type { LeanClaim } from '@andpay/authz'
 import { PrismaClient } from '../generated/client/index.js'
 import { LocalPepperAdapter } from '../src/ports/pepper.js'
@@ -14,6 +14,11 @@ const pepper = 'dev-pepper-not-a-real-secret'
 const pepperPort = new LocalPepperAdapter(pepper)
 const vndrId = newId('vndr')
 const operatorId = randomUUID()
+// Per-run fixture identity, and outbox reads narrowed to the api_ id under test.
+// This suite shares the dev database with the running ops portal: an unfiltered
+// deleteMany({}) wiped the whole outbox, and the globally unique idempotencyKey
+// means a fixed 'cfg-req-1' would resolve to the PREVIOUS run's credential.
+const runTag = operatorId.slice(0, 8)
 
 function opsClaim(authTime: number): LeanClaim {
   return {
@@ -27,30 +32,33 @@ beforeAll(async () => {
   await db.$connect()
 })
 afterAll(async () => {
+  // Leave the schema as we found it: remove this run's own credentials.
+  await db.vendorCredential.deleteMany({ where: { vndrId: toUuid(vndrId) } })
   await db.$disconnect()
 })
 beforeEach(async () => {
-  await db.vendorCredential.deleteMany({})
-  await db.outbox.deleteMany({})
+  await db.vendorCredential.deleteMany({ where: { vndrId: toUuid(vndrId) } })
+  // outbox rows here are partition-keyed by the api_ id minted inside each test,
+  // which is fresh every run, so every assertion below filters on it instead.
 })
 
 describe('auth-config channel (5c, check 1): class-6 verification material', () => {
   it('issuing a vendor credential enqueues, in the SAME transaction, fct (no pepperedHash) and cfg (with pepperedHash + scope, ACTIVE)', async () => {
     const { apiId, secret } = await issueVendorCredential(
-      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: 'cfg-req-1' },
+      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: `cfg-req-1-${runTag}` },
       operator,
       { db, pepper: pepperPort, traceId: 'trace-cfg-1', now: 1000 },
     )
     const pepperedHash = pepperPort.hmac(secret)
 
-    const fctRows = await db.outbox.findMany({ where: { eventType: AUTH_CREDENTIAL_TOPIC } })
+    const fctRows = await db.outbox.findMany({ where: { eventType: AUTH_CREDENTIAL_TOPIC, partitionKey: apiId } })
     expect(fctRows).toHaveLength(1)
     const fctJson = JSON.stringify(fctRows[0]!.payload)
     expect(fctJson.includes(apiId)).toBe(true)
     expect(fctJson.includes(pepperedHash)).toBe(false)
     expect(fctJson.includes(secret)).toBe(false)
 
-    const cfgRows = await db.outbox.findMany({ where: { eventType: CREDENTIAL_CONFIG_TOPIC } })
+    const cfgRows = await db.outbox.findMany({ where: { eventType: CREDENTIAL_CONFIG_TOPIC, partitionKey: apiId } })
     expect(cfgRows).toHaveLength(1)
     const cfgRow = cfgRows[0]!
     expect(cfgRow.partitionKey).toBe(apiId)
@@ -83,17 +91,20 @@ describe('auth-config channel (5c, check 1): class-6 verification material', () 
         throw new Error('force rollback')
       }),
     ).rejects.toThrow('force rollback')
-    expect(await db.outbox.count({ where: { eventType: CREDENTIAL_CONFIG_TOPIC } })).toBe(0)
+    // Narrowed to this probe's own api_ id: enqueueCredentialConfig partition-keys
+    // on it, so the 0-then-1 count measures THIS transaction and not the schema.
+    const ownCfg = { eventType: CREDENTIAL_CONFIG_TOPIC, partitionKey: payload.apiId }
+    expect(await db.outbox.count({ where: ownCfg })).toBe(0)
 
     await db.$transaction(async (tx) => {
       await enqueueCredentialConfig(tx, payload, 'trace-e1')
     })
-    expect(await db.outbox.count({ where: { eventType: CREDENTIAL_CONFIG_TOPIC } })).toBe(1)
+    expect(await db.outbox.count({ where: ownCfg })).toBe(1)
   })
 
   it('revoke emits a cfg.auth.credential.v1 with status REVOKED for the apiId', async () => {
     const { apiId, secret } = await issueVendorCredential(
-      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: 'cfg-req-2' },
+      { vndrId, workQueue: 'wq-A', permissionSetRef: 'vset:vendor_print', mode: 'live', idempotencyKey: `cfg-req-2-${runTag}` },
       operator,
       { db, pepper: pepperPort, traceId: 'trace-cfg-2', now: 1000 },
     )

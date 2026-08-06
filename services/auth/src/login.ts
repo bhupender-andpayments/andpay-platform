@@ -4,6 +4,7 @@ import type { AuthDb } from './db.js'
 import type { KmsSigningPort } from './ports/kms-signing.js'
 import type { MfaAdapter } from './ports/mfa.js'
 import { computeAcr, enforceRoleAssurance } from './assurance.js'
+import type { SecretRefResolver } from './factor.js'
 import { issueAccessToken } from './issue.js'
 import { issueRefreshFamily } from './refresh.js'
 import { auditStandalone } from './audit.js'
@@ -15,9 +16,11 @@ export interface LoginDeps {
   signer: KmsSigningPort
   // The enrolled second-factor adapter (TOTP in this slice).
   mfa: MfaAdapter
-  // Custody seam: resolves the principal's enrolled factor secret from Secrets
-  // Manager in production (the row holds only secret_ref, never the secret, S4).
-  mfaSecretResolver: (principalId: string) => Promise<string | undefined>
+  // Custody seam (S7): the row holds only secret_ref, never the secret.
+  // Resolves a custodied secret from an enrollment row's OWN reference. See
+  // factor.ts: keying custody by principal alone is what let a revoked factor
+  // keep working and let a pending attempt clobber a live one.
+  resolveSecretRef: SecretRefResolver
   iss: string
   accessTtlSec: number
   idleSec: number
@@ -27,11 +30,34 @@ export interface LoginDeps {
   now?: number
 }
 
+// The enrollment token is deliberately short lived: it exists only to carry the
+// operator from the password prompt to a scanned QR code in one sitting.
+const ENROLLMENT_TOKEN_TTL_SEC = 600
+
 export interface LoginResult {
-  accessToken: string
-  refreshToken: string
+  // Absent on the two intermediate outcomes below (mfaRequired), where the
+  // password verified but no session has been established yet.
+  accessToken?: string
+  // Absent on the enrollment-required outcome: that path opens NO refresh
+  // family, so there is no session to extend. Optional rather than an empty
+  // string so the caller is forced by the type to handle its absence.
+  refreshToken?: string
   principalId: string
   acr: Acr
+  // Set only when the caller must complete TOTP enrollment before it can hold a
+  // real session. accessToken is then an enrollment-only token.
+  enrollmentRequired?: boolean
+  // Set when the password verified but the enrolled second factor was not
+  // presented. Carries NO token: it is a "keep going" answer, not a session.
+  //
+  // This DISCLOSES that the password was correct, which the previous uniform
+  // 401 deliberately hid. Ruled by Bhupender 2026-08-06: a wrong password
+  // silently advancing to the code screen, then failing vaguely, was a worse
+  // failure in practice than the disclosure. Brute-force remains controlled by
+  // the per-source throttle at the edge (6d), which is the standard mitigation.
+  // A wrong password still returns the uniform authn-failed 401, so the handle
+  // itself is never enumerable.
+  mfaRequired?: boolean
 }
 
 // Class-3 human login (16.1). Verifies the Argon2id password (S4), optionally a
@@ -78,9 +104,24 @@ export async function login(
   if (!principal || principal.status !== 'ACTIVE') return denyThrow('authn-failed', new AuthzError('authn-failed'))
   if (!(await argonVerify(principal.passwordHash, password))) return denyThrow('authn-failed', new AuthzError('authn-failed'))
 
+  // The principal's ACTIVE enrollment, read ONCE and used for two decisions
+  // below: whether a presented factor is verifiable at all, and whether the
+  // first-login enrollment path applies.
+  const activeEnrollment = await deps.db.mfaEnrollment.findFirst({
+    where: { principalId: principal.id, principalType: 'internal', status: 'active' },
+    select: { id: true, secretRef: true },
+  })
+
   const amr: Amr[] = ['pwd']
   if (totp !== undefined) {
-    const secret = await deps.mfaSecretResolver(principal.id)
+    // A presented factor is only verifiable against an ACTIVE enrollment, and
+    // only through THAT row's own secret reference (factor.ts explains why both
+    // halves are load-bearing). The enrollment row is the authority on whether
+    // a factor exists; custody only answers what its secret is.
+    const secret =
+      activeEnrollment === null || activeEnrollment.secretRef === null
+        ? undefined
+        : await deps.resolveSecretRef(activeEnrollment.secretRef)
     const good = secret !== undefined && (await deps.mfa.verify({ secret, token: totp }))
     // Spec 12 Task 4: audit the mfa DENY before throwing (same uniform failure).
     if (!good) return denyThrow('mfa-failed', new AuthzError('mfa-failed'))
@@ -101,7 +142,64 @@ export async function login(
   try {
     enforceRoleAssurance(role.requiredAcr, acr)
   } catch {
-    return denyThrow('assurance-insufficient', new AuthzError('assurance-insufficient'))
+    // First-login TOTP self-enrollment (Bhupender ruling 2026-08-06). A
+    // principal who authenticated by password but has NO active enrollment
+    // cannot reach the AAL2 floor and previously had no way to ever reach it:
+    // /enroll requires an admin token with AAL2 step-up, so a brand new
+    // operator could obtain no token at all. That was a hard onboarding block.
+    //
+    // Instead of the DENY, mint a SINGLE-PURPOSE token: psr role:enrollment_pending
+    // (exactly one permission, mfa:enroll), a short TTL, and NO refresh family, so
+    // it cannot be silently extended and reaches no ops surface. The principal's
+    // real role floor is NOT satisfied and its real role is never stamped.
+    //
+    // Narrow by construction: only when NO active enrollment exists, and only
+    // when no totp was presented (a wrong code must stay a uniform mfa DENY,
+    // never a downgrade into enrollment). Rebinding an EXISTING factor is
+    // refused in enrollTotp, so this path can add a first factor and never
+    // replace one.
+    // A code WAS presented and still fell short of the floor: a genuine denial.
+    if (totp !== undefined) {
+      return denyThrow('assurance-insufficient', new AuthzError('assurance-insufficient'))
+    }
+
+    // Password verified, an enrolled factor exists, no code presented yet. This
+    // is a continuation, not a denial, so it emits no DENY: the previous
+    // behaviour audited an assurance-insufficient DENY on every ordinary
+    // sign-in, which buried real denials in routine noise.
+    if (activeEnrollment !== null) {
+      return { principalId: principal.id, acr, mfaRequired: true }
+    }
+
+    const enrollmentToken = await issueAccessToken(
+      {
+        principalId: principal.id,
+        cls: 3,
+        mode: 'live',
+        scope: {},
+        psr: 'role:enrollment_pending',
+        epoch: 1,
+        aud: INTERNAL_ADMIN_PLANE,
+        acr,
+        amr,
+        authTime: now,
+      },
+      { signer: deps.signer, iss: deps.iss, ttlSec: ENROLLMENT_TOKEN_TTL_SEC, now },
+    )
+    // The outcome is audited like any other login decision. It is an ALLOW of a
+    // strictly narrower thing, so it records its own outcome rather than
+    // borrowing 'authenticated'.
+    await auditStandalone(deps.db, {
+      principalId: principal.id,
+      cls: 3,
+      operation: 'login',
+      decision: 'ALLOW',
+      resourceIds: [],
+      outcome: 'enrollment-required',
+      reasonCode: 'enrollment-required',
+      traceId: deps.traceId,
+    })
+    return { accessToken: enrollmentToken, principalId: principal.id, acr, enrollmentRequired: true }
   }
 
   const accessToken = await issueAccessToken(

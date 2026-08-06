@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { PrismaClient } from '../generated/client/index.js'
 import { issueRefreshFamily, rotateRefresh } from '../src/refresh.js'
@@ -12,9 +12,10 @@ beforeAll(async () => {
 afterAll(async () => {
   await db.$disconnect()
 })
-beforeEach(async () => {
-  await db.refreshToken.deleteMany({})
-})
+// No reset: every test below mints its own random principalId and asserts only
+// against rows for that principal, so there is nothing to clean up. The previous
+// unfiltered deleteMany({}) revoked the refresh families of anyone signed in to
+// the ops portal against this shared dev database.
 
 describe('D3 refresh-token family (6b, check 3)', () => {
   it('a normal rotation issues a new token and marks the old one used', async () => {
@@ -22,7 +23,7 @@ describe('D3 refresh-token family (6b, check 3)', () => {
     const { refreshToken: r0 } = await issueRefreshFamily(principalId, 'client-A', { db, idleSec: 1800, absoluteSec: 28800, now: 1000 })
     const { refreshToken: r1 } = await rotateRefresh(r0, { db, idleSec: 1800, now: 1100 })
     expect(r1).not.toBe(r0)
-    const rows = await db.refreshToken.findMany({})
+    const rows = await db.refreshToken.findMany({ where: { principalId } })
     expect(rows.filter((x) => x.used)).toHaveLength(1)
     expect(rows.filter((x) => !x.used && !x.revoked)).toHaveLength(1)
   })

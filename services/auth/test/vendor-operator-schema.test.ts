@@ -93,11 +93,41 @@ describe('principal_type discriminator (additive, default internal)', () => {
     })
   }
 
-  it('existing mfa_enrollment rows are unaffected (default backfilled to internal)', async () => {
+  // The additive column is only safe if an INSERT that predates it (one that
+  // names no principal_type) still lands as 'internal'. This asserts that
+  // BEHAVIOUR on a row of its own, then removes it.
+  //
+  // It used to assert SELECT DISTINCT principal_type over the whole table,
+  // expecting every row to be 'internal'. That claim is false by design:
+  // vendor_operator enrollments are legitimate rows written by the vendor-login
+  // suites. It only ever passed because login.test.ts and authz-audit.test.ts
+  // ran an unfiltered deleteMany({}) on mfa_enrollment first and emptied the
+  // table of them. Scoping those resets (P0-1) removed that accident, so the
+  // test now states the property it actually meant.
+  it('an INSERT naming no principal_type defaults to internal (additive, back-compatible)', async () => {
+    const id = randomUUID()
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE auth_write')
+      // Raw SQL on purpose: the column is omitted entirely, so the DATABASE
+      // default is what fills it, not a Prisma client-side default.
+      await tx.$executeRawUnsafe(
+        `INSERT INTO auth.mfa_enrollment (id, principal_id, factor, status, enrolled_by_actor)
+         VALUES ($1::uuid, $2::uuid, 'totp', 'active', $3::uuid)`,
+        id,
+        randomUUID(),
+        randomUUID(),
+      )
+    })
     const rows = await db.$queryRawUnsafe<{ principal_type: string }[]>(
-      "SELECT DISTINCT principal_type FROM auth.mfa_enrollment",
+      'SELECT principal_type FROM auth.mfa_enrollment WHERE id = $1::uuid',
+      id,
     )
-    for (const r of rows) expect(r.principal_type).toBe('internal')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.principal_type).toBe('internal')
+    // Cleanup runs on the normal connection, NOT under auth_write: that role is
+    // granted SELECT/INSERT/UPDATE only, so a DELETE under it is denied by
+    // design. Scoped to this row's own id.
+    await db.mfaEnrollment.deleteMany({ where: { id } })
   })
 })
 
