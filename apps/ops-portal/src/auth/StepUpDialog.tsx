@@ -53,7 +53,7 @@ export function StepUpDialog() {
           <span className="text-[12px] font-semibold uppercase tracking-wide">Step-up required</span>
         </div>
         <h2 className="text-lg font-semibold text-ink">Confirm your identity</h2>
-        <p className="mt-1 text-[13px] text-muted">
+        <p className="mt-1 text-[13px] text-muted-foreground">
           Enter your current authentication code to continue.
         </p>
         <form

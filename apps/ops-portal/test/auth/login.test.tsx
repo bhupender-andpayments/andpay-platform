@@ -43,6 +43,33 @@ function LoginHarness() {
   )
 }
 
+// Answers /session/login the way auth-edge actually does for an ENROLLED
+// principal with a correct password: a password-only request reports that the
+// second factor is outstanding (200, mfaRequired, no token), and only a request
+// carrying a code yields a session. A 401 from this endpoint now means the
+// credentials themselves were wrong. `calls`, when passed, records only the
+// login requests, never the mount-time rehydrate.
+function stubLoginFetch(fakeToken: string, calls?: Array<{ url: string; init: RequestInit }>) {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+    if (url.includes('/session/rehydrate')) return new Response(null, { status: 401 })
+    if (calls) calls.push({ url, init })
+    const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as { totp?: string }) : {}
+    // Password-only on an ENROLLED principal: the password verified, the code
+    // is outstanding. No token, no cookie, and NOT a 401 (a 401 now means the
+    // credentials themselves were wrong).
+    if (body.totp === undefined) {
+      return new Response(JSON.stringify({ mfaRequired: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ accessToken: fakeToken }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }))
+}
+
 describe('auth login', () => {
   beforeEach(() => { clearAccessToken(); vi.unstubAllGlobals(); localStorage.clear(); sessionStorage.clear() })
   // vitest.config.ts does not set test.globals, so @testing-library/react's
@@ -59,34 +86,39 @@ describe('auth login', () => {
     // before the test acts, pre-empting the login flow under test here. The
     // rehydrate call gets a 401 (as a cold-start SPA with no refresh cookie
     // would), leaving the credentials step to actually exercise login().
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      if (url.includes('/session/rehydrate')) return new Response(null, { status: 401 })
-      return new Response(JSON.stringify({ accessToken: fakeToken }), { status: 200, headers: { 'content-type': 'application/json' } })
-    }))
+    stubLoginFetch(fakeToken)
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
     await userEvent.type(screen.getByLabelText(/username/i), 'alice')
-    await userEvent.type(screen.getByLabelText(/password/i), 'pw')
+    await userEvent.type(screen.getByLabelText(/^password$/i), 'pw')
     await userEvent.click(screen.getByRole('button', { name: /continue/i }))
     await userEvent.type(await screen.findByLabelText(/totp/i), '123456')
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
     expect(await screen.findByText('u-1')).toBeTruthy()
     // The psr claim (`role:ops`) is derived into the display label with the
-    // `role:` prefix stripped (AuthContext.deriveRoleLabel), not shown raw.
-    expect(await screen.findByText('ops')).toBeTruthy()
+    // `role:` prefix stripped (AuthContext.deriveRoleLabel), not shown raw. The
+    // sidebar title-cases it for display, since the role is what identifies the
+    // signed-in principal (the token carries no human name).
+    expect(await screen.findByText('Ops')).toBeTruthy()
     expect(getAccessToken()).toBe(fakeToken)
     expect(JSON.stringify(localStorage)).not.toContain(fakeToken)
     expect(JSON.stringify(sessionStorage)).not.toContain(fakeToken)
   })
 
-  it('a failed login (401) surfaces an error and does not set a token or principal', async () => {
+  it('a wrong password fails on the credentials step and never reaches the code step', async () => {
+    // Previously a wrong password silently advanced to the code screen and
+    // failed there with a vague message, so the operator never learned which
+    // field was wrong. The credentials are judged on the screen that collected
+    // them now.
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(null), { status: 401, headers: { 'content-type': 'application/json' } })))
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
     await userEvent.type(screen.getByLabelText(/username/i), 'alice')
-    await userEvent.type(screen.getByLabelText(/password/i), 'wrong')
+    await userEvent.type(screen.getByLabelText(/^password$/i), 'wrong')
     await userEvent.click(screen.getByRole('button', { name: /continue/i }))
-    await userEvent.type(await screen.findByLabelText(/totp/i), '000000')
-    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+
     expect(await screen.findByRole('alert')).toBeTruthy()
+    // Still on the credentials step: no code field was ever shown.
+    expect(screen.queryByLabelText(/totp/i)).toBeNull()
+    expect(screen.getByLabelText(/^password$/i)).toBeTruthy()
     expect(getAccessToken()).toBeNull()
     expect(screen.queryByText('u-1')).toBeNull()
   })
@@ -95,10 +127,10 @@ describe('auth login', () => {
     // decodeTokenClaims throws BEFORE setAccessToken/setPrincipal (AuthContext.login):
     // a 200 with a garbage accessToken must still land the user on the failed-login
     // path, exactly like a 401, never with a token in memory or a principal set.
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ accessToken: 'not-a-valid-jwt' }), { status: 200, headers: { 'content-type': 'application/json' } })))
+    stubLoginFetch('not-a-valid-jwt')
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
     await userEvent.type(screen.getByLabelText(/username/i), 'alice')
-    await userEvent.type(screen.getByLabelText(/password/i), 'pw')
+    await userEvent.type(screen.getByLabelText(/^password$/i), 'pw')
     await userEvent.click(screen.getByRole('button', { name: /continue/i }))
     await userEvent.type(await screen.findByLabelText(/totp/i), '123456')
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
@@ -114,8 +146,15 @@ describe('auth login', () => {
 
   it('logout clears the token and principal', async () => {
     const fakeToken = makeFakeJwt({ sub: 'u-1', psr: 'role:ops' })
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
       if (url.includes('/session/login')) {
+        // Mirror the edge: the credentials step's password-only probe cannot
+        // reach the AAL2 floor and is a 401; only the request carrying a code
+        // returns a session.
+        const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as { totp?: string }) : {}
+        if (body.totp === undefined) {
+          return new Response(JSON.stringify({ mfaRequired: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+        }
         return new Response(JSON.stringify({ accessToken: fakeToken }), { status: 200, headers: { 'content-type': 'application/json' } })
       }
       // /session/logout: 204 No Content
@@ -124,7 +163,7 @@ describe('auth login', () => {
     vi.stubGlobal('fetch', fetchMock)
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><LoginHarness /></AuthProvider></MemoryRouter>)
     await userEvent.type(screen.getByLabelText(/username/i), 'alice')
-    await userEvent.type(screen.getByLabelText(/password/i), 'pw')
+    await userEvent.type(screen.getByLabelText(/^password$/i), 'pw')
     await userEvent.click(screen.getByRole('button', { name: /continue/i }))
     await userEvent.type(await screen.findByLabelText(/totp/i), '123456')
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }))

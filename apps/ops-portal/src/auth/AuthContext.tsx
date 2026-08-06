@@ -51,9 +51,20 @@ export interface AuthContextValue {
   // (401 refresh, 403 step-up) the login/logout calls already use, rather
   // than each page constructing its own client with divergent deps.
   client: ReturnType<typeof createApiClient>
-  login(body: { handle: string; password: string; totp: string }): Promise<void>
+  // Resolves to the enrollment outcome so the login screen can route a
+  // first-time operator to TOTP setup. `enrollmentRequired` means NO session
+  // was established: `principal` stays null and the app stays locked.
+  login(body: { handle: string; password: string; totp: string }): Promise<LoginOutcome>
   logout(): Promise<void>
 }
+
+export type LoginOutcome =
+  // A real session: the principal is set and the app is reachable.
+  | { kind: 'session' }
+  // The password verified but the enrolled factor was not presented yet.
+  | { kind: 'mfa-required' }
+  // The password verified and this principal has no factor at all.
+  | { kind: 'enrollment-required'; principalId: string }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
@@ -127,14 +138,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })()
   }, [])
 
-  const login = useCallback(async (body: { handle: string; password: string; totp: string }) => {
+  // The explicit return type is load-bearing: without it useCallback infers
+  // `boolean` for the discriminant and the union no longer narrows.
+  const login = useCallback(async (body: { handle: string; password: string; totp: string }): Promise<LoginOutcome> => {
     const res = await loginEndpoint(client, body)
     // Decode BEFORE storing anything: a malformed token throws here and the
     // caller (LoginPage) surfaces it as a failed login, with no token and no
     // principal ever set.
+    // "Keep going" answers carry no token at all: nothing to decode, nothing to
+    // store, and the principal stays null so RequireAuth keeps the app locked.
+    if (res.mfaRequired === true || res.accessToken === undefined) {
+      return { kind: 'mfa-required' }
+    }
     const claims = decodeTokenClaims(res.accessToken)
     setAccessToken(res.accessToken)
+    if (res.enrollmentRequired === true) {
+      // Deliberately do NOT set the principal: an enrollment token is not a
+      // session. The token is stored only so the enrollment request can carry
+      // it, and it authorizes exactly one operation, so nothing else becomes
+      // reachable.
+      return { kind: 'enrollment-required', principalId: claims.sub }
+    }
     setPrincipal(claims)
+    return { kind: 'session' }
   }, [client])
 
   const logout = useCallback(async () => {
