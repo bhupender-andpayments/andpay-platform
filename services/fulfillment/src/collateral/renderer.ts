@@ -50,9 +50,10 @@ export interface CollateralInput {
   // Lenient config off bank_composition_config; unknown-shaped, read best-effort.
   imageTemplate?: unknown
   brandingParams?: unknown
-  // The bank logo bytes from the AssetStore, if any. Embedded when it is a PNG or
-  // JPG; any other format (.ai vector, svg, pdf) gracefully degrades to a text
-  // placeholder (P4-D3). null when the bank has no logo yet.
+  // The bank logo bytes from the AssetStore, if any. Embedded as a raster when
+  // PNG/JPG, and as a VECTOR page when the bytes are PDF-shaped, which covers
+  // the .ai masters banks actually supply (F4). SVG and non-PDF-compatible .ai
+  // still degrade to a text placeholder. null when the bank has no logo yet.
   logo?: { bytes: Uint8Array; contentType: string } | null
 }
 
@@ -188,21 +189,46 @@ export async function renderCollateralPdf(input: CollateralInput): Promise<Uint8
   let logoDrawn = false
   if (input.logo && input.logo.bytes.length > 0) {
     const ct = input.logo.contentType.toLowerCase()
+    const boxH = Math.min(30, H * 0.09)
+    // A bank master is usually supplied as .ai, and every aggregator's collateral
+    // printed unbranded because only PNG/JPG were ever embedded (F4).
+    //
+    // Illustrator writes .ai with "Create PDF Compatible File" on by default, so
+    // the bytes normally parse as a PDF. Embedding it as a PDF PAGE keeps the
+    // logo VECTOR, which is what a print vendor needs: rasterising a logo for a
+    // standee would visibly soften it. A genuinely non-PDF-compatible .ai, or
+    // true PostScript, still throws and still degrades to the placeholder.
+    const isPdfShaped = ct.includes('pdf') || ct.includes('postscript') || ct.includes('illustrator')
     try {
-      const img = ct.includes('png')
-        ? await doc.embedPng(input.logo.bytes)
-        : ct.includes('jpg') || ct.includes('jpeg')
-          ? await doc.embedJpg(input.logo.bytes)
-          : null
-      if (img !== null) {
-        const boxH = Math.min(30, H * 0.09)
-        const scale = boxH / img.height
-        page.drawImage(img, { x: margin, y: topCursor - boxH, width: Math.min(contentW, img.width * scale), height: boxH })
-        topCursor -= boxH + 3
-        logoDrawn = true
+      if (isPdfShaped) {
+        const [embedded] = await doc.embedPdf(input.logo.bytes)
+        if (embedded !== undefined) {
+          const scale = boxH / embedded.height
+          page.drawPage(embedded, {
+            x: margin,
+            y: topCursor - boxH,
+            width: Math.min(contentW, embedded.width * scale),
+            height: boxH,
+          })
+          topCursor -= boxH + 3
+          logoDrawn = true
+        }
+      } else {
+        const img = ct.includes('png')
+          ? await doc.embedPng(input.logo.bytes)
+          : ct.includes('jpg') || ct.includes('jpeg')
+            ? await doc.embedJpg(input.logo.bytes)
+            : null
+        if (img !== null) {
+          const scale = boxH / img.height
+          page.drawImage(img, { x: margin, y: topCursor - boxH, width: Math.min(contentW, img.width * scale), height: boxH })
+          topCursor -= boxH + 3
+          logoDrawn = true
+        }
       }
     } catch {
-      // Unembeddable (.ai / svg / corrupt): fall through to the text placeholder.
+      // Unembeddable (a flattened-only .ai, svg, or corrupt bytes): fall through
+      // to the text placeholder rather than failing the whole batch render.
       logoDrawn = false
     }
   }

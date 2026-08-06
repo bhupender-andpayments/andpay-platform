@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import QRCode from 'qrcode'
-import { PDFDocument } from 'pdf-lib'
+import { PDFDocument, rgb } from 'pdf-lib'
 import { renderCollateralPdf, resolveTemplate, type CollateralInput } from '../src/collateral/renderer.js'
 
 const base: CollateralInput = {
@@ -77,7 +77,8 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
     const withLogo = await renderCollateralPdf({ ...base, logo: { bytes: new Uint8Array(pngLogo), contentType: 'image/png' } })
     expect(isPdf(withLogo)).toBe(true)
 
-    // .ai content type -> never attempts embed -> placeholder, no throw
+    // A PDF-shaped content type IS now attempted (F4), so these garbage bytes
+    // exercise the catch: embed throws, and it degrades rather than failing.
     const aiLogo = await renderCollateralPdf({
       ...base,
       logo: { bytes: new Uint8Array([1, 2, 3, 4]), contentType: 'application/postscript' },
@@ -90,6 +91,50 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
       logo: { bytes: new Uint8Array([9, 9, 9, 9]), contentType: 'image/png' },
     })
     expect(isPdf(corrupt)).toBe(true)
+  })
+
+  // F4: banks supply their logo as .ai, and only PNG/JPG were ever embedded, so
+  // every aggregator's standees and stickers printed UNBRANDED while the asset
+  // sat stored and versioned. Illustrator writes .ai PDF-compatible by default,
+  // so the bytes are embedded as a vector PAGE (rasterising would visibly soften
+  // a standee-sized logo).
+  it('embeds a PDF-shaped (.ai) logo as a vector page rather than falling back to the placeholder', async () => {
+    // A stand-in for a PDF-compatible .ai master: a real one-page PDF carrying a
+    // uniquely identifiable mark.
+    const logoDoc = await PDFDocument.create()
+    const logoPage = logoDoc.addPage([120, 60])
+    logoPage.drawRectangle({ x: 0, y: 0, width: 120, height: 60, color: rgb(0.1, 0.37, 0.71) })
+    const aiLike = await logoDoc.save()
+
+    const withVector = await renderCollateralPdf({
+      ...base,
+      logo: { bytes: aiLike, contentType: 'application/postscript' },
+    })
+    expect(isPdf(withVector)).toBe(true)
+
+    // The placeholder path draws the bank name in the ACCENT colour as its
+    // stand-in for a logo; the embedded path draws it smaller and in ink and
+    // adds an XObject for the embedded page. Comparing against a no-logo render
+    // proves the logo actually changed the output instead of silently degrading.
+    const noLogo = await renderCollateralPdf({ ...base, logo: null })
+    expect(Buffer.from(withVector).equals(Buffer.from(noLogo))) .toBe(false)
+
+    // The embedded page's own content (the blue mark) must be carried into the
+    // output document, which a placeholder render can never contain.
+    const out = await PDFDocument.load(withVector)
+    expect(out.getPageCount()).toBe(1)
+    expect(withVector.byteLength).toBeGreaterThan(noLogo.byteLength)
+  })
+
+  it('still degrades to the placeholder for a NON-PDF-compatible .ai, without failing the render', async () => {
+    // Flattened/legacy .ai or true PostScript: claims a PDF-shaped content type
+    // but does not parse, so it must be caught and degrade, never throw and take
+    // the whole batch render down with it.
+    const bogus = await renderCollateralPdf({
+      ...base,
+      logo: { bytes: new Uint8Array([0x25, 0x21, 0x50, 0x53, 1, 2, 3]), contentType: 'application/postscript' },
+    })
+    expect(isPdf(bogus)).toBe(true)
   })
 
   it('input flows into output: a different QR value / VPA yields different bytes', async () => {
