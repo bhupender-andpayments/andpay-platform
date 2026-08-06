@@ -96,7 +96,17 @@ export async function ingestOpsDeviceInventory(
   // WHOLE file: no manufacturer validation, no write, no burned clientKey.
   const parsed = await parseDeviceInventoryFile(args.fileBytes, args.filename)
   if (parsed.structuralErrors.length > 0) {
-    throw new OpsClientError('invalid', 'device inventory file failed structural parse')
+    // Carry the CODE (a closed server-owned enum) and, for a missing column,
+    // its canonical name. The adapter's `message` is deliberately NOT passed:
+    // it embeds args.filename for the extension/unreadable codes, and a
+    // caller-supplied filename must never ride an HTTP response (S4/5c).
+    // Without this the operator saw only "invalid request" and could not tell
+    // which column was wrong, which is the failure that cost us this step.
+    throw new OpsClientError(
+      'invalid',
+      'device inventory file failed structural parse',
+      parsed.structuralErrors.map((e) => (e.column === undefined ? { code: e.code } : { code: e.code, column: e.column })),
+    )
   }
 
   const rows: IntakeRow[] = parsed.validRows.map((r) => ({

@@ -232,6 +232,44 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
     expect(await unitCount()).toBe(0)
     expect(await ledgerRows()).toHaveLength(0)
     expect(await fulfillmentOutboxAuthz()).toHaveLength(0)
+
+    // Step 1 Task 3, and the disclosure contract that goes with it. The body
+    // names the offending columns so the portal can tell the operator WHICH
+    // column was wrong, but carries nothing caller-influenced: no uploaded
+    // filename, no cell value, and not the domain error's own message (S4/5c,
+    // OpsErrorFilter). Every required column is missing from this file, so all
+    // three are reported.
+    expect(res.body.code).toBe('invalid')
+    expect(res.body.message).toBe('invalid request')
+    const columns = (res.body.reasons as { code: string; column?: string }[]).map((r) => r.column).sort()
+    expect(columns).toEqual(['Device ID', 'Device QR', 'Sim No'])
+    for (const r of res.body.reasons as { code: string }[]) {
+      expect(r.code).toBe('missing_required_column')
+    }
+    // The uploaded filename, the sheet's own header text and the internal
+    // message must all be absent from the wire.
+    const wire = JSON.stringify(res.body)
+    expect(wire).not.toContain('inventory.csv')
+    expect(wire).not.toContain('Serial')
+    expect(wire).not.toContain('ICCID')
+    expect(wire).not.toContain('structural parse')
+  })
+
+  // The other two structural codes carry a code and NO column, and must still
+  // never leak the filename their internal message embeds.
+  it('an unsupported extension -> 400 carrying the code only, filename never on the wire', async () => {
+    const manufacturerVndr = await seedVendor('MANUFACTURER')
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post('/ops/uploads/device-inventory')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .field('manufacturerVndrId', manufacturerVndr)
+      .attach('file', Buffer.from('anything', 'utf8'), 'devices.txt')
+    expect(res.status).toBe(400)
+    expect(res.body.reasons).toEqual([{ code: 'unsupported_extension' }])
+    expect(JSON.stringify(res.body)).not.toContain('devices.txt')
+    expect(await unitCount()).toBe(0)
   })
 
   // Fix round 1, Finding B: a malformed manufacturerVndrId must be a clean

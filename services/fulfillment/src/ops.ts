@@ -37,10 +37,27 @@ import type { AssetStore } from './storage/asset-store.js'
 // instead of Nest's default 500 for a plain `Error`. `kind` is intentionally
 // narrow (only the two shapes this domain throws): 'not-found' for a missing
 // target row, 'invalid' for a caller-supplied value that fails validation.
+// A disclosure-safe reason a client error may carry ACROSS the HTTP boundary.
+//
+// Read this before adding a field. `OpsClientError.message` is a domain message
+// and may embed caller-supplied input (a filename, a cell value), so
+// OpsErrorFilter deliberately never returns it (S4/5c). Everything on this type
+// must instead be SERVER-CONTROLLED: `code` is a closed enum owned by the
+// service, `column` is a canonical column name from the adapter's own HEADERS
+// constant. Never put an uploaded filename, a cell value, a row's contents, or
+// any other caller-influenced string here.
+export interface OpsClientErrorReason {
+  code: string
+  column?: string
+}
+
 export class OpsClientError extends Error {
   constructor(
     public readonly kind: 'not-found' | 'invalid',
     message: string,
+    // Optional and additive: every existing throw site is unchanged and keeps
+    // returning a bare fixed body.
+    public readonly reasons?: OpsClientErrorReason[],
   ) {
     super(message)
   }

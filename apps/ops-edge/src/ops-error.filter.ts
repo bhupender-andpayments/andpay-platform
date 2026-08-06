@@ -29,10 +29,31 @@ interface KindedError {
   kind?: unknown
 }
 
-function isOpsClientErrorShape(err: unknown): err is { kind: 'not-found' | 'invalid' } {
+function isOpsClientErrorShape(err: unknown): err is { kind: 'not-found' | 'invalid'; reasons?: unknown } {
   if (typeof err !== 'object' || err === null) return false
   const kind = (err as KindedError).kind
   return kind === 'not-found' || kind === 'invalid'
+}
+
+// A narrow, opt-in exception to the fixed-body rule above, and the ONLY detail
+// that may cross: the service's own `reasons` (OpsClientErrorReason), whose
+// fields are server-controlled by contract - a closed `code` enum and a
+// canonical `column` name. The thrown error's `message` still never rides the
+// response, because it may embed caller-supplied input such as a filename.
+//
+// Each reason is rebuilt FIELD BY FIELD rather than spread, so a future field
+// added to the service's type cannot start leaking here silently: it has to be
+// allowed in this function deliberately. Anything non-conforming is dropped.
+function safeReasons(raw: unknown): { code: string; column?: string }[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: { code: string; column?: string }[] = []
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const { code, column } = item as { code?: unknown; column?: unknown }
+    if (typeof code !== 'string' || code === '') continue
+    out.push(typeof column === 'string' && column !== '' ? { code, column } : { code })
+  }
+  return out.length > 0 ? out : undefined
 }
 
 interface MinimalResponse {
@@ -52,6 +73,13 @@ export class OpsErrorFilter extends BaseExceptionFilter {
       res.status(HttpStatus.NOT_FOUND).json({ code: 'not-found', message: 'resource not found' })
       return
     }
-    res.status(HttpStatus.BAD_REQUEST).json({ code: 'invalid', message: 'invalid request' })
+    const reasons = safeReasons(exception.reasons)
+    res
+      .status(HttpStatus.BAD_REQUEST)
+      .json(
+        reasons === undefined
+          ? { code: 'invalid', message: 'invalid request' }
+          : { code: 'invalid', message: 'invalid request', reasons },
+      )
   }
 }

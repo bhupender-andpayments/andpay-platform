@@ -19,13 +19,32 @@ import ExcelJS from 'exceljs'
 // REQUIRED COLUMN in the header, by contrast, IS a whole-file structural
 // failure (structuralErrors), the same policy the bank adapter applies.
 
-const HEADERS = { deviceId: 'Device ID', simNo: 'SIM No', deviceQr: 'Device QR' } as const
+// Canonical column names follow BRD Annexure E exactly. Matching is NORMALIZED
+// (case-folded, surrounding and repeated whitespace collapsed) because the same
+// column is spelled "Sim No" in the BRD and "SIM No" by some senders, and a
+// difference of case is never a meaningful distinction between two required
+// columns here. This adapter previously required the literal "SIM No", so a
+// file matching the BRD was rejected whole with zero rows ingested.
+//
+// Leniency stops at case and whitespace: a genuinely absent column still fails
+// the whole file, and the error still names the column by its BRD spelling.
+const HEADERS = { deviceId: 'Device ID', simNo: 'Sim No', deviceQr: 'Device QR' } as const
+
+function normalizeHeader(h: string): string {
+  return h.trim().toLowerCase().replace(/\s+/g, ' ')
+}
 
 export type DeviceInventoryStructuralErrorCode = 'unsupported_extension' | 'unreadable_file' | 'missing_required_column'
 
 export interface DeviceInventoryStructuralError {
   code: DeviceInventoryStructuralErrorCode
   message: string
+  // The canonical column this failure is about, taken from HEADERS above and so
+  // entirely server-controlled. It exists as its own field because `message`
+  // embeds the caller-supplied filename for two of the three codes and
+  // therefore may never cross the HTTP boundary (S4/5c, see OpsErrorFilter);
+  // this field may.
+  column?: string
 }
 
 export interface DeviceInventoryRow {
@@ -199,19 +218,26 @@ export async function parseDeviceInventoryFile(file: Uint8Array, filename: strin
 
   const { header, dataRows } = parsed
 
+  // Both the presence check and the column lookup run on the SAME normalized
+  // comparison, so a header that is accepted is always also locatable.
+  const normalized = header.map(normalizeHeader)
+  const indexOfHeader = (field: keyof typeof HEADERS): number =>
+    normalized.indexOf(normalizeHeader(HEADERS[field]))
+
   const missing = (Object.keys(HEADERS) as (keyof typeof HEADERS)[])
-    .filter((field) => !header.includes(HEADERS[field]))
+    .filter((field) => indexOfHeader(field) === -1)
     .map((field) => ({
       code: 'missing_required_column' as const,
       message: `Missing required column "${HEADERS[field]}".`,
+      column: HEADERS[field],
     }))
   if (missing.length > 0) return { validRows: [], invalidRows: [], structuralErrors: missing }
 
   if (dataRows.length === 0) return { validRows: [], invalidRows: [], structuralErrors: [] }
 
-  const deviceIdIdx = header.indexOf(HEADERS.deviceId)
-  const simNoIdx = header.indexOf(HEADERS.simNo)
-  const deviceQrIdx = header.indexOf(HEADERS.deviceQr)
+  const deviceIdIdx = indexOfHeader('deviceId')
+  const simNoIdx = indexOfHeader('simNo')
+  const deviceQrIdx = indexOfHeader('deviceQr')
 
   const validRows: DeviceInventoryRow[] = []
   const invalidRows: DeviceInventoryRowError[] = []
