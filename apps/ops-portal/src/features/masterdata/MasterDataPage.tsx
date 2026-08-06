@@ -117,8 +117,8 @@ const DAMAGE_REASON_COLUMNS: ReadonlyArray<DataTableColumn<DamageReasonRow>> = [
   { key: 'code', header: 'Code', cell: (r) => <CodeChip>{r.code}</CodeChip> },
   { key: 'label', header: 'Label', cell: (r) => <span className="font-medium text-ink">{r.label}</span> },
   { key: 'active', header: 'Status', cell: (r) => <StatusPill value={r.active ? 'ACTIVE' : 'INACTIVE'} /> },
-  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted">{fmtDate(r.createdAt)}</span> },
-  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted">{fmtDate(r.updatedAt)}</span> },
+  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
+  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
 ]
 
 function DamageReasonsView() {
@@ -184,8 +184,8 @@ const BATCHING_CONFIG_COLUMNS: ReadonlyArray<DataTableColumn<BatchingConfigRow>>
     header: 'Max wait (s)',
     cell: (r) => <span className="num text-ink">{fmtNumber(r.maxWaitSeconds)}</span>,
   },
-  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted">{fmtDate(r.createdAt)}</span> },
-  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted">{fmtDate(r.updatedAt)}</span> },
+  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
+  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
 ]
 
 function BatchingConfigView() {

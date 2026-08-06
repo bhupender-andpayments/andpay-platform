@@ -23,8 +23,8 @@ export const VENDOR_COLUMNS: ReadonlyArray<DataTableColumn<VendorRow>> = [
     header: 'Courier code',
     cell: (r) => (r.courierCode ? <CodeChip>{r.courierCode}</CodeChip> : <span className="text-subtle">-</span>),
   },
-  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted">{fmtDate(r.createdAt)}</span> },
-  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted">{fmtDate(r.updatedAt)}</span> },
+  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
+  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
 ]
 
 export function VendorRegistryPage() {

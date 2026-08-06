@@ -22,8 +22,8 @@ const COURIER_COLUMNS: ReadonlyArray<DataTableColumn<VendorRow>> = [
     cell: (r) => <span className="font-medium text-ink">{r.displayName}</span>,
   },
   { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
-  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted">{fmtDate(r.createdAt)}</span> },
-  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted">{fmtDate(r.updatedAt)}</span> },
+  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
+  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
 ]
 
 export function CourierMasterPage() {

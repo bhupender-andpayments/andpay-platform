@@ -82,9 +82,13 @@ describe('ops-portal app shell + navigation', () => {
     const names = links.map((link) => link.textContent?.trim())
     // Master-data is READ-ONLY (FR-11 deferred): the surface set is exactly
     // the 7 real sections (Task 13a added Activation, FR-07 live activation
-    // success mark, reachable from the live sidebar), in routes.tsx order,
-    // no extra admin/CRUD entry.
-    expect(names).toEqual(['Dashboards', 'Reports', 'Queues', 'Master Data', 'Uploads', 'Operations', 'Activation'])
+    // success mark, reachable from the live sidebar), no extra admin/CRUD
+    // entry. Compared as a SET: the sidebar now groups the same seven links
+    // under section headings, so their document order is a presentation
+    // choice, while "which sections exist" is the invariant worth guarding.
+    expect([...names].sort()).toEqual(
+      ['Activation', 'Dashboards', 'Master Data', 'Operations', 'Queues', 'Reports', 'Uploads'],
+    )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })
 

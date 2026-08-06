@@ -186,7 +186,7 @@ export function DataGrid<T>({
           </div>
 
           {pageCount > 1 && (
-            <div className="flex items-center justify-between gap-4 border-t border-line px-4 py-2.5 text-[13px] text-muted">
+            <div className="flex items-center justify-between gap-4 border-t border-line px-4 py-2.5 text-[13px] text-muted-foreground">
               <span>
                 <span className="num text-ink">{total}</span> {total === 1 ? 'row' : 'rows'}
               </span>
@@ -195,7 +195,7 @@ export function DataGrid<T>({
                   type="button"
                   onClick={() => table.previousPage()}
                   disabled={!table.getCanPreviousPage()}
-                  className="flex h-8 w-8 items-center justify-center rounded text-muted hover:bg-surface-2 disabled:opacity-40"
+                  className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-surface-2 disabled:opacity-40"
                   aria-label="Previous page"
                 >
                   <IconChevron width={16} height={16} className="rotate-180" />
@@ -207,7 +207,7 @@ export function DataGrid<T>({
                   type="button"
                   onClick={() => table.nextPage()}
                   disabled={!table.getCanNextPage()}
-                  className="flex h-8 w-8 items-center justify-center rounded text-muted hover:bg-surface-2 disabled:opacity-40"
+                  className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-surface-2 disabled:opacity-40"
                   aria-label="Next page"
                 >
                   <IconChevron width={16} height={16} />

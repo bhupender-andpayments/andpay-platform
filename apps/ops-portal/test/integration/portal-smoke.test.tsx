@@ -133,8 +133,12 @@ describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
     const nav = screen.getByRole('navigation', { name: /main/i })
     // Sanity check this test's own section table is not stale against the
     // real live sidebar before routing through it.
+    // Compared as a SET: the sidebar groups these links under section headings,
+    // so document order is presentation, while "this table matches the real
+    // sidebar" is what the sanity check is for. Every section is still visited
+    // individually below.
     const linkNames = within(nav).getAllByRole('link').map((l) => l.textContent?.trim())
-    expect(linkNames).toEqual(SECTIONS.map((s) => s.label))
+    expect([...linkNames].sort()).toEqual([...SECTIONS.map((s) => s.label)].sort())
 
     for (const section of SECTIONS) {
       const link = within(nav).getByRole('link', { name: new RegExp(`^${section.label}$`, 'i') })

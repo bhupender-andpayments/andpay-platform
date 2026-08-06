@@ -1,61 +1,263 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
 
 /* ------------------------------------------------------------------ *
- * AndPayments Ops Console - design system tokens.
- * "Calm control room in daylight": a precise, data-first light console,
- * a deep indigo-cobalt brand accent, and a disciplined lifecycle status
- * language. Tabular monospace numerics are the typographic signature.
+ * AndPayments internal portal theme.
+ *
+ * Section 2 of docs/design/ANDPAYMENTS-DESIGN-SYSTEM.md, copied wholesale.
+ * Every value below comes from the AndExpense (EXPMS) app; the whole point is
+ * visual parity across AndPayments portals, so do NOT "improve" the numbers.
+ *
+ * Tailwind v4, CSS-first: there is no tailwind.config.ts. All tokens live in
+ * the @theme inline block below.
  * ------------------------------------------------------------------ */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: "Inter Variable", sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* ---------------------------------------------------------------- *
+   * TEMPORARY MIGRATION ALIASES. Delete each as its screens convert.
+   *
+   * The portal predates this spec and still uses its own token
+   * vocabulary in ~370 places. These aliases map the old names onto the
+   * spec's values so unconverted screens keep rendering while screens
+   * are converted one at a time. They are NOT part of the design system
+   * and nothing new should use them.
+   *
+   * Two old names collided with spec names and were renamed in code
+   * instead of aliased, because aliasing would have inverted their
+   * meaning: `accent` (was the amber, is a neutral surface here) and
+   * `muted` (was grey TEXT, is a near-white SURFACE here).
+   * ---------------------------------------------------------------- */
+  --color-bg: var(--background);
+  --color-surface: var(--card);
+  --color-surface-2: var(--muted);
+  --color-surface-3: var(--secondary);
+  --color-line: var(--border);
+  --color-line-strong: var(--ring);
+  --color-ink: var(--foreground);
+  --color-subtle: var(--muted-foreground);
+  /* Brand navy. The spec keeps navy for the wordmark and the auth headline only
+     (section 2, "Brand hex values"), so it is not a semantic token. It follows
+     the spec's own pattern anyway: the value lives on :root and is mapped to a
+     utility here, which also keeps it readable by getComputedStyle. */
+  --color-brand: var(--brand-navy);
+  --color-brand-strong: var(--brand-navy-strong);
+  --color-brand-weak: var(--brand-navy-weak);
+  --color-brand-contrast: #ffffff;
+  /* No amber-tint aliases: the shades the pre-spec theme had (accent-weak /
+     -strong / -contrast) are expressed with the spec's own idiom instead, as
+     opacity modifiers on primary (bg-primary/10, hover:bg-primary/80) and
+     text-primary-foreground, exactly as the spec's own Button does. */
+}
+
 :root {
-  --bg: #f5f6f9;
-  --surface: #ffffff;
-  --surface-2: #f1f3f8;
-  --surface-3: #e9edf4;
-  --line: #e3e7ef;
-  --line-strong: #ccd3e0;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.745 0.155 65);          /* AndPayments amber ~ #ee9528 */
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --success: oklch(0.55 0.16 145);
+  --success-foreground: oklch(1 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.745 0.155 65);
+  --chart-2: oklch(0.55 0.18 250);
+  --chart-3: oklch(0.6 0.19 145);
+  --chart-4: oklch(0.55 0.2 25);
+  --chart-5: oklch(0.6 0.16 310);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.745 0.155 65);   /* amber - active nav item */
+  --sidebar-accent-foreground: oklch(1 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
 
-  --text: #171e2e;
-  --text-muted: #586277;
-  --text-subtle: #8891a4;
-
-  --brand: #3538cd;
-  --brand-strong: #292bab;
-  --brand-weak: #ecedfb;
-  --brand-contrast: #ffffff;
-  --accent: #b45309;
-
-  --focus: #6d70f0;
-
-  --radius-sm: 6px;
-  --radius: 10px;
-  --radius-lg: 14px;
-
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.05);
-  --shadow: 0 6px 18px rgba(16, 24, 40, 0.08);
-  --shadow-lg: 0 16px 40px rgba(16, 24, 40, 0.14);
-
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  /* Retained from the pre-spec theme: consumed by .login-mesh and the
+     focus-visible rule below, which have no spec counterpart. */
+  --brand-navy: #08243e;
+  --brand-navy-strong: #061a2e;
+  --brand-navy-weak: #e7eef5;
+  --mesh-cool: #bcd6ec;
+  --mesh-warm: #f8d1a0;
+  --mesh-base: #eef3f8;
+  --focus: #1a73c7;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
-html,
-body,
-#root {
-  height: 100%;
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.745 0.155 65);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.6 0.16 145);
+  --success-foreground: oklch(1 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.75 0.155 65);
+  --chart-2: oklch(0.65 0.16 250);
+  --chart-3: oklch(0.65 0.17 145);
+  --chart-4: oklch(0.65 0.18 25);
+  --chart-5: oklch(0.65 0.14 310);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.745 0.155 65);
+  --sidebar-accent-foreground: oklch(1 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
 }
 
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground overflow-x-hidden;
+  }
+  html {
+    @apply font-sans;
+  }
 }
 
-/* Tabular monospace figures for every data value (counts, IDs, AWBs, dates). */
+/* Pointer cursor on all interactive controls */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+[role="combobox"],
+[role="listbox"],
+[role="option"],
+[role="menuitem"]:not([data-disabled]),
+[role="menuitemcheckbox"]:not([data-disabled]),
+[role="menuitemradio"]:not([data-disabled]),
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+/* Modern thin scrollbar - global, all scroll containers */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.25) transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 116, 139, 0.25);
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.15s ease;
+}
+*::-webkit-scrollbar-thumb:hover { background-color: rgba(100, 116, 139, 0.5); }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+/* Top/bottom fade-mask for scrollable lists. Add class `scroll-fade-y`. */
+.scroll-fade-y {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
+}
+
+/* Sidebar: softer amber on hover, full brand amber on active */
+[data-sidebar="menu-button"]:not([data-active="true"]):hover {
+  background: color-mix(in oklch, var(--sidebar-accent) 12%, transparent) !important;
+  color: var(--sidebar-foreground) !important;
+}
+[data-sidebar="menu-button"]:not([data-active="true"]):hover * {
+  color: var(--sidebar-foreground) !important;
+}
+
+/* Companion to the two rules above, not a replacement for them. The spec's
+   selector assumes shadcn's Sidebar, which stamps data-active on the active
+   menu button. This shell uses react-router NavLink, which stamps
+   aria-current="page" instead, so without this the ACTIVE row would also take
+   the 12% hover tint and lose its solid amber. Same intent, same values. */
+[data-sidebar="menu-button"][aria-current="page"]:hover {
+  background: var(--sidebar-accent) !important;
+  color: var(--sidebar-accent-foreground) !important;
+}
+[data-sidebar="menu-button"][aria-current="page"]:hover * {
+  color: var(--sidebar-accent-foreground) !important;
+}
+
+/* ------------------------------------------------------------------ *
+ * Portal-specific utilities the spec does not cover. Kept verbatim from
+ * the pre-spec theme because components depend on them: `.num` (26 call
+ * sites), the status pills (generated by ui/format.ts pillClass), the
+ * skeleton shimmer, and the sign-in ambient wash.
+ * ------------------------------------------------------------------ */
+
+/* Tabular monospace numerics: the console's typographic signature. */
 .num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -66,6 +268,18 @@ body {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 5px;
+}
+
+/* Sign-in ambient wash. Two soft blooms mixed from the logo's own navy and
+   orange over a near-white base. Static by intent: the page has one moment
+   of movement (the step transition) and a drifting background would compete
+   with it. */
+.login-mesh {
+  background-color: var(--mesh-base);
+  background-image:
+    radial-gradient(58% 52% at 18% 22%, var(--mesh-cool) 0%, transparent 68%),
+    radial-gradient(52% 48% at 12% 88%, var(--mesh-warm) 0%, transparent 66%),
+    radial-gradient(46% 44% at 78% 68%, #ffffff 0%, transparent 70%);
 }
 
 /* Status pills: a paired background+foreground per lifecycle facet. */
@@ -93,7 +307,7 @@ body {
 .pill-info { background: #e6edfe; color: #1d4ed8; }
 .pill-positive { background: #e2f3ea; color: #15803d; }
 .pill-negative { background: #fbe9e9; color: #b91c1c; }
-.pill-brand { background: var(--brand-weak); color: var(--brand-strong); }
+.pill-brand { background: var(--brand-navy-weak); color: var(--brand-navy-strong); }
 
 @keyframes shimmer {
   100% { transform: translateX(100%); }
@@ -101,7 +315,7 @@ body {
 .skeleton {
   position: relative;
   overflow: hidden;
-  background: var(--surface-2);
+  background: var(--muted);
   border-radius: var(--radius-sm);
 }
 .skeleton::after {

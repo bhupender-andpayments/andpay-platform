@@ -88,7 +88,12 @@ describe('TilesPage', () => {
     // Both activation-dependent tiles show the neutral empty marker instead.
     expect(within(grid).getAllByText(/not available/i)).toHaveLength(2)
     // The watermark badge reflects the body's watermark.asOf, not a header.
-    expect(screen.getByText(/as of 2026-07-29T12:00:00\.000Z/i)).toBeTruthy()
+    // The badge renders the instant in the reader's locale rather than as a raw
+    // ISO string, and keeps the exact instant on the title attribute. Asserting
+    // the title is both locale-independent and a tighter check than matching
+    // formatted text.
+    const badge = screen.getByTitle('2026-07-29T12:00:00.000Z')
+    expect(badge.textContent).toMatch(/^as of /)
   })
 
   it('emphasizes exactly one tile with a filled accent treatment; every other tile stays neutral (E design cue)', async () => {

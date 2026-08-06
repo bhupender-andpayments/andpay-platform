@@ -28,25 +28,25 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
     <dl className="flex flex-wrap gap-6 text-sm">
       {result.accepted !== undefined && (
         <div>
-          <dt className="text-slate-500">Accepted</dt>
-          <dd className="text-lg font-semibold text-slate-900">{result.accepted}</dd>
+          <dt className="text-subtle">Accepted</dt>
+          <dd className="text-lg font-semibold text-ink">{result.accepted}</dd>
         </div>
       )}
       {result.replaced !== undefined && (
         <div>
-          <dt className="text-slate-500">Replaced</dt>
-          <dd className="text-lg font-semibold text-slate-900">{result.replaced}</dd>
+          <dt className="text-subtle">Replaced</dt>
+          <dd className="text-lg font-semibold text-ink">{result.replaced}</dd>
         </div>
       )}
       {result.quarantined !== undefined && (
         <div>
-          <dt className="text-slate-500">Quarantined</dt>
+          <dt className="text-subtle">Quarantined</dt>
           <dd className="text-lg font-semibold text-amber-700">
             {result.quarantined}
             {result.quarantined > 0 && (
               <>
                 {' '}
-                <Link to="/queues" className="text-sm font-medium text-blue-600 underline hover:text-blue-800">
+                <Link to="/queues" className="text-sm font-medium text-brand underline hover:text-brand-strong">
                   view in quarantine queue
                 </Link>
               </>
@@ -56,13 +56,13 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
       )}
       {result.flagged !== undefined && (
         <div>
-          <dt className="text-slate-500">Flagged</dt>
+          <dt className="text-subtle">Flagged</dt>
           <dd className="text-lg font-semibold text-amber-700">
             {result.flagged}
             {result.flagged > 0 && (
               <>
                 {' '}
-                <Link to="/queues" className="text-sm font-medium text-blue-600 underline hover:text-blue-800">
+                <Link to="/queues" className="text-sm font-medium text-brand underline hover:text-brand-strong">
                   view in intake exceptions
                 </Link>
               </>
@@ -72,14 +72,14 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
       )}
       {result.invalid !== undefined && (
         <div>
-          <dt className="text-slate-500">Invalid</dt>
-          <dd className="text-lg font-semibold text-slate-900">{result.invalid}</dd>
+          <dt className="text-subtle">Invalid</dt>
+          <dd className="text-lg font-semibold text-ink">{result.invalid}</dd>
         </div>
       )}
       {result.duplicate !== undefined && (
         <div>
-          <dt className="text-slate-500">Duplicate</dt>
-          <dd className="text-lg font-semibold text-slate-900">{result.duplicate}</dd>
+          <dt className="text-subtle">Duplicate</dt>
+          <dd className="text-lg font-semibold text-ink">{result.duplicate}</dd>
         </div>
       )}
     </dl>

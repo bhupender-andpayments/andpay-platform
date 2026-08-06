@@ -82,7 +82,7 @@ export function QueuesPage() {
 
 function IncludeResolvedToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label className="flex items-center gap-2 text-[13px] text-muted">
+    <label className="flex items-center gap-2 text-[13px] text-muted-foreground">
       <input type="checkbox" className="h-4 w-4 accent-[color:var(--brand)]" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       Show resolved rows
     </label>
