@@ -549,14 +549,26 @@ describe('authentication and authorization failures at the edge', () => {
 })
 
 describe('DO-NOT: the fronted handlers stay byte-identical', () => {
-  // Rebaselined for the SIM No capture fast-follow: intake.ts is DELIBERATELY
-  // modified (ICCID capture + R2 duplicate flagging) under explicit ratified
-  // authorization SCOPED to intake.ts only. Every OTHER fronted handler
-  // (return-sheet.ts, status-webhook.ts) still stays byte-identical and is
-  // re-proven here. If a future change touches those, this guard still fires.
-  it('git shows zero diff on the still-frozen fronted handlers (return-sheet.ts, status-webhook.ts)', () => {
+  // Rebaselined TWICE, each time under explicit authorization scoped to ONE
+  // handler, never as a blanket relaxation:
+  //
+  //  1. intake.ts, for the SIM No capture fast-follow (ICCID capture + R2
+  //     duplicate flagging).
+  //  2. return-sheet.ts, for the device lifecycle (Bhupender, 2026-08-07):
+  //     "after printing when the print vendor gives the devices ids which got
+  //     printed then after that they got dispatched". The print vendor's
+  //     return sheet IS that moment, and it was the only place already holding
+  //     both the device and its assignment in one transaction. The change is
+  //     narrow: it sets unit.asgn_id alongside the batch/merchant/shipment
+  //     columns that update was ALREADY writing, and advances the unit status
+  //     through PRINTED to DISPATCHED. No new parameter, no changed signature
+  //     (the arity guard below still proves that), no change to what the
+  //     handler accepts, rejects or quarantines.
+  //
+  // status-webhook.ts remains frozen and is still re-proven here, so a future
+  // change touching it still fires this guard.
+  it('git shows zero diff on the still-frozen fronted handler (status-webhook.ts)', () => {
     const files = [
-      'services/fulfillment/src/return-sheet.ts',
       'services/fulfillment/src/status-webhook.ts',
     ]
     const diff = execFileSync('git', ['diff', '--stat', '--', ...files]).toString().trim()

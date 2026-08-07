@@ -96,6 +96,12 @@ model Unit {
   simNo              String?  @map("sim_no")
   shipment           String?  @db.Uuid
   printedForMerchant String?  @map("printed_for_merchant") @db.Uuid
+  // The assignment this unit was printed for. Activation and damage both happen
+  // against an ASSIGNMENT, and a merchant can hold several over time (a
+  // replacement is a new assignment for the same merchant), so
+  // printed_for_merchant is too coarse to carry an activation back to the right
+  // device. Nullable: stock exists before it is paired to anything.
+  asgnId             String?  @map("asgn_id") @db.Uuid
   location           String?
   // quantity-line-only
   qrString           String?  @map("qr_string")
@@ -115,6 +121,7 @@ model Unit {
   // assertion, so a legitimate SIM re-use is adjudicated by ops, not rejected
   // by a constraint.
   @@index([simNo])
+  @@index([asgnId])
   @@map("unit")
 }
 

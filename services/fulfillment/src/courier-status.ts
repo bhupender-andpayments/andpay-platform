@@ -2,6 +2,7 @@ import { fromUuid } from '@andpay/ids'
 import { onceWithin, enqueue } from '@andpay/outbox'
 import { CONSUMER, type Tx } from './internal.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
+import { advanceUnitsForShipment } from './unit-lifecycle.js'
 
 // The C3 forward ladder. FAILED and RETURNED are OFF-ladder: reachable from any
 // in-flight ladder state, never from a settled one. RETURNED is an RTO and is
@@ -134,6 +135,17 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
       return
     }
     outcome = 'advanced'
+
+    // The device lifecycle follows the parcel. The carrier reports on the
+    // SHIPMENT, and the devices inside inherit that outcome: DELIVERED moves
+    // them along the spine, RETURNED puts them on the terminal branch. Only
+    // these two are propagated; the in-transit rungs (PICKED_UP, IN_TRANSIT,
+    // OUT_FOR_DELIVERY) describe where the parcel is, not a change in the
+    // device's own state, and FAILED is a delivery attempt that may still
+    // succeed on a retry. Advancing is monotonic, so a redelivered courier fact
+    // is a no-op rather than a device that reverts.
+    if (u.status === 'DELIVERED') await advanceUnitsForShipment(tx, shptUuid, 'DELIVERED')
+    else if (u.status === 'RETURNED') await advanceUnitsForShipment(tx, shptUuid, 'RETURNED')
 
     // The dedupKey MUST be per-transition. The spec-08 birth fact uses the bare
     // shpt wire id, so a bare key here would let an E6 inbox consumer dedup

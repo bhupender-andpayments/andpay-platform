@@ -13,6 +13,21 @@ export {
   updateVendorWithinTx,
 } from './vendor.js'
 export { projectDemandFact } from './pool.js'
+export {
+  UNIT_STATUS_ORDER,
+  UNIT_TERMINAL_STATUSES,
+  canAdvanceUnitStatus,
+  advanceUnitStatus,
+  advanceUnitsForShipment,
+  advanceUnitsForAssignment,
+  type UnitStatus,
+  type UnitTerminalStatus,
+  type AnyUnitStatus,
+  projectActivationToUnits,
+  projectReplacementToUnits,
+  type ActivatedFactView,
+  type ReplacementRaisedFactView,
+} from './unit-lifecycle.js'
 export { projectShipToAmended, NotYet } from './ship-to.js'
 export { poolConfig, resolvePoolConfig, DEFAULT_POOL_CFG, type PoolCfg } from './config/pool-config.js'
 export {

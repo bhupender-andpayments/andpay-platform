@@ -4,6 +4,7 @@ import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 import { enterWriteRole } from './write-context.js'
+import { advanceUnitStatus } from './unit-lifecycle.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 import {
   PRINT_FOR_TOPIC,
@@ -357,9 +358,17 @@ export async function ingestReturnSheet(
         await onceWithin(tx, CONSUMER, `${unitWire}|print_for`, async () => {
           await tx.$executeRaw`
             UPDATE unit SET batch = ${batchUuid}::uuid, printed_for_merchant = ${merchantUuid}::uuid,
-                   shipment = ${finalShptUuid}::uuid, updated_at = now()
+                   shipment = ${finalShptUuid}::uuid, asgn_id = ${asgnUuid}::uuid, updated_at = now()
             WHERE id = ${unitUuid}::uuid
           `
+          // The device lifecycle. This one sheet reports BOTH facts at once:
+          // the vendor printed this serial for this assignment, and it handed
+          // the parcel to the courier under the AWB above. So the unit advances
+          // through PRINTED to DISPATCHED rather than stopping at PRINTED, and
+          // both steps are monotonic, so a re-uploaded sheet cannot walk a
+          // device that is already DELIVERED back down.
+          await advanceUnitStatus(tx, unitUuid, 'PRINTED')
+          await advanceUnitStatus(tx, unitUuid, 'DISPATCHED')
           pairedUnitIds.push(unitWire)
           if (birth) birth.unitIds.push(unitWire)
 
