@@ -37,6 +37,11 @@ interface PendingRowRow {
   contact_name: string | null
   mobile: string | null
   branch_code: string | null
+  // The row's OWN bank code (the aggregator / member bank beneath the tenant),
+  // written by ingest from BankRequestRow.bankReferenceCode. See the
+  // bank_reference_code note on the INSERT below for why the assignment now
+  // takes it from here rather than from the tenant projection.
+  tenant_reference: string
 }
 interface MerchantProjRow { display_name: string; legal_name: string; mcc: string }
 interface TenantProjRow { display_name: string; bank_reference_code: string }
@@ -145,7 +150,8 @@ export async function createAssignmentFromEnrollment(
     await enterWriteScope(tx, 'tms_write', progUuid)
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       const pend = await tx.$queryRaw<PendingRowRow[]>`
-        SELECT soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code
+        SELECT soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code,
+               tenant_reference
         FROM pending_row WHERE correlation_id = ${p.sourceEventId}
       `
       if (pend.length === 0) throw new Error(`pending row not found for ${p.sourceEventId}`)
@@ -184,6 +190,17 @@ export async function createAssignmentFromEnrollment(
       // middleware only (it does not run for $queryRaw/$executeRaw) and the
       // column has no DB-level DEFAULT (unlike created_at), so it must be set
       // explicitly here, same as projections.ts does for its two tables.
+      // bank_reference_code below is the AGGREGATOR (member bank / branch)
+      // code, taken from the row's own pending_row.tenant_reference and NOT
+      // from the tenant projection. Bhupender ruled 2026-08-07 that one tenant
+      // (the bank partner) pools ALL the aggregators beneath it, so the
+      // tenant's own bank_reference_code is now the PARTNER, while every
+      // downstream consumer of this column wants the aggregator: the
+      // bank_composition_config logo lookup, the bank+branch dispatch-sheet
+      // sort, and the damage-file match (Annexure C ships the aggregator code).
+      // While the tenant was keyed on the row's bank code these two values were
+      // identical, so this is a NO-OP for existing data and only diverges once
+      // a file declares a tenant of its own.
       const won = await tx.$queryRaw<{ id: string }[]>`
         INSERT INTO assignment (
           id, merchant_id, program_id, tenant_id,
@@ -194,7 +211,7 @@ export async function createAssignmentFromEnrollment(
         ) VALUES (
           ${asgnUuid}::uuid, ${mrchUuid}::uuid, ${progUuid}::uuid, ${tnntUuid}::uuid,
           ${m.display_name}, ${m.legal_name}, ${m.mcc},
-          ${t.bank_reference_code}, ${t.display_name}, ${pr.ship_to_address},
+          ${pr.tenant_reference}, ${t.display_name}, ${pr.ship_to_address},
           ${pr.qr_value}, ${pr.vpa_value}, ${pr.soundbox}, ${pr.standee_count}, ${pr.sticker_count},
           ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, ${pr.branch_code}, now()
         )

@@ -16,6 +16,9 @@ export const TMS_FACT_SCHEMAS: Record<string, object> = {
       mcc: { type: 'string' },
       registeredAddress: { type: 'string' },
       bankReferenceCode: { type: 'string' },
+      // Additive + OPTIONAL (never in `required`): a producer that omits it is
+      // still valid, which is what keeps this a FULL-compat v1 change.
+      tenantReference: { type: 'string' },
       productType: { type: 'string' },
       vpaHint: { type: 'string' },
     },

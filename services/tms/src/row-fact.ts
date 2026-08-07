@@ -13,8 +13,14 @@ export interface RowFactPayload {
   legalName: string
   mcc: string
   registeredAddress: string
-  // the tenant slice
+  // the tenant slice. bankReferenceCode is the AGGREGATOR (member bank /
+  // branch) code the row carries. tenantReference, when present, is the BANK
+  // PARTNER that owns those aggregators and is what Identity resolves the
+  // tenant on; absent, the aggregator code IS the tenant (the pre-2026-08-07
+  // behaviour, and what every existing fixture still exercises). Additive and
+  // optional on the wire, the same FULL-compat rule branchCode followed (D120).
   bankReferenceCode: string
+  tenantReference?: string
   // the Program slice
   productType: string
   // a secondary dedup hint only, never the identity key (D116, I1)

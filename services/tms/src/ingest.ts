@@ -31,6 +31,9 @@ export interface BankRequestRow {
   // fact, only pending_row and the assignment snapshot. A row missing it is a
   // row-level rejection, mirroring contactName/mobile.
   branchCode: string
+  // The bank PARTNER that owns the aggregators, when the file declares one.
+  // Absent means the row's own bankReferenceCode is the tenant.
+  tenantReference?: string
   vpaHint?: string
 }
 
@@ -115,6 +118,7 @@ export async function ingestRequestRowWithinTx(
         mcc: row.mcc,
         registeredAddress: row.registeredAddress,
         bankReferenceCode: row.bankReferenceCode,
+        ...(row.tenantReference === undefined ? {} : { tenantReference: row.tenantReference }),
         productType: row.productType,
         vpaHint: row.vpaHint,
       },

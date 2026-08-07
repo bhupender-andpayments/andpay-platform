@@ -226,7 +226,12 @@ export async function projectRowFact(db: IdentityDb, env: RowFactEnvelope): Prom
   await db.$transaction(async (tx) => {
     await enterWriteRole(tx, 'identity_write')
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
-      const tenant = await resolveTenant(tx, p.bankReferenceCode)
+      // Bhupender ruled 2026-08-07: one tenant (the bank partner) pools ALL
+      // the aggregators beneath it, so a single GSCB file of 19 aggregator
+      // codes must yield ONE tenant, ONE program and ONE pool, not 19. The
+      // fallback keeps every pre-existing fact working: with no tenantReference
+      // the aggregator code IS the tenant, exactly as before.
+      const tenant = await resolveTenant(tx, p.tenantReference ?? p.bankReferenceCode)
       const program = await resolveProgram(tx, tenant.tenantUuid, p.productType)
       const merchant = await resolveMerchant(tx, tenant.tenantUuid, p.bankMerchantReference, p.vpaHint, {
         displayName: p.displayName,

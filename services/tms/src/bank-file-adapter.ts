@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs'
 import type { BankRequestRow } from './ingest.js'
 import type { BankDamageRow } from './damage.js'
+import { selectBankSourceProfile, BANK_SOURCE_PROFILES, type BankSourceProfile } from './bank-source-profile.js'
 
 // Phase 2 Task 1 (D-C core): the server-side bank-file parse and normalize
 // adapter. Today (Phase 1) `apps/ops-portal/src/features/uploads/parseSheet.ts`
@@ -35,6 +36,14 @@ export const DEFAULT_REQUEST_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
   bankReferenceCode: 'bankReferenceCode',
   productType: 'productType',
   vpaValue: 'vpaValue',
+  // KNOWN BANK QUIRK, carried through this column UNCHANGED on purpose. GSCB's
+  // export HTML-escapes the first query separator of every UPI payload, so the
+  // value arrives as `upi://pay?ver=01&amp;mode=01&pa=...` and a scanner reads
+  // a junk `amp;mode` parameter. This adapter does NOT correct it: D117/T2
+  // (services/tms/src/internal.ts) says TMS validates format only and never
+  // alters the value, so the fact stream keeps what the bank actually sent.
+  // The correction happens at the artifact boundary in fulfillment, in
+  // services/fulfillment/src/qr-payload.ts, which documents the whole defect.
   qrValue: 'qrValue',
   soundbox: 'soundbox',
   standeeCount: 'standeeCount',
@@ -44,6 +53,11 @@ export const DEFAULT_REQUEST_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
   mobile: 'mobile',
   branchCode: 'branchCode',
   vpaHint: 'vpaHint',
+  // LAST on purpose. services/tms/test/bank-file-adapter.test.ts derives its
+  // CSV header from Object.values of this map and pairs it with a POSITIONAL
+  // data row, so inserting a field in the middle silently shifts every value
+  // after it. Trailing optional fields keep that fixture aligned.
+  tenantReference: 'tenantReference',
 })
 
 export const DEFAULT_DAMAGE_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
@@ -66,9 +80,12 @@ export const DEFAULT_DAMAGE_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
 // the request mapping uses to make `vpaHint` optional.
 const OPTIONAL_DAMAGE_FIELDS = ['soundbox', 'standeeCount', 'stickerCount', 'deliveryStatus']
 
-// vpaHint is the only optional field on BankRequestRow (see ingest.ts); every
-// other canonical field on both row shapes is required.
-const REQUEST_REQUIRED_FIELDS = Object.keys(DEFAULT_REQUEST_COLUMN_MAPPING).filter((f) => f !== 'vpaHint')
+// vpaHint and tenantReference are the OPTIONAL request fields (see ingest.ts);
+// every other canonical field on both row shapes is required.
+const REQUEST_OPTIONAL_FIELDS = ['vpaHint', 'tenantReference']
+const REQUEST_REQUIRED_FIELDS = Object.keys(DEFAULT_REQUEST_COLUMN_MAPPING).filter(
+  (f) => !REQUEST_OPTIONAL_FIELDS.includes(f),
+)
 const DAMAGE_REQUIRED_FIELDS = Object.keys(DEFAULT_DAMAGE_COLUMN_MAPPING).filter(
   (f) => !OPTIONAL_DAMAGE_FIELDS.includes(f),
 )
@@ -284,8 +301,10 @@ function normalizeRequestRow(
     mobile: get('mobile'),
     branchCode: get('branchCode'),
   }
+  const tenantReference = get('tenantReference')
+  const withTenant = tenantReference === '' ? row : { ...row, tenantReference }
   const vpaHint = get('vpaHint')
-  return vpaHint === '' ? row : { ...row, vpaHint }
+  return vpaHint === '' ? withTenant : { ...withTenant, vpaHint }
 }
 
 function normalizeDamageRow(
@@ -333,15 +352,34 @@ async function parseBankFile<T>(
   mapping: BankColumnMapping,
   requiredFields: string[],
   normalize: (rec: Record<string, string>, mapping: BankColumnMapping, fileId: string, rowNo: number) => T,
+  profiles?: readonly BankSourceProfile[],
 ): Promise<{ rows: T[]; errors: StructuralParseError[] }> {
   const parsed = await parseGrid(file, filename)
   if ('code' in parsed) return { rows: [], errors: [parsed] }
 
   const { header, dataRows } = parsed
-  const missing = missingRequiredColumns(header, mapping, requiredFields)
+
+  // P3-3: reshape a bank-native layout into canonical field names BEFORE the
+  // required-column check, so the rest of this function is unchanged. A file
+  // that matches no profile falls through with `profile === null` and gets the
+  // exact diagnostics it got before: the missing-column errors naming what the
+  // canonical mapping wanted. `profiles` is undefined for damage files, which
+  // keeps that path byte-for-byte as it was.
+  const profile = profiles === undefined ? null : selectBankSourceProfile(header, profiles)
+
+  // The UNION of the file's own header and the profile's OUTPUT keys. Taking
+  // only the profile's keys breaks the pass-through canonical profile, whose
+  // toCanonical is the identity function and therefore yields nothing at all
+  // for an empty probe record. Taking only the header breaks the Annexure B
+  // profile, whose derived fields are in no header. Deriving the profile keys
+  // from a probe rather than from the data keeps a header-only file correct.
+  const effectiveHeader =
+    profile === null ? header : [...header, ...Object.keys(profile.toCanonical({}))]
+  const missing = missingRequiredColumns(effectiveHeader, mapping, requiredFields)
   if (missing.length > 0) return { rows: [], errors: missing }
 
-  const records = toRecords(header, dataRows)
+  const raw = toRecords(header, dataRows)
+  const records = profile === null ? raw : raw.map((rec) => profile.toCanonical(rec))
   const rows = records.map((rec, idx) => normalize(rec, mapping, fileId, idx + 1))
   return { rows, errors: [] }
 }
@@ -356,8 +394,9 @@ export function parseBankRequestFile(
   filename: string,
   fileId: string,
   mapping: BankColumnMapping = DEFAULT_REQUEST_COLUMN_MAPPING,
+  profiles: readonly BankSourceProfile[] = BANK_SOURCE_PROFILES,
 ): Promise<BankRequestParseResult> {
-  return parseBankFile(file, filename, fileId, mapping, REQUEST_REQUIRED_FIELDS, normalizeRequestRow)
+  return parseBankFile(file, filename, fileId, mapping, REQUEST_REQUIRED_FIELDS, normalizeRequestRow, profiles)
 }
 
 // Parses a damage-file (.csv or .xlsx) into BankDamageRow[], same fileId/rowNo

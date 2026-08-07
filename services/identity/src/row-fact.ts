@@ -14,6 +14,10 @@ export interface RowFactPayload {
   registeredAddress: string
   // the tenant slice
   bankReferenceCode: string
+  // See the producer view in services/tms/src/row-fact.ts: the bank PARTNER
+  // that owns the aggregators, optional and additive. Absent means the
+  // aggregator code is itself the tenant.
+  tenantReference?: string
   // the Program slice
   productType: string
   // a secondary dedup hint only, never the identity key (D116, I1)
