@@ -27,7 +27,15 @@ afterAll(async () => {
 })
 
 beforeEach(async () => {
-  await db.$executeRawUnsafe('TRUNCATE refresh_token, vendor_credential, denylist, outbox CASCADE')
+  await db.$executeRawUnsafe('TRUNCATE vendor_credential, denylist, outbox CASCADE')
+  // refresh_token is SCOPED, not truncated: an unfiltered TRUNCATE here logged
+  // the developer out of the running demo portal on every gate run (the same
+  // class of defect P0-1 fixed for deleteMany, which did not cover raw
+  // TRUNCATE). Every refresh assertion in this file is already scoped by
+  // principalId or familyId, so a globally empty table was never load-bearing.
+  // This suite owns the `client-*` binds; a real login's client_bind is a hex
+  // digest, so a live session is never collected here.
+  await db.$executeRawUnsafe(`DELETE FROM refresh_token WHERE client_bind LIKE 'client-%'`)
 })
 
 // A DB-level BEFORE trigger, installed only for the duration of one test

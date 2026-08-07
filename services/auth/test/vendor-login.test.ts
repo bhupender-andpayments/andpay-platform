@@ -38,7 +38,13 @@ afterAll(async () => {
   await db.$disconnect()
 })
 beforeEach(async () => {
-  await db.$executeRawUnsafe('TRUNCATE vendor_operator, refresh_token, outbox CASCADE')
+  await db.$executeRawUnsafe('TRUNCATE vendor_operator, outbox CASCADE')
+  // refresh_token is SCOPED to this suite's own principal_type, matching the
+  // mfa_enrollment delete on the very next line, which was already scoped this
+  // way. The unfiltered TRUNCATE that used to be here also took every INTERNAL
+  // session with it, logging the developer out of the running demo portal on
+  // every gate run. This suite only ever asserts on vendor_operator rows.
+  await db.$executeRawUnsafe(`DELETE FROM refresh_token WHERE principal_type = 'vendor_operator'`)
   await db.$executeRawUnsafe(`DELETE FROM mfa_enrollment WHERE principal_type = 'vendor_operator'`)
   vndrId = newId('vndr')
   username = `op-${randomUUID()}`

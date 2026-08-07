@@ -23,10 +23,24 @@ const authDb: AuthDb = new AuthClient({
 })
 
 let app: INestApplication
+
+// This suite OWNS the principals it seeds and cleans up after itself. It used
+// to have no isolation at all, silently relying on other suites' unfiltered
+// TRUNCATE of refresh_token to clear its rows. Those truncations are now
+// scoped (they were logging a running demo portal out on every gate run), so
+// the incidental cleanup is gone and the dependency is made explicit here
+// instead. Scoped to this suite's own principal ids, never a bare TRUNCATE.
+const seededPrincipalIds: string[] = []
+
 beforeAll(async () => {
   app = await buildTestAuthEdgeApp()
 })
 afterAll(async () => {
+  if (seededPrincipalIds.length > 0) {
+    await authDb.refreshToken.deleteMany({ where: { principalId: { in: seededPrincipalIds } } })
+    await authDb.mfaEnrollment.deleteMany({ where: { principalId: { in: seededPrincipalIds } } })
+    await authDb.internalPrincipal.deleteMany({ where: { id: { in: seededPrincipalIds } } })
+  }
   await app.close()
   await authDb.$disconnect()
 })
@@ -35,6 +49,7 @@ afterAll(async () => {
 // cookie-only, so the returned access token is intentionally NOT re-presented.
 async function loginAndGetCookie(): Promise<{ cookie: string; principalId: string }> {
   const { handle, secret, principalId } = await seedPrincipalWithTotp('admin')
+  seededPrincipalIds.push(principalId)
   const res = await request(app.getHttpServer())
     .post('/session/login')
     .send({ handle, password: SEEDED_PASSWORD, totp: authenticator.generate(secret) })
