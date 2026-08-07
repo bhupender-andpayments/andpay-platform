@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { triggerBatch, downloadDispatchExcel, downloadCollateral } from '../../api/endpoints.js'
+import { saveBlob } from '../../lib/saveBlob.js'
 import { Card, CardHeader, Field, Input, Select, Button, ErrorNote, InfoNote, CodeChip } from '../../ui/primitives.js'
 
 // Manual batch trigger + dispatch-package downloads (Phase 7 Task 9). The
@@ -17,24 +18,18 @@ import { Card, CardHeader, Field, Input, Select, Button, ErrorNote, InfoNote, Co
 // dispatchExcel/collateral, guard-only reads, C5 disclosure posture does
 // not block rendering): both are binary GETs keyed on the wire `btch_...`
 // id. No ops-edge read discovers a batch id (confirmed against every DTO in
-// ops-read.ts/mediation.ts) - the ONLY real source is this same trigger
-// response, or a batch id the operator already has from elsewhere, so the
+// ops-read.ts/mediation.ts) - the ONLY real source was this same trigger
+// response, or a batch id the operator already had from elsewhere, so the
 // Batch ID field here is free text exactly like the Tenant/Program inputs
-// above (also unblocked, also with no discovery read). A successful trigger
-// prefills it with the just-returned real id, but it stays editable so a
-// previously-triggered batch can be downloaded too.
+// above. A successful trigger prefills it with the just-returned real id, but
+// it stays editable so a previously-triggered batch can be downloaded too.
+//
+// SUPERSEDED IN PART (P2-1): GET /ops/batches now DOES expose batch ids, and
+// the P2-3 batch detail hub (features/fulfillment/BatchDetailPage.tsx) offers
+// the same two downloads with no id typing at all. This free-text form is kept
+// because it still serves the manual trigger, and because an operator holding
+// a batch id from outside the portal can still use it directly.
 const ARTIFACT_TYPES = ['SOUNDBOX_IMG', 'STANDEE_IMG', 'STICKER_IMG'] as const
-
-function saveBlob(filename: string, blob: Blob): void {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  document.body.appendChild(anchor)
-  anchor.click()
-  document.body.removeChild(anchor)
-  URL.revokeObjectURL(url)
-}
 
 export function BatchPage() {
   const { client } = useAuth()

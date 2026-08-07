@@ -34,6 +34,11 @@ export const IconUploads = (p: P) => (
 export const IconOperations = (p: P) => (
   <svg {...base(p)}><circle cx="12" cy="12" r="3" /><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M19 5l-2 2M7 17l-2 2" /></svg>
 )
+// P2-2: the Fulfillment section (pool -> batch -> shipment). A parcel reads as
+// the physical thing those three states describe.
+export const IconFulfillment = (p: P) => (
+  <svg {...base(p)}><path d="M21 8.5 12 13 3 8.5 12 4l9 4.5Z" /><path d="M3 8.5v7L12 20l9-4.5v-7" /><path d="M12 13v7" /></svg>
+)
 export const IconChevron = (p: P) => (
   <svg {...base(p)}><path d="m9 6 6 6-6 6" /></svg>
 )

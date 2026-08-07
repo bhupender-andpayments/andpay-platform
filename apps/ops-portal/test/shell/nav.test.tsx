@@ -75,19 +75,20 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 7 real sections (incl. Activation), no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 8 real sections (incl. Fulfillment), no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
     const names = links.map((link) => link.textContent?.trim())
     // Master-data is READ-ONLY (FR-11 deferred): the surface set is exactly
-    // the 7 real sections (Task 13a added Activation, FR-07 live activation
-    // success mark, reachable from the live sidebar), no extra admin/CRUD
-    // entry. Compared as a SET: the sidebar now groups the same seven links
+    // the 8 real sections (Task 13a added Activation, FR-07 live activation
+    // success mark; P2-2 added Fulfillment, the pool/batches/dispatches object
+    // spine), no extra admin/CRUD entry. Compared as a SET: the sidebar groups
+    // these links
     // under section headings, so their document order is a presentation
     // choice, while "which sections exist" is the invariant worth guarding.
     expect([...names].sort()).toEqual(
-      ['Activation', 'Dashboards', 'Master Data', 'Operations', 'Queues', 'Reports', 'Uploads'],
+      ['Activation', 'Dashboards', 'Fulfillment', 'Master Data', 'Operations', 'Queues', 'Reports', 'Uploads'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })

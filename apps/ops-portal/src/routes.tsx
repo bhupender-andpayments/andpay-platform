@@ -10,6 +10,8 @@ import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
 import { UploadsPage } from './features/uploads/UploadsPage.js'
 import { OperationsPage } from './features/operations/OperationsPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
+import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
+import { BatchDetailPage } from './features/fulfillment/BatchDetailPage.js'
 
 // Router-agnostic route tree (no <BrowserRouter> here) so tests can wrap it
 // in a <MemoryRouter> with a chosen initialEntries, per Task 9's test plan.
@@ -47,6 +49,10 @@ export function AppRoutes() {
           <Route path="/dashboards" element={<TilesPage />} />
           <Route path="/reports" element={<ReportPage />} />
           <Route path="/queues" element={<QueuesPage />} />
+          {/* P2-2/3/4: the object spine. /batches/:btchId is a sibling of the
+              tabbed list page, so a batch is linkable and refreshable. */}
+          <Route path="/fulfillment" element={<FulfillmentPage />} />
+          <Route path="/batches/:btchId" element={<BatchDetailPage />} />
           <Route path="/masterdata" element={<MasterDataPage />} />
           <Route path="/uploads" element={<UploadsPage />} />
           <Route path="/operations" element={<OperationsPage />} />

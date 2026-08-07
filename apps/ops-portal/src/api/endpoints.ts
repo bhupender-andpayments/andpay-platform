@@ -400,6 +400,102 @@ export function getVendors(c: Client) {
 }
 
 // -----------------------------------------------------------------------
+// P2-1 object spine (apps/ops-edge/src/ops-read.controller.ts batches / pool /
+// dispatches / batchDetail, over services/fulfillment/src/ops-read.ts). Same
+// class-3 guard-only posture as GET /ops/vendors above: no per-op D2
+// authorize, no 6e, reads are not mutations (check 3).
+//
+// These projections are deliberately PII-FREE on the server (D104
+// default-exclude): no ship-to address, contact name, mobile, or raw qr/vpa
+// value is returned, so none of it can be rendered here. The ship-view lives
+// in the dispatch-excel download, which is the surface that documents that
+// entitlement. Do NOT "enrich" these rows client-side from another endpoint.
+// -----------------------------------------------------------------------
+
+/** services/fulfillment/src/ops-read.ts BatchRow. */
+export interface BatchRow {
+  id: string
+  status: string
+  triggerReason: string
+  unitCount: number
+  printVndr: string | null
+  triggeredByActor: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** services/fulfillment/src/ops-read.ts BatchEntryRow (PII-free). */
+export interface BatchEntryRow {
+  asgnId: string
+  merchantDisplayName: string
+  merchantLegalName: string
+  bankReferenceCode: string
+  bankDisplayName: string
+  branchCode: string | null
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  poolStatus: string
+  dispatchState: string | null
+  shipToSuperseded: boolean
+}
+
+/** services/fulfillment/src/ops-read.ts PoolEntryRow. */
+export interface PoolEntryRow extends BatchEntryRow {
+  batch: string | null
+  createdAt: string
+}
+
+/** services/fulfillment/src/ops-read.ts BatchArtifactRow. */
+export interface BatchArtifactRow {
+  asgnId: string
+  artifactType: string
+  assetReference: string
+  supersededAt: string | null
+}
+
+/** services/fulfillment/src/ops-read.ts BatchDetailView. */
+export interface BatchDetailView {
+  batch: BatchRow
+  entries: BatchEntryRow[]
+  artifacts: BatchArtifactRow[]
+}
+
+/** services/fulfillment/src/ops-read.ts DispatchRow (PII-free by construction). */
+export interface DispatchRow {
+  id: string
+  awb: string
+  status: string
+  courierPartner: string | null
+  dispatchDate: string
+  statusAt: string | null
+  statusSource: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export function getBatches(c: Client) {
+  return c.request<BatchRow[]>({ method: 'GET', path: '/ops/batches' })
+}
+
+// 404 when the batch does not exist; the edge throws NotFoundException rather
+// than returning an empty-but-valid-looking detail, so the caller can tell
+// "no such batch" from "a batch with no entries".
+export function getBatchDetail(c: Client, btchId: string) {
+  return c.request<BatchDetailView>({ method: 'GET', path: `/ops/batches/${encodeURIComponent(btchId)}` })
+}
+
+export function getPoolEntries(c: Client, poolStatus?: string) {
+  const q = poolStatus !== undefined && poolStatus !== '' ? `?poolStatus=${encodeURIComponent(poolStatus)}` : ''
+  return c.request<PoolEntryRow[]>({ method: 'GET', path: `/ops/pool${q}` })
+}
+
+export function getDispatches(c: Client, status?: string) {
+  const q = status !== undefined && status !== '' ? `?status=${encodeURIComponent(status)}` : ''
+  return c.request<DispatchRow[]>({ method: 'GET', path: `/ops/dispatches${q}` })
+}
+
+// -----------------------------------------------------------------------
 // Bank masters, damage-reason master, batching config (Phase 7 Task 8). The
 // confirmed ops-edge contract (apps/ops-edge/src/ops-read.controller.ts's
 // bankMasters/damageReasons/batchingConfig, grounded against
@@ -808,12 +904,12 @@ export function markActivated(c: Client, dispatchId: string, idempotencyKey: str
 // typed `client.request` (JSON/text only; client.ts is a SPINE_FILE this
 // task does not touch). Mirrors postFile's raw-fetch-with-Bearer pattern
 // above instead. `:btchId` is the wire `btch_...` id BatchPage's own trigger
-// response already returns (`{ btchId }`); no ops-edge read exposes a batch
-// id at all (confirmed against every DTO in ops-read.ts and mediation.ts),
-// so that trigger response - or a previously known batch id the operator
-// already has - is the only real, non-fabricated source for it, exactly
-// like BatchPage's own tenantWire/programWire free-text inputs (also
-// unblocked, also with no discovery read).
+// response already returns (`{ btchId }`). SUPERSEDED IN PART (P2-1): when
+// this was written no ops-edge read exposed a batch id at all, so that
+// trigger response, or an id the operator already held, was the only real
+// non-fabricated source. `getBatches` above is now a genuine discovery read,
+// and the batch detail hub calls both downloads with an id the operator
+// SELECTED rather than typed.
 // -----------------------------------------------------------------------
 
 export interface DownloadedFile {

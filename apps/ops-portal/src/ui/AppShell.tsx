@@ -9,6 +9,7 @@ import {
   IconMasterData,
   IconUploads,
   IconOperations,
+  IconFulfillment,
   IconCheck,
   IconLogout,
 } from './icons.js'
@@ -36,6 +37,7 @@ const SECTIONS: readonly Section[] = [
   { to: '/queues', label: 'Queues', icon: IconQueues },
   { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
   { to: '/uploads', label: 'Uploads', icon: IconUploads },
+  { to: '/fulfillment', label: 'Fulfillment', icon: IconFulfillment },
   { to: '/operations', label: 'Operations', icon: IconOperations },
   { to: '/activation', label: 'Activation', icon: IconCheck },
 ]
@@ -52,7 +54,7 @@ const NAV_GROUPS: ReadonlyArray<{ title: string; items: readonly Section[] }> = 
   },
   {
     title: 'Dispatch',
-    items: SECTIONS.filter((s) => ['/operations', '/uploads', '/queues', '/activation'].includes(s.to)),
+    items: SECTIONS.filter((s) => ['/uploads', '/fulfillment', '/operations', '/queues', '/activation'].includes(s.to)),
   },
   {
     title: 'Configuration',
@@ -189,7 +191,17 @@ function Sidebar({ className = '' }: { className?: string }) {
 
 function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
   const { pathname } = useLocation()
-  const current = SECTIONS.find((s) => pathname.startsWith(s.to))?.label ?? 'Ops Console'
+  // Detail routes that live OUTSIDE the nav's own path prefixes still belong to
+  // a section in the breadcrumb. /batches/:btchId is reached from Fulfillment
+  // but shares no prefix with /fulfillment, so without this it fell through to
+  // the 'Ops Console' default and the crumb read "Operations / Ops Console".
+  const DETAIL_ROUTE_SECTIONS: ReadonlyArray<{ prefix: string; label: string }> = [
+    { prefix: '/batches/', label: 'Fulfillment' },
+  ]
+  const current =
+    SECTIONS.find((s) => pathname.startsWith(s.to))?.label ??
+    DETAIL_ROUTE_SECTIONS.find((d) => pathname.startsWith(d.prefix))?.label ??
+    'Ops Console'
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/80 px-4 backdrop-blur lg:px-6">
       <button
