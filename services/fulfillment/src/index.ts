@@ -131,6 +131,17 @@ export {
   type BankCompositionConfigRow,
   listBatchingConfigs,
   type BatchingConfigRow,
+  // P2-1: the object-spine reads (batch list, batch detail, pool, dispatches).
+  listBatches,
+  type BatchRow,
+  readBatchDetail,
+  type BatchDetailView,
+  type BatchEntryRow,
+  type BatchArtifactRow,
+  listPoolEntries,
+  type PoolEntryRow,
+  listDispatches,
+  type DispatchRow,
 } from './ops-read.js'
 export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
 export { InMemoryAssetStore } from './storage/dev-asset-store.js'

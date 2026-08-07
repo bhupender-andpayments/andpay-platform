@@ -335,3 +335,293 @@ export async function listBatchingConfigs(db: FulfillmentDb): Promise<BatchingCo
   })
   return rows.map(toBatchingConfigDto)
 }
+
+// ---------------------------------------------------------------------------
+// P2-1: the four object-spine reads (batch list, batch detail, pool list,
+// dispatch list). Before this, the ONLY batch-shaped ops read was
+// download-by-typed-id, so the portal could fetch a batch's Excel but could not
+// LIST batches to find one.
+//
+// All four follow the established posture above: guard-only at the edge (reads
+// are not mutations, so no D2 authorize and no 6e), entering
+// `fulfillment_ops_read` bare. batch / pending_pool_entry / shpt already carry
+// that role's SELECT grant and a USING(true) ops policy from
+// 20260727010000_ops_portal_columns_roles, so NO migration is needed here.
+//
+// NO aggregate in any of them: test/architecture.test.ts scans this file for
+// SQL aggregate calls and its matcher reads COMMENTS too, so do not name them
+// literally here. Batch size is read from the STORED batch.unit_count column
+// that the batching PM already maintains, never recomputed in SQL.
+//
+// PII posture (D104 default-exclude): pending_pool_entry carries entitled
+// recipient PII (ship_to_address, ship_to_contact_name, ship_to_mobile) and the
+// raw qr/vpa values. The LIST projections below deliberately omit all of it: a
+// worklist needs to identify a record, not to address a parcel. The ship-view
+// remains available through the existing dispatch-excel download, which is the
+// surface that documents that entitlement. shpt is PII-free by construction
+// (AWB and carrier status only, see read.ts).
+
+export interface BatchRow {
+  id: string
+  status: string
+  triggerReason: string
+  unitCount: number
+  printVndr: string | null
+  triggeredByActor: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+interface BatchDbRow {
+  id: string
+  status: string
+  trigger_reason: string
+  unit_count: number
+  print_vndr: string | null
+  triggered_by_actor: string | null
+  created_at: Date
+  updated_at: Date
+}
+
+function toBatchDto(r: BatchDbRow): BatchRow {
+  return {
+    id: fromUuid('btch', r.id),
+    status: r.status,
+    triggerReason: r.trigger_reason,
+    unitCount: Number(r.unit_count),
+    printVndr: r.print_vndr === null ? null : fromUuid('vndr', r.print_vndr),
+    triggeredByActor: r.triggered_by_actor,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}
+
+// Newest batch first: this is a worklist, and the batch an operator wants is
+// almost always the one that just formed.
+export async function listBatches(db: FulfillmentDb): Promise<BatchRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<BatchDbRow[]>`
+      SELECT id::text AS id, status, trigger_reason, unit_count, print_vndr::text AS print_vndr,
+             triggered_by_actor::text AS triggered_by_actor, created_at, updated_at
+      FROM batch
+      ORDER BY created_at DESC
+    `
+  })
+  return rows.map(toBatchDto)
+}
+
+// One line of a batch: enough to identify the record and see where it is, with
+// no recipient PII (see the PII note above).
+export interface BatchEntryRow {
+  asgnId: string
+  merchantDisplayName: string
+  merchantLegalName: string
+  bankReferenceCode: string
+  bankDisplayName: string
+  branchCode: string | null
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  poolStatus: string
+  dispatchState: string | null
+  shipToSuperseded: boolean
+}
+
+interface BatchEntryDbRow {
+  asgn_id: string
+  merchant_display_name: string
+  merchant_legal_name: string
+  bank_reference_code: string
+  bank_display_name: string
+  branch_code: string | null
+  soundbox: boolean
+  standee_count: number
+  sticker_count: number
+  pool_status: string
+  dispatch_state: string | null
+  ship_to_superseded: boolean
+}
+
+function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
+  return {
+    asgnId: fromUuid('asgn', r.asgn_id),
+    merchantDisplayName: r.merchant_display_name,
+    merchantLegalName: r.merchant_legal_name,
+    bankReferenceCode: r.bank_reference_code,
+    bankDisplayName: r.bank_display_name,
+    branchCode: r.branch_code,
+    soundbox: r.soundbox,
+    standeeCount: Number(r.standee_count),
+    stickerCount: Number(r.sticker_count),
+    poolStatus: r.pool_status,
+    dispatchState: r.dispatch_state,
+    shipToSuperseded: r.ship_to_superseded,
+  }
+}
+
+export interface BatchArtifactRow {
+  asgnId: string
+  artifactType: string
+  assetReference: string
+  supersededAt: Date | null
+}
+
+interface BatchArtifactDbRow {
+  asgn_id: string
+  artifact_type: string
+  asset_reference: string
+  superseded_at: Date | null
+}
+
+export interface BatchDetailView {
+  batch: BatchRow
+  entries: BatchEntryRow[]
+  artifacts: BatchArtifactRow[]
+}
+
+// The batch detail hub. Returns null for an unknown batch so the edge can 404
+// rather than present an empty batch that looks real. Artifacts come back
+// row-level (one per assignment per type) so the UI can offer exactly the
+// download buttons that exist, instead of probing the download route and
+// treating its 404 as "no artifact".
+export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promise<BatchDetailView | null> {
+  const btchUuid = toUuid(btchId)
+  return db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    const header = await tx.$queryRaw<BatchDbRow[]>`
+      SELECT id::text AS id, status, trigger_reason, unit_count, print_vndr::text AS print_vndr,
+             triggered_by_actor::text AS triggered_by_actor, created_at, updated_at
+      FROM batch WHERE id = ${btchUuid}::uuid
+    `
+    if (header.length === 0) return null
+    const entries = await tx.$queryRaw<BatchEntryDbRow[]>`
+      SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
+             bank_reference_code, bank_display_name, branch_code, soundbox,
+             standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded
+      FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
+      ORDER BY bank_reference_code, branch_code, asgn_id
+    `
+    const artifacts = await tx.$queryRaw<BatchArtifactDbRow[]>`
+      SELECT asgn_id::text AS asgn_id, artifact_type, asset_reference, superseded_at
+      FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
+      ORDER BY artifact_type, asgn_id
+    `
+    return {
+      batch: toBatchDto(header[0]!),
+      entries: entries.map(toBatchEntryDto),
+      artifacts: artifacts.map((a) => ({
+        asgnId: fromUuid('asgn', a.asgn_id),
+        artifactType: a.artifact_type,
+        assetReference: a.asset_reference,
+        supersededAt: a.superseded_at,
+      })),
+    }
+  })
+}
+
+// The pending pool: everything not yet batched, which is the queue an operator
+// works. `poolStatus` narrows to one of POOLED / HELD / BATCHED; omitted returns
+// the whole pool. Same PII-free projection as a batch entry, plus the batch it
+// landed in (null while still pending) so one list serves both views.
+export interface PoolEntryRow extends BatchEntryRow {
+  batch: string | null
+  createdAt: Date
+}
+
+interface PoolEntryDbRow extends BatchEntryDbRow {
+  batch: string | null
+  created_at: Date
+}
+
+function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
+  return {
+    ...toBatchEntryDto(r),
+    batch: r.batch === null ? null : fromUuid('btch', r.batch),
+    createdAt: r.created_at,
+  }
+}
+
+const POOL_ENTRY_COLUMNS = `asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
+             bank_reference_code, bank_display_name, branch_code, soundbox,
+             standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
+             batch::text AS batch, created_at`
+
+export async function listPoolEntries(
+  db: FulfillmentDb,
+  { poolStatus }: { poolStatus?: string } = {},
+): Promise<PoolEntryRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    // Oldest first: the pool is a FIFO queue and the oldest entry is the one
+    // ageing toward its max-wait trigger.
+    if (poolStatus !== undefined) {
+      return tx.$queryRawUnsafe<PoolEntryDbRow[]>(
+        `SELECT ${POOL_ENTRY_COLUMNS} FROM pending_pool_entry WHERE pool_status = $1 ORDER BY created_at`,
+        poolStatus,
+      )
+    }
+    return tx.$queryRawUnsafe<PoolEntryDbRow[]>(
+      `SELECT ${POOL_ENTRY_COLUMNS} FROM pending_pool_entry ORDER BY created_at`,
+    )
+  })
+  return rows.map(toPoolEntryDto)
+}
+
+// The ops dispatch list: every shipment, unscoped by program (the class-3
+// operator sees the whole platform, unlike read.ts's readShipments which is the
+// program-scoped class-2 TENANT read). PII-free by construction.
+export interface DispatchRow {
+  id: string
+  awb: string
+  status: string
+  courierPartner: string | null
+  dispatchDate: Date
+  statusAt: Date | null
+  statusSource: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+interface DispatchDbRow {
+  id: string
+  awb: string
+  status: string
+  courier_partner: string | null
+  dispatch_date: Date
+  status_at: Date | null
+  status_source: string | null
+  created_at: Date
+  updated_at: Date
+}
+
+export async function listDispatches(db: FulfillmentDb, { status }: { status?: string } = {}): Promise<DispatchRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    if (status !== undefined) {
+      return tx.$queryRaw<DispatchDbRow[]>`
+        SELECT id::text AS id, awb, status, courier_partner::text AS courier_partner, dispatch_date,
+               status_at, status_source, created_at, updated_at
+        FROM shpt WHERE status = ${status}
+        ORDER BY dispatch_date DESC
+      `
+    }
+    return tx.$queryRaw<DispatchDbRow[]>`
+      SELECT id::text AS id, awb, status, courier_partner::text AS courier_partner, dispatch_date,
+             status_at, status_source, created_at, updated_at
+      FROM shpt
+      ORDER BY dispatch_date DESC
+    `
+  })
+  return rows.map((r) => ({
+    id: fromUuid('shpt', r.id),
+    awb: r.awb,
+    status: r.status,
+    courierPartner: r.courier_partner === null ? null : fromUuid('vndr', r.courier_partner),
+    dispatchDate: r.dispatch_date,
+    statusAt: r.status_at,
+    statusSource: r.status_source,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }))
+}

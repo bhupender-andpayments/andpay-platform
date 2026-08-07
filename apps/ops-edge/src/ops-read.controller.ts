@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Inject, Param, Query, Res, UseGuards } from '@nestjs/common'
+import { Controller, Get, HttpCode, Inject, NotFoundException, Param, Query, Res, UseGuards } from '@nestjs/common'
 import {
   listVendors,
   readIntakeExceptions,
@@ -8,6 +8,14 @@ import {
   buildDispatchPackage,
   dispatchXlsx,
   assembleTypePdf,
+  listBatches,
+  readBatchDetail,
+  listPoolEntries,
+  listDispatches,
+  type BatchRow,
+  type BatchDetailView,
+  type PoolEntryRow,
+  type DispatchRow,
   type VendorRow,
   type IntakeExceptionView,
   type CourierStatusExceptionView,
@@ -122,6 +130,44 @@ export class OpsReadController {
   @HttpCode(200)
   async bankMasters(): Promise<BankMasterRow[]> {
     return listBankMasters(this.deps.identityDb)
+  }
+
+  // P2-1: the object-spine reads. Guard-only exactly like every read above (no
+  // D2 authorize, no 6e; the fulfillment_ops_read role scopes visibility). These
+  // four close the gap where the ONLY batch-shaped read was
+  // download-by-typed-id: the portal could fetch a batch's Excel but had no way
+  // to LIST batches and find one. All are PII-free projections (see ops-read.ts).
+  @Get('batches')
+  @HttpCode(200)
+  async batches(): Promise<BatchRow[]> {
+    return listBatches(this.deps.fulfillmentDb)
+  }
+
+  // `?poolStatus=POOLED|HELD|BATCHED` narrows the queue; omitted returns the
+  // whole pool. Registered BEFORE `batches/:btchId` is irrelevant here (a
+  // different path), but the pool route is deliberately its own noun rather than
+  // `batches/pending`, which WOULD have been captured by the :btchId param.
+  @Get('pool')
+  @HttpCode(200)
+  async pool(@Query('poolStatus') poolStatus?: string): Promise<PoolEntryRow[]> {
+    return listPoolEntries(this.deps.fulfillmentDb, poolStatus !== undefined ? { poolStatus } : {})
+  }
+
+  @Get('dispatches')
+  @HttpCode(200)
+  async dispatches(@Query('status') status?: string): Promise<DispatchRow[]> {
+    return listDispatches(this.deps.fulfillmentDb, status !== undefined ? { status } : {})
+  }
+
+  // 404 on an unknown batch rather than an empty-but-valid-looking detail, so
+  // the UI cannot render a batch that does not exist. A malformed id throws out
+  // of toUuid and is mapped by the ops error filter.
+  @Get('batches/:btchId')
+  @HttpCode(200)
+  async batchDetail(@Param('btchId') btchId: string): Promise<BatchDetailView> {
+    const detail = await readBatchDetail(this.deps.fulfillmentDb, btchId)
+    if (detail === null) throw new NotFoundException('batch not found')
+    return detail
   }
 
   // Phase 4 (BRD 5.3 FR-03 / FR-04, P4-D6): the Phase-1 dispatch-package hand-off
