@@ -521,3 +521,95 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     expect(await assembleTypePdf(db, assetStore, btchWire, 'STICKER_IMG')).toBeNull()
   })
 })
+
+// The property the three-phase refactor trades on, previously reasoned but not
+// proven. Rendering and the object-store puts happen OUTSIDE the consume
+// transaction, so a crash between them and the commit leaves stored objects
+// with no composed_artifact row. That must be orphaned bytes, never corruption
+// and never a double-write: the redelivery has to land EXACTLY one set.
+describe('crash between the pre-render and the commit (three-phase idempotency)', () => {
+  it('a redelivery after a failed consume lands exactly one set of artifacts and one dispatch fact', async () => {
+    const tenantWire = newId('tnnt')
+    const tenantUuid = toUuid(tenantWire)
+    const programWire = newId('prog')
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+    await seedBankConfig(tenantUuid, 'HDFC')
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-a', 'HDFC')
+
+    const env = batchFactEnvelope({
+      payload: {
+        btchId: btchWire,
+        tenantId: tenantWire,
+        programId: programWire,
+        triggerReason: 'LOT_SIZE',
+        unitCount: 1,
+        asgnIds: [a.asgnWire],
+      },
+      dedupKey: btchWire,
+      traceId: 'trace-crash-1',
+    })
+
+    // Fail the CONSUME transaction specifically, not the pre-render. The
+    // pre-render opens the first $transaction (its short read); the consume
+    // transaction is the second. Throwing there reproduces the exact window
+    // this refactor introduced: assets stored, nothing committed.
+    let txCalls = 0
+    const crashingDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === '$transaction') {
+          return async (...args: unknown[]) => {
+            txCalls += 1
+            if (txCalls === 2) throw new Error('simulated crash after pre-render, before commit')
+            return (target.$transaction as (...a: unknown[]) => unknown).apply(target, args)
+          }
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    }) as typeof db
+
+    await expect(consumeBatchFact(crashingDb, env, assetStore)).rejects.toThrow(/simulated crash/)
+
+    // NON-VACUITY: the crash must land AFTER the pre-render, otherwise this
+    // test proves nothing about the window it claims to cover. The objects are
+    // in the store, keyed deterministically, with no row referencing them.
+    // Without this assertion a crash on the pre-render's own read transaction
+    // would satisfy every other expectation here.
+    const orphanA = await assetStore.getCurrent(`artifact/${btchWire}/${a.asgnUuid}/SOUNDBOX_IMG`)
+    const orphanB = await assetStore.getCurrent(`artifact/${btchWire}/${a.asgnUuid}/STANDEE_IMG`)
+    expect(orphanA, 'the pre-render must have stored objects before the crash').not.toBeNull()
+    expect(orphanB).not.toBeNull()
+
+    // Nothing committed: the objects exist but the batch left no trace in the DB.
+    const afterCrash = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid`
+    expect(Number(afterCrash[0]!.n)).toBe(0)
+
+    // The redelivery. Same envelope, same dedupKey, as an at-least-once rail
+    // would deliver it.
+    const res = await consumeBatchFact(db, env, assetStore)
+    expect(res.deduped).toBe(false)
+    expect(res.composed).toBe(2) // SOUNDBOX_IMG + STANDEE_IMG for the one entry
+
+    // EXACTLY one set: the re-render wrote identical bytes to the same
+    // deterministic asset key, so no duplicate rows and no second fact.
+    const rows = await db.$queryRaw<{ artifact_type: string; asset_reference: string }[]>`
+      SELECT artifact_type, asset_reference FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid ORDER BY artifact_type
+    `
+    expect(rows.map((r) => r.artifact_type)).toEqual(['SOUNDBOX_IMG', 'STANDEE_IMG'])
+    expect(new Set(rows.map((r) => r.asset_reference)).size).toBe(2)
+
+    const facts = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = ${DISPATCH_TOPIC} AND aggregate_id = ${btchWire}
+        AND payload->'payload'->>'dispatchState' = 'QR_GENERATED'
+    `
+    expect(Number(facts[0]!.n)).toBe(1)
+
+    // And a THIRD delivery is a clean no-op, so the guard did not merely
+    // survive the crash, it still dedupes normally afterwards.
+    const third = await consumeBatchFact(db, env, assetStore)
+    expect(third.deduped).toBe(true)
+    const finalCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid`
+    expect(Number(finalCount[0]!.n)).toBe(2)
+  })
+})
