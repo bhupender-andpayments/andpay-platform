@@ -28,7 +28,7 @@ const DAMAGE_HEADERS = Object.values(DEFAULT_DAMAGE_COLUMN_MAPPING)
 // A recipient-contact value that is PII: the preview must return it in the
 // response object yet never log it.
 const PII_CONTACT = 'Jane Doe'
-const PII_MOBILE = '+91-9000000000'
+const PII_MOBILE = '9000000000'
 
 const BASE_REQUEST: Record<string, string> = {
   bankMerchantReference: 'BM-1',
@@ -36,7 +36,7 @@ const BASE_REQUEST: Record<string, string> = {
   legalName: 'Acme Pvt Ltd',
   mcc: '5814',
   registeredAddress: '221B Baker Street',
-  bankReferenceCode: 'HDFC',
+  bankReferenceCode: '3',
   productType: 'soundbox',
   vpaValue: 'acme@hdfcbank',
   qrValue: 'upi://pay?pa=acme@hdfcbank',
@@ -46,7 +46,7 @@ const BASE_REQUEST: Record<string, string> = {
   shipToAddress: '221B Baker Street',
   contactName: PII_CONTACT,
   mobile: PII_MOBILE,
-  branchCode: 'BR-001',
+  branchCode: '30',
   vpaHint: 'acme@hdfcbank',
 }
 
@@ -106,7 +106,7 @@ function validRow(over: Partial<BankRequestRow> = {}): BankRequestRow {
     legalName: 'Acme Pvt Ltd',
     mcc: '5814',
     registeredAddress: '221B Baker Street',
-    bankReferenceCode: 'HDFC',
+    bankReferenceCode: '3',
     productType: 'soundbox',
     vpaValue: 'acme@hdfcbank',
     qrValue: 'upi://pay?pa=acme@hdfcbank',
@@ -115,8 +115,8 @@ function validRow(over: Partial<BankRequestRow> = {}): BankRequestRow {
     stickerCount: 2,
     shipToAddress: '221B Baker Street',
     contactName: 'Jane Doe',
-    mobile: '+91-9000000000',
-    branchCode: 'BR-001',
+    mobile: '9000000000',
+    branchCode: '30',
     vpaHint: 'acme@hdfcbank',
     ...over,
   }

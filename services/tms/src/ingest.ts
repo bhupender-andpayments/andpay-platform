@@ -51,8 +51,7 @@ export interface BankRequestRow {
 // (Email is not on BankRequestRow at all), it covered contact name and mobile,
 // and D3 requires BOTH. So this is a pure split, nothing dropped.
 //
-// P-A: these are the SOURCE-AGNOSTIC rules only. See the note below on why the
-// D3 per-column patterns are deliberately NOT here.
+// P-A: the source-agnostic rules PLUS the D3 per-column patterns.
 export type RequestRowRejectReason =
   | 'invalid_qr_vpa_format'
   | 'missing_display_name'
@@ -60,33 +59,47 @@ export type RequestRowRejectReason =
   | 'missing_registered_address'
   | 'missing_contact_name'
   | 'missing_mobile'
+  | 'invalid_mobile_format'
+  | 'invalid_category_code_format'
+  | 'invalid_bank_code_format'
   | 'missing_branch_code'
+  | 'invalid_branch_code_format'
   | 'invalid_standee_count'
   | 'invalid_sticker_count'
 
-// WHY THE D3 PATTERNS ARE NOT VALIDATED HERE (P-A, 2026-08-07).
+// D11 RULED (Bhupender, 2026-08-07): GSCB is the ONLY tenant in scope, so its
+// dialect IS the platform's dialect and the D3 patterns are enforced right here,
+// globally, rather than being pushed into the source profile.
 //
-// D3 tabulates per-column patterns (Mobile exactly 10 digits, Category Code 3 or
-// 4 digits, Bank and Branch code numeric). Every one of those was measured
-// against ONE bank's file, the 360-row GSCB export. This function is the
-// SOURCE-AGNOSTIC validator: every file from every bank passes through it,
-// including canonical-profile files that no Annexure B profile ever reshaped.
+// THE COST IS DELIBERATE AND IS RECORDED SO IT IS NOT REDISCOVERED THE HARD WAY.
+// Every pattern below was measured against ONE bank's file. A second bank
+// shipping alphanumeric codes ('HDFC', 'BR-001') or a '+91' prefixed mobile will
+// be REJECTED ROW BY ROW at ingest, and the rejection will look like the bank's
+// fault rather than ours. The repo's own fixtures used exactly those shapes
+// before this change, which is how concrete the risk is.
 //
-// Enforcing GSCB's dialect here would reject a second bank's legitimate data.
-// Concretely, `bankReferenceCode: 'HDFC'` and `branchCode: 'BR-001'` are
-// alphanumeric and would be rejected on arrival, and a `+91` prefixed mobile
-// would fail a bare-10-digit rule. GSCB happens to ship numeric aggregator codes
-// (3, 18, 1523 ... 8606); that is a fact about GSCB, not about bank files.
-//
-// The precedent is already set in this repo. The Soundbox `Y`/`N` defect was
-// fixed in the Annexure B profile "that knows the dialect rather than by
-// widening parseBoolean for every future format". Dialect belongs with the
-// profile. bank-source-profile.ts:33 currently states a profile only reshapes
-// and has no reject channel, so giving it one is a design change, not a drive-by.
-// AWAITING A RULING from Bhupender; see BANK_FILE_DECISIONS_2026-08-07.md.
-//
-// What IS here is what holds for ANY source: a value that is structurally
-// impossible rather than merely differently formatted.
+// SO WHEN A SECOND PARTNER ONBOARDS, THIS IS THE FIRST THING TO MOVE, and the
+// destination is already known: the Annexure B source profile (D8), which is
+// where the Soundbox Y/N dialect fix went for this same reason. That is option
+// D11a in BANK_FILE_DECISIONS_2026-08-07.md, and the only work it needs is a
+// reject channel on BankSourceProfile, which today only reshapes.
+
+// D3: exactly 10 digits. 360 of 360 real rows comply, so Annexure B's 9-digit
+// sample is simply wrong. Digits ONLY, so a separator or a letter-for-digit typo
+// (O for 0) is a rejection rather than a silently mangled contact number.
+const MOBILE_FORMAT = /^\d{10}$/
+
+// D3: BOTH 3 and 4 digits are valid and are stored AS GIVEN. The real file
+// carries 310 four-digit and 50 three-digit codes, and Bhupender ruled
+// explicitly that a 3-digit code is NOT padded to 4. Validation therefore only
+// bounds the shape; it never rewrites the value.
+const CATEGORY_CODE_FORMAT = /^\d{3,4}$/
+
+// D3: numeric, VARIABLE length, for both. One real file carries 19 distinct bank
+// codes of 1, 2 and 4 digits (3, 18, 1523 ... 8606) and branch codes of 1 to 4
+// digits, so a fixed width would reject real data. Length is deliberately
+// unbounded: the evidence constrains the alphabet, not the width.
+const NUMERIC_CODE_FORMAT = /^\d+$/
 
 // Required, non-negative INTEGER. Zero is a legitimate quantity (a merchant
 // wanting no standee), so the floor is 0 and not 1. NaN is what a non-numeric
@@ -110,7 +123,11 @@ export function requestRowRejectReason(row: BankRequestRow): RequestRowRejectRea
   if (isBlank(row.registeredAddress)) return 'missing_registered_address'
   if (!row.contactName) return 'missing_contact_name'
   if (!row.mobile) return 'missing_mobile'
+  if (!MOBILE_FORMAT.test(row.mobile)) return 'invalid_mobile_format'
+  if (!CATEGORY_CODE_FORMAT.test(row.mcc)) return 'invalid_category_code_format'
+  if (!NUMERIC_CODE_FORMAT.test(row.bankReferenceCode)) return 'invalid_bank_code_format'
   if (!row.branchCode) return 'missing_branch_code'
+  if (!NUMERIC_CODE_FORMAT.test(row.branchCode)) return 'invalid_branch_code_format'
   if (!isCollateralCount(row.standeeCount)) return 'invalid_standee_count'
   if (!isCollateralCount(row.stickerCount)) return 'invalid_sticker_count'
   return null

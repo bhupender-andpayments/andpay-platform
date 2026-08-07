@@ -59,9 +59,63 @@ describe('Mobile and contact name: the D2 split into one code per column', () =>
   it('names the mobile column when it is empty, not a shared contact code', () => {
     expect(requestRowRejectReason(validRow({ mobile: '' }))).toBe('missing_mobile')
   })
+})
 
-  it('accepts a +91 prefixed mobile, because the 10-digit rule is GSCB dialect and is NOT enforced here', () => {
-    expect(requestRowRejectReason(validRow({ mobile: '+91-9000000000' }))).toBeNull()
+describe('D3 Mobile: exactly 10 digits', () => {
+  it('rejects a mobile carrying a letter-for-digit typo', () => {
+    expect(requestRowRejectReason(validRow({ mobile: '95379O8O17' }))).toBe('invalid_mobile_format')
+  })
+
+  it('rejects a 9-digit mobile, so the wrong Annexure B sample cannot get in', () => {
+    expect(requestRowRejectReason(validRow({ mobile: '953790801' }))).toBe('invalid_mobile_format')
+  })
+
+  it('rejects an 11-digit mobile', () => {
+    expect(requestRowRejectReason(validRow({ mobile: '95379080171' }))).toBe('invalid_mobile_format')
+  })
+
+  it('rejects a +91 prefixed mobile, since GSCB ships bare 10-digit numbers', () => {
+    expect(requestRowRejectReason(validRow({ mobile: '+91-9000000000' }))).toBe('invalid_mobile_format')
+  })
+})
+
+describe('D3 Category Code: 3 OR 4 digits, no padding, no transformation', () => {
+  it('accepts a 4-digit category code (310 of the 360 real rows)', () => {
+    expect(requestRowRejectReason(validRow({ mcc: '5977' }))).toBeNull()
+  })
+
+  it('accepts a 3-digit category code UNPADDED (50 of the 360 real rows)', () => {
+    expect(requestRowRejectReason(validRow({ mcc: '742' }))).toBeNull()
+  })
+
+  it('rejects a 2-digit category code', () => {
+    expect(requestRowRejectReason(validRow({ mcc: '59' }))).toBe('invalid_category_code_format')
+  })
+
+  it('rejects a 5-digit category code', () => {
+    expect(requestRowRejectReason(validRow({ mcc: '59770' }))).toBe('invalid_category_code_format')
+  })
+
+  it('rejects a non-numeric category code', () => {
+    expect(requestRowRejectReason(validRow({ mcc: '59A7' }))).toBe('invalid_category_code_format')
+  })
+})
+
+describe('D3 Bank code and Branch code: numeric, VARIABLE length', () => {
+  it('accepts a 1-digit bank code, the shortest real value', () => {
+    expect(requestRowRejectReason(validRow({ bankReferenceCode: '3' }))).toBeNull()
+  })
+
+  it('accepts a 4-digit bank code, the longest real value', () => {
+    expect(requestRowRejectReason(validRow({ bankReferenceCode: '8606' }))).toBeNull()
+  })
+
+  it('rejects an alphabetic bank code, which GSCB never ships', () => {
+    expect(requestRowRejectReason(validRow({ bankReferenceCode: 'HDFC' }))).toBe('invalid_bank_code_format')
+  })
+
+  it('rejects a non-numeric branch code, which previously passed on non-emptiness alone', () => {
+    expect(requestRowRejectReason(validRow({ branchCode: 'BR-0142' }))).toBe('invalid_branch_code_format')
   })
 })
 

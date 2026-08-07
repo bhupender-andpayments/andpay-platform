@@ -35,9 +35,9 @@ describe('TMS-thin to Identity-min round trip (checks 1, 2)', () => {
     // 1. TMS ingests a request row and emits the row fact.
     const outcome = await ingestRequestRow(tms, {
       fileId: 'file-1', rowNo: 1, bankMerchantReference: 'BM-1', displayName: 'Acme', legalName: 'Acme Pvt Ltd',
-      mcc: '5814', registeredAddress: '221B Baker Street', bankReferenceCode: 'HDFC', productType: 'soundbox',
+      mcc: '5814', registeredAddress: '221B Baker Street', bankReferenceCode: '3', productType: 'soundbox',
       vpaValue: 'acme@hdfcbank', qrValue: 'upi://pay?pa=acme@hdfcbank', soundbox: true, standeeCount: 1, stickerCount: 2,
-      shipToAddress: '221B Baker Street', contactName: 'Jane Doe', mobile: '+91-9000000000', branchCode: 'BR-001', vpaHint: 'acme@hdfcbank',
+      shipToAddress: '221B Baker Street', contactName: 'Jane Doe', mobile: '9000000000', branchCode: '30', vpaHint: 'acme@hdfcbank',
     }, 'trace-1')
     expect(outcome).toBe('accepted')
 
@@ -69,7 +69,7 @@ describe('TMS-thin to Identity-min round trip (checks 1, 2)', () => {
     `
     expect(asgn).toHaveLength(1)
     expect(asgn[0]!.merchant_display_name).toBe('Acme')     // from merchant_projection <- fct.identity.merchant.v1
-    expect(asgn[0]!.bank_reference_code).toBe('HDFC')       // from tenant_projection
+    expect(asgn[0]!.bank_reference_code).toBe('3')       // from tenant_projection
     expect(asgn[0]!.ship_to_address).toBe('221B Baker Street')
     expect(asgn[0]!.source_event_id).toBe('file-1|1')       // correlation join
 

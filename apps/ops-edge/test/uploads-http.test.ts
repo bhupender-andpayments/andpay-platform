@@ -73,7 +73,7 @@ const BASE_REQUEST: Record<string, string> = {
   legalName: 'Acme Pvt Ltd',
   mcc: '5814',
   registeredAddress: '221B Baker Street',
-  bankReferenceCode: 'HDFC',
+  bankReferenceCode: '3',
   productType: 'soundbox',
   vpaValue: 'acme@hdfcbank',
   qrValue: 'upi://pay?pa=acme@hdfcbank',
@@ -82,8 +82,8 @@ const BASE_REQUEST: Record<string, string> = {
   stickerCount: '2',
   shipToAddress: '221B Baker Street',
   contactName: 'Jane Doe',
-  mobile: '+91-9000000000',
-  branchCode: 'BR-001',
+  mobile: '9000000000',
+  branchCode: '30',
   vpaHint: 'acme@hdfcbank',
 }
 

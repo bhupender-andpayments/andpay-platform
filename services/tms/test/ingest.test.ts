@@ -19,10 +19,10 @@ function validRow(over: Partial<BankRequestRow> = {}): BankRequestRow {
   return {
     fileId: 'file-1', rowNo: 1,
     bankMerchantReference: 'BM-1', displayName: 'Acme', legalName: 'Acme Pvt Ltd',
-    mcc: '5814', registeredAddress: '221B Baker Street', bankReferenceCode: 'HDFC',
+    mcc: '5814', registeredAddress: '221B Baker Street', bankReferenceCode: '3',
     productType: 'soundbox', vpaValue: 'acme@hdfcbank', qrValue: 'upi://pay?pa=acme@hdfcbank',
     soundbox: true, standeeCount: 1, stickerCount: 2, shipToAddress: '221B Baker Street',
-    contactName: 'Jane Doe', mobile: '+91-9000000000', branchCode: 'BR-001',
+    contactName: 'Jane Doe', mobile: '9000000000', branchCode: '30',
     vpaHint: 'acme@hdfcbank', ...over,
   }
 }
@@ -44,14 +44,14 @@ describe('request-file ingest (spec 06 sections 6, 10; checks 3, 4)', () => {
     expect(pend[0]!.qr_value).toBe('upi://pay?pa=acme@hdfcbank')
     // 06a check 1: the recipient contact snapshot is parsed into pending_row.
     expect(pend[0]!.contact_name).toBe('Jane Doe')
-    expect(pend[0]!.mobile).toBe('+91-9000000000')
+    expect(pend[0]!.mobile).toBe('9000000000')
     // Task 4: the Branch Code snapshot is parsed into pending_row.
-    expect(pend[0]!.branch_code).toBe('BR-001')
+    expect(pend[0]!.branch_code).toBe('30')
 
     const ob = await outboxRows()
     expect(ob).toHaveLength(1)
     expect(ob[0]!.event_type).toBe(ROW_FACT_TYPE)
-    expect(ob[0]!.partition_key).toBe('HDFC|BM-1')
+    expect(ob[0]!.partition_key).toBe('3|BM-1')
     // check 4: the row fact carries the identity slice + vpaHint, and NOT the
     // QR/VPA value, the demand slice, or the ship-to (S7/S5).
     const payload = ob[0]!.payload as { payload: Record<string, unknown> }

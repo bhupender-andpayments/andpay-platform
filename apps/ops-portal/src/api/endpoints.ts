@@ -610,7 +610,11 @@ export type RequestRowRejectReason =
   | 'missing_registered_address'
   | 'missing_contact_name'
   | 'missing_mobile'
+  | 'invalid_mobile_format'
+  | 'invalid_category_code_format'
+  | 'invalid_bank_code_format'
   | 'missing_branch_code'
+  | 'invalid_branch_code_format'
   | 'invalid_standee_count'
   | 'invalid_sticker_count'
 

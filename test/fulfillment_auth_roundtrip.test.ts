@@ -692,7 +692,7 @@ describe('check 8: E4 trace propagates end to end from the demand fact to the ba
       merchantDisplayName: 'Acme',
       merchantLegalName: 'Acme Pvt Ltd',
       merchantMcc: '5814',
-      bankReferenceCode: 'HDFC',
+      bankReferenceCode: '3',
       bankDisplayName: 'HDFC Bank',
       shipToAddress: '221B Baker Street',
       qrValue: 'upi://pay?pa=acme@hdfcbank',
