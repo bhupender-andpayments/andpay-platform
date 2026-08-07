@@ -3,6 +3,7 @@ import { PDFDocument } from 'pdf-lib'
 import { toUuid, fromUuid } from '@andpay/ids'
 import type { FulfillmentDb } from './db.js'
 import type { AssetStore } from './storage/asset-store.js'
+import { decodeBankQrPayload } from './qr-payload.js'
 
 // Which adapter function the package projection is being built for. The
 // entitlement below is scoped to THIS parameter, never a global field: a
@@ -116,7 +117,9 @@ export async function buildDispatchPackage(
       branchCode: e.branch_code,
       artifacts: artifactsByAsgn.get(e.asgn_id) ?? [],
       labelDisplayName: e.merchant_display_name,
-      labelQr: e.qr_value,
+      // decodeBankQrPayload: the vendor may print from this column, so it is an
+      // artifact boundary too, not just a report field. See qr-payload.ts.
+      labelQr: decodeBankQrPayload(e.qr_value),
       soundbox: e.soundbox,
       standeeCount: e.standee_count,
       stickerCount: e.sticker_count,

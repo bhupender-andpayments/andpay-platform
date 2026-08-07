@@ -29,6 +29,19 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
     }
   })
 
+  it('encodes the DECODED bank payload into the QR (the GSCB escaped-separator defect)', async () => {
+    // Wiring assertion, not a restatement of qr-payload.test.ts. Rendering is
+    // deterministic and a different qrValue yields different bytes, so if
+    // decodeBankQrPayload is wired at the QR call site then the bank's escaped
+    // payload and its hand-corrected twin must render BYTE-IDENTICAL. Drop the
+    // decode from renderer.ts and this fails.
+    const escaped = 'upi://pay?ver=01&amp;mode=01&pa=acme@hdfcbank&pn=Acme&mc=5977'
+    const corrected = 'upi://pay?ver=01&mode=01&pa=acme@hdfcbank&pn=Acme&mc=5977'
+    const a = await renderCollateralPdf({ ...base, qrValue: escaped })
+    const b = await renderCollateralPdf({ ...base, qrValue: corrected })
+    expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true)
+  })
+
   it('is deterministic: identical input yields byte-identical output (safe to cache)', async () => {
     const a = await renderCollateralPdf(base)
     const b = await renderCollateralPdf(base)

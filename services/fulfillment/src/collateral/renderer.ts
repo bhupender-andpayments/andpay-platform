@@ -1,5 +1,6 @@
 import QRCode from 'qrcode'
 import { PDFDocument, StandardFonts, rgb, degrees, type PDFFont, type PDFPage } from 'pdf-lib'
+import { decodeBankQrPayload } from '../qr-payload.js'
 
 // Phase 4 (BRD 5.3 FR-03): the PURE, in-house collateral renderer. Turns one
 // merchant artifact (soundbox / standee / sticker) into a print-ready VECTOR PDF
@@ -264,7 +265,14 @@ export async function renderCollateralPdf(input: CollateralInput): Promise<Uint8
   const qrSide = Math.max(40, Math.min(contentW, bandTop - bandBot))
   const qrX = (W - qrSide) / 2
   const qrY = bandBot + (bandTop - bandBot - qrSide) / 2
-  const qrPng = await QRCode.toBuffer(input.qrValue, { type: 'png', margin: 1, width: 600, errorCorrectionLevel: 'M' })
+  // decodeBankQrPayload: the bank ships HTML-escaped query separators, and this
+  // is the string a merchant's phone actually scans off the printed artifact.
+  const qrPng = await QRCode.toBuffer(decodeBankQrPayload(input.qrValue), {
+    type: 'png',
+    margin: 1,
+    width: 600,
+    errorCorrectionLevel: 'M',
+  })
   const qrImg = await doc.embedPng(qrPng)
   page.drawImage(qrImg, { x: qrX, y: qrY, width: qrSide, height: qrSide })
 
