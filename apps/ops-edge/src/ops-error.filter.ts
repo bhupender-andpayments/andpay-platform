@@ -56,6 +56,23 @@ function safeReasons(raw: unknown): { code: string; column?: string }[] | undefi
   return out.length > 0 ? out : undefined
 }
 
+// A MALFORMED typed id is a client error, not a server fault. `toUuid` throws
+// InvalidIdError (packages/ids) on a bad payload, which carries no `kind`, so
+// before this it fell through to super.catch and surfaced as a 500. Every
+// route taking a typed id in the path was affected, not just one: the P2-1
+// batch detail, and the pre-existing dispatch-excel and collateral downloads.
+// Found by probing the running edge, NOT by a test: the suites only ever
+// passed WELL-FORMED ids (a real newId), which correctly 404 when absent.
+//
+// Duck-typed on `name` for the same reason the shape check above avoids
+// instanceof: it must hold across package boundaries and dual instantiation.
+// The thrown message never rides the response (it echoes caller input, e.g.
+// the offending payload length), so a fixed code and message go out instead.
+function isInvalidIdShape(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false
+  return (err as { name?: unknown }).name === 'InvalidIdError'
+}
+
 interface MinimalResponse {
   status(code: number): { json(body: unknown): unknown }
 }
@@ -63,6 +80,15 @@ interface MinimalResponse {
 @Catch()
 export class OpsErrorFilter extends BaseExceptionFilter {
   override catch(exception: unknown, host: ArgumentsHost): void {
+    if (isInvalidIdShape(exception)) {
+      host
+        .switchToHttp()
+        .getResponse<MinimalResponse>()
+        .status(HttpStatus.BAD_REQUEST)
+        .json({ code: 'invalid-id', message: 'invalid id' })
+      return
+    }
+
     if (!isOpsClientErrorShape(exception)) {
       super.catch(exception, host)
       return
