@@ -103,7 +103,7 @@ const BANK_ROW_2 = {
 const BANK_PREVIEW_RESULT = {
   rows: [
     { rowNo: 1, valid: true, errors: [], row: BANK_ROW_1 },
-    { rowNo: 2, valid: false, errors: ['missing_recipient_contact'], row: BANK_ROW_2 },
+    { rowNo: 2, valid: false, errors: ['missing_contact_name'], row: BANK_ROW_2 },
   ],
   summary: { total: 2, valid: 1, invalid: 1 },
   structuralErrors: [],
@@ -235,7 +235,7 @@ describe('uploads', () => {
     // per-row data (BMR-1/BMR-2), not decorative rows.
     expect(await screen.findByText('BMR-1')).toBeTruthy()
     expect(screen.getByText('BMR-2')).toBeTruthy()
-    expect(screen.getByText('Missing Recipient Contact')).toBeTruthy()
+    expect(screen.getByText('Missing Contact Name')).toBeTruthy()
     expect(screen.getByText(/2 row\(s\) previewed/i)).toBeTruthy()
 
     const previewCall = calls.find((c) => c.url.includes('/ops/uploads/bank/preview'))

@@ -594,8 +594,25 @@ export function getBatchingConfig(c: Client) {
 // tokenStore). None of these routes is step-up-gated.
 // -----------------------------------------------------------------------
 
-/** services/tms/src/ingest.ts RequestRowRejectReason. */
-export type RequestRowRejectReason = 'invalid_qr_vpa_format' | 'missing_recipient_contact'
+/**
+ * services/tms/src/ingest.ts RequestRowRejectReason. Kept in sync by hand: the
+ * portal cannot import from a service (no cross-context dependency), so a guard
+ * test asserts this union matches the service's own list exactly.
+ *
+ * P-A: previously this listed only TWO of the codes the service could actually
+ * return, so `missing_branch_code` had been reachable on the wire and absent
+ * from the type since Phase 3. That drift is what the parity guard now prevents.
+ */
+export type RequestRowRejectReason =
+  | 'invalid_qr_vpa_format'
+  | 'missing_display_name'
+  | 'missing_legal_name'
+  | 'missing_registered_address'
+  | 'missing_contact_name'
+  | 'missing_mobile'
+  | 'missing_branch_code'
+  | 'invalid_standee_count'
+  | 'invalid_sticker_count'
 
 /** services/tms/src/ops.ts PreviewRowResult: one row's preview verdict. */
 export interface PreviewRowResult {

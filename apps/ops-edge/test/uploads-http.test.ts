@@ -195,7 +195,7 @@ describe('ops-edge uploads: bank PREVIEW (multipart, persists nothing)', () => {
     expect(res.body.summary).toEqual({ total: 2, valid: 1, invalid: 1 })
     expect(res.body.rows[0].valid).toBe(true)
     expect(res.body.rows[1].valid).toBe(false)
-    expect(res.body.rows[1].errors).toEqual(['missing_recipient_contact'])
+    expect(res.body.rows[1].errors).toEqual(['missing_contact_name'])
 
     // Persist-nothing across BOTH context stores.
     expect(await tmsCount('pending_row')).toBe(0)

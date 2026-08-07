@@ -93,12 +93,12 @@ describe('request-file ingest (spec 06 sections 6, 10; checks 3, 4)', () => {
     expect(noContact).toBe('quarantined')
     const q1 = await db.$queryRaw<{ reason_code: string }[]>`SELECT reason_code FROM quarantine_row WHERE row_no = 3`
     expect(q1).toHaveLength(1)
-    expect(q1[0]!.reason_code).toBe('missing_recipient_contact')
+    expect(q1[0]!.reason_code).toBe('missing_contact_name')
 
     const noMobile = await ingestRequestRow(db, validRow({ rowNo: 4, mobile: '' }), 'trace-1')
     expect(noMobile).toBe('quarantined')
     const q2 = await db.$queryRaw<{ reason_code: string }[]>`SELECT reason_code FROM quarantine_row WHERE row_no = 4`
-    expect(q2[0]!.reason_code).toBe('missing_recipient_contact')
+    expect(q2[0]!.reason_code).toBe('missing_mobile')
 
     // neither created a pending_row or a row fact (row-level rejection, S8).
     const pend = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM pending_row`

@@ -159,7 +159,7 @@ describe('tms ops preview (spec P2 Task 2): previewBankFile persists nothing and
     expect(res.rows[0]!.valid).toBe(true)
     expect(res.rows[0]!.errors).toEqual([])
     expect(res.rows[1]!.valid).toBe(false)
-    expect(res.rows[1]!.errors).toEqual(['missing_recipient_contact'])
+    expect(res.rows[1]!.errors).toEqual(['missing_contact_name'])
     // The PII travels ONLY in the response row.
     expect(res.rows[0]!.row.contactName).toBe(PII_CONTACT)
     expect(res.rows[0]!.row.mobile).toBe(PII_MOBILE)
@@ -379,7 +379,7 @@ describe('tms ops API (spec 10c Task 5): quarantine resolution, ops-read', () =>
   it('resolveQuarantineRow re-drives ingest and stamps resolved_at/resolved_by_actor without mutating other quarantine state', async () => {
     const seeded = await db.$queryRaw<{ id: string }[]>`
       INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
-      VALUES ('seed-file', 1, ${'redacted:bank_request'}, 'missing_recipient_contact')
+      VALUES ('seed-file', 1, ${'redacted:bank_request'}, 'missing_contact_name')
       RETURNING id
     `
     const otherSeeded = await db.$queryRaw<{ id: string }[]>`
@@ -421,7 +421,7 @@ describe('tms ops API (spec 10c Task 5): quarantine resolution, ops-read', () =>
   it('resolveQuarantineRow replay (same clientKey) is unambiguous: deduped true, outcome null, no re-stamp', async () => {
     const seeded = await db.$queryRaw<{ id: string }[]>`
       INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
-      VALUES ('seed-file-2', 1, ${'redacted:bank_request'}, 'missing_recipient_contact')
+      VALUES ('seed-file-2', 1, ${'redacted:bank_request'}, 'missing_contact_name')
       RETURNING id
     `
     const quarantineId = seeded[0]!.id
@@ -477,7 +477,7 @@ describe('tms ops API (spec 10c Task 5): quarantine resolution, ops-read', () =>
     `
     const resolvedRow = await db.$queryRaw<{ id: string }[]>`
       INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
-      VALUES ('q-file', 2, ${'redacted:bank_request'}, 'missing_recipient_contact')
+      VALUES ('q-file', 2, ${'redacted:bank_request'}, 'missing_contact_name')
       RETURNING id
     `
     const resolvedId = resolvedRow[0]!.id
@@ -495,7 +495,7 @@ describe('tms ops API (spec 10c Task 5): quarantine resolution, ops-read', () =>
     expect(resolvedView).toBeDefined()
     expect(resolvedView!.resolvedAt).not.toBeNull()
     expect(resolvedView!.resolvedByActor).toBe(actorId)
-    expect(resolvedView!.reasonCode).toBe('missing_recipient_contact')
+    expect(resolvedView!.reasonCode).toBe('missing_contact_name')
     expect(resolvedView!.fileId).toBe('q-file')
   })
 })

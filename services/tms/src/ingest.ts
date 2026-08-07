@@ -43,12 +43,76 @@ export interface BankRequestRow {
 // (D117) plus the FR-01b mandatory recipient contact/mobile (spec 06a). An
 // empty contact_name or mobile counts as missing. An empty branch_code counts
 // as missing too (Phase 3 Task 4, BRD 5.1b mandatory). `null` means the row passes.
-export type RequestRowRejectReason = 'invalid_qr_vpa_format' | 'missing_recipient_contact' | 'missing_branch_code'
+//
+// P-A / D2: `missing_recipient_contact` covered TWO columns under one code, so
+// even first-error-wins could not name which column failed. It is now split into
+// `missing_contact_name` and `missing_mobile`. D2's note that "the Email half
+// should go away entirely" does not apply here: this check never covered Email
+// (Email is not on BankRequestRow at all), it covered contact name and mobile,
+// and D3 requires BOTH. So this is a pure split, nothing dropped.
+//
+// P-A: these are the SOURCE-AGNOSTIC rules only. See the note below on why the
+// D3 per-column patterns are deliberately NOT here.
+export type RequestRowRejectReason =
+  | 'invalid_qr_vpa_format'
+  | 'missing_display_name'
+  | 'missing_legal_name'
+  | 'missing_registered_address'
+  | 'missing_contact_name'
+  | 'missing_mobile'
+  | 'missing_branch_code'
+  | 'invalid_standee_count'
+  | 'invalid_sticker_count'
+
+// WHY THE D3 PATTERNS ARE NOT VALIDATED HERE (P-A, 2026-08-07).
+//
+// D3 tabulates per-column patterns (Mobile exactly 10 digits, Category Code 3 or
+// 4 digits, Bank and Branch code numeric). Every one of those was measured
+// against ONE bank's file, the 360-row GSCB export. This function is the
+// SOURCE-AGNOSTIC validator: every file from every bank passes through it,
+// including canonical-profile files that no Annexure B profile ever reshaped.
+//
+// Enforcing GSCB's dialect here would reject a second bank's legitimate data.
+// Concretely, `bankReferenceCode: 'HDFC'` and `branchCode: 'BR-001'` are
+// alphanumeric and would be rejected on arrival, and a `+91` prefixed mobile
+// would fail a bare-10-digit rule. GSCB happens to ship numeric aggregator codes
+// (3, 18, 1523 ... 8606); that is a fact about GSCB, not about bank files.
+//
+// The precedent is already set in this repo. The Soundbox `Y`/`N` defect was
+// fixed in the Annexure B profile "that knows the dialect rather than by
+// widening parseBoolean for every future format". Dialect belongs with the
+// profile. bank-source-profile.ts:33 currently states a profile only reshapes
+// and has no reject channel, so giving it one is a design change, not a drive-by.
+// AWAITING A RULING from Bhupender; see BANK_FILE_DECISIONS_2026-08-07.md.
+//
+// What IS here is what holds for ANY source: a value that is structurally
+// impossible rather than merely differently formatted.
+
+// Required, non-negative INTEGER. Zero is a legitimate quantity (a merchant
+// wanting no standee), so the floor is 0 and not 1. NaN is what a non-numeric
+// cell parses to upstream, and it must never reach a print instruction.
+// Source-agnostic: no bank can want minus one sticker.
+function isCollateralCount(value: number): boolean {
+  return Number.isInteger(value) && value >= 0
+}
+
+// Trimmed, because a whitespace-only cell is empty to the human who has to read
+// the printed artifact, and these three values are DRAWN onto standees and
+// stickers. Source-agnostic: no bank can want a blank merchant name printed.
+function isBlank(value: string): boolean {
+  return value.trim() === ''
+}
 
 export function requestRowRejectReason(row: BankRequestRow): RequestRowRejectReason | null {
   if (!validateQrVpaFormat(row.qrValue, row.vpaValue)) return 'invalid_qr_vpa_format'
-  if (!row.contactName || !row.mobile) return 'missing_recipient_contact'
+  if (isBlank(row.displayName)) return 'missing_display_name'
+  if (isBlank(row.legalName)) return 'missing_legal_name'
+  if (isBlank(row.registeredAddress)) return 'missing_registered_address'
+  if (!row.contactName) return 'missing_contact_name'
+  if (!row.mobile) return 'missing_mobile'
   if (!row.branchCode) return 'missing_branch_code'
+  if (!isCollateralCount(row.standeeCount)) return 'invalid_standee_count'
+  if (!isCollateralCount(row.stickerCount)) return 'invalid_sticker_count'
   return null
 }
 
