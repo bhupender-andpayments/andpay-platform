@@ -56,6 +56,128 @@ function templateFor(imageTemplates: unknown, artifactType: ArtifactType): unkno
  * picking one via row order would be non-deterministic. env.traceId is the
  * single, deterministic source for every fact this step emits.
  */
+
+// The shape composition reads. Hoisted to module scope so the pre-render phase
+// and the in-transaction insert loop share ONE definition and cannot drift.
+interface ComposeEntry {
+  asgn_id: string
+  merchant_display_name: string
+  merchant_legal_name: string
+  bank_display_name: string
+  vpa_value: string
+  qr_value: string
+  bank_reference_code: string
+  branch_code: string | null
+  soundbox: boolean
+  standee_count: number
+  sticker_count: number
+}
+
+interface BankConfigRow {
+  id: string
+  bank_code: string
+  branch_code: string | null
+  branding_params: unknown
+  image_templates: unknown
+  logo_master_ref: string | null
+}
+
+// ---------------------------------------------------------------------------
+// PRE-RENDER: the expensive work, deliberately OUTSIDE any transaction.
+//
+// Composition used to render every PDF and push every object to the AssetStore
+// INSIDE the consume transaction. That is CPU and object-store I/O holding a
+// Postgres connection open, and at real volume it does not merely run slowly,
+// it FAILS: the first real GSCB batch is 360 rows / 857 artifacts and blew
+// Prisma's 5s interactive-transaction default, so the whole batch fact
+// dead-lettered, no dispatch fact was ever emitted, and the failure surfaced
+// three hops away as an ops user unable to activate a delivered device.
+//
+// Raising the timeout was rejected as the fix: it pins a connection for minutes
+// while rendering, blocks vacuum, and scales linearly with file size. Instead
+// the slow work moves out, and the transaction keeps ONLY fast inserts.
+//
+// SAFE TO REPEAT. Rendering is deterministic (renderCollateralPdf takes no
+// clock and no randomness) and the asset key is deterministic, so a redelivery
+// re-renders identical bytes to the same key. A crash between this phase and
+// the commit leaves stored objects with no composed_artifact row: orphaned
+// bytes, never corruption, and the E6 guard makes the retry land exactly one
+// set of rows. That is the one property this refactor trades away, and it is
+// the right trade against holding a transaction open for minutes.
+interface PreparedArtifact {
+  reference: string
+}
+
+async function preRenderArtifacts(
+  db: FulfillmentDb,
+  assetStore: AssetStore,
+  p: BatchFactPayload,
+  btchUuid: string,
+  programUuid: string,
+): Promise<Map<string, PreparedArtifact>> {
+  const prepared = new Map<string, PreparedArtifact>()
+
+  // A SHORT read transaction: enter the same scope the write path uses so RLS
+  // sees the same predicate, read what composition needs, and get out.
+  const { entries, configs } = await db.$transaction(async (tx: Tx) => {
+    await enterWriteScope(tx, 'fulfillment_write', programUuid)
+    const rows = await tx.$queryRaw<ComposeEntry[]>`
+      SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name, bank_display_name,
+             vpa_value, qr_value, bank_reference_code, branch_code, soundbox, standee_count, sticker_count
+      FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
+    `
+    const cfgs = await tx.$queryRaw<BankConfigRow[]>`
+      SELECT id::text AS id, bank_code, branch_code, branding_params, image_templates, logo_master_ref
+      FROM bank_composition_config
+    `
+    return { entries: rows, configs: cfgs }
+  })
+  if (entries.length === 0) return prepared
+
+  // Same (bank_code, branch_code) fallback the in-transaction lookup uses: an
+  // exact branch match, then the bank-level '' sentinel row, then null.
+  const byKey = new Map<string, BankConfigRow>()
+  for (const c of configs) byKey.set(`${c.bank_code}|${c.branch_code ?? ''}`, c)
+  const cfgFor = (bankCode: string, branchCode: string | null): BankConfigRow | null =>
+    byKey.get(`${bankCode}|${branchCode ?? ''}`) ?? byKey.get(`${bankCode}|`) ?? null
+
+  const logoCache = new Map<string, { bytes: Uint8Array; contentType: string } | null>()
+  async function logoFor(ref: string | null): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+    if (ref === null) return null
+    if (logoCache.has(ref)) return logoCache.get(ref) ?? null
+    const rec = await assetStore.getByReference(ref)
+    const val = rec === null ? null : { bytes: rec.bytes, contentType: rec.meta.contentType }
+    logoCache.set(ref, val)
+    return val
+  }
+
+  for (const e of entries) {
+    const cfg = cfgFor(e.bank_reference_code, e.branch_code)
+    const logo = await logoFor(cfg?.logo_master_ref ?? null)
+    for (const artifactType of artifactTypesFor(e)) {
+      const pdfBytes = await renderCollateralPdf({
+        artifactType,
+        qrValue: e.qr_value,
+        vpa: e.vpa_value,
+        merchantDisplayName: e.merchant_display_name,
+        merchantLegalName: e.merchant_legal_name,
+        bankName: e.bank_display_name,
+        bankCode: e.bank_reference_code,
+        imageTemplate: templateFor(cfg?.image_templates, artifactType),
+        brandingParams: cfg?.branding_params,
+        logo,
+      })
+      const assetKey = `artifact/${p.btchId}/${e.asgn_id}/${artifactType}`
+      const put = await assetStore.put(assetKey, pdfBytes, {
+        contentType: 'application/pdf',
+        filename: `${artifactType}.pdf`,
+      })
+      prepared.set(`${e.asgn_id}|${artifactType}`, { reference: put.reference })
+    }
+  }
+  return prepared
+}
+
 export async function consumeBatchFact(
   db: FulfillmentDb,
   env: Envelope<BatchFactPayload>,
@@ -67,6 +189,15 @@ export async function consumeBatchFact(
   const tenantUuid = toUuid(p.tenantId)
   let composed = 0
 
+  // Phase 1+2, OUTSIDE any transaction: read what composition needs, render
+  // every PDF, and store every object. See preRenderArtifacts for why this must
+  // not happen inside the transaction below. Safe to repeat: deterministic
+  // render, deterministic asset key.
+  const prepared = await preRenderArtifacts(db, assetStore, p, btchUuid, programUuid)
+
+  // Phase 3: the transaction now performs ONLY fast inserts, so the
+  // composed_artifact rows and the dispatch fact still commit together (E1)
+  // and every onceWithin guard is unchanged (E6).
   const ran = await db.$transaction(async (tx: Tx) => {
     // Fix wave (spec 10d consolidated defect): enter fulfillment_write FIRST,
     // before onceWithin's inbox dedup INSERT AND the leading saga_instance
@@ -147,61 +278,51 @@ export async function consumeBatchFact(
           return row
         }
 
-        // The bank logo bytes, fetched once per master reference via the
-        // AssetStore. renderCollateralPdf embeds a PNG/JPG and degrades a
-        // non-embeddable (.ai) master to a text placeholder itself (P4-D3).
-        const logoCache = new Map<string, { bytes: Uint8Array; contentType: string } | null>()
-        async function logoFor(ref: string | null): Promise<{ bytes: Uint8Array; contentType: string } | null> {
-          if (ref === null) return null
-          if (logoCache.has(ref)) return logoCache.get(ref) ?? null
-          const rec = await assetStore.getByReference(ref)
-          const val = rec === null ? null : { bytes: rec.bytes, contentType: rec.meta.contentType }
-          logoCache.set(ref, val)
-          return val
-        }
-
+        // ONE multi-row insert, not one round trip per artifact. After the
+        // render moved out of the transaction, 857 sequential INSERTs became
+        // the new bottleneck on their own (~30s, still over the 5s default):
+        // the cost was never only the PDFs, it was also the chatter. Building
+        // the rows first and inserting once keeps the transaction to a single
+        // statement.
+        const artifactRows: {
+          asgnId: string
+          btchId: string
+          tenantId: string
+          programId: string
+          artifactType: string
+          assetReference: string
+          labelDisplayName: string
+          labelQr: string
+          bankConfigRef: string | null
+        }[] = []
         for (const e of entries) {
           const cfg = await bankConfigFor(e.bank_reference_code, e.branch_code)
           const bankConfigRef = cfg?.id ?? null
-          const logo = await logoFor(cfg?.logo_master_ref ?? null)
           for (const artifactType of artifactTypesFor(e)) {
-            // Phase 4 (P4-D4): render the real collateral PDF and store its bytes
-            // via the AssetStore, then persist the returned OPAQUE reference on
-            // composed_artifact.asset_reference (replacing the old placeholder
-            // string). Render + put run INSIDE the onceWithin-guarded compose
-            // step, so they execute exactly once per batch even under retry.
-            // Two seams for the future S3 adapter: (1) a batch's worth of renders
-            // + network puts holds the tx open longer; (2) put is not
-            // transactional, so a tx that rolls back after a put (or a retried
-            // batch) leaves an orphaned object version (harmless here since no
-            // reference is persisted on rollback, but S3 would accumulate).
-            const pdfBytes = await renderCollateralPdf({
+            // The bytes were rendered and stored BEFORE this transaction
+            // opened; only the opaque reference is persisted here. A missing
+            // entry is a real bug, not something to paper over with a
+            // placeholder, so it throws and the batch rolls back.
+            const pre = prepared.get(`${e.asgn_id}|${artifactType}`)
+            if (pre === undefined) {
+              throw new Error(`pre-render missing for ${e.asgn_id}|${artifactType}`)
+            }
+            artifactRows.push({
+              asgnId: e.asgn_id,
+              btchId: btchUuid,
+              tenantId: tenantUuid,
+              programId: programUuid,
               artifactType,
-              qrValue: e.qr_value,
-              vpa: e.vpa_value,
-              merchantDisplayName: e.merchant_display_name,
-              merchantLegalName: e.merchant_legal_name,
-              bankName: e.bank_display_name,
-              bankCode: e.bank_reference_code,
-              imageTemplate: templateFor(cfg?.image_templates, artifactType),
-              brandingParams: cfg?.branding_params,
-              logo,
+              assetReference: pre.reference,
+              labelDisplayName: e.merchant_display_name,
+              labelQr: e.qr_value,
+              bankConfigRef,
             })
-            const assetKey = `artifact/${p.btchId}/${e.asgn_id}/${artifactType}`
-            const put = await assetStore.put(assetKey, pdfBytes, {
-              contentType: 'application/pdf',
-              filename: `${artifactType}.pdf`,
-            })
-            // e.asgn_id is already the native uuid (selected as `::text` off a
-            // uuid column, not a wire id), so it is used directly here, NOT
-            // re-decoded via toUuid (which expects a wire-form id or a bare
-            // 26-char payload and throws on a 36-char uuid string).
-            await tx.$executeRaw`
-              INSERT INTO composed_artifact (id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr, bank_config_ref)
-              VALUES (gen_random_uuid(), ${e.asgn_id}::uuid, ${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${artifactType}, ${put.reference}, ${e.merchant_display_name}, ${e.qr_value}, ${bankConfigRef}::uuid)
-            `
             composed++
           }
+        }
+        if (artifactRows.length > 0) {
+          await tx.composedArtifact.createMany({ data: artifactRows })
         }
         // Monotonicity guard (dispatch_state: null -> QR_GENERATED ->
         // SENT_TO_VENDOR -> DISPATCHED_BY_VENDOR must never regress): only
