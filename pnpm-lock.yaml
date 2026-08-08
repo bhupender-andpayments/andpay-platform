@@ -160,6 +160,21 @@ importers:
         specifier: ^7.0.0
         version: 7.2.2
 
+  apps/consumer:
+    dependencies:
+      '@andpay/bus':
+        specifier: workspace:*
+        version: link:../../packages/bus
+      '@andpay/envelope':
+        specifier: workspace:*
+        version: link:../../packages/envelope
+      '@andpay/identity-service':
+        specifier: workspace:*
+        version: link:../../services/identity
+      kafkajs:
+        specifier: ^2.2.4
+        version: 2.2.4
+
   apps/ops-edge:
     dependencies:
       '@andpay/analytics-service':
