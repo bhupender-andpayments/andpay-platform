@@ -1,7 +1,10 @@
 import { Kafka, logLevel } from 'kafkajs'
 import { runFactConsumer } from '@andpay/bus'
 import { PrismaClient as IdentityClient } from '@andpay/identity-service'
-import { identityRoutes, groupIdFor, type ConsumerRoute } from './routes.js'
+import { PrismaClient as TmsClient } from '@andpay/tms-service'
+import { PrismaClient as FulfillmentClient, InMemoryAssetStore } from '@andpay/fulfillment-service'
+import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
+import { identityRoutes, tmsRoutes, fulfillmentRoutes, analyticsRoutes, groupIdFor, type ConsumerRoute } from './routes.js'
 import { withLadder, ladderTopicsFor } from './ladder.js'
 
 // The per-context fact consumer (relay plan step 2).
@@ -15,7 +18,7 @@ import { withLadder, ladderTopicsFor } from './ladder.js'
 // what stops a slow consumer from ever running inside relayOnce's claim
 // transaction (GO_LIVE_BLOCKERS 2.3).
 //
-// STEP 2 SHIPS IDENTITY ONLY. Asking for another context fails loudly rather
+// All four contexts are wired. An unknown CONSUMER_CONTEXT fails loudly rather
 // than starting a process that silently consumes nothing.
 
 function requireEnv(name: string): string {
@@ -32,13 +35,35 @@ interface Built {
 }
 
 function buildContext(context: string): Built {
-  if (context === 'identity') {
-    const db = new IdentityClient({ datasourceUrl: requireEnv('IDENTITY_DATABASE_URL') })
-    return { route: identityRoutes(db), disconnect: () => db.$disconnect() }
+  switch (context) {
+    case 'identity': {
+      const db = new IdentityClient({ datasourceUrl: requireEnv('IDENTITY_DATABASE_URL') })
+      return { route: identityRoutes(db), disconnect: () => db.$disconnect() }
+    }
+    case 'tms': {
+      const db = new TmsClient({ datasourceUrl: requireEnv('TMS_DATABASE_URL') })
+      return { route: tmsRoutes(db), disconnect: () => db.$disconnect() }
+    }
+    case 'fulfillment': {
+      const db = new FulfillmentClient({ datasourceUrl: requireEnv('FULFILLMENT_DATABASE_URL') })
+      // GO-LIVE BLOCKER E-5, deliberately not solved here. consumeBatchFact
+      // renders collateral into this store, and in-process means the artifacts
+      // live in THIS process's memory: a restart loses them, and a second task
+      // cannot serve what the first one rendered. Production needs the S3
+      // adapter. The demo pump had the same limitation, so this is parity, not
+      // a regression, but it must not ship to production unnoticed.
+      const assetStore = new InMemoryAssetStore()
+      return { route: fulfillmentRoutes(db, assetStore), disconnect: () => db.$disconnect() }
+    }
+    case 'analytics': {
+      const db = new AnalyticsClient({ datasourceUrl: requireEnv('ANALYTICS_DATABASE_URL') })
+      return { route: analyticsRoutes(db), disconnect: () => db.$disconnect() }
+    }
+    default:
+      throw new Error(
+        `CONSUMER_CONTEXT="${context}" is not a context. Expected one of: identity, tms, fulfillment, analytics.`,
+      )
   }
-  throw new Error(
-    `CONSUMER_CONTEXT="${context}" is not built yet. Step 2 ships identity only; tms, fulfillment and analytics are step 3.`,
-  )
 }
 
 async function main(): Promise<void> {

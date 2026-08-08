@@ -162,15 +162,24 @@ importers:
 
   apps/consumer:
     dependencies:
+      '@andpay/analytics-service':
+        specifier: workspace:*
+        version: link:../../services/analytics
       '@andpay/bus':
         specifier: workspace:*
         version: link:../../packages/bus
       '@andpay/envelope':
         specifier: workspace:*
         version: link:../../packages/envelope
+      '@andpay/fulfillment-service':
+        specifier: workspace:*
+        version: link:../../services/fulfillment
       '@andpay/identity-service':
         specifier: workspace:*
         version: link:../../services/identity
+      '@andpay/tms-service':
+        specifier: workspace:*
+        version: link:../../services/tms
       kafkajs:
         specifier: ^2.2.4
         version: 2.2.4

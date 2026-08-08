@@ -10,9 +10,12 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@andpay/analytics-service": "workspace:*",
     "@andpay/bus": "workspace:*",
     "@andpay/envelope": "workspace:*",
+    "@andpay/fulfillment-service": "workspace:*",
     "@andpay/identity-service": "workspace:*",
+    "@andpay/tms-service": "workspace:*",
     "kafkajs": "^2.2.4"
   }
 }

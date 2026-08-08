@@ -1,5 +1,25 @@
 import type { Envelope } from '@andpay/envelope'
 import { projectRowFact, type PrismaClient as IdentityClient } from '@andpay/identity-service'
+import {
+  projectMerchantFact,
+  projectTenantFact,
+  createAssignmentFromEnrollment,
+  type PrismaClient as TmsClient,
+} from '@andpay/tms-service'
+import {
+  projectDemandFact,
+  onDemandAccrued,
+  projectActivationToUnits,
+  projectReplacementToUnits,
+  consumeBatchFact,
+  type AssetStore,
+  type PrismaClient as FulfillmentClient,
+} from '@andpay/fulfillment-service'
+import {
+  ingestEnvelope,
+  ANALYTICS_TOPICS,
+  type PrismaClient as AnalyticsClient,
+} from '@andpay/analytics-service'
 
 /**
  * The fact routes, keyed by the context that OWNS THE WRITE.
@@ -16,23 +36,8 @@ import { projectRowFact, type PrismaClient as IdentityClient } from '@andpay/ide
  * table is the version that has actually carried a real 360-row file end to
  * end.
  *
- * STEP 2 SHIPS IDENTITY ONLY. tms, fulfillment and analytics are step 3.
- * Their routes, from the same pump table, will be:
- *   tms          fct.identity.merchant.v1     -> projectMerchantFact
- *                fct.identity.tenant.v1       -> projectTenantFact
- *                fct.identity.enrollment.v1   -> createAssignmentFromEnrollment
- *   fulfillment  fct.tms.assignment.v1        -> projectDemandFact (plus accrual)
- *                fct.tms.assignment.activated.v1        -> projectActivationToUnits
- *                fct.tms.assignment.replacement_raised.v1 -> projectReplacementToUnits
- *                fct.fulfillment.batch.v1     -> consumeBatchFact
- *   analytics    the nine ANALYTICS_TOPICS    -> ingestEnvelope
- *
- * NOTE for step 3: `createAssignmentFromEnrollment` READS the merchant and
- * tenant projections, so an enrollment fact arriving before them MUST throw.
- * That is correct behaviour, not a bug: it lands on retry.1 and succeeds once
- * the merchant fact has folded. Do NOT reintroduce the pump's dependency sort
- * to prevent it. Kafka gives no ordering between those topics anyway, because
- * they carry different partition keys.
+ * ALL FOUR CONTEXTS ARE WIRED (steps 2 and 3). `fct.identity.program.v1` has no
+ * consumer, matching the pump, which counted it `skipped:`.
  */
 
 export interface ConsumerRoute {
@@ -83,6 +88,130 @@ export function identityRoutes(db: IdentityClient): ConsumerRoute {
       // consumer adds NO role handling and NO dedup of its own, and
       // at-least-once redelivery from Kafka is absorbed by that guard.
       await projectRowFact(db, envelope as Parameters<typeof projectRowFact>[1])
+    },
+  }
+}
+
+/**
+ * TMS consumes IDENTITY's facts, because TMS owns the tables they project into.
+ *
+ * `createAssignmentFromEnrollment` READS the merchant and tenant projections, so
+ * an enrollment fact that arrives before them MUST throw. That is correct
+ * behaviour, not a defect: it lands on retry.1 and succeeds once the merchant
+ * fact has folded. Kafka gives no ordering between these topics anyway, because
+ * they carry different partition keys, which is exactly why the ladder exists.
+ *
+ * DO NOT reintroduce the demo pump's dependency sort to prevent it. That sort
+ * was a workaround for having no ladder, and it could only order facts WITHIN
+ * one claimed batch, so a merchant and its enrollment straddling a batch
+ * boundary still failed. It is dead weight now (task B-2).
+ */
+export function tmsRoutes(db: TmsClient): ConsumerRoute {
+  return {
+    topics: [
+      'fct.identity.merchant.v1',
+      'fct.identity.tenant.v1',
+      'fct.identity.enrollment.v1',
+    ],
+    handle: async (envelope: Envelope) => {
+      switch (envelope.type) {
+        case 'fct.identity.merchant.v1':
+          await projectMerchantFact(db, envelope as Parameters<typeof projectMerchantFact>[1])
+          return
+        case 'fct.identity.tenant.v1':
+          await projectTenantFact(db, envelope as Parameters<typeof projectTenantFact>[1])
+          return
+        case 'fct.identity.enrollment.v1':
+          await createAssignmentFromEnrollment(db, envelope as Parameters<typeof createAssignmentFromEnrollment>[1])
+          return
+        default:
+          // Never silently ignore. A subscribed topic with no case is a wiring
+          // bug, and dropping it would lose a fact with no trace.
+          throw new Error(`tms consumer received an unrouted topic: ${envelope.type}`)
+      }
+    },
+  }
+}
+
+interface DemandPayload {
+  tnntId: string
+  progId: string
+}
+
+function demandTargetOf(envelope: Envelope): DemandPayload {
+  const p = envelope.payload as Partial<DemandPayload> | null
+  if (typeof p?.tnntId !== 'string' || typeof p.progId !== 'string') {
+    throw new Error(`${envelope.type}: demand fact is missing tnntId or progId`)
+  }
+  return { tnntId: p.tnntId, progId: p.progId }
+}
+
+/**
+ * FULFILLMENT consumes TMS's assignment facts plus its own batch fact.
+ *
+ * The batch fact is what makes a batch DISPATCHABLE: `consumeBatchFact` composes
+ * the collateral and emits `fct.fulfillment.dispatch.v1`, which is what tells
+ * analytics which assignments belong to which shipment. Without it,
+ * `dispatch_row` never learns its shpt_id, the later DELIVERED fact has no row
+ * to stamp, and the ops activation route keeps answering "not-delivered" for a
+ * parcel that demonstrably arrived.
+ */
+export function fulfillmentRoutes(db: FulfillmentClient, assetStore: AssetStore): ConsumerRoute {
+  return {
+    topics: [
+      'fct.tms.assignment.v1',
+      'fct.tms.assignment.activated.v1',
+      'fct.tms.assignment.replacement_raised.v1',
+      'fct.fulfillment.batch.v1',
+    ],
+    handle: async (envelope: Envelope) => {
+      switch (envelope.type) {
+        case 'fct.tms.assignment.v1': {
+          const res = await projectDemandFact(db, envelope as Parameters<typeof projectDemandFact>[1])
+          if (res.deduped) return
+          const { tnntId, progId } = demandTargetOf(envelope)
+          // THE DEDUP KEY IS THE DEMAND FACT'S OWN, exactly as onDemandAccrued
+          // documents ("epoch = triggerDedupKey ... so a redelivered demand
+          // fact can never double-trigger a LOT_SIZE batch"). The demo pump
+          // passed `pump:<tnnt>:<prog>:<Date.now()>`, which is unique per call
+          // and therefore defeats that guarantee outright. Do not copy it.
+          //
+          // Called per message rather than batched: it is idempotent by that
+          // key, so the pump's accrual map is unnecessary here.
+          await onDemandAccrued(db, tnntId, progId, envelope.dedupKey, envelope.traceId ?? envelope.dedupKey)
+          return
+        }
+        case 'fct.tms.assignment.activated.v1':
+          await projectActivationToUnits(db, envelope as Parameters<typeof projectActivationToUnits>[1])
+          return
+        case 'fct.tms.assignment.replacement_raised.v1':
+          await projectReplacementToUnits(db, envelope as Parameters<typeof projectReplacementToUnits>[1])
+          return
+        case 'fct.fulfillment.batch.v1':
+          await consumeBatchFact(db, envelope as Parameters<typeof consumeBatchFact>[1], assetStore)
+          return
+        default:
+          throw new Error(`fulfillment consumer received an unrouted topic: ${envelope.type}`)
+      }
+    },
+  }
+}
+
+/**
+ * ANALYTICS is a SECOND consumer of most topics, not an alternative to the
+ * domain one. Its own consumer group is what makes that natural on Kafka: the
+ * demo pump had to call `ingestEnvelope` inline after each domain handler,
+ * which coupled the two and meant a domain failure could skip the analytics
+ * write.
+ *
+ * It feeds `analytics.dispatch_row`, and `dispatch_row.delivery_date` is the
+ * gate the ops activation route reads.
+ */
+export function analyticsRoutes(db: AnalyticsClient): ConsumerRoute {
+  return {
+    topics: [...ANALYTICS_TOPICS],
+    handle: async (envelope: Envelope) => {
+      await ingestEnvelope(db, envelope)
     },
   }
 }
