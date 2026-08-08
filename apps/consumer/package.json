@@ -1,0 +1,18 @@
+{
+  "name": "@andpay/consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@andpay/bus": "workspace:*",
+    "@andpay/envelope": "workspace:*",
+    "@andpay/identity-service": "workspace:*",
+    "kafkajs": "^2.2.4"
+  }
+}
