@@ -51,7 +51,11 @@ import { PerRowErrors } from '../../components/PerRowErrors.js'
 // The FR-01a column contract, as the adapter's own HEADERS constant spells it.
 // One source for both the drop zone's up-front hint and the rejection copy, so
 // the two can never disagree about what a valid sheet looks like.
-const EXPECTED_COLUMN_LIST = ['Device ID', 'Sim No', 'Device QR'] as const
+// EXPORTED so the uploads index can state the same columns from the same
+// source. Two copies of this list would eventually disagree about what a valid
+// sheet looks like, and the operator would believe whichever one they read.
+export const DEVICE_INVENTORY_COLUMNS = ['Device ID', 'Sim No', 'Device QR'] as const
+const EXPECTED_COLUMN_LIST = DEVICE_INVENTORY_COLUMNS
 const EXPECTED_COLUMNS = EXPECTED_COLUMN_LIST.join(', ')
 
 // Operator-facing wording for a structural rejection. It lives here, not on the

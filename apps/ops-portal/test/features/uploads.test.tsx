@@ -4,7 +4,6 @@ import { render, screen, cleanup, waitFor, within, fireEvent } from '@testing-li
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
-import { UploadsPage } from '../../src/features/uploads/UploadsPage.js'
 import { BankUploadPage } from '../../src/features/uploads/BankUploadPage.js'
 import { DamageUploadPage } from '../../src/features/uploads/DamageUploadPage.js'
 import { DeviceInventoryUploadPage } from '../../src/features/uploads/DeviceInventoryUploadPage.js'
@@ -197,18 +196,11 @@ describe('uploads', () => {
     cleanup()
   })
 
-  it('UploadsPage renders all three upload tabs (bank, damage, device inventory)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([])))
-    renderWithProviders(<UploadsPage />)
-    expect(screen.getByRole('button', { name: 'Bank Requests' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Damage Reports' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Device Inventory' })).toBeTruthy()
-    // Defaults to the bank tab.
-    expect(screen.getByLabelText(/bank request file/i)).toBeTruthy()
-
-    await userEvent.click(screen.getByRole('button', { name: 'Device Inventory' }))
-    expect(await screen.findByLabelText(/manufacturer/i)).toBeTruthy()
-  })
+  // The three-TAB layout, and its default-to-bank behaviour, were removed in
+  // redesign step 4: they are the thing that step deletes. Uploads is now an
+  // index of three equal cards, each on its own route, covered by
+  // test/features/uploads-index.test.tsx. The per-upload behaviour (preview,
+  // commit, per-row errors) is unchanged and still covered below.
 
   it('bank upload: picking a file POSTs it multipart to preview with a Bearer header, renders the per-row results in a table, then Commit POSTs the same file multipart with a fresh Idempotency-Key and shows the counts', async () => {
     const calls: Call[] = []

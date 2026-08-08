@@ -54,7 +54,9 @@ export function AppRoutes() {
           <Route path="/batches" element={<FulfillmentPage />} />
           <Route path="/batches/:btchId" element={<BatchDetailPage />} />
           <Route path="/activation" element={<ActivationPage />} />
-          <Route path="/uploads" element={<UploadsPage />} />
+          {/* Step 4: uploads are three linkable routes behind an index of
+              cards, so `/uploads/*` is delegated to the feature. */}
+          <Route path="/uploads/*" element={<UploadsPage />} />
           <Route path="/operations" element={<OperationsPage />} />
           <Route path="/queues" element={<QueuesPage />} />
           <Route path="/reports" element={<ReportPage />} />
