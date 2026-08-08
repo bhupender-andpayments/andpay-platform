@@ -63,7 +63,11 @@ describe('MerchantsPage', () => {
   })
 
   it('calls GET /ops/merchants', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse(ROWS))
+    // Typed with its input parameter on purpose. `vi.fn(async () => ...)` gives
+    // `calls` an EMPTY tuple type, so reading `calls[0][0]` is a TS2493 the
+    // root typecheck does not surface (it excludes apps/ops-portal) and only
+    // the portal's own build catches.
+    const fetchMock = vi.fn(async (_input: string | URL) => jsonResponse(ROWS))
     vi.stubGlobal('fetch', fetchMock)
     renderPage()
     await screen.findByText('Kirana Corner')

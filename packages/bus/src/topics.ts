@@ -48,6 +48,43 @@ export const SOUNDBOX_TOPICS: TopicSpec[] = [
   { name: 'authz.audit', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
 ]
 
+/**
+ * The topics whose message value is NOT an E4 envelope.
+ *
+ * Every fact and command channel carries an envelope, which is why the
+ * publisher validates one. `authz.audit` is the documented exception (see its
+ * entry above, D121 / spec 10a task 8): it is an AUTH-INTERNAL channel, not a
+ * broadcast fact, and both of its ends are already specified around the RAW
+ * record. `buildAuthzAuditEvent` (@andpay/audit) enqueues `{id, ...record}` and
+ * `consumeAuthzAudit` (services/auth) takes exactly that, deduping on the
+ * delivered `payload.id` rather than on an envelope dedupKey.
+ *
+ * WHY THIS EXISTS AT ALL. Until the relay was built nothing had ever carried
+ * these rows over Kafka: the demo pump has no route for `authz.audit`, so it
+ * counted them as skipped and stamped them published, and the mismatch stayed
+ * invisible. The first live drain of fulfillment.outbox failed with "payload is
+ * not a valid E4 envelope", and because relayOnce claims, publishes and stamps
+ * in ONE transaction, that single row rolled back the whole batch and would
+ * have re-claimed it forever. One audit row would have wedged the entire
+ * context's outbox permanently.
+ *
+ * The exemption is declared HERE, next to the topic definition that documents
+ * the channel, so the codec policy and the topic taxonomy cannot drift apart.
+ * Adding a topic to this set is a corpus-level decision, not a convenience: it
+ * opts a channel out of the platform's wire contract.
+ */
+const RAW_PAYLOAD_TOPICS: ReadonlySet<string> = new Set(['authz.audit'])
+
+/**
+ * True when `topic` carries an E4 envelope as its message value, which is
+ * everything except the auth-internal audit channel. Retry and DLQ topics
+ * inherit their base topic's contract, so `authz.audit.retry.1` is raw too.
+ */
+export function isEnvelopeTopic(topic: string): boolean {
+  const base = topic.replace(/\.(retry\.\d+|dlq)$/, '')
+  return !RAW_PAYLOAD_TOPICS.has(base)
+}
+
 /** Derive the per-consumer retry and DLQ topics for a base topic (E7). */
 export function retryAndDlqTopics(baseName: string, retryLevels = 3, partitions = 3): TopicSpec[] {
   const topics: TopicSpec[] = []

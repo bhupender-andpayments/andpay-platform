@@ -1,6 +1,7 @@
 import type { Producer } from 'kafkajs'
 import type { OutboxMessage, PublisherPort } from '@andpay/outbox'
 import { encode, isEnvelope } from '@andpay/envelope'
+import { isEnvelopeTopic } from './topics.js'
 import { BusError } from './errors.js'
 
 /**
@@ -20,21 +21,46 @@ export class KafkaPublisher implements PublisherPort {
 
   async publish(messages: OutboxMessage[]): Promise<void> {
     for (const message of messages) {
-      const envelope = message.payload
-      if (!isEnvelope(envelope)) {
-        throw new BusError(
-          `outbox row ${message.id} payload is not a valid E4 envelope; cannot publish`,
-        )
-      }
       await this.producer.send({
         topic: message.eventType,
         messages: [
           {
             key: message.partitionKey,
-            value: Buffer.from(encode(envelope)),
+            value: this.encodeValue(message),
           },
         ],
       })
     }
+  }
+
+  /**
+   * Encodes one outbox row's payload for the wire.
+   *
+   * Fact and command channels carry an E4 envelope and are validated, so a
+   * producer that enqueues garbage on a fact topic still fails loudly here.
+   *
+   * `authz.audit` is the ONE documented non-envelope channel (see
+   * `isEnvelopeTopic` in topics.ts): it is auth-internal, and both its producer
+   * (`buildAuthzAuditEvent`) and its consumer (`consumeAuthzAudit`) are already
+   * specified around the raw record. Validating it as an envelope was a
+   * transport assumption that no channel had ever tested, because the demo pump
+   * skips these rows entirely.
+   *
+   * That assumption was not a harmless error: relayOnce claims, publishes and
+   * stamps in ONE transaction, so a throw here rolls back the whole claimed
+   * batch and the identical batch is re-claimed on the next tick. A single
+   * audit row wedged its context's entire outbox permanently.
+   */
+  private encodeValue(message: OutboxMessage): Buffer {
+    if (!isEnvelopeTopic(message.eventType)) {
+      return Buffer.from(JSON.stringify(message.payload))
+    }
+    const envelope = message.payload
+    if (!isEnvelope(envelope)) {
+      throw new BusError(
+        `outbox row ${message.id} payload is not a valid E4 envelope; cannot publish`,
+      )
+    }
+    return Buffer.from(encode(envelope))
   }
 }
