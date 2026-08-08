@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createApiClient, sendOnce } from '../api/client.js'
 import { getAccessToken, setAccessToken, clearAccessToken } from '../api/tokenStore.js'
 import { login as loginEndpoint, logout as logoutEndpoint } from '../api/endpoints.js'
+import { authBase, opsBase } from '../lib/env.js'
 import { promptStepUpTotp } from './stepUpController.js'
 import { StepUpDialog } from './StepUpDialog.js'
 
@@ -96,8 +97,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // below can reuse the exact same base URLs via sendOnce, without touching
   // api/client.ts or duplicating the env lookups.
   const clientDeps = useMemo(() => ({
-    opsBase: (import.meta.env.VITE_OPS_BASE as string | undefined) ?? 'http://localhost:3001',
-    authBase: (import.meta.env.VITE_AUTH_BASE as string | undefined) ?? 'http://localhost:3000',
+    opsBase: opsBase(),
+    authBase: authBase(),
     onSessionLost,
     promptStepUpTotp,
   }), [onSessionLost, promptStepUpTotp])

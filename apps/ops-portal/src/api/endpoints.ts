@@ -1,6 +1,7 @@
 import type { ApiRequest } from './client.js'
 import { getAccessToken } from './tokenStore.js'
 import { ApiError } from './errors.js'
+import { opsBase } from '../lib/env.js'
 
 type Client = { request<T>(req: ApiRequest): Promise<T> }
 
@@ -776,7 +777,7 @@ export function deviceInventoryStructuralReasons(err: unknown): DeviceInventoryS
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
 function opsBaseUrl(): string {
-  return (import.meta.env.VITE_OPS_BASE as string | undefined) ?? 'http://localhost:3001'
+  return opsBase()
 }
 
 // The shared raw multipart POST (mirrors ReturnUploadPage's fetch): a
