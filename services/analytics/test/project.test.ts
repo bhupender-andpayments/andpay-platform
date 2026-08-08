@@ -193,6 +193,26 @@ async function snapshotRows(): Promise<Record<string, unknown>[]> {
 }
 
 describe('analytics modeled projection: fact-only dispatch_row assembly + deterministic rebuild (checks 3, 5)', () => {
+  it('folds the BATCH id onto the row, not just the pipeline state (D8 / C-4)', async () => {
+    // The batch fact used to advance pipelineState to BATCHED and discard
+    // btchId. Without the id stored, "total batches to date" could only have
+    // been counted from raw_event, which cannot answer a bank filter, so a
+    // filtered dashboard would have shown a batch number contradicting every
+    // tile beside it.
+    const asgnA = newId('asgn')
+    const progP = newId('prog') as ProgId
+    const btch = newId('btch')
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnA, progId: progP, ts: '2026-07-01T05:00:00Z' }))
+    await ingestEnvelope(db, batchEnvelope({ btchId: btch, programId: progP, asgnIds: [asgnA], ts: '2026-07-01T06:00:00Z' }))
+
+    const rows = await db.$queryRawUnsafe<{ batch_id: string | null; pipeline_state: string }[]>(
+      `SELECT batch_id, pipeline_state FROM dispatch_row WHERE dispatch_id = $1`,
+      asgnA,
+    )
+    expect(rows[0]!.batch_id).toBe(btch)
+    expect(rows[0]!.pipeline_state).toBe('BATCHED')
+  })
+
   it('assembles a dispatch_row from assignment + batch + dispatch + print_for + shipment facts only (check 3)', async () => {
     const asgnA = newId('asgn')
     const progP = newId('prog') as ProgId

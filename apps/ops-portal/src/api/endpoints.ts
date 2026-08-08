@@ -91,9 +91,11 @@ export interface ReportFilters {
   status?: string
 }
 
-/** The seven FR-09 dashboard tiles (services/analytics/src/mediation.ts TileSet). */
+/** The FR-09 dashboard tiles (services/analytics/src/mediation.ts TileSet). */
 export interface TileSet {
   requestsReceived: number
+  /** Design D8: total batches to date. Every other tile counts RECORDS. */
+  totalBatches: number
   pendingQrAwaitingBatch: { count: number; oldestAgeDays: number | null }
   pendingPrintVendorPickup: number
   dispatchedNotDelivered: number

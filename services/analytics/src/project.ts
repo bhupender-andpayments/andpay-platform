@@ -10,6 +10,7 @@ import type {
   PrintForFactView,
   DispatchFactView,
   ShipmentFactView,
+  BatchFactView,
 } from './fact-views.js'
 
 type Tx = Prisma.TransactionClient
@@ -46,6 +47,8 @@ export interface DispatchRowState {
   deviceIds: string[]
   awb: string | null
   shptId: string | null
+  /** The batch this record was folded into, null until a batch forms (D8). */
+  batchId: string | null
   dispatchDate: Date | null
   courierStatus: string | null
   deliveryDate: Date | null
@@ -94,6 +97,7 @@ function freshState(dispatchId: string): DispatchRowState {
     deviceIds: [],
     awb: null,
     shptId: null,
+    batchId: null,
     dispatchDate: null,
     courierStatus: null,
     deliveryDate: null,
@@ -197,9 +201,16 @@ export function applyFact(
       if (!s.deviceIds.includes(p.deviceId)) s.deviceIds.push(p.deviceId)
       return s
     }
-    case T.BATCH:
+    case T.BATCH: {
+      // Keep the batch id, do not just advance past it. It is what makes
+      // "total batches to date" countable over the SAME rows as every other
+      // tile, so the metric honours the bank, courier and date filters exactly
+      // as its neighbours do (D8, C-4).
+      const p = payload as BatchFactView
+      if (typeof p.btchId === 'string' && p.btchId.length > 0) s.batchId = p.btchId
       s.pipelineState = advance(s.pipelineState, 'BATCHED')
       return s
+    }
     case T.DISPATCH: {
       const p = payload as DispatchFactView
       if (p.dispatchState === 'SENT_TO_VENDOR') {
@@ -287,6 +298,7 @@ function toUpsertInput(s: DispatchRowState): Prisma.DispatchRowUncheckedCreateIn
     deviceIds: s.deviceIds,
     awb: s.awb,
     shptId: s.shptId,
+    batchId: s.batchId,
     dispatchDate: s.dispatchDate,
     courierStatus: s.courierStatus,
     deliveryDate: s.deliveryDate,

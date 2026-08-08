@@ -46,6 +46,7 @@ describe('TilesPage', () => {
 
   const TILES_FIXTURE = {
     requestsReceived: 5,
+    totalBatches: 12, // distinct from every other fixture value, so a text assertion is unambiguous
     pendingQrAwaitingBatch: { count: 2, oldestAgeDays: 1.5 },
     pendingPrintVendorPickup: 3,
     dispatchedNotDelivered: 4,
@@ -54,7 +55,7 @@ describe('TilesPage', () => {
     activatedSuccessfully: 7, // same
   }
 
-  it('renders the seven tiles from the real analytics aggregate; the two activation-empty tiles show the neutral marker, never a fabricated count', async () => {
+  it('renders the eight tiles from the real analytics aggregate; the two activation-empty tiles show the neutral marker, never a fabricated count', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -117,7 +118,9 @@ describe('TilesPage', () => {
 
     const grid = await screen.findByTestId('tile-grid')
     const links = within(grid).getAllByRole('link')
-    expect(links).toHaveLength(7)
+    // 8 since design D8 added the total-batches tile, which counts BATCHES
+    // where the other seven count records.
+    expect(links).toHaveLength(8)
     // Exactly ONE anchor tile, still. The mechanism moved with the design system
     // port: section 6.4 has no solid-fill card, so emphasis is the brand amber
     // left border on the same card shape rather than a navy fill.

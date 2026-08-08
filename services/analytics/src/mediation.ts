@@ -24,6 +24,19 @@ type Tx = Prisma.TransactionClient
  */
 export interface TileSet {
   requestsReceived: number
+  /**
+   * Total batches to date (design D8). The other seven tiles count RECORDS; a
+   * batch is a different unit entirely, so before this the dashboard could not
+   * say how many batches had ever formed.
+   *
+   * Counted over the SAME narrowed rows as its neighbours, so it decomposes per
+   * Program (D97) and honours the bank, courier and date filters identically. A
+   * count taken from raw_event instead would have answered a different question
+   * from the rest of the dashboard: it could not honour a bank filter, so a
+   * filtered view would have shown a batch number that silently contradicted
+   * every tile beside it.
+   */
+  totalBatches: number
   pendingQrAwaitingBatch: { count: number; oldestAgeDays: number | null }
   pendingPrintVendorPickup: number
   dispatchedNotDelivered: number
@@ -86,6 +99,7 @@ interface DispatchDbRow {
   device_ids: string[] | null
   awb: string | null
   shpt_id: string | null
+  batch_id: string | null
   dispatch_date: Date | null
   courier_status: string | null
   delivery_date: Date | null
@@ -121,7 +135,7 @@ async function scopedDispatchRead(db: AnalyticsDb, scope: ReadScope): Promise<Di
       const arrayLiteral = `{${scope.programIds.join(',')}}`
       return tx.$queryRaw<DispatchDbRow[]>`
         SELECT dispatch_id, program_id::text AS program_id, bank_code, bank_display, branch,
-               merchant_display, device_ids, awb, shpt_id, dispatch_date, courier_status,
+               merchant_display, device_ids, awb, shpt_id, batch_id, dispatch_date, courier_status,
                delivery_date, activation_status, sim_activation_status, activation_date,
                activation_failure_reason, pipeline_state, is_replacement, original_dispatch_id,
                damage_reason, replacement_dispatch_id, replacement_status, billable_flag,
@@ -133,7 +147,7 @@ async function scopedDispatchRead(db: AnalyticsDb, scope: ReadScope): Promise<Di
     // row, so no application predicate is needed.
     return tx.$queryRaw<DispatchDbRow[]>`
       SELECT dispatch_id, program_id::text AS program_id, bank_code, bank_display, branch,
-             merchant_display, device_ids, awb, shpt_id, dispatch_date, courier_status,
+             merchant_display, device_ids, awb, shpt_id, batch_id, dispatch_date, courier_status,
              delivery_date, activation_status, sim_activation_status, activation_date,
              activation_failure_reason, pipeline_state, is_replacement, original_dispatch_id,
              damage_reason, replacement_dispatch_id, replacement_status, billable_flag,
@@ -255,8 +269,17 @@ function computeTiles(rows: DispatchDbRow[], filters: ReportFilters): TileSet {
   // real, general aggregate (correct once an activation write path exists).
   const activatedSuccessfully = narrowed.filter((r) => r.activation_status === 'ACTIVATED').length
 
+  // DISTINCT, because one batch spans many records: counting rows would report
+  // the number of batched RECORDS, which is the mistake this tile exists to
+  // correct. Nulls are excluded rather than counted as one anonymous batch: a
+  // record with no batch_id has not been batched yet.
+  const totalBatches = new Set(
+    narrowed.map((r) => r.batch_id).filter((id): id is string => typeof id === 'string' && id !== ''),
+  ).size
+
   return {
     requestsReceived,
+    totalBatches,
     pendingQrAwaitingBatch: { count: pendingQr.length, oldestAgeDays },
     pendingPrintVendorPickup,
     dispatchedNotDelivered,
@@ -271,6 +294,13 @@ function tilePredicate(tile: TileName): (r: DispatchDbRow) => boolean {
   switch (tile) {
     case 'requestsReceived':
       return () => true // windowing applied separately, see readTileDrilldown
+    case 'totalBatches':
+      // The TILE counts DISTINCT batches; this drilldown lists the RECORDS in
+      // them. That asymmetry is deliberate and unavoidable: every report row is
+      // a dispatch record, so there is no batch-shaped row to list. Clicking
+      // "12 batches" answers "which records were batched", which is the useful
+      // question the record-shaped surface can actually answer.
+      return (r) => r.batch_id !== null && r.batch_id !== ''
     case 'pendingQrAwaitingBatch':
       return (r) => r.pipeline_state === 'RECEIVED' || r.pipeline_state === 'POOLED'
     case 'pendingPrintVendorPickup':

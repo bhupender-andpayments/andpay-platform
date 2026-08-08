@@ -69,6 +69,7 @@ function stubBody(token: string): string {
     accessToken: token,
     tiles: {
       requestsReceived: 0,
+      totalBatches: 4,
       pendingQrAwaitingBatch: { count: 0, oldestAgeDays: null },
       pendingPrintVendorPickup: 0,
       dispatchedNotDelivered: 0,

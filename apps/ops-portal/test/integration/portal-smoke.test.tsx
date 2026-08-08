@@ -30,6 +30,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 const TILES_FIXTURE = {
   requestsReceived: 0,
+  totalBatches: 4,
   pendingQrAwaitingBatch: { count: 0, oldestAgeDays: null },
   pendingPrintVendorPickup: 0,
   dispatchedNotDelivered: 0,

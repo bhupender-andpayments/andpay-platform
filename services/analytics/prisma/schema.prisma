@@ -55,6 +55,7 @@ model DispatchRow {
   deviceIds               String[]  @map("device_ids")
   awb                     String?
   shptId                  String?   @map("shpt_id")
+  batchId                 String?   @map("batch_id")
   dispatchDate            DateTime? @map("dispatch_date") @db.Timestamptz(6)
   courierStatus           String?   @map("courier_status")
   deliveryDate            DateTime? @map("delivery_date") @db.Timestamptz(6)

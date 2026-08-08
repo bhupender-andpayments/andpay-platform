@@ -1,0 +1,30 @@
+-- C-4 / design D8: "Total batches to date" is a batch-level metric, and every
+-- existing tile counts RECORDS, not batches.
+--
+-- WHY A COLUMN RATHER THAN A COUNT OVER raw_event. The seven existing tiles are
+-- all computed over the SAME narrowed dispatch_row set, so they decompose per
+-- Program (D97) and respond to the bank, courier and date filters identically.
+-- A batch count taken from raw_event instead would answer a DIFFERENT question
+-- from its neighbours: it could not honour a bank filter, so an operator who
+-- narrowed to one bank would see a batch number that silently contradicted the
+-- rest of the dashboard. Storing the batch id on the row it belongs to lets the
+-- metric be counted over exactly the same rows as every other tile.
+--
+-- The linkage already arrives: the batch fact carries asgnIds[], and
+-- affectedAsgns already fans it out to precisely those dispatch rows. It was
+-- being used to advance the pipeline state and then discarded.
+--
+-- NULLABLE, and it stays nullable: a dispatch row exists from the assignment
+-- fact onward, which is long before any batch forms. NULL means "not batched
+-- yet", which is a real state and not missing data.
+--
+-- Backfill is deliberately NOT done here. The modeled layer is rebuildable from
+-- the append-only raw_event log by construction (rebuildDispatchRows folds the
+-- SAME applyFact over the SAME ordered rows), so existing rows gain their
+-- batch_id from a rebuild rather than from a hand-written UPDATE that could
+-- drift from the fold.
+--
+-- Additive only (S23): one nullable column, no DROP, no ALTER of an existing
+-- column, no RLS or grant change (analytics_write and analytics_read already
+-- hold table-level privileges on dispatch_row).
+ALTER TABLE analytics.dispatch_row ADD COLUMN IF NOT EXISTS batch_id TEXT;

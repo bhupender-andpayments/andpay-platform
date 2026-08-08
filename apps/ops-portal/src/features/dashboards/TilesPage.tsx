@@ -15,6 +15,7 @@ import {
   IconArrowUpDown,
   IconAlert,
   IconCheck,
+  IconFulfillment,
 } from '../../ui/icons.js'
 import { fmtNumber, fmtDays } from '../../ui/format.js'
 
@@ -94,6 +95,10 @@ interface TileDef {
 // space in the middle of the most-scanned row.
 const TILE_DEFS: readonly TileDef[] = [
   { key: 'requestsReceived', label: 'Requests received', hint: 'Bank requests ingested', tone: 'info', icon: IconUploads },
+  // D8 / C-4: the one tile that counts BATCHES rather than records. It sits
+  // beside requestsReceived because both are top-of-funnel volume, and the
+  // contrast is the point: N requests became M batches.
+  { key: 'totalBatches', label: 'Total batches to date', hint: 'Batches formed, all time', tone: 'info', icon: IconFulfillment },
   { key: 'pendingQrAwaitingBatch', label: 'Pending QR, awaiting batch', hint: 'Received or pooled', tone: 'pending', icon: IconQueues },
   { key: 'pendingPrintVendorPickup', label: 'Pending print vendor pickup', hint: 'Sent to print vendor', tone: 'pending', icon: IconOperations },
   { key: 'dispatchedNotDelivered', label: 'Dispatched, not delivered', hint: 'Awaiting delivery', tone: 'info', icon: IconArrowUpDown },
