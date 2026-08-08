@@ -15,7 +15,19 @@ beforeEach(async () => {
     'TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
   )
 })
-afterAll(async () => { await db.$disconnect() })
+// Clears up AFTER the last test as well as before each one (F-9). Truncating
+// only in beforeEach leaves whatever the FINAL test inserted sitting in the
+// database for the rest of the gate and beyond, and this file seeds
+// merchant_projection. That row survived every gate run and reached a real
+// screen: the step-7 Merchants page rendered a merchant called "Acme" that
+// nobody created. A test fixture is not demo data, so it must not outlive the
+// test.
+afterAll(async () => {
+  await db.$executeRawUnsafe(
+    'TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
+  )
+  await db.$disconnect()
+})
 
 async function seed(correlationId: string) {
   const mrchId = fromUuid('mrch', toUuid(newId('mrch')))

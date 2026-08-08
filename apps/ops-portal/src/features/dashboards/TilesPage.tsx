@@ -5,6 +5,7 @@ import { getTiles, type TileName, type TileSet } from '../../api/endpoints.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import { PageHeader, Card, ErrorNote } from '../../ui/primitives.js'
 import { ExceptionSurface } from './ExceptionSurface.js'
+import { RecentBatches } from './RecentBatches.js'
 import type { ComponentType, SVGProps } from 'react'
 import {
   IconChevron,
@@ -276,6 +277,12 @@ export function TilesPage() {
           <LifecycleRail tiles={tiles} />
         </>
       )}
+
+      {/* C-3: below the fold, a way INTO the objects the tiles count. Every
+          tile is a number, and a number is not clickable to the thing it
+          counts, so until now the dashboard could tell an operator that work
+          existed without offering any route to it. */}
+      <RecentBatches />
     </div>
   )
 }
