@@ -1,0 +1,22 @@
+{
+  "name": "@andpay/relay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "provision": "node dist/provision.js"
+  },
+  "dependencies": {
+    "@andpay/analytics-service": "workspace:*",
+    "@andpay/bus": "workspace:*",
+    "@andpay/fulfillment-service": "workspace:*",
+    "@andpay/identity-service": "workspace:*",
+    "@andpay/outbox": "workspace:*",
+    "@andpay/tms-service": "workspace:*",
+    "kafkajs": "^2.2.4"
+  }
+}
