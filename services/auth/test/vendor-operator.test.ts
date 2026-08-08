@@ -30,7 +30,14 @@ afterAll(async () => {
   await db.$disconnect()
 })
 beforeEach(async () => {
-  await db.$executeRawUnsafe('TRUNCATE vendor_operator, outbox CASCADE')
+  // SCOPED to the usernames this suite mints, never the whole table. See the
+  // same change in vendor-login.test.ts: the unfiltered TRUNCATE deleted
+  // apps/vendor-auth-edge's beforeAll-seeded operator, whose login then failed
+  // 401 in a different file, intermittently, purely on file order (F-1).
+  // This suite only ever mints `op-<uuid>`, and no foreign key references
+  // vendor_operator, so CASCADE was covering nothing.
+  await db.$executeRawUnsafe(`DELETE FROM vendor_operator WHERE username LIKE 'op-%'`)
+  await db.$executeRawUnsafe('TRUNCATE outbox')
 })
 
 function provisionInput(overrides: Partial<{ vndrId: string; username: string; password: string; createdByActor: string; traceId: string }> = {}) {

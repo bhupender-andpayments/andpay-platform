@@ -38,7 +38,21 @@ afterAll(async () => {
   await db.$disconnect()
 })
 beforeEach(async () => {
-  await db.$executeRawUnsafe('TRUNCATE vendor_operator, outbox CASCADE')
+  // SCOPED to the usernames this suite mints, never the whole table.
+  //
+  // The unfiltered `TRUNCATE vendor_operator ... CASCADE` that used to be here
+  // deleted operators belonging to OTHER suites. apps/vendor-auth-edge seeds
+  // its operator ONCE in beforeAll and logs in later, so whenever this file ran
+  // in between, that login came back 401 and the failure surfaced far away
+  // from its cause. Root vitest is fileParallelism:false, so file ORDER alone
+  // decided whether it bit, which is exactly why it read as flake (F-1).
+  //
+  // The two sides never actually collide: this suite mints `op-<uuid>` and
+  // vendor-auth-edge seeds `operator_<suffix>`, so scoping costs this suite
+  // nothing. CASCADE was covering nothing either: no foreign key references
+  // vendor_operator (checked against the live schema).
+  await db.$executeRawUnsafe(`DELETE FROM vendor_operator WHERE username LIKE 'op-%'`)
+  await db.$executeRawUnsafe('TRUNCATE outbox')
   // refresh_token is SCOPED to this suite's own principal_type, matching the
   // mfa_enrollment delete on the very next line, which was already scoped this
   // way. The unfiltered TRUNCATE that used to be here also took every INTERNAL
