@@ -11,12 +11,15 @@ import {
   type ReportName,
   type ReportRow,
   type TileName,
+  getBankMasters,
+  type BankMasterRow,
 } from '../../api/endpoints.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { downloadCsv } from './exportCsv.js'
 import { PageHeader, Card, CardHeader, Field, Select, Input, Button, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
 import { IconSearch, IconDownload } from '../../ui/icons.js'
+import { COURIER_STATUSES } from './courierStatuses.js'
 
 // The six FR-10 reports. The Activation Report renders as the
 // delivered-not-activated worklist (services/analytics/src/mediation.ts's
@@ -107,7 +110,12 @@ export function ReportPage() {
   const tileParam = searchParams.get('tile')
   const initialTile = isTileName(tileParam) ? tileParam : null
 
-  const [mode, setMode] = useState<'report' | 'drilldown'>(initialTile !== null ? 'drilldown' : 'report')
+  // Step 5: the mode is DERIVED from the URL, never chosen. Command Center
+  // links in with ?tile=<name> when an operator clicks a number, and they land
+  // on the rows behind it. There is no reason for them to know that "report"
+  // and "tile drilldown" are different things to us, so the control is gone and
+  // this is a plain constant for the life of the page.
+  const mode: 'report' | 'drilldown' = initialTile !== null ? 'drilldown' : 'report'
   const [reportName, setReportName] = useState<ReportName>('soundbox-delivery')
   const [tileName, setTileName] = useState<TileName>(initialTile ?? 'requestsReceived')
   const [from, setFrom] = useState('')
@@ -118,6 +126,8 @@ export function ReportPage() {
   const [watermark, setWatermark] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // The real bank list, so Bank is a choice rather than a spelling test.
+  const [banks, setBanks] = useState<BankMasterRow[]>([])
 
   function currentFilters(): ReportFilters {
     const filters: ReportFilters = {}
@@ -153,6 +163,25 @@ export function ReportPage() {
     void load()
   }, [])
 
+  // Loaded separately from the report itself: a bank list that fails to load
+  // must not stop the report rendering, it just leaves the filter with only
+  // "Any bank" in it.
+  useEffect(() => {
+    let cancelled = false
+    getBankMasters(client)
+      .then((rows) => {
+        if (!cancelled && Array.isArray(rows)) setBanks(rows)
+      })
+      .catch(() => {
+        // Deliberately silent: the report is the point of this screen, and a
+        // missing filter is a smaller problem than an error banner over data
+        // that loaded perfectly well.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client])
+
   async function handleExport(): Promise<void> {
     const csv =
       mode === 'report'
@@ -177,16 +206,10 @@ export function ReportPage() {
 
       <Card>
         <div className="grid grid-cols-2 gap-4 p-5 sm:grid-cols-3 lg:grid-cols-6">
-          <Field label="View" htmlFor="report-mode">
-            <Select
-              id="report-mode"
-              value={mode}
-              onChange={(e) => setMode(e.target.value === 'drilldown' ? 'drilldown' : 'report')}
-            >
-              <option value="report">Report</option>
-              <option value="drilldown">Tile drilldown</option>
-            </Select>
-          </Field>
+          {/* ONE list of reports. The old "View" control asked the operator to
+              choose between "Report" and "Tile drilldown" BEFORE choosing the
+              thing itself, which is our internal split leaking onto their
+              screen. A drilldown arrives via ?tile= from Command Center. */}
           {mode === 'report' ? (
             <Field label="Report" htmlFor="report-name">
               <Select id="report-name" value={reportName} onChange={(e) => setReportName(e.target.value as ReportName)}>
@@ -198,7 +221,7 @@ export function ReportPage() {
               </Select>
             </Field>
           ) : (
-            <Field label="Tile" htmlFor="tile-name">
+            <Field label="Showing" htmlFor="tile-name">
               <Select id="tile-name" value={tileName} onChange={(e) => setTileName(e.target.value as TileName)}>
                 {TILE_DEFS.map((d) => (
                   <option key={d.value} value={d.value}>
@@ -214,11 +237,30 @@ export function ReportPage() {
           <Field label="To" htmlFor="filter-to">
             <Input id="filter-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
           </Field>
+          {/* Both filters cover a KNOWN value set, so both are pickers. As free
+              text they were the typed-id problem again: get the string exactly
+              right or silently get nothing back, with no way to tell a real
+              empty result from a typo. The bank option's VALUE is the reference
+              code the edge filters on; its LABEL is the name a human uses. */}
           <Field label="Bank" htmlFor="filter-bank">
-            <Input id="filter-bank" value={bank} onChange={(e) => setBank(e.target.value)} placeholder="e.g. HDFC" />
+            <Select id="filter-bank" value={bank} onChange={(e) => setBank(e.target.value)}>
+              <option value="">Any bank</option>
+              {banks.map((b) => (
+                <option key={b.tnntId} value={b.bankReferenceCode}>
+                  {b.displayName}
+                </option>
+              ))}
+            </Select>
           </Field>
           <Field label="Status" htmlFor="filter-status">
-            <Input id="filter-status" value={status} onChange={(e) => setStatus(e.target.value)} placeholder="e.g. DELIVERED" />
+            <Select id="filter-status" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="">Any status</option>
+              {COURIER_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </Select>
           </Field>
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">

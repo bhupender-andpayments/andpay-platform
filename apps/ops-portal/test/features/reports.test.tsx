@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -69,7 +69,10 @@ describe('ReportPage', () => {
     expect(screen.getByText('HDFC')).toBeTruthy()
     expect(screen.getByText('Acme Traders')).toBeTruthy()
     expect(screen.getByText('AWB-001')).toBeTruthy()
-    expect(screen.getByText('IN_TRANSIT')).toBeTruthy()
+    // Scoped to the table: IN_TRANSIT is now also an <option> in the Status
+    // picker, so an unscoped getByText matches twice. The point of this
+    // assertion is that the ROW rendered the served value.
+    expect(within(screen.getByRole('table')).getByText('IN_TRANSIT')).toBeTruthy()
     // The badge renders the instant in the reader's locale rather than as a raw
     // ISO string, and keeps the exact instant on the title attribute. Asserting
     // the title is both locale-independent and a tighter check than matching
@@ -84,6 +87,11 @@ describe('ReportPage', () => {
       'fetch',
       vi.fn(async (url: string) => {
         urls.push(url)
+        if (url.includes('/ops/bank-masters')) {
+          return jsonResponse([
+            { tnntId: 'tnnt_1', bankReferenceCode: 'HDFC', displayName: 'HDFC Bank', status: 'ACTIVE' },
+          ])
+        }
         return jsonResponse({ rows: [], watermark: { asOf: null, perTopic: {} } })
       }),
     )
@@ -94,8 +102,11 @@ describe('ReportPage', () => {
     // Initial mount load carries no filters.
     expect(urls.some((u) => u.includes('/ops/reports/soundbox-delivery') && !u.includes('bank='))).toBe(true)
 
-    await userEvent.type(screen.getByLabelText(/bank/i), 'HDFC')
-    await userEvent.type(screen.getByLabelText(/^status/i), 'DELIVERED')
+    // Step 5: both are pickers now. Selecting by VALUE proves the option's
+    // value (the bank reference code the edge filters on) is what travels,
+    // not the display name the operator reads.
+    await userEvent.selectOptions(await screen.findByLabelText(/bank/i), 'HDFC')
+    await userEvent.selectOptions(screen.getByLabelText(/^status/i), 'DELIVERED')
     await userEvent.click(screen.getByRole('button', { name: /search/i }))
 
     const requeried = urls[urls.length - 1]!
