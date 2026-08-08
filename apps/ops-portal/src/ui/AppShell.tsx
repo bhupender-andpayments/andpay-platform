@@ -12,6 +12,7 @@ import {
   IconFulfillment,
   IconCheck,
   IconLogout,
+  IconMerchants,
 } from './icons.js'
 import { shortId } from './format.js'
 
@@ -52,10 +53,14 @@ interface Section {
 // honest description of what that page still is, a bag of verbs, and it empties
 // out as each verb moves onto the object it acts on.
 //
-// `Merchants` is deliberately ABSENT: the ratified nav ships only sections
-// backed by a read that exists, and there is no merchant list endpoint yet.
+// STEP 7 LANDED: `Merchants` is now present. It was absent because the ratified
+// nav ships only sections backed by a read that EXISTS, and there was no
+// merchant list endpoint. There is one now (`GET /ops/merchants`, ruling 1b), so
+// the condition that kept it out is gone. It leads the Pipeline group because
+// the merchant is the entity the rest of the pipeline acts ON.
 const SECTIONS: readonly Section[] = [
   { to: '/command-center', label: 'Command Center', icon: IconDashboard },
+  { to: '/merchants', label: 'Merchants', icon: IconMerchants },
   { to: '/batches', label: 'Batches', icon: IconFulfillment },
   { to: '/activation', label: 'Activation', icon: IconCheck },
   { to: '/uploads', label: 'Uploads', icon: IconUploads },
@@ -75,7 +80,7 @@ const SECTIONS: readonly Section[] = [
 // rather than silently vanishing from the sidebar.
 const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = [
   { title: 'Overview', routes: ['/command-center'] },
-  { title: 'Pipeline', routes: ['/batches', '/activation'] },
+  { title: 'Pipeline', routes: ['/merchants', '/batches', '/activation'] },
   { title: 'Operations', routes: ['/uploads', '/operations', '/queues'] },
   { title: 'Insights', routes: ['/reports'] },
   { title: 'Setup', routes: ['/masterdata'] },

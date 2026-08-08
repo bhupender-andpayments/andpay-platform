@@ -63,8 +63,10 @@ export {
   readQuarantineQueue,
   listDamageReasons,
   readDamageCases,
+  listMerchants,
   type QuarantineRowView,
   type DamageCaseView,
+  type MerchantRow,
 } from './ops-read.js'
 export {
   createDamageReasonWithinTx,

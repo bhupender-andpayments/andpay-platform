@@ -138,6 +138,72 @@ export async function readDamageCases(
   return rows.map(toDamageCaseDto)
 }
 
+// Redesign step 7 (ruling 1b): the class-3 ops Merchants list. "Find the
+// merchant" is the most common ops entry point, and until now the portal had no
+// merchant read at all, which is why an entity-first nav shipped without its
+// primary entity.
+//
+// Reads ONLY the tms schema (C4). merchant_projection is TMS's own projection of
+// the merchant fact (projections.ts), so this crosses no context boundary and
+// needs no read of identity.merchant, which holds the same data on the other
+// side of that boundary.
+//
+// Emits the WIRE id (D-A: reads emit wire ids), never the raw uuid.
+//
+// PII-free by construction (D104 default-exclude), and not by filtering: the
+// table holds display_name, legal_name, mcc and status only. The recipient
+// address, contact name and mobile that the pool list guards against live on
+// the assignment and the pool entry, never here.
+//
+// Rejected shape: deriving this from pending_pool_entry (option 1c). It shows
+// only in-flight merchants, so a search would silently omit settled ones and
+// the operator could not tell the difference between "no such merchant" and
+// "that merchant has nothing in flight".
+export interface MerchantRow {
+  mrchId: string
+  displayName: string
+  legalName: string
+  mcc: string
+  status: string
+  updatedAt: Date
+}
+
+interface MerchantDbRow {
+  id: string
+  display_name: string
+  legal_name: string
+  mcc: string
+  status: string
+  updated_at: Date
+}
+
+function toMerchantDto(r: MerchantDbRow): MerchantRow {
+  return {
+    mrchId: fromUuid('mrch', r.id),
+    displayName: r.display_name,
+    legalName: r.legal_name,
+    mcc: r.mcc,
+    status: r.status,
+    updatedAt: r.updated_at,
+  }
+}
+
+// Ordered by display_name because the operator scans this list by the name they
+// call the merchant, not by when it arrived. Every row is returned, active and
+// suspended alike: a merchant search that hides suspended merchants would send
+// the operator looking for a record that does exist.
+export async function listMerchants(db: TmsDb): Promise<MerchantRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<MerchantDbRow[]>`
+      SELECT id, display_name, legal_name, mcc, status, updated_at
+      FROM merchant_projection
+      ORDER BY display_name, id
+    `
+  })
+  return rows.map(toMerchantDto)
+}
+
 export async function readQuarantineQueue(
   db: TmsDb,
   args: { includeResolved: boolean },

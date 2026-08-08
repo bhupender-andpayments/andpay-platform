@@ -25,6 +25,12 @@ export const IconReports = (p: P) => (
 export const IconQueues = (p: P) => (
   <svg {...base(p)}><path d="M4 7h16M4 12h16M4 17h10" /><circle cx="19" cy="17" r="2.4" /></svg>
 )
+// Redesign step 7. A storefront, because the merchant is a SHOP to the operator,
+// not a database row. Same visual language as the rest: 1.6 stroke, round caps,
+// currentColor, drawn inside the shared 24 viewBox.
+export const IconMerchants = (p: P) => (
+  <svg {...base(p)}><path d="M4 9h16l-1 3.2a3 3 0 0 1-2.9 2.3H7.9A3 3 0 0 1 5 12.2Z" /><path d="M5.6 9 7 4.5h10L18.4 9" /><path d="M6 14.5V20h12v-5.5" /><path d="M10.5 20v-3.4h3V20" /></svg>
+)
 export const IconMasterData = (p: P) => (
   <svg {...base(p)}><ellipse cx="12" cy="6" rx="7" ry="3" /><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6" /><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6" /></svg>
 )

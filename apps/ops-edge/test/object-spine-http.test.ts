@@ -155,6 +155,61 @@ describe('P2-1 object-spine routes: authentication', () => {
       expect(res.status, `${path} must be 401 without a token`).toBe(401)
     }
   })
+
+  it('the step-7 merchants route requires a token too', async () => {
+    const res = await request(app.getHttpServer()).get('/ops/merchants')
+    expect(res.status).toBe(401)
+  })
+})
+
+// Redesign step 7 (ruling 1b). The fifth object-spine read, and the only one
+// served from the TMS db rather than fulfillment. Seeds and removes its own
+// rows by id: merchant_projection is NOT in the fulfillment beforeEach truncate
+// above, and truncating a projection other TMS suites write to would be a
+// cross-suite data dependency of exactly the kind already filed as F-1.
+describe('step-7 merchants route', () => {
+  async function seedMerchant(displayName: string, status = 'ACTIVE'): Promise<{ wire: string; uuid: string }> {
+    const wire = newId('mrch')
+    const uuid = toUuid(wire)
+    await tmsDb.$executeRaw`
+      INSERT INTO merchant_projection (id, display_name, legal_name, mcc, status, updated_at)
+      VALUES (${uuid}::uuid, ${displayName}, ${'LEGAL ' + displayName}, ${'5411'}, ${status}, now())
+    `
+    return { wire, uuid }
+  }
+
+  async function removeMerchant(uuid: string): Promise<void> {
+    await tmsDb.$executeRaw`DELETE FROM merchant_projection WHERE id = ${uuid}::uuid`
+  }
+
+  it('GET /ops/merchants -> 200 with the merchant, as a WIRE id', async () => {
+    const m = await seedMerchant('ZZ EDGE PROBE')
+    try {
+      const res = await request(app.getHttpServer())
+        .get('/ops/merchants')
+        .set('Authorization', `Bearer ${await mint()}`)
+      expect(res.status).toBe(200)
+      const row = res.body.find((r: { mrchId: string }) => r.mrchId === m.wire)
+      expect(row, 'the seeded merchant must cross the wire').toBeDefined()
+      expect(row.displayName).toBe('ZZ EDGE PROBE')
+      // The raw uuid must not appear ANYWHERE in the response body.
+      expect(JSON.stringify(res.body)).not.toContain(m.uuid)
+    } finally {
+      await removeMerchant(m.uuid)
+    }
+  })
+
+  it('emits NO 6e audit: a read is not a mutation (check 3)', async () => {
+    const m = await seedMerchant('ZZ EDGE AUDIT PROBE')
+    try {
+      await fulfillmentDb.$executeRawUnsafe('TRUNCATE outbox')
+      await request(app.getHttpServer()).get('/ops/merchants').set('Authorization', `Bearer ${await mint()}`)
+      const rows = await fulfillmentDb.$queryRawUnsafe<unknown[]>('SELECT id FROM outbox')
+      expect(rows.length, 'a guard-only read must emit nothing').toBe(0)
+    } finally {
+      await removeMerchant(m.uuid)
+    }
+  })
 })
 
 describe('P2-1 object-spine routes: a baseline ops operator can read all four', () => {

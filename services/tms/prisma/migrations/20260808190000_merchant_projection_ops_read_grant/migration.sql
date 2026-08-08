@@ -1,0 +1,22 @@
+-- Redesign step 7 (ruling 1b): the class-3 ops Merchants list reads
+-- merchant_projection, so tms_ops_read needs SELECT on it.
+--
+-- THE RULING SAID THIS NEEDED NO MIGRATION. That was true of the four P2-1
+-- fulfillment reads and is NOT true here. merchant_projection was simply never
+-- granted to the ops read role, because until now nothing in the ops portal
+-- read it. Measured before writing this file: tms_ops_read held SELECT on
+-- assignment, damage_reason, ingest_file, pending_row and quarantine_row, and
+-- nothing else.
+--
+-- Same reason damage_reason needed its own GRANT in 20260804163403: there is NO
+-- ALTER DEFAULT PRIVILEGES in this schema (that is a recorded spec-10d
+-- landmine), so a role's access is exactly the set of explicit grants and
+-- nothing widens automatically.
+--
+-- Additive only (S23): no DROP, no ALTER of an existing table, no new table, no
+-- new RLS policy. merchant_projection already has RLS enabled with the
+-- permissive `merchant_projection_v1` policy (ALL, USING(true)), so the grant
+-- alone is what the read needs. This is a DB grant, NOT a D2 permission string:
+-- no authz string is introduced, and the route stays guard-only like every
+-- other ops read.
+GRANT SELECT ON tms.merchant_projection TO tms_ops_read;

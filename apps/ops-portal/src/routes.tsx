@@ -10,6 +10,7 @@ import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
 import { UploadsPage } from './features/uploads/UploadsPage.js'
 import { OperationsPage } from './features/operations/OperationsPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
+import { MerchantsPage } from './features/merchants/MerchantsPage.js'
 import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
 import { BatchDetailPage } from './features/fulfillment/BatchDetailPage.js'
 
@@ -54,6 +55,8 @@ export function AppRoutes() {
           <Route path="/batches" element={<FulfillmentPage />} />
           <Route path="/batches/:btchId" element={<BatchDetailPage />} />
           <Route path="/activation" element={<ActivationPage />} />
+          {/* Redesign step 7: the entity the object-first nav was missing. */}
+          <Route path="/merchants" element={<MerchantsPage />} />
           {/* Step 4: uploads are three linkable routes behind an index of
               cards, so `/uploads/*` is delegated to the feature. */}
           <Route path="/uploads/*" element={<UploadsPage />} />

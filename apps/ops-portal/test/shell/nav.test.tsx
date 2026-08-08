@@ -126,7 +126,7 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 8 real sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 9 real sections, no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
@@ -134,13 +134,14 @@ describe('ops-portal app shell + navigation', () => {
     // Master-data is READ-ONLY (FR-11 deferred): no admin/CRUD entry.
     //
     // Redesign step 1 (object-first IA): "Dashboards" is now "Command Center"
-    // and "Fulfillment" is now "Batches". Merchants is deliberately ABSENT:
-    // nav option B ships only sections backed by a read that exists, and there
-    // is no merchant list endpoint yet. Compared as a SET, because the sidebar
-    // groups these links under headings, so document order is a presentation
-    // choice while "which sections exist" is the invariant worth guarding.
+    // and "Fulfillment" is now "Batches". Step 7 ADDS Merchants, which was
+    // absent only because nav option B ships sections backed by a read that
+    // exists and there was no merchant list endpoint; `GET /ops/merchants`
+    // (ruling 1b) is that read. Compared as a SET, because the sidebar groups
+    // these links under headings, so document order is a presentation choice
+    // while "which sections exist" is the invariant worth guarding.
     expect([...names].sort()).toEqual(
-      ['Actions', 'Activation', 'Batches', 'Command Center', 'Master Data', 'Queues', 'Reports', 'Uploads'],
+      ['Actions', 'Activation', 'Batches', 'Command Center', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })

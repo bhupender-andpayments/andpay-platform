@@ -8,8 +8,9 @@ import { AppRoutes } from '../../src/routes.js'
 import { clearAccessToken } from '../../src/api/tokenStore.js'
 
 // Phase 7 Task 13a consistency smoke test: mount the real authenticated shell
-// (routes.tsx -> AppShell, Task 1/3/13a) and route through every one of the 7
-// live sidebar sections (AppShell's own SECTIONS, now including Activation),
+// (routes.tsx -> AppShell, Task 1/3/13a) and route through every one of the 9
+// live sidebar sections (AppShell's own SECTIONS, now including Activation and
+// the redesign step-7 Merchants),
 // asserting each section's own heading renders and nothing throws or logs a
 // console.error along the way. This is the final proof that the sidebar,
 // routing, and each feature page's default (mount-time) data fetch are all
@@ -37,7 +38,7 @@ const TILES_FIXTURE = {
   activatedSuccessfully: null,
 }
 
-// A single fetch stub that answers every mount-time read the 7 sections'
+// A single fetch stub that answers every mount-time read the 9 sections'
 // DEFAULT tab issues (dashboards tiles, the reports page's default report,
 // queues' default quarantine tab, master-data's default vendor-registry tab,
 // the activation worklist report), plus login/rehydrate. Uploads' default
@@ -97,12 +98,14 @@ async function renderAuthedShell(): Promise<void> {
   await screen.findByRole('navigation', { name: /main/i })
 }
 
-// The 7 live sidebar sections in AppShell's own order (src/ui/AppShell.tsx),
+// The 9 live sidebar sections in AppShell's own order (src/ui/AppShell.tsx),
 // each paired with the exact heading its page renders (PageHeader's title
 // prop, confirmed by reading every feature page: TilesPage/ReportPage/
-// QueuesPage/MasterDataPage/UploadsPage/OperationsPage/ActivationPage).
+// QueuesPage/MasterDataPage/UploadsPage/OperationsPage/ActivationPage/
+// MerchantsPage).
 const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
   { label: 'Command Center', heading: /^command center$/i },
+  { label: 'Merchants', heading: /^merchants$/i },
   { label: 'Reports', heading: /^reports$/i },
   { label: 'Queues', heading: /^queues$/i },
   { label: 'Master Data', heading: /^master data$/i },
@@ -128,7 +131,7 @@ describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
     consoleErrorSpy.mockRestore()
   })
 
-  it('mounts the shell authenticated and routes through all 7 sections with no thrown errors and no console.error', async () => {
+  it('mounts the shell authenticated and routes through all 9 sections with no thrown errors and no console.error', async () => {
     await renderAuthedShell()
 
     const nav = screen.getByRole('navigation', { name: /main/i })

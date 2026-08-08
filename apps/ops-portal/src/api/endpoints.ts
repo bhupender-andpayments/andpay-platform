@@ -484,6 +484,26 @@ export function getBatches(c: Client) {
   return c.request<BatchRow[]>({ method: 'GET', path: '/ops/batches' })
 }
 
+/**
+ * services/tms/src/ops-read.ts MerchantRow (PII-free: the projection holds no
+ * address, contact name or mobile at all).
+ */
+export interface MerchantRow {
+  mrchId: string
+  displayName: string
+  legalName: string
+  mcc: string
+  status: string
+  updatedAt: string
+}
+
+// Redesign step 7 (ruling 1b). Every merchant, not only those with something in
+// flight: a search that silently omits settled merchants is why deriving this
+// from the pool (option 1c) was rejected.
+export function getMerchants(c: Client) {
+  return c.request<MerchantRow[]>({ method: 'GET', path: '/ops/merchants' })
+}
+
 // 404 when the batch does not exist; the edge throws NotFoundException rather
 // than returning an empty-but-valid-looking detail, so the caller can tell
 // "no such batch" from "a batch with no entries".

@@ -26,9 +26,11 @@ import {
   readQuarantineQueue,
   listDamageReasons,
   readDamageCases,
+  listMerchants,
   type QuarantineRowView,
   type DamageReasonRow,
   type DamageCaseView,
+  type MerchantRow,
 } from '@andpay/tms-service'
 import { listBankMasters, type BankMasterRow } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
@@ -141,6 +143,18 @@ export class OpsReadController {
   @HttpCode(200)
   async batches(): Promise<BatchRow[]> {
     return listBatches(this.deps.fulfillmentDb)
+  }
+
+  // Redesign step 7 (ruling 1b): the merchant list the entity-first nav was
+  // missing. Guard-only like every read here, and served from the TMS db
+  // (merchant_projection), not identity, so no context boundary is crossed.
+  // Unlike the four fulfillment reads above this one DID need a migration, a
+  // single GRANT SELECT to tms_ops_read (20260808190000). No D2 permission
+  // string was added.
+  @Get('merchants')
+  @HttpCode(200)
+  async merchants(): Promise<MerchantRow[]> {
+    return listMerchants(this.deps.tmsDb)
   }
 
   // `?poolStatus=POOLED|HELD|BATCHED` narrows the queue; omitted returns the
