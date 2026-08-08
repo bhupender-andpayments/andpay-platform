@@ -1,6 +1,6 @@
 import { type DynamicModule, Module, type INestApplication } from '@nestjs/common'
 import { APP_FILTER, NestFactory } from '@nestjs/core'
-import { applyPortalCors } from '@andpay/edge'
+import { applyPortalCors, applyApiSecurityHeaders } from '@andpay/edge'
 import { ProbeController } from './probe.controller.js'
 import { OpsController } from './ops.controller.js'
 import { OpsReadController } from './ops-read.controller.js'
@@ -41,6 +41,9 @@ export async function buildOpsEdgeApp(deps: OpsEdgeDeps): Promise<INestApplicati
   // Additive browser CORS for the ops portal (spec 12 task 7, D6). Applied
   // before the app is init'd/returned, so no handler behavior changes, only
   // the preflight/response headers.
+  // E-8: security headers on EVERY response including errors. Applied before
+  // CORS so an early rejection still carries them.
+  applyApiSecurityHeaders(app)
   applyPortalCors(app, deps.portalOrigin)
   return app
 }

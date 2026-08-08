@@ -122,7 +122,16 @@ describe('onDemandAccrued / triggerBatch (batching pool anchor and lot-size trig
     // already exceeds any BASE-derived fake threshold; only a real wall-clock
     // mark captured right before the trigger proves the mark-BATCHED UPDATE's
     // updated_at = now() actually advances the column past this point.
-    const preTrigger = new Date()
+    // Read from the DATABASE clock, not `new Date()`.
+    //
+    // `updated_at` is stamped by Postgres, so comparing it against the Node
+    // clock compares two INDEPENDENT clocks: here Postgres runs in a Docker VM
+    // whose clock drifts from the host by a fraction of a millisecond. That is
+    // enough to invert a strict millisecond comparison, and it did: a full gate
+    // run failed with "expected 1786207236461 to be greater than
+    // 1786207236462", one millisecond backwards, while the file passed 8/8 in
+    // isolation. Same clock on both sides removes the skew.
+    const preTrigger = (await db.$queryRaw<{ now: Date }[]>`SELECT now() AS now`)[0]!.now
 
     // capture the pool's FIRST timer (armed by ensurePool on first touch) before triggering
     const anchor = await ensurePool(db, tenantWire, programWire)
@@ -165,7 +174,13 @@ describe('onDemandAccrued / triggerBatch (batching pool anchor and lot-size trig
     for (const row of entries) {
       expect(row.pool_status).toBe('BATCHED')
       expect(row.batch).toBe(toUuid(btchId))
-      expect(row.updated_at.getTime()).toBeGreaterThan(preTrigger.getTime())
+      // >= rather than >, and it loses nothing. Both timestamps now come from
+      // the same clock, and `now()` is TRANSACTION-START time, so the trigger's
+      // transaction can legitimately begin in the same millisecond this probe
+      // read. The assertion's real job is to catch a STALE row, one the trigger
+      // never touched, and such a row's updated_at sits far earlier than this
+      // instant, not one millisecond either side of it.
+      expect(row.updated_at.getTime()).toBeGreaterThanOrEqual(preTrigger.getTime())
     }
 
     // exactly one fct.fulfillment.batch.v1 fact, carrying the asgn_id set and the oldest trace_id

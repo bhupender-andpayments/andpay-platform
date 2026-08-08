@@ -14,11 +14,17 @@ export TMS_DATABASE_URL="${TMS_DATABASE_URL:-postgresql://andpay:andpay_dev@loca
 export FULFILLMENT_DATABASE_URL="${FULFILLMENT_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment}"
 export ORCHESTRATOR_DATABASE_URL="${ORCHESTRATOR_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=orchestrator}"
 export AUTH_DATABASE_URL="${AUTH_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=auth}"
+export ANALYTICS_DATABASE_URL="${ANALYTICS_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics}"
 
 MODE="${1:-deploy}"
 NAME="${2:-init}"
 
-for ctx in identity tms fulfillment orchestrator auth; do
+# ANALYTICS WAS MISSING FROM THIS LIST until 2026-08-08, and it was a silent
+# gap rather than a loud one: this is the documented way to apply migrations, so
+# every analytics migration authored after the schema was created would simply
+# never run, and nothing would say so. Found while adding the E-3 login roles,
+# when analytics_app was the only one of six that failed to appear.
+for ctx in identity tms fulfillment orchestrator auth analytics; do
   schema="services/${ctx}/prisma/schema.prisma"
   echo ">>> ${ctx}"
   if [ "${MODE}" = "dev" ]; then

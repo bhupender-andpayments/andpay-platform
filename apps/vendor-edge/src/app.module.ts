@@ -1,6 +1,6 @@
 import { type DynamicModule, Module, type INestApplication } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
-import { applyBearerCors } from '@andpay/edge'
+import { applyBearerCors, applyApiSecurityHeaders } from '@andpay/edge'
 import { CourierStatusController } from './courier-status.controller.js'
 import { IntakeController } from './intake.controller.js'
 import { PullController } from './pull.controller.js'
@@ -36,6 +36,9 @@ export async function buildEdgeApp(deps: EdgeDeps): Promise<INestApplication> {
   // is bearer-only and never sets or reads a cookie. Applied before the app
   // is returned, so no handler behavior changes, only the preflight/response
   // headers.
+  // E-8: security headers on EVERY response including errors. Applied before
+  // CORS so an early rejection still carries them.
+  applyApiSecurityHeaders(app)
   applyBearerCors(app, deps.vendorPortalOrigin)
   return app
 }
