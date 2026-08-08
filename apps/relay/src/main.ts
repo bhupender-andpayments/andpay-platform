@@ -6,6 +6,7 @@ import { PrismaClient as FulfillmentClient } from '@andpay/fulfillment-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { RELAY_CONTEXTS, assertRelayContextsAreSafe } from './contexts.js'
 import { runRelayTick, type DrainResult } from './tick.js'
+import { QuarantiningPublisher } from './quarantine.js'
 import { resolveTickSeconds, runRelay } from './loop.js'
 import type { TransactionalClient } from './role-client.js'
 
@@ -103,7 +104,17 @@ async function main(): Promise<void> {
   await producer.connect()
 
   const { clients, disconnect } = buildClients()
-  const publisher = new KafkaPublisher(producer)
+  // Wrapped, never bare. A bare KafkaPublisher throws on a row that can never
+  // be encoded, and because relayOnce claims, publishes and stamps in ONE
+  // transaction, that throw rolls back the whole batch and re-claims it
+  // forever. Quarantine converts that permanent failure into a DLQ write so
+  // everything behind it keeps moving; a TRANSIENT failure still propagates and
+  // still rolls back, which is what makes a broker outage lossless.
+  const publisher = new QuarantiningPublisher(new KafkaPublisher(producer), producer, (record) => {
+    console.error(
+      `[relay] QUARANTINED outbox row ${record.outboxId} to ${record.topic}: ${record.reason}`,
+    )
+  })
   const tickSeconds = resolveTickSeconds(process.env.RELAY_TICK_SECONDS)
   const once = process.env.RELAY_ONCE === '1'
 

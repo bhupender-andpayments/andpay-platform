@@ -1,3 +1,4 @@
+import { baseTopic } from './ladder.js'
 /**
  * Topic taxonomy (E7, Section 10.7), config-as-code. Facts broadcast on
  * `fct.<domain>.<aggregate>.v<n>`, commands point-to-point on
@@ -81,8 +82,11 @@ const RAW_PAYLOAD_TOPICS: ReadonlySet<string> = new Set(['authz.audit'])
  * inherit their base topic's contract, so `authz.audit.retry.1` is raw too.
  */
 export function isEnvelopeTopic(topic: string): boolean {
-  const base = topic.replace(/\.(retry\.\d+|dlq)$/, '')
-  return !RAW_PAYLOAD_TOPICS.has(base)
+  // baseTopic, not a second local regex: two independent definitions of what a
+  // ladder suffix looks like would eventually disagree, and the failure would
+  // be a message judged by the wrong codec on retry but the right one at first
+  // delivery.
+  return !RAW_PAYLOAD_TOPICS.has(baseTopic(topic))
 }
 
 /** Derive the per-consumer retry and DLQ topics for a base topic (E7). */

@@ -2,6 +2,7 @@ import { Kafka, logLevel } from 'kafkajs'
 import { runFactConsumer } from '@andpay/bus'
 import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { identityRoutes, groupIdFor, type ConsumerRoute } from './routes.js'
+import { withLadder, ladderTopicsFor } from './ladder.js'
 
 // The per-context fact consumer (relay plan step 2).
 //
@@ -63,31 +64,40 @@ async function main(): Promise<void> {
       `${fromBeginning ? ', REPLAYING FROM THE START OF EACH TOPIC' : ''}`,
   )
 
+  // The ladder needs a producer of its own: a failed message is republished one
+  // rung up rather than rethrown. Rethrowing is what jams a partition, because
+  // kafkajs never commits the offset for a throwing message and redelivers the
+  // same one forever.
+  const producer = kafka.producer()
+  await producer.connect()
+
   const handle = await runFactConsumer(kafka, {
     groupId,
-    topics: [...route.topics],
+    // Base topic plus every retry rung, never the DLQ.
+    topics: ladderTopicsFor(route.topics),
     fromBeginning,
-    onEnvelope: async (envelope) => {
-      try {
-        await route.handle(envelope)
-      } catch (err: unknown) {
-        // Rethrow after naming the fact. kafkajs does NOT commit the offset for
-        // a throwing message, so it is retried rather than lost. The retry
-        // LADDER (retry.1/2/3 then dlq) is step 4; until it exists a genuinely
-        // poison message retries indefinitely, which is loud rather than
-        // silent, and is the right failure mode of the two.
-        console.error(
-          `[consumer:${context}] ${envelope.type} dedupKey=${envelope.dedupKey} failed: ` +
-            `${err instanceof Error ? err.message : String(err)}`,
+    onEnvelope: withLadder({
+      producer,
+      handle: route.handle,
+      onRetry: (i) => {
+        console.warn(
+          `[consumer:${context}] ${i.dedupKey} -> ${i.nextTopic}: ${i.reason}`,
         )
-        throw err
-      }
-    },
+      },
+      onDeadLetter: (i) => {
+        // The signal a human acts on. A message here is no longer being
+        // retried, so silence would mean a fact quietly ceased to exist.
+        console.error(
+          `[consumer:${context}] DEAD-LETTERED ${i.dedupKey} to ${i.topic}: ${i.reason}`,
+        )
+      },
+    }),
   })
 
   const stop = (): void => {
     void (async () => {
       await handle.stop()
+      await producer.disconnect()
       await disconnect()
     })()
   }

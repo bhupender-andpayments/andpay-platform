@@ -13,3 +13,4 @@ export {
   type RunLoopOptions,
   type RunRelayOptions,
 } from './loop.js'
+export { QuarantiningPublisher, type QuarantineRecord } from './quarantine.js'
