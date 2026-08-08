@@ -145,7 +145,7 @@ export function FulfillmentPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Fulfillment"
+        title="Batches"
         description="The pending pool, the batches formed from it, and the shipments they became."
         actions={
           <Button variant="secondary" onClick={() => void load()} disabled={loading}>

@@ -88,7 +88,7 @@ async function renderAuthedShell(): Promise<void> {
   const fakeToken = makeFakeJwt({ sub: 'ops-1', psr: 'role:ops' })
   stubPortalFetch(fakeToken)
   render(
-    <MemoryRouter initialEntries={['/dashboards']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={['/command-center']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
         <AuthedAppRoutes onError={(e) => { throw e }} />
       </AuthProvider>
@@ -102,13 +102,13 @@ async function renderAuthedShell(): Promise<void> {
 // prop, confirmed by reading every feature page: TilesPage/ReportPage/
 // QueuesPage/MasterDataPage/UploadsPage/OperationsPage/ActivationPage).
 const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
-  { label: 'Dashboards', heading: /^dashboards$/i },
+  { label: 'Command Center', heading: /^command center$/i },
   { label: 'Reports', heading: /^reports$/i },
   { label: 'Queues', heading: /^queues$/i },
   { label: 'Master Data', heading: /^master data$/i },
   { label: 'Uploads', heading: /^uploads$/i },
-  { label: 'Fulfillment', heading: /^fulfillment$/i },
-  { label: 'Operations', heading: /^operations$/i },
+  { label: 'Batches', heading: /^batches$/i },
+  { label: 'Actions', heading: /^operations$/i },
   { label: 'Activation', heading: /^activation$/i },
 ]
 

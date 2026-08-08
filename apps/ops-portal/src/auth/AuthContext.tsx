@@ -46,6 +46,20 @@ export function decodeTokenClaims(token: string): Principal {
 
 export interface AuthContextValue {
   principal: Principal | null
+  /**
+   * True until the mount-time silent rehydrate has SETTLED, either way.
+   *
+   * P-C: without this, a cold reload of any deep link was lost. The in-memory
+   * access token is gone on a fresh page load, so the rehydrate below is async,
+   * and RequireAuth rendered on the same tick with a null principal and
+   * redirected to /login immediately. By the time the session came back the
+   * router had already left, and the login route sent the operator to the
+   * landing page. Every bookmark and every pasted link died that way.
+   *
+   * Consumers must WAIT rather than treat this as unauthenticated. It is not an
+   * authorization signal (S24/T14): the edge still decides every request.
+   */
+  bootstrapping: boolean
   // Exposed so feature pages (Task 10's dashboards, and the tasks after it)
   // can call the typed endpoint functions under the same interceptor pipeline
   // (401 refresh, 403 step-up) the login/logout calls already use, rather
@@ -70,6 +84,9 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [principal, setPrincipal] = useState<Principal | null>(null)
+  // Starts true: on a cold load the rehydrate below has not run yet, and
+  // "no principal" must not be read as "logged out" until it has.
+  const [bootstrapping, setBootstrapping] = useState(true)
 
   // An unrecoverable session loss (both refresh attempts exhausted): drop the
   // display principal so the app falls back to the login page.
@@ -113,14 +130,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // gets a fresh ref and correctly re-attempts. The theoretical post-unmount
   // setState warning is accepted: the root AuthProvider never unmounts in
   // practice, and a cancelled flag here is unsafe, not merely unnecessary.
+  //
+  // P-C ADDENDUM. That last sentence stopped being true once this effect had to
+  // settle `bootstrapping`. In a TEST the provider genuinely does unmount, and
+  // the settle then ran against a torn-down jsdom, throwing
+  // "ReferenceError: window is not defined" from React's scheduler. It failed
+  // the whole run while every test still reported green.
+  //
+  // The fix is an unmounted flag on the SETTLE ONLY, never on the request. The
+  // request must still fire exactly once (reuse detection), so `unmountedRef`
+  // deliberately does NOT gate `rehydrateAttempted`. It is cleared on every
+  // setup, so StrictMode's setup1 -> cleanup1 -> setup2 leaves it false and
+  // setup1's in-flight result still settles, which is the whole point of the
+  // ref-alone pattern above.
   const rehydrateAttempted = useRef(false)
+  const unmountedRef = useRef(false)
   useEffect(() => {
-    if (rehydrateAttempted.current) return
+    unmountedRef.current = false
+    if (rehydrateAttempted.current) return () => { unmountedRef.current = true }
     rehydrateAttempted.current = true
     // Guards the (currently impossible within one provider lifecycle, but
     // cheap to check) case of an access token already present in memory: a
     // rehydrate would be redundant and could only ever downgrade the session.
-    if (getAccessToken() !== null) return
+    if (getAccessToken() !== null) {
+      setBootstrapping(false)
+      return () => { unmountedRef.current = true }
+    }
 
     void (async () => {
       try {
@@ -134,8 +169,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch {
         // No cookie, reuse/revoke/idle/absolute expiry, a network failure, or
         // a malformed token: fall through to unauthenticated, single attempt.
+      } finally {
+        // ALWAYS settles on every exit path, success or failure: a bootstrapping
+        // flag that can stick on would hang the app on a blank screen instead of
+        // showing the login page. Skipped only when the provider is already
+        // gone, where there is no state left to set and React's scheduler would
+        // reach for a `window` the test environment has torn down.
+        if (!unmountedRef.current) setBootstrapping(false)
       }
     })()
+
+    return () => { unmountedRef.current = true }
   }, [])
 
   // The explicit return type is load-bearing: without it useCallback infers
@@ -173,8 +217,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [client])
 
   const value = useMemo<AuthContextValue>(
-    () => ({ principal, client, login, logout }),
-    [principal, client, login, logout],
+    () => ({ principal, bootstrapping, client, login, logout }),
+    [principal, bootstrapping, client, login, logout],
   )
 
   return (

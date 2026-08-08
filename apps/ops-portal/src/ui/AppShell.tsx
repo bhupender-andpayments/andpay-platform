@@ -31,36 +31,69 @@ interface Section {
   label: string
   icon: ComponentType<SVGProps<SVGSVGElement>>
 }
+// REDESIGN STEP 1: object-first navigation.
+//
+// The portal was named after what the SYSTEM does (Dashboards, Reports, Queues,
+// Uploads, Operations). A verb-first page holds no object, so it has to ask the
+// operator to supply one, and the only name it has for an object is the wire id.
+// That is why the batch trigger asks for a typed `tnnt_` and `prg_`. The typed
+// ids are a symptom of this nav, not a separate problem.
+//
+// Two renames land here, and no page contents move yet:
+//   Dashboards  -> Command Center   (/dashboards  -> /command-center)
+//   Fulfillment -> Batches          (/fulfillment -> /batches)
+//
+// `Queues` keeps its name ON PURPOSE: it is dissolved into Command Center in a
+// later step, so renaming it now is churn toward a destination that deletes it.
+//
+// The old `Operations` page is labelled `Actions` instead. Not cosmetic: it sits
+// inside the Operations GROUP, and a group header repeating one of its own item
+// names is the confusion this redesign exists to remove. `Actions` is also the
+// honest description of what that page still is, a bag of verbs, and it empties
+// out as each verb moves onto the object it acts on.
+//
+// `Merchants` is deliberately ABSENT: the ratified nav ships only sections
+// backed by a read that exists, and there is no merchant list endpoint yet.
 const SECTIONS: readonly Section[] = [
-  { to: '/dashboards', label: 'Dashboards', icon: IconDashboard },
-  { to: '/reports', label: 'Reports', icon: IconReports },
-  { to: '/queues', label: 'Queues', icon: IconQueues },
-  { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
-  { to: '/uploads', label: 'Uploads', icon: IconUploads },
-  { to: '/fulfillment', label: 'Fulfillment', icon: IconFulfillment },
-  { to: '/operations', label: 'Operations', icon: IconOperations },
+  { to: '/command-center', label: 'Command Center', icon: IconDashboard },
+  { to: '/batches', label: 'Batches', icon: IconFulfillment },
   { to: '/activation', label: 'Activation', icon: IconCheck },
+  { to: '/uploads', label: 'Uploads', icon: IconUploads },
+  { to: '/operations', label: 'Actions', icon: IconOperations },
+  { to: '/queues', label: 'Queues', icon: IconQueues },
+  { to: '/reports', label: 'Reports', icon: IconReports },
+  { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
 ]
 
-// Grouped rather than one flat list of seven. The groups are the operator's own
-// division of the work (what am I looking at / what am I doing / what is
-// configured), so scanning for a destination reads down a short list instead of
-// the whole nav. Routes and labels are unchanged, so routing behaviour and its
-// tests are untouched; only the presentation groups them.
-const NAV_GROUPS: ReadonlyArray<{ title: string; items: readonly Section[] }> = [
-  {
-    title: 'Overview',
-    items: SECTIONS.filter((s) => ['/dashboards', '/reports'].includes(s.to)),
-  },
-  {
-    title: 'Dispatch',
-    items: SECTIONS.filter((s) => ['/uploads', '/fulfillment', '/operations', '/queues', '/activation'].includes(s.to)),
-  },
-  {
-    title: 'Configuration',
-    items: SECTIONS.filter((s) => ['/masterdata'].includes(s.to)),
-  },
+// The five groups are the operator's own division of the work: what needs me,
+// what is the thing moving through the pipeline, what am I doing to it, what am
+// I measuring, what is configured. Scanning for a destination reads down a short
+// list instead of the whole nav.
+//
+// Membership is declared by ROUTE here and asserted exhaustive below, so a
+// section added to SECTIONS and forgotten here fails loudly at module load
+// rather than silently vanishing from the sidebar.
+const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = [
+  { title: 'Overview', routes: ['/command-center'] },
+  { title: 'Pipeline', routes: ['/batches', '/activation'] },
+  { title: 'Operations', routes: ['/uploads', '/operations', '/queues'] },
+  { title: 'Insights', routes: ['/reports'] },
+  { title: 'Setup', routes: ['/masterdata'] },
 ]
+
+const GROUPED_NAV: ReadonlyArray<{ title: string; items: readonly Section[] }> = NAV_GROUPS.map((g) => ({
+  title: g.title,
+  items: g.routes.map((route) => {
+    const section = SECTIONS.find((s) => s.to === route)
+    if (section === undefined) throw new Error(`nav group "${g.title}" references unknown route ${route}`)
+    return section
+  }),
+}))
+
+const UNGROUPED = SECTIONS.filter((s) => !NAV_GROUPS.some((g) => g.routes.includes(s.to)))
+if (UNGROUPED.length > 0) {
+  throw new Error(`nav sections missing from every group: ${UNGROUPED.map((s) => s.to).join(', ')}`)
+}
 
 // The real logo asset (public/logo). This previously drew an invented chevron
 // glyph because no logo asset existed in the repo.
@@ -116,7 +149,7 @@ function Sidebar({ className = '' }: { className?: string }) {
         <BrandMark />
       </div>
       <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 pb-4">
-        {NAV_GROUPS.map((group) => (
+        {GROUPED_NAV.map((group) => (
           <div key={group.title} className="mb-5 last:mb-0">
             <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-foreground/60">
               {group.title}
@@ -191,17 +224,19 @@ function Sidebar({ className = '' }: { className?: string }) {
 
 function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
   const { pathname } = useLocation()
-  // Detail routes that live OUTSIDE the nav's own path prefixes still belong to
-  // a section in the breadcrumb. /batches/:btchId is reached from Fulfillment
-  // but shares no prefix with /fulfillment, so without this it fell through to
-  // the 'Ops Console' default and the crumb read "Operations / Ops Console".
-  const DETAIL_ROUTE_SECTIONS: ReadonlyArray<{ prefix: string; label: string }> = [
-    { prefix: '/batches/', label: 'Fulfillment' },
-  ]
-  const current =
-    SECTIONS.find((s) => pathname.startsWith(s.to))?.label ??
-    DETAIL_ROUTE_SECTIONS.find((d) => pathname.startsWith(d.prefix))?.label ??
-    'Ops Console'
+  // A detail route now shares its list's prefix, so one prefix match covers
+  // both. The previous DETAIL_ROUTE_SECTIONS special case existed only because
+  // /batches/:btchId sat under a list at /fulfillment and shared no prefix with
+  // it, so the crumb fell through to the default and read "Ops Console". The
+  // rename removed the cause, so the workaround is gone rather than kept.
+  const section = SECTIONS.find((s) => pathname.startsWith(s.to))
+  const current = section?.label ?? 'Ops Console'
+  // The crumb root names the section's ACTUAL group. It used to be the literal
+  // string "Operations" on every screen, which predates the nav having groups
+  // at all and is wrong on most of them now: Command Center is under Overview,
+  // Reports under Insights. It read correctly only for the Operations group, by
+  // coincidence.
+  const group = GROUPED_NAV.find((g) => g.items.some((i) => i.to === section?.to))?.title ?? 'Ops Console'
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/80 px-4 backdrop-blur lg:px-6">
       <button
@@ -213,7 +248,7 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
         <IconMenu width={20} height={20} />
       </button>
       <div className="flex min-w-0 items-center gap-2 text-[13px]">
-        <span className="hidden text-muted-foreground sm:inline">Operations</span>
+        <span className="hidden text-muted-foreground sm:inline">{group}</span>
         <span className="hidden text-muted-foreground sm:inline">/</span>
         <span className="truncate font-medium text-foreground">{current}</span>
       </div>

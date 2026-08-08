@@ -39,7 +39,15 @@ describe('ops-portal routing', () => {
   // automatic afterEach never registers (same pattern as login.test.tsx).
   afterEach(() => { cleanup() })
 
-  it('an unauthenticated visit to a feature route redirects to /login', () => {
+  // AWAITED, not synchronous. P-C made RequireAuth wait for the mount-time
+  // rehydrate to settle before deciding, because redirecting on the first tick
+  // threw away the operator's destination on every cold deep link. So an
+  // unauthenticated visitor now renders nothing for exactly one round-trip and
+  // then gets the login page. The redirect still happens; it is one tick later.
+  //
+  // The second assertion is the load-bearing one: the feature route must never
+  // render. Waiting must not become a window where a protected screen paints.
+  it('an unauthenticated visit to a feature route redirects to /login', async () => {
     render(
       <MemoryRouter
         initialEntries={['/queues']}
@@ -50,7 +58,7 @@ describe('ops-portal routing', () => {
         </AuthProvider>
       </MemoryRouter>,
     )
-    expect(screen.getByLabelText(/username/i)).toBeTruthy()
+    expect(await screen.findByLabelText(/username/i)).toBeTruthy()
     expect(screen.queryByText(/queues/i)).toBeNull()
   })
 
@@ -75,11 +83,11 @@ describe('ops-portal routing', () => {
     expect(await screen.findByRole('heading', { name: /queues/i })).toBeTruthy()
 
     // The nav lists every feature section.
-    expect(screen.getByRole('link', { name: /dashboards/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /command center/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /reports/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /master data/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /uploads/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /operations/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /actions/i })).toBeTruthy()
 
     // The logged-in principal and a logout control are shown.
     expect(screen.getByText(/ops-1/)).toBeTruthy()

@@ -22,7 +22,7 @@ import { BatchDetailPage } from './features/fulfillment/BatchDetailPage.js'
 // decision: both only steer navigation over a display-only principal.
 function LoginRoute() {
   const { principal } = useAuth()
-  if (principal !== null) return <Navigate to="/dashboards" replace />
+  if (principal !== null) return <Navigate to="/command-center" replace />
   return <LoginPage />
 }
 
@@ -46,19 +46,28 @@ export function AppRoutes() {
       <Route path="/login" element={<LoginRoute />} />
       <Route element={<RequireAuth />}>
         <Route element={<Shell />}>
-          <Route path="/dashboards" element={<TilesPage />} />
-          <Route path="/reports" element={<ReportPage />} />
-          <Route path="/queues" element={<QueuesPage />} />
-          {/* P2-2/3/4: the object spine. /batches/:btchId is a sibling of the
-              tabbed list page, so a batch is linkable and refreshable. */}
-          <Route path="/fulfillment" element={<FulfillmentPage />} />
+          {/* Redesign step 1: object-first routes. The batch LIST moved from
+              /fulfillment to /batches so the detail route is finally a child of
+              its own list rather than an unrelated sibling. That is what fixed
+              the breadcrumb reading "Ops Console" on a batch detail page. */}
+          <Route path="/command-center" element={<TilesPage />} />
+          <Route path="/batches" element={<FulfillmentPage />} />
           <Route path="/batches/:btchId" element={<BatchDetailPage />} />
-          <Route path="/masterdata" element={<MasterDataPage />} />
+          <Route path="/activation" element={<ActivationPage />} />
           <Route path="/uploads" element={<UploadsPage />} />
           <Route path="/operations" element={<OperationsPage />} />
-          <Route path="/activation" element={<ActivationPage />} />
-          <Route path="/" element={<Navigate to="/dashboards" replace />} />
-          <Route path="*" element={<Navigate to="/dashboards" replace />} />
+          <Route path="/queues" element={<QueuesPage />} />
+          <Route path="/reports" element={<ReportPage />} />
+          <Route path="/masterdata" element={<MasterDataPage />} />
+
+          {/* The renamed routes keep working. A bookmark, a link in someone's
+              notes, or a deep link in an old runbook must not 404 or silently
+              land on the dashboard. `replace` so Back does not bounce. */}
+          <Route path="/dashboards" element={<Navigate to="/command-center" replace />} />
+          <Route path="/fulfillment" element={<Navigate to="/batches" replace />} />
+
+          <Route path="/" element={<Navigate to="/command-center" replace />} />
+          <Route path="*" element={<Navigate to="/command-center" replace />} />
         </Route>
       </Route>
     </Routes>

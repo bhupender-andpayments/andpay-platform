@@ -229,7 +229,7 @@ export function TilesPage() {
           action they came to take. Ingesting a bank file is the head of the
           whole pipeline: everything else on this page is downstream of it. */}
       <PageHeader
-        title="Dashboards"
+        title="Command Center"
         description="Live snapshot of the soundbox dispatch pipeline across all programs."
         actions={
           <>

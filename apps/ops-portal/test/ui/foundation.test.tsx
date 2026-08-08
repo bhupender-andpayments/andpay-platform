@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { describe, it, expect, afterEach } from 'vitest'
+import { render, screen, within, cleanup } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL as NodeURL } from 'node:url'
@@ -16,6 +16,14 @@ import { DataGrid, type GridColumn } from '../../src/ui/DataGrid.js'
 //       auth dependency.
 
 describe('design-system foundation (Task 1)', () => {
+  // Explicit cleanup: vitest.config.ts does not set test.globals, so RTL's
+  // automatic afterEach never registers. This file had none, so every tree it
+  // rendered stayed mounted past the test and into environment teardown. That
+  // leak was invisible until AuthProvider gained a post-await setState, which
+  // then ran against a torn-down jsdom and threw "window is not defined",
+  // failing the whole run while every test still reported green.
+  afterEach(() => { cleanup() })
+
   it('AppShell renders the main nav with the real section set', () => {
     render(
       <MemoryRouter initialEntries={['/dashboards']}>
@@ -27,7 +35,7 @@ describe('design-system foundation (Task 1)', () => {
       </MemoryRouter>,
     )
     const nav = screen.getByRole('navigation', { name: /main/i })
-    for (const label of ['Dashboards', 'Reports', 'Queues', 'Master Data', 'Uploads', 'Operations']) {
+    for (const label of ['Command Center', 'Reports', 'Queues', 'Master Data', 'Uploads', 'Batches']) {
       expect(within(nav).getByText(label)).toBeTruthy()
     }
     expect(screen.getByText('page content')).toBeTruthy()
