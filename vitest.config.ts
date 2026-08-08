@@ -16,6 +16,13 @@ export default defineConfig({
     // as before ops-portal existed. One extra jsdom smoke test running
     // serially too is immaterial to run time.
     fileParallelism: false,
+    // ONE teardown for the whole run (F-9c), rather than an afterAll in each of
+    // the 82 suites that truncate in beforeEach only. Root-level and outside
+    // `projects` on purpose: it must run ONCE after everything, not once per
+    // project. It exports `teardown` and no meaningful setup. See the file for
+    // the two guards (auth is never touched; unseeded master data is preserved)
+    // and for the ANDPAY_SKIP_TEST_TEARDOWN=1 escape hatch.
+    globalSetup: ['./vitest.global-teardown.ts'],
     projects: [
       {
         test: {
