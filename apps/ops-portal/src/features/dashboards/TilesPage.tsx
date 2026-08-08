@@ -4,6 +4,7 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { getTiles, type TileName, type TileSet } from '../../api/endpoints.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import { PageHeader, Card, ErrorNote } from '../../ui/primitives.js'
+import { ExceptionSurface } from './ExceptionSurface.js'
 import type { ComponentType, SVGProps } from 'react'
 import {
   IconChevron,
@@ -244,6 +245,13 @@ export function TilesPage() {
           </>
         }
       />
+
+      {/* Step 6: what needs a human, ABOVE the metrics. An operator opens this
+          page to find out whether anything is wrong, and a stuck row is a more
+          urgent answer than a count that moved. Exceptions previously lived
+          behind a Queues nav item, so they were only ever found by going to
+          look for them. */}
+      <ExceptionSurface />
 
       {error !== null && <ErrorNote>{error}</ErrorNote>}
 
