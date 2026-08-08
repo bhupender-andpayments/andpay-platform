@@ -62,7 +62,15 @@ describe('courier carrier-status advance', () => {
   beforeEach(async () => {
     await db.$executeRaw`TRUNCATE shpt_status_event, courier_status_exception, shpt, outbox, inbox CASCADE`
   })
-  afterAll(async () => { await db.$disconnect() })
+  // Truncating ONLY in beforeEach leaves whatever the FINAL test inserted
+  // sitting in the database for the rest of the gate and beyond (F-9, F-9b).
+  // A test fixture is not demo data and must not outlive the test. Note this
+  // list is this suite's OWN and deliberately omits vndr, which it never
+  // writes: a shared teardown list would truncate tables a suite does not own.
+  afterAll(async () => {
+    await db.$executeRaw`TRUNCATE shpt_status_event, courier_status_exception, shpt, outbox, inbox CASCADE`
+    await db.$disconnect()
+  })
 
   it('advances the full ladder, appends one trail row per update, and emits one fact per transition (check 1)', async () => {
     const shptUuid = await seedShipment()

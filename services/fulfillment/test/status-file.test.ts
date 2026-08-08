@@ -16,7 +16,15 @@ beforeEach(async () => {
     'TRUNCATE shpt_status_event, courier_status_exception, shpt, vndr, outbox, inbox CASCADE',
   )
 })
+// Truncating ONLY in beforeEach leaves whatever the FINAL test inserted sitting
+// in the database for the rest of the gate and beyond (F-9, F-9b). That is not
+// theoretical here: this suite's own 'AWB1' shipment was found alive in the demo
+// database, and the courier credential rows outlived the run too. A test fixture
+// is not demo data and must not outlive the test.
 afterAll(async () => {
+  await db.$executeRawUnsafe(
+    'TRUNCATE shpt_status_event, courier_status_exception, shpt, vndr, outbox, inbox CASCADE',
+  )
   await db.$disconnect()
 })
 
