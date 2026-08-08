@@ -91,6 +91,16 @@ describe('EntityPicker', () => {
     expect(screen.queryByRole('searchbox')).toBeNull()
   })
 
+  // Found by a REGRESSION, not by design. This component assumed its fetch
+  // always resolved to an array. When a caller's endpoint returned an object
+  // instead, `.map` threw during render and took down the ENTIRE page it was
+  // embedded in, not just the picker. A picker failing to load must degrade to
+  // an error inside its own box, never crash its host.
+  it('treats a non-array response as a failure instead of crashing its host page', async () => {
+    renderPicker({ fetchItems: (async () => ({ unexpected: true })) as unknown as () => Promise<Pool[]> })
+    expect(await screen.findByRole('alert')).toBeTruthy()
+  })
+
   it('shows the picked entity id as copyable context, never as an input', async () => {
     renderPicker({ selectedId: 'tnnt_50000000008008000000000001' })
     const selected = await screen.findByTestId('entity-picker-selected')

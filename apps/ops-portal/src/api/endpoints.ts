@@ -444,6 +444,11 @@ export interface BatchEntryRow {
 export interface PoolEntryRow extends BatchEntryRow {
   batch: string | null
   createdAt: string
+  // The pool this entry belongs to. Batching is per (tenant, program), so these
+  // are what let the pending-pool screen offer "trigger THIS pool" instead of
+  // asking the operator to type a tnnt_ and a prg_ from memory.
+  tenantId: string
+  programId: string
 }
 
 /** services/fulfillment/src/ops-read.ts BatchArtifactRow. */

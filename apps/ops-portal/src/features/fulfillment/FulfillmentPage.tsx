@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { BatchablePools } from './BatchablePools.js'
 import {
   getBatches,
   getPoolEntries,
@@ -161,6 +162,11 @@ export function FulfillmentPage() {
       <Tabs tabs={TABS} active={tab} onChange={(k) => setTab(k)} />
 
       {loadError !== null ? <ErrorNote>{loadError}</ErrorNote> : null}
+
+      {/* Step 3: the pool is now actionable. The trigger used to live on a
+          separate screen behind two typed wire ids; it belongs on the queue it
+          acts on, where the operator can already see what is waiting. */}
+      {tab === 'pending' ? <BatchablePools /> : null}
 
       {tab === 'pending' ? (
         <Card>

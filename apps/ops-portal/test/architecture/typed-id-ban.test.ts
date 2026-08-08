@@ -21,10 +21,14 @@ const src = join(import.meta.dirname, '..', '..', 'src')
 const TYPED_ID_PLACEHOLDER = /placeholder="(tnnt_|prg_|btch_|asgn_|mrch_|smrch_|vndr_|shpt_)/
 
 // Every remaining hand-typed id, with the step that removes it.
+//
+// SHRANK IN STEP 3: BatchPage.tsx carried THREE (tnnt_, prg_, btch_) and now
+// carries none. The trigger moved onto the pending pool it acts on, and the
+// batch is picked from the real batch list. Removed from this list, so it can
+// never regress back in unnoticed.
 const KNOWN_DEBT: Readonly<Record<string, number>> = {
-  // Step 3 replaces the whole form with the pending-pool list.
-  'features/operations/BatchPage.tsx': 3,
-  // Later steps move these onto the object they act on.
+  // Each of these still asks for an asgn_ id. They move onto the object they
+  // act on (a pool entry, a dispatch) in a later step.
   'features/operations/HoldButton.tsx': 1,
   'features/operations/RecomposeForm.tsx': 1,
   'features/destructive/HoldReleaseButton.tsx': 1,

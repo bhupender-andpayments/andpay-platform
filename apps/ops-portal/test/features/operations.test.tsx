@@ -26,6 +26,20 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 // StatusCorrectionForm is now driven ONLY by a shptId picked from a real
 // dispatch-history row - never a hand-typed value.
 
+// The real batch list the picker reads. The operator picks by what a batch IS
+// (size, status, trigger reason) rather than by an id they had to obtain
+// elsewhere, which is the whole point of the step.
+const BATCH_LIST = [{
+  id: 'btch_1', status: 'BORN', triggerReason: 'LOT_SIZE', unitCount: 12,
+  printVndr: null, triggeredByActor: null,
+  createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+}]
+const BATCH_LIST_2 = [{
+  id: 'btch_2', status: 'BORN', triggerReason: 'LOT_SIZE', unitCount: 34,
+  printVndr: null, triggeredByActor: null,
+  createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+}]
+
 interface Call {
   url: string
   init: RequestInit
@@ -82,52 +96,18 @@ describe('BatchPage', () => {
     cleanup()
   })
 
-  it('triggers a batch, posting { tenantWire, programWire } with an Idempotency-Key, and renders the btchId', async () => {
+  // The batch TRIGGER moved to the pending pool it acts on (step 3). Its
+  // coverage moved with it, to test/features/batchable-pools.test.tsx, which
+  // asserts the same POST body and Idempotency-Key plus the grouping rules the
+  // old form had no concept of.
+
+  it('downloads the dispatch sheet for a PICKED batch, hitting GET /ops/batches/:btchId/dispatch-excel with a Bearer token, and saves the exact served bytes', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init: RequestInit) => {
         calls.push({ url, init })
-        if (url.includes('/ops/batches/trigger')) return jsonResponse({ btchId: 'btch_abc123' })
-        return jsonResponse({})
-      }),
-    )
-
-    render(withProviders(<BatchPage />))
-
-    await userEvent.type(screen.getByLabelText(/tenant/i), 'ten_1')
-    await userEvent.type(screen.getByLabelText(/program/i), 'prg_1')
-    await userEvent.click(screen.getByRole('button', { name: /trigger/i }))
-
-    expect(await screen.findByText(/btch_abc123/)).toBeTruthy()
-
-    const call = calls.find((c) => c.url.includes('/ops/batches/trigger'))
-    expect(call).toBeTruthy()
-    expect(call!.init.method).toBe('POST')
-    expect(headerValue(call!, 'Idempotency-Key')).toBeTruthy()
-    const body = parseBody(call!)
-    expect(body.tenantWire).toBe('ten_1')
-    expect(body.programWire).toBe('prg_1')
-  })
-
-  it('renders a clear "nothing to batch" message when the response is null', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)))
-
-    render(withProviders(<BatchPage />))
-
-    await userEvent.type(screen.getByLabelText(/tenant/i), 'ten_1')
-    await userEvent.type(screen.getByLabelText(/program/i), 'prg_1')
-    await userEvent.click(screen.getByRole('button', { name: /trigger/i }))
-
-    expect(await screen.findByText(/nothing to batch/i)).toBeTruthy()
-  })
-
-  it('downloads the dispatch sheet for a typed batch id, hitting GET /ops/batches/:btchId/dispatch-excel with a Bearer token, and saves the exact served bytes', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
+        if (url.endsWith('/ops/batches')) return jsonResponse(BATCH_LIST)
         if (url.includes('/dispatch-excel')) {
           return new Response('xlsx-bytes', {
             status: 200,
@@ -154,7 +134,7 @@ describe('BatchPage', () => {
 
     render(withProviders(<BatchPage />))
 
-    await userEvent.type(screen.getByLabelText(/batch id/i), 'btch_1')
+    await userEvent.click(await screen.findByRole('button', { name: /12 records/ }))
     await userEvent.click(screen.getByRole('button', { name: /download dispatch sheet/i }))
 
     await vi.waitFor(() => {
@@ -177,12 +157,13 @@ describe('BatchPage', () => {
     expect(savedBlob.type).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   })
 
-  it('downloads collateral for a typed batch id + artifact type, hitting GET /ops/batches/:btchId/collateral/:artifactType', async () => {
+  it('downloads collateral for a PICKED batch + artifact type, hitting GET /ops/batches/:btchId/collateral/:artifactType', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init: RequestInit) => {
         calls.push({ url, init })
+        if (url.endsWith('/ops/batches')) return jsonResponse(BATCH_LIST_2)
         if (url.includes('/collateral/')) {
           return new Response('pdf-bytes', {
             status: 200,
@@ -207,7 +188,7 @@ describe('BatchPage', () => {
 
     render(withProviders(<BatchPage />))
 
-    await userEvent.type(screen.getByLabelText(/batch id/i), 'btch_2')
+    await userEvent.click(await screen.findByRole('button', { name: /34 records/ }))
     await userEvent.selectOptions(screen.getByLabelText(/collateral type/i), 'SOUNDBOX_IMG')
     await userEvent.click(screen.getByRole('button', { name: /download collateral/i }))
 
@@ -223,6 +204,7 @@ describe('BatchPage', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
+        if (url.endsWith('/ops/batches')) return jsonResponse(BATCH_LIST)
         if (url.includes('/collateral/')) return new Response(null, { status: 404 })
         return jsonResponse({})
       }),
@@ -230,7 +212,7 @@ describe('BatchPage', () => {
 
     render(withProviders(<BatchPage />))
 
-    await userEvent.type(screen.getByLabelText(/batch id/i), 'btch_3')
+    await userEvent.click(await screen.findByRole('button', { name: /12 records/ }))
     await userEvent.click(screen.getByRole('button', { name: /download collateral/i }))
 
     expect(await screen.findByText(/no .*collateral/i)).toBeTruthy()

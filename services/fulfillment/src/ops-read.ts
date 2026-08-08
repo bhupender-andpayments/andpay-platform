@@ -527,11 +527,26 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
 export interface PoolEntryRow extends BatchEntryRow {
   batch: string | null
   createdAt: Date
+  // The pool this entry belongs to, as WIRE ids. Batching is per (tenant,
+  // program), so without these the ops portal cannot offer "trigger THIS pool"
+  // and has to ask the operator to type a tnnt_ and a prg_ from memory, which
+  // is exactly the friction the portal redesign removes.
+  //
+  // NOT a grouping by bank: D7 pools many aggregator bank codes beneath one
+  // tenant, so bank is display context, not the batchable unit.
+  //
+  // Both columns already existed on pending_pool_entry and were simply never
+  // projected. Additive, no migration, no new permission, and they are opaque
+  // ids rather than PII, so the D104 default-exclude posture is unchanged.
+  tenantId: string
+  programId: string
 }
 
 interface PoolEntryDbRow extends BatchEntryDbRow {
   batch: string | null
   created_at: Date
+  tenant_id: string
+  program_id: string
 }
 
 function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
@@ -539,13 +554,16 @@ function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
     ...toBatchEntryDto(r),
     batch: r.batch === null ? null : fromUuid('btch', r.batch),
     createdAt: r.created_at,
+    tenantId: fromUuid('tnnt', r.tenant_id),
+    programId: fromUuid('prog', r.program_id),
   }
 }
 
 const POOL_ENTRY_COLUMNS = `asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             batch::text AS batch, created_at`
+             batch::text AS batch, created_at,
+             tenant_id::text AS tenant_id, program_id::text AS program_id`
 
 export async function listPoolEntries(
   db: FulfillmentDb,

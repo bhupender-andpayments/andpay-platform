@@ -55,7 +55,16 @@ export function EntityPicker<T>({
     let cancelled = false
     fetchItems()
       .then((res) => {
-        if (!cancelled) setItems(res)
+        if (cancelled) return
+        // A malformed response is a FAILURE, not an empty list. Without this
+        // check a non-array made `.map` throw during render and took down the
+        // entire host page rather than just this control. A picker that cannot
+        // load must fail inside its own box.
+        if (!Array.isArray(res)) {
+          setError(`Could not read the ${label.toLowerCase()} list.`)
+          return
+        }
+        setItems(res)
       })
       .catch((err: unknown) => {
         if (cancelled) return

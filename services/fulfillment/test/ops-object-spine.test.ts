@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { newId, toUuid } from '@andpay/ids'
+import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import { listBatches, readBatchDetail, listPoolEntries, listDispatches } from '../src/ops-read.js'
 
@@ -143,6 +143,31 @@ describe('P2-1 ops object-spine reads: listPoolEntries', () => {
     const newer = await seedPoolEntry({ createdAt: '2026-05-02T00:00:00Z' })
     const rows = await listPoolEntries(db)
     expect(rows.map((r) => r.asgnId)).toEqual([older.asgnWire, newer.asgnWire])
+  })
+
+  // Step 3 of the portal redesign. The pending-pool screen replaces a form that
+  // asked the operator to TYPE a tnnt_ and a prg_. To trigger from a row it has
+  // to know which pool that row belongs to, and batching is per (tenant,
+  // program), not per bank: D7 pools many aggregator bank codes beneath ONE
+  // tenant, so grouping by bank would show several rows whose Trigger buttons
+  // all fire the same batch.
+  //
+  // Both columns already exist on pending_pool_entry and were simply never
+  // projected. Additive: no migration, no new permission, existing grants.
+  it('projects the tenant and program as WIRE ids, so a row knows its own pool', async () => {
+    const seeded = await seedPoolEntry({})
+    const rows = await listPoolEntries(db)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.tenantId).toBe(fromUuid('tnnt', TENANT))
+    expect(rows[0]!.programId).toBe(fromUuid('prog', PROGRAM))
+    expect(rows[0]!.asgnId).toBe(seeded.asgnWire)
+  })
+
+  it('still returns no recipient PII alongside the new pool ids', async () => {
+    await seedPoolEntry({})
+    const serialized = JSON.stringify(await listPoolEntries(db))
+    expect(serialized).not.toContain('tenant_id')
+    expect(serialized).not.toContain('program_id')
   })
 
   it('narrows to one pool status', async () => {
