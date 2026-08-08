@@ -110,6 +110,31 @@ describe('RecentBatches', () => {
     expect(await screen.findByText('1 record')).toBeTruthy()
   })
 
+  it('distinguishes batches formed on the SAME DAY, so the claimed order is visible', async () => {
+    // The widget's only claim is "the most recent". Batches routinely form
+    // several times a day, and a date-only stamp rendered all of them
+    // identically, so the ordering it asserts could not be checked against the
+    // screen asserting it. Deliberately NOT asserting a formatted literal:
+    // that would pin a locale and a timezone. Two instants four hours apart on
+    // one UTC day must simply render differently, which is true in any fixed
+    // zone and false for any date-only format.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse([
+          batch('btch_early', '2026-08-03T02:00:00.000Z'),
+          batch('btch_later', '2026-08-03T06:00:00.000Z'),
+        ]),
+      ),
+    )
+    renderIt()
+    await screen.findByText('btch_later')
+    const rows = screen.getAllByRole('listitem')
+    const stamps = rows.map((r) => within(r).getByText(/\d{2}:\d{2}/).textContent)
+    expect(stamps).toHaveLength(2)
+    expect(stamps[0]).not.toEqual(stamps[1])
+  })
+
   it('survives a non-array body instead of taking the whole dashboard down', async () => {
     // EntityPicker's .map on a non-array threw during render and killed its
     // entire host page. This widget sits on the Command Center, so the same

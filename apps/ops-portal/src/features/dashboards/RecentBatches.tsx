@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { getBatches, type BatchRow } from '../../api/endpoints.js'
 import { Card, CardHeader, ErrorNote, SkeletonRows, StatusPill, CodeChip, EmptyState } from '../../ui/primitives.js'
-import { fmtDate } from '../../ui/format.js'
+import { fmtDateTime } from '../../ui/format.js'
 
 // C-3 (old P2-6): the Command Center's below-the-fold region.
 //
@@ -90,7 +90,13 @@ export function RecentBatches() {
                 </span>
                 <span className="text-sm text-muted-foreground">{b.triggerReason}</span>
                 <CodeChip>{b.id}</CodeChip>
-                <span className="num ml-auto text-sm text-muted-foreground">{fmtDate(b.createdAt)}</span>
+                {/* The TIME, not just the date. This widget's only claim is that
+                    these are the most recent, and several batches routinely
+                    form on one day: a date-only stamp renders them identically
+                    and leaves the stated ordering unverifiable on the very
+                    screen that asserts it. Found in the browser, where five
+                    same-day rows all read "08 Aug 2026". */}
+                <span className="num ml-auto text-sm text-muted-foreground">{fmtDateTime(b.createdAt)}</span>
               </Link>
             </li>
           ))}
