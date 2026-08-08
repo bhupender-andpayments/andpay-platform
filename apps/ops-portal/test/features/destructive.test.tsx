@@ -5,7 +5,6 @@ import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { OperationsPage } from '../../src/features/operations/OperationsPage.js'
 import { DispatchHistoryPage } from '../../src/features/operations/DispatchHistoryPage.js'
-import { HoldReleaseButton } from '../../src/features/destructive/HoldReleaseButton.js'
 import { VendorSuspendButton } from '../../src/features/destructive/VendorSuspendButton.js'
 import { TerminalOverrideForm } from '../../src/features/destructive/TerminalOverrideForm.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
@@ -64,106 +63,11 @@ function withProviders(children: React.ReactNode) {
   )
 }
 
-describe('HoldReleaseButton', () => {
-  beforeEach(() => {
-    clearAccessToken()
-    setAccessToken('tok-1')
-    vi.unstubAllGlobals()
-  })
-  afterEach(() => {
-    cleanup()
-  })
-
-  it('posts to /ops/records/:asgnId/release with NO body and an Idempotency-Key (fresh AAL2 session, no 403)', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.includes('/ops/records/asgn_1/release')) return jsonResponse({ deduped: false, released: true })
-        return jsonResponse({})
-      }),
-    )
-
-    render(withProviders(<HoldReleaseButton />))
-
-    await userEvent.type(screen.getByLabelText(/assignment id/i), 'asgn_1')
-    await userEvent.click(screen.getByRole('button', { name: /release/i }))
-
-    expect(await screen.findByText(/released/i)).toBeTruthy()
-
-    const call = calls.find((c) => c.url.includes('/ops/records/asgn_1/release'))
-    expect(call).toBeTruthy()
-    expect(call!.init.method).toBe('POST')
-    expect(headerValue(call!, 'Idempotency-Key')).toBeTruthy()
-    expect(call!.init.body).toBeUndefined()
-  })
-
-  it('a 403 drives the REAL TOTP dialog once, steps up, and retries ONCE with the SAME Idempotency-Key', async () => {
-    const calls: Call[] = []
-    let releaseCallCount = 0
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.includes('/ops/records/asgn_2/release')) {
-          releaseCallCount += 1
-          if (releaseCallCount === 1) return jsonResponse(null, 403)
-          return jsonResponse({ deduped: false, released: true })
-        }
-        if (url.includes('/session/stepup')) return jsonResponse({ accessToken: 'tok-2' })
-        return jsonResponse({})
-      }),
-    )
-
-    render(withProviders(<HoldReleaseButton />))
-
-    await userEvent.type(screen.getByLabelText(/assignment id/i), 'asgn_2')
-    await userEvent.click(screen.getByRole('button', { name: /release/i }))
-
-    const totpInput = await screen.findByLabelText(/totp/i)
-    await userEvent.type(totpInput, '654321')
-    await userEvent.click(screen.getByRole('button', { name: /confirm/i }))
-
-    expect(await screen.findByText(/released/i)).toBeTruthy()
-    // exactly one prompt: the dialog is gone after resolving
-    expect(screen.queryByLabelText(/totp/i)).toBeNull()
-
-    const releaseCalls = calls.filter((c) => c.url.includes('/ops/records/asgn_2/release'))
-    expect(releaseCalls.length).toBe(2)
-    const keyFirst = headerValue(releaseCalls[0]!, 'Idempotency-Key')
-    expect(keyFirst).toBeTruthy()
-    expect(headerValue(releaseCalls[1]!, 'Idempotency-Key')).toBe(keyFirst)
-
-    const stepupCall = calls.find((c) => c.url.includes('/session/stepup'))
-    expect(parseBody(stepupCall!).totp).toBe('654321')
-  })
-
-  it('a cancelled step-up surfaces the denial and does not loop (no retry, no stepup call after cancel)', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.includes('/ops/records/asgn_3/release')) return jsonResponse(null, 403)
-        return jsonResponse({})
-      }),
-    )
-
-    render(withProviders(<HoldReleaseButton />))
-
-    await userEvent.type(screen.getByLabelText(/assignment id/i), 'asgn_3')
-    await userEvent.click(screen.getByRole('button', { name: /release/i }))
-
-    await screen.findByLabelText(/totp/i)
-    await userEvent.click(screen.getByRole('button', { name: /cancel/i }))
-
-    expect(await screen.findByRole('alert')).toBeTruthy()
-    expect(screen.queryByText(/released/i)).toBeNull()
-    expect(calls.filter((c) => c.url.includes('/ops/records/asgn_3/release')).length).toBe(1)
-    expect(calls.some((c) => c.url.includes('/session/stepup'))).toBe(false)
-  })
-})
+// HoldReleaseButton is DELETED (step 8), for the same reason as HoldButton and
+// into the same place. Its step-up gate is unaffected: 'hold-release' is still
+// in OPS_STEP_UP_GATED_OPERATIONS and the round trip is owned by the client
+// interceptor and StepUpDialog, never by the calling component. Covered by
+// test/features/pool-entry-actions.test.tsx.
 
 describe('VendorSuspendButton (driven by a real listVendors wire id, no raw-uuid bridge)', () => {
   beforeEach(() => {

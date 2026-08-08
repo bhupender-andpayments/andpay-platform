@@ -20,19 +20,19 @@ const src = join(import.meta.dirname, '..', '..', 'src')
 // those are credentials, never entered in this portal at all.
 const TYPED_ID_PLACEHOLDER = /placeholder="(tnnt_|prg_|btch_|asgn_|mrch_|smrch_|vndr_|shpt_)/
 
-// Every remaining hand-typed id, with the step that removes it.
+// EMPTY, AND IT MUST STAY EMPTY.
 //
-// SHRANK IN STEP 3: BatchPage.tsx carried THREE (tnnt_, prg_, btch_) and now
-// carries none. The trigger moved onto the pending pool it acts on, and the
-// batch is picked from the real batch list. Removed from this list, so it can
-// never regress back in unnoticed.
-const KNOWN_DEBT: Readonly<Record<string, number>> = {
-  // Each of these still asks for an asgn_ id. They move onto the object they
-  // act on (a pool entry, a dispatch) in a later step.
-  'features/operations/HoldButton.tsx': 1,
-  'features/operations/RecomposeForm.tsx': 1,
-  'features/destructive/HoldReleaseButton.tsx': 1,
-}
+// This started at six typed wire ids across four screens and reached zero:
+// step 3 took BatchPage's tnnt_/prg_/btch_, step 8 took the last three asgn_
+// ones (Hold and Release became actions on the pool row they act on, Recompose
+// picks its record). The ban is now absolute rather than a ratchet.
+//
+// Do NOT add an entry here to make a new screen pass. Use EntityPicker: the
+// operator searches by what they call the thing and the component hands you the
+// id. Every justification for free text in this repo took the same form, "no
+// read discovers one of these", and every one of them expired when the
+// object-spine reads landed without anybody going back to check.
+const KNOWN_DEBT: Readonly<Record<string, number>> = {}
 
 function tsxFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {

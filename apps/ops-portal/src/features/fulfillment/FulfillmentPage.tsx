@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { BatchablePools } from './BatchablePools.js'
+import { PoolEntryActions } from './PoolEntryActions.js'
 import {
   getBatches,
   getPoolEntries,
@@ -101,6 +102,14 @@ export function FulfillmentPage() {
     { key: 'kit', header: 'Kit', cell: (r) => kit(r) },
     { key: 'poolStatus', header: 'Pool Status', cell: (r) => r.poolStatus },
     { key: 'dispatchState', header: 'Dispatch State', cell: (r) => r.dispatchState ?? '-' },
+    {
+      // Step 8: the action sits on the row it acts on. Which action applies is
+      // decided by that row's own pool status, which the two standalone forms
+      // this replaces could not know.
+      key: 'actions',
+      header: '',
+      cell: (r) => <PoolEntryActions row={r} onChanged={() => void load()} />,
+    },
     {
       key: 'batch',
       header: 'Batch',

@@ -2,10 +2,8 @@ import { useState } from 'react'
 import { BatchPage } from './BatchPage.js'
 import { StatusCorrectionForm } from './StatusCorrectionForm.js'
 import { RecomposeForm } from './RecomposeForm.js'
-import { HoldButton } from './HoldButton.js'
 import { DispatchHistoryPage } from './DispatchHistoryPage.js'
 import { TerminalOverrideForm } from '../destructive/TerminalOverrideForm.js'
-import { HoldReleaseButton } from '../destructive/HoldReleaseButton.js'
 import { VendorSuspendButton } from '../destructive/VendorSuspendButton.js'
 import { PageHeader, Tabs, InfoNote } from '../../ui/primitives.js'
 import { IconShield } from '../../ui/icons.js'
@@ -26,15 +24,17 @@ import type { ReportRow } from '../../api/endpoints.js'
 // The "Destructive" tab holds the three step-up-gated counterparts
 // (terminal override, hold release, vendor suspend). TerminalOverrideForm
 // is driven by the same lifted `selectedRow` as StatusCorrectionForm;
-// HoldReleaseButton and VendorSuspendButton are self-contained (a free-text
-// asgn id, and a self-fetched real vendor list, respectively).
-type TabKey = 'batch' | 'correction' | 'recompose' | 'hold' | 'history' | 'destructive'
+// STEP 8: the Hold tab and the Hold-release control are GONE from this page.
+// Both were forms asking for a typed asgn_ id; both are now actions on the pool
+// entry row they act on (features/fulfillment/PoolEntryActions.tsx), where the
+// row's own status decides which of the two even applies. VendorSuspendButton
+// stays: it already drove itself off a real vendor list.
+type TabKey = 'batch' | 'correction' | 'recompose' | 'history' | 'destructive'
 
 const TABS: ReadonlyArray<{ key: TabKey; label: string }> = [
   { key: 'batch', label: 'Batch' },
   { key: 'correction', label: 'Status Correction' },
   { key: 'recompose', label: 'Recompose' },
-  { key: 'hold', label: 'Hold' },
   { key: 'history', label: 'Dispatch History' },
   { key: 'destructive', label: 'Destructive' },
 ]
@@ -65,7 +65,6 @@ export function OperationsPage() {
         <StatusCorrectionForm selectedRow={selectedRow} onClearSelection={() => setSelectedRow(null)} />
       )}
       {tab === 'recompose' && <RecomposeForm />}
-      {tab === 'hold' && <HoldButton />}
       {tab === 'history' && (
         <DispatchHistoryPage onCorrectStatus={handleCorrectStatus} onOverrideTerminal={handleOverrideTerminal} />
       )}
@@ -79,7 +78,6 @@ export function OperationsPage() {
             . These actions re-prompt for your authenticator code and are re-authorized at the edge.
           </InfoNote>
           <TerminalOverrideForm selectedRow={selectedRow} onClearSelection={() => setSelectedRow(null)} />
-          <HoldReleaseButton />
           <VendorSuspendButton />
         </div>
       )}

@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { recompose } from '../../api/endpoints.js'
+import { recompose, getPoolEntries, type PoolEntryRow } from '../../api/endpoints.js'
 import { Card, CardHeader, Field, Input, Select, Button, ErrorNote } from '../../ui/primitives.js'
+import { EntityPicker } from '../../components/EntityPicker.js'
 
 // Artifact recompose (Phase 7 Task 9). The confirmed ops-edge contract
 // (apps/ops-edge/src/ops.controller.ts's recompose, grounded against
@@ -23,6 +24,7 @@ const ARTIFACT_TYPES = ['SOUNDBOX_IMG', 'STANDEE_IMG', 'STICKER_IMG'] as const
 export function RecomposeForm() {
   const { client } = useAuth()
   const [asgnId, setAsgnId] = useState('')
+  const [picked, setPicked] = useState<PoolEntryRow | null>(null)
   const [artifactType, setArtifactType] = useState<string>(ARTIFACT_TYPES[0])
   const [requestedShipTo, setRequestedShipTo] = useState('')
   const [result, setResult] = useState<{ deduped: boolean; artifactId: string | null } | null>(null)
@@ -62,9 +64,26 @@ export function RecomposeForm() {
         }}
         className="flex flex-wrap items-end gap-3 p-5 pt-4"
       >
-        <Field label="Assignment ID" htmlFor="recompose-asgnId">
-          <Input id="recompose-asgnId" value={asgnId} onChange={(e) => setAsgnId(e.target.value)} placeholder="asgn_..." />
-        </Field>
+        <div className="w-full max-w-md">
+          <Field label="Record" htmlFor="recompose-asgn-picker">
+            <EntityPicker<PoolEntryRow>
+              label="Record"
+              fetchItems={() => getPoolEntries(client)}
+              toOption={(r) => ({
+                id: r.asgnId,
+                primary: r.merchantDisplayName,
+                secondary: `${r.bankDisplayName} (${r.bankReferenceCode})`,
+                meta: r.dispatchState ?? r.poolStatus,
+              })}
+              onSelect={(id, r) => {
+                setAsgnId(id)
+                setPicked(r)
+              }}
+              emptyText="No records to recompose yet."
+              selectedId={picked?.asgnId ?? null}
+            />
+          </Field>
+        </div>
         <Field label="Artifact type" htmlFor="recompose-artifactType">
           <Select id="recompose-artifactType" value={artifactType} onChange={(e) => setArtifactType(e.target.value)}>
             {ARTIFACT_TYPES.map((t) => (

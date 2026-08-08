@@ -7,7 +7,6 @@ import { OperationsPage } from '../../src/features/operations/OperationsPage.js'
 import { BatchPage } from '../../src/features/operations/BatchPage.js'
 import { StatusCorrectionForm } from '../../src/features/operations/StatusCorrectionForm.js'
 import { RecomposeForm } from '../../src/features/operations/RecomposeForm.js'
-import { HoldButton } from '../../src/features/operations/HoldButton.js'
 import { DispatchHistoryPage } from '../../src/features/operations/DispatchHistoryPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
@@ -76,11 +75,13 @@ describe('OperationsPage', () => {
     cleanup()
   })
 
-  it('renders the Operations heading and all six tabs', () => {
+  // FIVE tabs now: Hold is gone (step 8), because holding is an action on the
+  // pool entry row it acts on rather than a form taking a typed id.
+  it('renders the Operations heading and its five tabs', () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})))
     render(withProviders(<OperationsPage />))
     expect(screen.getByRole('heading', { name: /operations/i })).toBeTruthy()
-    for (const label of ['Batch', 'Status Correction', 'Recompose', 'Hold', 'Dispatch History', 'Destructive']) {
+    for (const label of ['Batch', 'Status Correction', 'Recompose', 'Dispatch History', 'Destructive']) {
       expect(screen.getByRole('button', { name: label })).toBeTruthy()
     }
   })
@@ -303,6 +304,14 @@ describe('StatusCorrectionForm (G-SHPT: driven only by a selected dispatch-histo
   })
 })
 
+const RECOMPOSE_POOL = [{
+  asgnId: 'asgn_1', merchantDisplayName: 'BRILLIANT PERFUME', merchantLegalName: 'BRILLIANT PERFUME',
+  bankReferenceCode: '3', bankDisplayName: 'GSCB', branchCode: '30', soundbox: true,
+  standeeCount: 1, stickerCount: 2, poolStatus: 'POOLED', dispatchState: null,
+  shipToSuperseded: false, batch: null, createdAt: '2026-08-01T00:00:00.000Z',
+  tenantId: 'tnnt_1', programId: 'prog_1',
+}]
+
 describe('RecomposeForm', () => {
   beforeEach(() => {
     clearAccessToken()
@@ -319,6 +328,7 @@ describe('RecomposeForm', () => {
       'fetch',
       vi.fn(async (url: string, init: RequestInit) => {
         calls.push({ url, init })
+        if (url.includes('/ops/pool')) return jsonResponse(RECOMPOSE_POOL)
         if (url.includes('/ops/artifacts/recompose')) {
           return jsonResponse({ deduped: false, artifactId: 'artf_1' })
         }
@@ -328,7 +338,9 @@ describe('RecomposeForm', () => {
 
     render(withProviders(<RecomposeForm />))
 
-    await userEvent.type(screen.getByLabelText(/assignment id/i), 'asgn_1')
+    // Picked by MERCHANT NAME, never typed. The posted asgnId below proves the
+    // component still sends the wire id the edge expects.
+    await userEvent.click(await screen.findByRole('button', { name: /BRILLIANT PERFUME/ }))
     await userEvent.selectOptions(screen.getByLabelText(/artifact type/i), 'SOUNDBOX_IMG')
     await userEvent.click(screen.getByRole('button', { name: /recompose/i }))
 
@@ -349,13 +361,14 @@ describe('RecomposeForm', () => {
       'fetch',
       vi.fn(async (url: string, init: RequestInit) => {
         calls.push({ url, init })
+        if (url.includes('/ops/pool')) return jsonResponse(RECOMPOSE_POOL)
         return jsonResponse({ deduped: false, artifactId: 'artf_2' })
       }),
     )
 
     render(withProviders(<RecomposeForm />))
 
-    await userEvent.type(screen.getByLabelText(/assignment id/i), 'asgn_2')
+    await userEvent.click(await screen.findByRole('button', { name: /BRILLIANT PERFUME/ }))
     await userEvent.selectOptions(screen.getByLabelText(/artifact type/i), 'STANDEE_IMG')
     await userEvent.type(screen.getByLabelText(/requested ship.to/i), '5 New St')
     await userEvent.click(screen.getByRole('button', { name: /recompose/i }))
@@ -367,41 +380,10 @@ describe('RecomposeForm', () => {
   })
 })
 
-describe('HoldButton', () => {
-  beforeEach(() => {
-    clearAccessToken()
-    setAccessToken('tok-1')
-    vi.unstubAllGlobals()
-  })
-  afterEach(() => {
-    cleanup()
-  })
-
-  it('posts to /ops/records/:asgnId/hold with no body, with an Idempotency-Key', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.includes('/ops/records/asgn_9/hold')) return jsonResponse({ deduped: false })
-        return jsonResponse({})
-      }),
-    )
-
-    render(withProviders(<HoldButton />))
-
-    await userEvent.type(screen.getByLabelText(/assignment id/i), 'asgn_9')
-    await userEvent.click(screen.getByRole('button', { name: /hold/i }))
-
-    expect(await screen.findByText(/hold (recorded|placed|applied)/i)).toBeTruthy()
-
-    const call = calls.find((c) => c.url.includes('/ops/records/asgn_9/hold'))
-    expect(call).toBeTruthy()
-    expect(call!.init.method).toBe('POST')
-    expect(headerValue(call!, 'Idempotency-Key')).toBeTruthy()
-    expect(call!.init.body).toBeUndefined()
-  })
-})
+// HoldButton is DELETED (step 8). It was a form asking for a typed asgn_ id;
+// holding is now an action on the pool entry row it acts on, where the row's own
+// status decides whether Hold or Release even applies. Covered by
+// test/features/pool-entry-actions.test.tsx.
 
 describe('DispatchHistoryPage', () => {
   beforeEach(() => {
