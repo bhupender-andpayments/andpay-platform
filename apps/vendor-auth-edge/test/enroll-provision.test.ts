@@ -5,7 +5,7 @@ import request from 'supertest'
 import { authenticator } from 'otplib'
 import { newId } from '@andpay/ids'
 import type { INestApplication } from '@nestjs/common'
-import { buildTestVendorAuthEdgeApp, seedVendorOperatorWithTotp, authDb, mintAdminToken, SEEDED_VENDOR_PASSWORD } from './helpers.js'
+import { buildTestVendorAuthEdgeApp, seedVendorOperatorWithTotp, authDb, mintAdminToken, SEEDED_VENDOR_PASSWORD, trackProvisionedOperator } from './helpers.js'
 
 // Spec 14a task 11 (LOAD-BEARING check 3 enroll): the admin-seed TOTP enroll
 // and the class-3-authorized vendor-operator provisioning routes. Mirrors
@@ -32,7 +32,9 @@ describe('vendor-auth-edge POST /provision (spec 14a task 11)', () => {
     const adminSub = randomUUID()
     const adminToken = await mintAdminToken(adminSub)
     const vndrId = newId('vndr')
-    const username = `op-${randomUUID().slice(0, 8)}`
+    // Provisioned through the ROUTE, so the helper cannot see the id it mints
+    // (F-4): register it or the row outlives the run.
+    const username = trackProvisionedOperator(`op-${randomUUID().slice(0, 8)}`)
 
     const res = await request(app.getHttpServer())
       .post('/provision')

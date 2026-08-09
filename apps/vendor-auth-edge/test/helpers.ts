@@ -1,5 +1,6 @@
 import 'reflect-metadata'
 import { randomUUID } from 'node:crypto'
+import { afterAll } from 'vitest'
 import type { INestApplication } from '@nestjs/common'
 import type { JSONWebKeySet } from 'jose'
 import {
@@ -129,6 +130,78 @@ export interface SeededVendorOperator {
 // login without re-deriving this constant).
 export const SEEDED_VENDOR_PASSWORD = 'correct horse battery staple'
 
+// F-4, the vendor half. Same reasoning as apps/auth-edge/test/helpers.ts: the
+// F-9c global teardown refuses to touch `auth`, so this residue class has to be
+// cleaned at the one place that mints it. Measured 2026-08-09, a single run of
+// the two auth edge suites left 15 vendor_operator rows behind.
+//
+// These rows matter more than their count suggests: a leftover vendor_operator
+// is indistinguishable at a glance from a real one, which is the same reason
+// the leaked `wq-map-a`/`wq-map-b` credential rows were worth fixing in F-9b.
+//
+// Scoped by the ids we actually created, never by a username pattern.
+const seededVendorOperatorIds: string[] = []
+
+// Operators this file created by driving the REAL provision ROUTE over HTTP
+// rather than by calling the helper. Those rows are minted server-side, so the
+// helper never sees their ids and they leaked straight past the tracking above
+// (measured: 5 such call sites, and they are why the first cleanup still left
+// 2 rows per run behind). Registering the username is the whole contract; the
+// id is resolved at cleanup time.
+const provisionedUsernames: string[] = []
+
+/**
+ * Register a username that a test is about to provision THROUGH THE ROUTE, so
+ * it is cleaned up with everything else this file created (F-4).
+ *
+ * Call it for any operator not created via `seedVendorOperatorWithTotp`.
+ * Deliberately explicit rather than a `DELETE ... WHERE username LIKE 'op-%'`
+ * sweep: a pattern delete is only safe while no real vendor_operator row
+ * happens to match, which is an assumption about data rather than a property
+ * of the code, and the bare TRUNCATE that used to live in these suites is the
+ * cautionary tale.
+ */
+export function trackProvisionedOperator(username: string): string {
+  provisionedUsernames.push(username)
+  return username
+}
+
+afterAll(async () => {
+  if (provisionedUsernames.length > 0) {
+    const usernames = provisionedUsernames.splice(0)
+    try {
+      const rows = await authDb.vendorOperator.findMany({ where: { username: { in: usernames } }, select: { id: true } })
+      seededVendorOperatorIds.push(...rows.map((r) => r.id))
+    } catch (e) {
+      console.warn(`[vendor-auth-edge cleanup] failed to resolve ${usernames.length} provisioned operators:`, e)
+    }
+  }
+  if (seededVendorOperatorIds.length === 0) return
+  const ids = seededVendorOperatorIds.splice(0)
+  try {
+    // Children first: the auth schema declares no foreign keys, so nothing
+    // cascades.
+    //
+    // NOT filtered by principalType, and that is deliberate rather than an
+    // oversight. The two principal kinds share both child tables and are told
+    // apart by that discriminator, so filtering looks like the careful choice.
+    // It is not, because what we own here is the ID: we minted it, so every
+    // row keyed to it is this file's residue whatever plane it claims.
+    //
+    // `refresh-logout.test.ts` proves the difference is real rather than
+    // theoretical. Its disjointness test deliberately seeds an INTERNAL-plane
+    // refresh family under a VENDOR operator's id, to show the vendor plane
+    // never touches it. A principalType-filtered delete leaves exactly those
+    // rows behind, which is measurable: it was the last 2 rows per run still
+    // leaking after everything else was fixed.
+    await authDb.mfaEnrollment.deleteMany({ where: { principalId: { in: ids } } })
+    await authDb.refreshToken.deleteMany({ where: { principalId: { in: ids } } })
+    await authDb.vendorOperator.deleteMany({ where: { id: { in: ids } } })
+  } catch (e) {
+    console.warn(`[vendor-auth-edge cleanup] failed to remove ${ids.length} seeded operators:`, e)
+  }
+})
+
 // Creates a real `vendor_operator` row (via the REAL `provisionVendorOperator`
 // primitive, a known Argon2id-hashed password, ACTIVE) and enrolls a TOTP
 // factor via the REAL `enrollTotp` (principalType:'vendor_operator') against
@@ -147,6 +220,7 @@ export async function seedVendorOperatorWithTotp(vndrId: string, username: strin
     createdByActor: randomUUID(),
     traceId,
   })
+  seededVendorOperatorIds.push(id)
 
   const { otpauthUri } = await enrollTotp(authDb, {
     targetPrincipalId: id,

@@ -1,5 +1,6 @@
 import 'reflect-metadata'
 import { randomUUID } from 'node:crypto'
+import { afterAll } from 'vitest'
 import { hash as argonHash } from '@node-rs/argon2'
 import type { INestApplication } from '@nestjs/common'
 import type { JSONWebKeySet } from 'jose'
@@ -139,6 +140,53 @@ export interface SeededPrincipal {
 // without re-deriving this constant).
 export const SEEDED_PASSWORD = 'correct horse battery staple'
 
+// F-4: every principal this helper mints, so the hook below can delete exactly
+// those rows and nothing else.
+//
+// WHY THIS IS THE RIGHT UNIT OF WORK. `auth` is the one schema the F-9c global
+// teardown REFUSES to touch, and deliberately: it holds the demo login and the
+// hash-chained audit ledger. So auth residue cannot be solved the way the four
+// domain schemas were, and it had been growing unbounded (measured 2026-08-09:
+// 2047 principals, 2238 MFA enrollments, 2412 refresh tokens, +21/+39/+52 from
+// a SINGLE run of the two auth edge suites).
+//
+// Cleanup lives HERE, at the one place that mints them, rather than in each of
+// the 8 suites that call it: this is the F-9c lesson (fix the choke point, not
+// the instances) applied where a global teardown is not allowed to reach. Any
+// FUTURE suite calling this helper is covered automatically, which is what
+// stops the leak recurring.
+//
+// SCOPED BY ID, NEVER BY NAME. Deleting `login_handle LIKE 'test-%'` would work
+// today and is exactly the kind of unfiltered-by-shape delete that has already
+// bitten this repo once: the bare `TRUNCATE` these suites used to run took the
+// demo login with it. Tracking the ids we actually created cannot touch
+// `ops.admin`, and cannot touch `authz_audit`, which is HASH-CHAINED and must
+// never have rows removed to tidy up.
+const seededPrincipalIds: string[] = []
+
+// vitest gives each test file its own module graph (see the `signerPromise`
+// note above), so this array holds only the CURRENT file's principals and this
+// hook registers once per file that imports the helper.
+afterAll(async () => {
+  if (seededPrincipalIds.length === 0) return
+  const ids = seededPrincipalIds.splice(0)
+  try {
+    // Children first: the auth schema declares NO foreign keys at all, so
+    // nothing cascades and an orphaned enrollment or refresh token would
+    // simply be left behind. Keyed on the id alone, not on principalType:
+    // what we own is the ID we minted, so every row under it is ours whatever
+    // plane it claims (see the fuller note in vendor-auth-edge's helpers,
+    // where a principalType filter demonstrably stranded rows).
+    await authDb.mfaEnrollment.deleteMany({ where: { principalId: { in: ids } } })
+    await authDb.refreshToken.deleteMany({ where: { principalId: { in: ids } } })
+    await authDb.internalPrincipal.deleteMany({ where: { id: { in: ids } } })
+  } catch (e) {
+    // LOUD BUT NEVER FATAL, mirroring the global teardown: a green suite must
+    // not turn red because tidying failed.
+    console.warn(`[auth-edge cleanup] failed to remove ${ids.length} seeded principals:`, e)
+  }
+})
+
 // Creates a real `internal_principal` row (a known Argon2id-hashed password,
 // ACTIVE, a random loginHandle) and enrolls a TOTP factor via the REAL
 // `enrollTotp` against the SAME vault this file's `resolveSecretRef` reads
@@ -150,6 +198,7 @@ export const SEEDED_PASSWORD = 'correct horse battery staple'
 export async function seedPrincipalWithTotp(role: string): Promise<SeededPrincipal> {
   const principalId = randomUUID()
   const handle = `test-${role}-${principalId.slice(0, 8)}`
+  seededPrincipalIds.push(principalId)
 
   await authDb.internalPrincipal.create({
     data: {

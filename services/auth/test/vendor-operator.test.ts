@@ -27,6 +27,18 @@ beforeAll(() => {
   db = new PrismaClient({ datasourceUrl: url })
 })
 afterAll(async () => {
+  // F-4: repeat the beforeEach cleanup at the END, or the LAST test's rows
+  // outlive the whole gate. `beforeEach`-only cleanup always leaks exactly
+  // that much, which is the F-9b shape, and `auth` is the one schema the
+  // global teardown refuses to touch so nothing else will collect it.
+  //
+  // WIDER THAN THE beforeEach ON PURPOSE: this suite also mints `dupe-<uuid>`
+  // (the duplicate-provision test), which `LIKE 'op-%'` never matched, so that
+  // row survived even BETWEEN tests. Both prefixes are listed here.
+  // authz_audit is hash-chained and is deliberately not touched.
+  await db.$executeRawUnsafe(`DELETE FROM vendor_operator WHERE username LIKE 'op-%' OR username LIKE 'dupe-%'`)
+  await db.$executeRawUnsafe(`DELETE FROM refresh_token WHERE principal_type = 'vendor_operator'`)
+  await db.$executeRawUnsafe(`DELETE FROM mfa_enrollment WHERE principal_type = 'vendor_operator'`)
   await db.$disconnect()
 })
 beforeEach(async () => {

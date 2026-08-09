@@ -226,6 +226,25 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  // F-4: the DO-NOT-by-design case below really does provision an operator
+  // (it asserts a 200), through the ROUTE, so nothing else knows the row
+  // exists. `auth` is the one schema the global teardown refuses to touch, so
+  // without this the row outlives every gate. Scoped to this suite's own
+  // prefix; authz_audit is hash-chained and is not touched.
+  try {
+    const created = await authDb.vendorOperator.findMany({
+      where: { username: { startsWith: 'cross-edge-op-' } },
+      select: { id: true },
+    })
+    const ids = created.map((r) => r.id)
+    if (ids.length > 0) {
+      await authDb.mfaEnrollment.deleteMany({ where: { principalId: { in: ids } } })
+      await authDb.refreshToken.deleteMany({ where: { principalId: { in: ids } } })
+      await authDb.vendorOperator.deleteMany({ where: { id: { in: ids } } })
+    }
+  } catch (e) {
+    console.warn('[cross-edge cleanup] failed to remove provisioned operators:', e)
+  }
   await authEdgeApp.close()
   await opsEdgeApp.close()
   await tenantEdgeApp.close()

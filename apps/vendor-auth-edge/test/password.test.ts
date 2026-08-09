@@ -5,7 +5,7 @@ import request from 'supertest'
 import { authenticator } from 'otplib'
 import { newId } from '@andpay/ids'
 import type { INestApplication } from '@nestjs/common'
-import { buildTestVendorAuthEdgeApp, seedVendorOperatorWithTotp, authDb, mintAdminToken, SEEDED_VENDOR_PASSWORD } from './helpers.js'
+import { buildTestVendorAuthEdgeApp, seedVendorOperatorWithTotp, authDb, mintAdminToken, SEEDED_VENDOR_PASSWORD, trackProvisionedOperator } from './helpers.js'
 
 // Spec 14a task 12: the authenticated change-password (class-7 session) and
 // admin-reset (class-3-admin-guarded) routes, plus the task-11 carry-forward
@@ -187,7 +187,9 @@ describe('vendor-auth-edge POST /provision duplicate (spec 14a task 11 carry-for
   it('a duplicate (vndrId, username) provision returns 409, not 500', async () => {
     const adminToken = await mintAdminToken()
     const vndrId = newId('vndr')
-    const username = `op-${randomUUID().slice(0, 8)}`
+    // Provisioned through the ROUTE (twice, deliberately), so the helper
+    // cannot see the id it mints: register it (F-4).
+    const username = trackProvisionedOperator(`op-${randomUUID().slice(0, 8)}`)
 
     const first = await request(app.getHttpServer())
       .post('/provision')
