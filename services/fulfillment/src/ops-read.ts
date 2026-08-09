@@ -643,3 +643,98 @@ export async function listDispatches(db: FulfillmentDb, { status }: { status?: s
     updatedAt: r.updated_at,
   }))
 }
+
+// The device inventory list.
+//
+// `unit` is the device lifecycle table, and until this read existed no ops
+// surface could see it at all: an operator could not tell how many devices were
+// in stock, could not look one up by serial, and could not tell which devices a
+// batch had become. The data was correct the whole time and simply invisible.
+//
+// PLATFORM-ONLY, like vndr above, so this enters the ops read role bare with no
+// program scope to set. Row-level only, no aggregate (the guard scans this
+// file); a caller wanting "how many are in stock" filters by status and reads
+// the length of what it gets back.
+//
+// The merchant a device was printed for is returned as a wire id and NOT joined
+// to a name here: merchants live in TMS and C4 forbids the cross-context read.
+// The portal already resolves that name from GET /ops/merchants, the same way
+// batch detail resolves a vendor name.
+//
+// sim_no and device_qr are absent BY GRANT, not by omission here: the ICCID is
+// never exposed to a read role (S7), so selecting it would raise a
+// permission-denied rather than leak. See migration 20260810020000.
+export interface UnitInventoryRow {
+  id: string
+  deviceSerial: string | null
+  status: string
+  productType: string
+  manufacturerVndr: string | null
+  batch: string | null
+  shipment: string | null
+  printedForMerchant: string | null
+  asgnId: string | null
+  location: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+interface UnitInventoryDbRow {
+  id: string
+  device_serial: string | null
+  status: string
+  product_type: string
+  manufacturer_vndr: string | null
+  batch: string | null
+  shipment: string | null
+  printed_for_merchant: string | null
+  asgn_id: string | null
+  location: string | null
+  created_at: Date
+  updated_at: Date
+}
+
+function toUnitInventoryDto(r: UnitInventoryDbRow): UnitInventoryRow {
+  return {
+    id: fromUuid('unit', r.id),
+    deviceSerial: r.device_serial,
+    status: r.status,
+    productType: r.product_type,
+    manufacturerVndr: r.manufacturer_vndr === null ? null : fromUuid('vndr', r.manufacturer_vndr),
+    batch: r.batch === null ? null : fromUuid('btch', r.batch),
+    shipment: r.shipment === null ? null : fromUuid('shpt', r.shipment),
+    printedForMerchant: r.printed_for_merchant === null ? null : fromUuid('mrch', r.printed_for_merchant),
+    asgnId: r.asgn_id === null ? null : fromUuid('asgn', r.asgn_id),
+    location: r.location,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}
+
+export async function listDeviceInventory(
+  db: FulfillmentDb,
+  { status }: { status?: string } = {},
+): Promise<UnitInventoryRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    if (status !== undefined) {
+      return tx.$queryRaw<UnitInventoryDbRow[]>`
+        SELECT id::text AS id, device_serial, status, product_type,
+               manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
+               shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
+               asgn_id::text AS asgn_id, location, created_at, updated_at
+        FROM unit WHERE status = ${status}
+        ORDER BY device_serial
+      `
+    }
+    return tx.$queryRaw<UnitInventoryDbRow[]>`
+      SELECT id::text AS id, device_serial, status, product_type,
+               manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
+               shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
+               asgn_id::text AS asgn_id, location, created_at, updated_at
+      FROM unit
+      ORDER BY device_serial
+    `
+  })
+  return rows.map(toUnitInventoryDto)
+}

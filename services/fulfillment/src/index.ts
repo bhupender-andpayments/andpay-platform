@@ -164,7 +164,9 @@ export {
   listPoolEntries,
   type PoolEntryRow,
   listDispatches,
+  listDeviceInventory,
   type DispatchRow,
+  type UnitInventoryRow,
 } from './ops-read.js'
 export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
 export { InMemoryAssetStore } from './storage/dev-asset-store.js'

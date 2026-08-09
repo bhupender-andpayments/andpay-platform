@@ -1,0 +1,117 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { render, screen, cleanup } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
+import { AuthProvider } from '../../src/auth/AuthContext.js'
+import { InventoryPage } from '../../src/features/inventory/InventoryPage.js'
+import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
+
+// The device inventory, closing the largest gap the end-to-end walkthrough
+// found: `unit` carries the whole device lifecycle and no ops surface could
+// read it, so devices in the warehouse appeared on no screen at all and a
+// device could not be looked up.
+//
+// The ICCID and the manufacturer QR payload are absent BY GRANT, not by this
+// component, so there is nothing here to assert about them beyond the fact that
+// the wire shape has no field for either.
+
+const DEVICE = {
+  id: 'unit_1',
+  deviceSerial: '9990000001001',
+  status: 'ACTIVATED',
+  productType: 'SOUNDBOX',
+  manufacturerVndr: 'vndr_1',
+  batch: 'btch_1',
+  shipment: 'shpt_1',
+  printedForMerchant: 'mrch_1',
+  asgnId: 'asgn_1',
+  location: null,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-02T00:00:00.000Z',
+}
+const IN_STOCK = { ...DEVICE, id: 'unit_2', deviceSerial: '9990000001002', status: 'IN_STOCK', batch: null, shipment: null, printedForMerchant: null, asgnId: null }
+const MERCHANTS = [{ mrchId: 'mrch_1', displayName: 'Flow Alpha Store', legalName: 'FLOW ALPHA LLP', mcc: '5411', status: 'ACTIVE', updatedAt: '2026-08-01T00:00:00.000Z' }]
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+}
+
+function stub(devices: unknown = [DEVICE, IN_STOCK]): { url: string }[] {
+  const calls: { url: string }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    calls.push({ url })
+    if (url.includes('/ops/merchants')) return jsonResponse(MERCHANTS)
+    return jsonResponse(devices)
+  }))
+  return calls
+}
+
+function renderPage() {
+  return render(
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <AuthProvider>
+        <InventoryPage />
+      </AuthProvider>
+    </MemoryRouter>,
+  )
+}
+
+describe('InventoryPage', () => {
+  beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
+  afterEach(() => { cleanup(); clearAccessToken() })
+
+  it('lists devices from GET /ops/devices, which nothing could read before', async () => {
+    const calls = stub()
+    renderPage()
+    expect(await screen.findByText('9990000001001')).toBeTruthy()
+    expect(screen.getByText('9990000001002')).toBeTruthy()
+    expect(calls.some((c) => c.url.includes('/ops/devices'))).toBe(true)
+  })
+
+  it('says how many are in stock, which is the question the warehouse asks', async () => {
+    stub()
+    renderPage()
+    expect(await screen.findByText(/2 devices, 1 in stock/)).toBeTruthy()
+  })
+
+  it('resolves the merchant NAME rather than showing a wire id', async () => {
+    stub()
+    renderPage()
+    expect(await screen.findByText('Flow Alpha Store')).toBeTruthy()
+    expect(screen.queryByText('mrch_1')).toBeNull()
+  })
+
+  it('says "unassigned" for a device no merchant owns yet, not an empty cell', async () => {
+    stub()
+    renderPage()
+    expect(await screen.findByText('unassigned')).toBeTruthy()
+  })
+
+  it('filters by status and sends it to the server', async () => {
+    const calls = stub()
+    renderPage()
+    await screen.findByText('9990000001001')
+    await userEvent.selectOptions(screen.getByLabelText(/^status/i), 'IN_STOCK')
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('status=IN_STOCK'))).toBe(true)
+    })
+  })
+
+  // ALLOCATED is reachable by nothing today. It is still offered because the
+  // rung exists in unit-lifecycle.ts, and a filter that silently disagreed with
+  // the domain would be its own small lie.
+  it('offers every lifecycle status, in lifecycle order rather than alphabetical', async () => {
+    stub()
+    renderPage()
+    const select = (await screen.findByLabelText(/^status/i)) as HTMLSelectElement
+    expect([...select.options].map((o) => o.value)).toEqual([
+      '', 'IN_STOCK', 'ALLOCATED', 'PRINTED', 'DISPATCHED', 'DELIVERED', 'ACTIVATED', 'DAMAGED', 'RETURNED',
+    ])
+  })
+
+  it('survives a non-array body instead of taking the page down with it', async () => {
+    stub({ error: 'nope' })
+    renderPage()
+    expect(await screen.findByText(/could not read the device list/i)).toBeTruthy()
+  })
+})

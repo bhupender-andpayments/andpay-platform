@@ -9,6 +9,7 @@ import { QueuesPage } from './features/queues/QueuesPage.js'
 import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
 import { UploadsPage } from './features/uploads/UploadsPage.js'
 import { DispatchesPage } from './features/dispatches/DispatchesPage.js'
+import { InventoryPage } from './features/inventory/InventoryPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
 import { MerchantsPage } from './features/merchants/MerchantsPage.js'
 import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
@@ -64,6 +65,10 @@ export function AppRoutes() {
               correction and terminal override, are now actions on the dispatch
               they act on, and recompose moved onto the batch. */}
           <Route path="/dispatches" element={<DispatchesPage />} />
+          {/* The Inventory section the redesign deferred under option B for
+              want of a read. GET /ops/devices exists now, so the condition
+              that kept it out is gone. */}
+          <Route path="/inventory" element={<InventoryPage />} />
           <Route path="/queues" element={<QueuesPage />} />
           <Route path="/reports" element={<ReportPage />} />
           <Route path="/masterdata" element={<MasterDataPage />} />

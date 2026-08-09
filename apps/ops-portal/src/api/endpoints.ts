@@ -522,6 +522,29 @@ export function getPoolEntries(c: Client, poolStatus?: string) {
   return c.request<PoolEntryRow[]>({ method: 'GET', path: `/ops/pool${q}` })
 }
 
+export interface UnitInventoryRow {
+  id: string
+  deviceSerial: string | null
+  status: string
+  productType: string
+  manufacturerVndr: string | null
+  batch: string | null
+  shipment: string | null
+  printedForMerchant: string | null
+  asgnId: string | null
+  location: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+// The device inventory. No ICCID and no manufacturer QR payload: both are
+// excluded by the GRANT rather than by this shape, so the wire cannot widen
+// without a migration.
+export function getDevices(c: Client, status?: string) {
+  const q = status !== undefined && status !== '' ? `?status=${encodeURIComponent(status)}` : ''
+  return c.request<UnitInventoryRow[]>({ method: 'GET', path: `/ops/devices${q}` })
+}
+
 export function getDispatches(c: Client, status?: string) {
   const q = status !== undefined && status !== '' ? `?status=${encodeURIComponent(status)}` : ''
   return c.request<DispatchRow[]>({ method: 'GET', path: `/ops/dispatches${q}` })

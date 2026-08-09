@@ -12,10 +12,12 @@ import {
   readBatchDetail,
   listPoolEntries,
   listDispatches,
+  listDeviceInventory,
   type BatchRow,
   type BatchDetailView,
   type PoolEntryRow,
   type DispatchRow,
+  type UnitInventoryRow,
   type VendorRow,
   type IntakeExceptionView,
   type CourierStatusExceptionView,
@@ -171,6 +173,17 @@ export class OpsReadController {
   @HttpCode(200)
   async dispatches(@Query('status') status?: string): Promise<DispatchRow[]> {
     return listDispatches(this.deps.fulfillmentDb, status !== undefined ? { status } : {})
+  }
+
+  // The device inventory. Guard-only, like the other reads on this controller:
+  // no new D2 permission string is minted for it, because it exposes nothing a
+  // class-3 ops principal cannot already reach about a device through a batch
+  // or a dispatch. The ICCID and the manufacturer QR payload are excluded BY
+  // GRANT rather than here, so this cannot widen by accident.
+  @Get('devices')
+  @HttpCode(200)
+  async devices(@Query('status') status?: string): Promise<UnitInventoryRow[]> {
+    return listDeviceInventory(this.deps.fulfillmentDb, status !== undefined ? { status } : {})
   }
 
   // 404 on an unknown batch rather than an empty-but-valid-looking detail, so

@@ -127,7 +127,7 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 9 real sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 10 real sections, no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
@@ -142,7 +142,7 @@ describe('ops-portal app shell + navigation', () => {
     // these links under headings, so document order is a presentation choice
     // while "which sections exist" is the invariant worth guarding.
     expect([...names].sort()).toEqual(
-      ['Activation', 'Batches', 'Command Center', 'Dispatches', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
+      ['Activation', 'Batches', 'Command Center', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })

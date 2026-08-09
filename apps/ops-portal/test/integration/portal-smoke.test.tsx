@@ -113,6 +113,7 @@ const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
   { label: 'Uploads', heading: /^uploads$/i },
   { label: 'Batches', heading: /^batches$/i },
   { label: 'Dispatches', heading: /^dispatches$/i },
+  { label: 'Inventory', heading: /^inventory$/i },
   { label: 'Activation', heading: /^activation$/i },
 ]
 
@@ -132,7 +133,7 @@ describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
     consoleErrorSpy.mockRestore()
   })
 
-  it('mounts the shell authenticated and routes through all 9 sections with no thrown errors and no console.error', async () => {
+  it('mounts the shell authenticated and routes through all 10 sections with no thrown errors and no console.error', async () => {
     await renderAuthedShell()
 
     const nav = screen.getByRole('navigation', { name: /main/i })

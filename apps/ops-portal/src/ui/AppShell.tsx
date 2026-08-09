@@ -64,6 +64,7 @@ interface Section {
 const SECTIONS: readonly Section[] = [
   { to: '/command-center', label: 'Command Center', icon: IconDashboard },
   { to: '/merchants', label: 'Merchants', icon: IconMerchants },
+  { to: '/inventory', label: 'Inventory', icon: IconMasterData },
   { to: '/batches', label: 'Batches', icon: IconFulfillment },
   { to: '/activation', label: 'Activation', icon: IconCheck },
   { to: '/uploads', label: 'Uploads', icon: IconUploads },
@@ -83,7 +84,7 @@ const SECTIONS: readonly Section[] = [
 // rather than silently vanishing from the sidebar.
 const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = [
   { title: 'Overview', routes: ['/command-center'] },
-  { title: 'Pipeline', routes: ['/merchants', '/batches', '/dispatches', '/activation'] },
+  { title: 'Pipeline', routes: ['/merchants', '/inventory', '/batches', '/dispatches', '/activation'] },
   { title: 'Operations', routes: ['/uploads', '/queues'] },
   { title: 'Insights', routes: ['/reports'] },
   { title: 'Setup', routes: ['/masterdata'] },
