@@ -96,6 +96,35 @@ describe('device inventory row format (A-2, deliberately loose)', () => {
     expect(blank.invalidRows).toEqual([{ rowNo: 1, errors: ['missing_device_id'] }])
   })
 
+  it('STAYS LOOSE: values that a stricter rule would reject are still accepted', async () => {
+    // THE LOCK (Bhupender, 2026-08-09: keep the current format, validation
+    // stays minimal). This test exists to FAIL if someone tightens these rules
+    // without a real CWD file and a decision, so a quiet "improvement" cannot
+    // slide in. Every value below is one that an obvious tightening would kill:
+    const stillAccepted: Array<[string, string, string]> = [
+      // a 12-digit id, which an exact-13 rule would reject (six exist in the
+      // real printer file)
+      [QR, SIM, '123456789012'],
+      // an id outside the mock file's 784 prefix, which a prefix rule would kill
+      [QR, SIM, '1234567890123'],
+      // an id that fails Luhn, which a check-digit rule would kill (real device
+      // ids carry no check digit: only 8 of 98 pass, i.e. chance)
+      [QR, SIM, '1234567890124'],
+      // a sim no that is not 20 characters, which an exact-length rule would kill
+      [QR, '89910000000000001', '1234567890123'],
+      // a QR that is not JSON, which a payload-shape rule would kill
+      ['plain-qr-value', SIM, '1234567890123'],
+      // a QR whose key is spelled with a leading space, exactly as BRD
+      // Annexure E itself spells " DOM"
+      ['{"DI":1234567890123," DOM":1771218817}', SIM, '1234567890123'],
+    ]
+    for (const [qr, sim, id] of stillAccepted) {
+      const r = await parseOne(qr, sim, id)
+      expect(r.invalidRows, `must stay accepted under the lock: ${id} / ${sim} / ${qr.slice(0, 24)}`).toEqual([])
+      expect(r.validRows).toHaveLength(1)
+    }
+  })
+
   it('quarantines only the bad row and still ingests the good ones', async () => {
     // The property that makes a loose-then-tighten policy safe: a row we reject
     // must never cost the rest of the file.

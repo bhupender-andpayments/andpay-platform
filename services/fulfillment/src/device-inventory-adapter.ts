@@ -62,7 +62,15 @@ export type DeviceInventoryRowErrorCode =
   | 'malformed_sim_no'
 
 /**
- * A-2 / D12, DELIBERATELY LOOSE. Tighten when a REAL CWD inventory file lands.
+ * A-2 / D12. LOCKED BY BHUPENDER 2026-08-09: the format below is the accepted
+ * one and validation stays MINIMAL. Revisit only if a real file disagrees.
+ *
+ * THIS IS A DECISION, NOT AN OVERSIGHT. Do not "improve" it. If you are here
+ * because these bounds look lax next to the rest of this codebase, that is the
+ * intent: ingestion must bend to whatever the partners actually send, and the
+ * cost of wrongly rejecting a real file is far higher than the cost of letting
+ * an odd value through to a queue where an operator can see it. Tightening
+ * needs a real CWD inventory file AND Bhupender, in that order.
  *
  * Before this, the ONLY row check was non-empty, so `Device ID = ABCDEF` was
  * accepted and became a real unit. These bounds close that without pretending
@@ -83,6 +91,13 @@ export type DeviceInventoryRowErrorCode =
  *    neither column. Sim No is therefore charset-and-range only, and Device QR
  *    stays non-empty ONLY. Validating an unseen payload shape is exactly the
  *    mistake above.
+ *  - HONEST NOTE ON THE ONE WEAK BOUND: Sim No's 10-to-30 LENGTH is the only
+ *    rule here with zero supporting evidence, real or mock-independent (the
+ *    mock's 20 characters is all we have, and the mock is not trustworthy at
+ *    value level). It is kept only because it costs nothing plausible: a real
+ *    ICCID is 19 to 20 digits, so the band has roughly a 10-character margin on
+ *    each side. If a real file ever trips it, DELETE THE LENGTH and keep the
+ *    charset; do not narrow it.
  *
  * THE QR'S `DI` MIRRORS THE `Device ID` COLUMN. That is a BRD requirement
  * (Annexure E shows one row with `Device QR = {"DI":7846237843772,...}` beside
