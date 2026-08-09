@@ -433,6 +433,59 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     expect(byAsgn.get(c.asgnUuid)).toBeNull() // neither exists -> null (no-branding)
   })
 
+  // D-3 (flow scrutiny F5): the THIRD rung Phase 3 ruling B ratified and Task
+  // 5a never built. Same three-entry shape as the Task 5a test above, with one
+  // difference: a tenant-level default row (the ('', '') sentinel key) now
+  // exists, so the entry whose bank has NO row of its own inherits the
+  // tenant's branding instead of printing unbranded.
+  //
+  // The two more specific rungs are re-asserted here on purpose rather than
+  // trusted: the hazard when adding a fallback is that the NEW rung shadows
+  // the old ones, which would silently discard every per-bank and per-branch
+  // configuration while still looking like branding worked.
+  it('D-3: bankConfigRefFor falls back to the tenant-level default before null', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+
+    const hdfcBranchConfigId = await seedBankConfig(tenantUuid, 'HDFC', 'BR-001')
+    const hdfcDefaultConfigId = await seedBankConfig(tenantUuid, 'HDFC', '')
+    // The tenant-level default: empty bank code AND empty branch code.
+    const tenantDefaultConfigId = await seedBankConfig(tenantUuid, '', '')
+
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-a', 'HDFC', 'BR-001')
+    const b = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-b', 'HDFC', 'BR-002')
+    const c = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-c', 'ICICI', 'BR-003')
+
+    const env = batchFactEnvelope({
+      payload: {
+        btchId: btchWire,
+        tenantId: tenantWire,
+        programId: programWire,
+        triggerReason: 'LOT_SIZE',
+        unitCount: 3,
+        asgnIds: [a.asgnWire, b.asgnWire, c.asgnWire],
+      },
+      dedupKey: btchWire,
+      traceId: 'trace-batch-d3',
+    })
+
+    const res = await consumeBatchFact(db, env, assetStore)
+    expect(res.deduped).toBe(false)
+
+    const artifacts = await db.$queryRaw<{ asgn_id: string; bank_config_ref: string | null }[]>`
+      SELECT asgn_id::text AS asgn_id, bank_config_ref::text AS bank_config_ref
+      FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid AND artifact_type = 'SOUNDBOX_IMG'
+    `
+    const byAsgn = new Map(artifacts.map((r) => [r.asgn_id, r.bank_config_ref]))
+    expect(byAsgn.get(a.asgnUuid)).toBe(hdfcBranchConfigId) // still the exact branch row
+    expect(byAsgn.get(b.asgnUuid)).toBe(hdfcDefaultConfigId) // still the bank-level default
+    expect(byAsgn.get(c.asgnUuid)).toBe(tenantDefaultConfigId) // NEW: inherits the tenant default
+  })
+
   it('P4-2: composition stores a real PDF per artifact via the AssetStore and persists its reference (not the placeholder)', async () => {
     const tenantWire = newId('tnnt')
     const programWire = newId('prog')

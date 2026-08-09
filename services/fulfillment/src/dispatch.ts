@@ -8,6 +8,7 @@ import { enterWriteScope } from './write-context.js'
 import { DISPATCH_TOPIC, dispatchFactEnvelope, type BatchFactPayload } from './events.js'
 import { renderCollateralPdf, type ArtifactType } from './collateral/renderer.js'
 import type { AssetStore } from './storage/asset-store.js'
+import { bankConfigCandidateKeys, selectBankConfig } from './config/bank-config-fallback.js'
 
 // which artifacts a snapshot entry gets (from the snapshot alone, C4-safe)
 function artifactTypesFor(e: { soundbox: boolean; standee_count: number; sticker_count: number }): ArtifactType[] {
@@ -134,12 +135,14 @@ async function preRenderArtifacts(
   })
   if (entries.length === 0) return prepared
 
-  // Same (bank_code, branch_code) fallback the in-transaction lookup uses: an
-  // exact branch match, then the bank-level '' sentinel row, then null.
+  // Same fallback the in-transaction lookup uses, and now literally the same
+  // rule rather than a second hand-maintained copy of it: an exact branch
+  // match, then the bank-level '' sentinel row, then the tenant-level default
+  // ('' bank AND '' branch, D-3), then null.
   const byKey = new Map<string, BankConfigRow>()
   for (const c of configs) byKey.set(`${c.bank_code}|${c.branch_code ?? ''}`, c)
   const cfgFor = (bankCode: string, branchCode: string | null): BankConfigRow | null =>
-    byKey.get(`${bankCode}|${branchCode ?? ''}`) ?? byKey.get(`${bankCode}|`) ?? null
+    selectBankConfig(byKey, bankCode, branchCode)
 
   const logoCache = new Map<string, { bytes: Uint8Array; contentType: string } | null>()
   async function logoFor(ref: string | null): Promise<{ bytes: Uint8Array; contentType: string } | null> {
@@ -260,19 +263,17 @@ export async function consumeBatchFact(
           const cacheKey = `${bankCode}|${branchCode ?? ''}`
           if (bankConfigCache.has(cacheKey)) return bankConfigCache.get(cacheKey) ?? null
           let row: BankConfigRow | null = null
-          if (branchCode) {
-            const exact = await tx.$queryRaw<BankConfigRow[]>`
+          // Rungs in precedence order, stopping at the first hit. The keys come
+          // from the shared rule so this can never drift from the compose-path
+          // lookup above, and a rung is only queried when it is distinct (a
+          // branch-less entry does not probe branch_code = '' twice).
+          for (const key of bankConfigCandidateKeys(bankCode, branchCode)) {
+            const hit = await tx.$queryRaw<BankConfigRow[]>`
               SELECT id::text AS id, branding_params, image_templates, logo_master_ref FROM bank_composition_config
-              WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${bankCode} AND branch_code = ${branchCode}
+              WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${key.bankCode} AND branch_code = ${key.branchCode}
             `
-            row = exact[0] ?? null
-          }
-          if (row === null) {
-            const fallback = await tx.$queryRaw<BankConfigRow[]>`
-              SELECT id::text AS id, branding_params, image_templates, logo_master_ref FROM bank_composition_config
-              WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${bankCode} AND branch_code = ''
-            `
-            row = fallback[0] ?? null
+            row = hit[0] ?? null
+            if (row !== null) break
           }
           bankConfigCache.set(cacheKey, row)
           return row
