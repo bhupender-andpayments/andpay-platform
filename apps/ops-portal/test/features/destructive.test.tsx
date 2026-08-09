@@ -3,7 +3,7 @@ import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
-import { OperationsPage } from '../../src/features/operations/OperationsPage.js'
+import { DispatchesPage } from '../../src/features/dispatches/DispatchesPage.js'
 import { DispatchHistoryPage } from '../../src/features/operations/DispatchHistoryPage.js'
 import { VendorSuspendButton } from '../../src/features/destructive/VendorSuspendButton.js'
 import { TerminalOverrideForm } from '../../src/features/destructive/TerminalOverrideForm.js'
@@ -423,7 +423,7 @@ describe('DispatchHistoryPage: the Override action', () => {
   })
 })
 
-describe('OperationsPage integration: selecting a dispatch-history row drives Terminal Override', () => {
+describe('DispatchesPage integration: selecting a dispatch-history row drives Terminal Override', () => {
   beforeEach(() => {
     clearAccessToken()
     setAccessToken('tok-1')
@@ -433,7 +433,7 @@ describe('OperationsPage integration: selecting a dispatch-history row drives Te
     cleanup()
   })
 
-  it('clicking Override on a real-shptId row switches to the Destructive tab pre-selected with that row, and submitting sends the SAME wire shptId (never the row awb/dispatchId)', async () => {
+  it('clicking Override on a real-shptId row opens the override form in place, pre-selected with that row, and submitting sends the SAME wire shptId (never the row awb/dispatchId)', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
@@ -453,20 +453,21 @@ describe('OperationsPage integration: selecting a dispatch-history row drives Te
       }),
     )
 
-    render(withProviders(<OperationsPage />))
+    render(withProviders(<DispatchesPage />))
 
-    await userEvent.click(screen.getByRole('button', { name: 'Dispatch History' }))
     const row = (await screen.findByText('AWB-1')).closest('tr')!
     await userEvent.click(within(row).getByRole('button', { name: /override/i }))
 
-    expect(screen.getByRole('button', { name: 'Destructive', pressed: true })).toBeTruthy()
-    expect(screen.getByText('shpt_from_row')).toBeTruthy()
+    const overrideForm = within(screen.getByRole('region', { name: 'Terminal override' }))
+    expect(overrideForm.getByRole('button', { name: 'Override' })).toBeTruthy()
+    // Shown in the form AND in the row it came from: one page now.
+    expect(screen.getAllByText('shpt_from_row').length).toBeGreaterThan(0)
     expect(screen.queryByRole('textbox', { name: /shipment/i })).toBeNull()
 
-    await userEvent.selectOptions(screen.getByLabelText(/status/i), 'DELIVERED')
-    await userEvent.type(screen.getByLabelText(/courier timestamp/i), '2026-08-01T10:00')
-    await userEvent.type(screen.getByLabelText(/override reason/i), 'Confirmed with courier')
-    await userEvent.click(screen.getByRole('button', { name: /^override$/i }))
+    await userEvent.selectOptions(overrideForm.getByLabelText(/status/i), 'DELIVERED')
+    await userEvent.type(overrideForm.getByLabelText(/courier timestamp/i), '2026-08-01T10:00')
+    await userEvent.type(overrideForm.getByLabelText(/override reason/i), 'Confirmed with courier')
+    await userEvent.click(overrideForm.getByRole('button', { name: /^override$/i }))
 
     await vi.waitFor(() => {
       expect(calls.some((c) => c.url.includes('/ops/shipments/shpt_from_row/override'))).toBe(true)
@@ -490,15 +491,15 @@ describe('OperationsPage integration: selecting a dispatch-history row drives Te
       }),
     )
 
-    render(withProviders(<OperationsPage />))
+    render(withProviders(<DispatchesPage />))
 
-    await userEvent.click(screen.getByRole('button', { name: 'Dispatch History' }))
     const row = (await screen.findByText('AWB-2')).closest('tr')!
     const button = within(row).getByRole('button', { name: /override/i }) as HTMLButtonElement
     expect(button.disabled).toBe(true)
 
     await userEvent.click(button)
-    // still on Dispatch History; Destructive tab was never entered via this row
-    expect(screen.getByRole('button', { name: 'Dispatch History', pressed: true })).toBeTruthy()
+    // The form never opened: there is no tab to be 'still on' any more, so
+    // the assertion is that the override surface is simply absent.
+    expect(screen.queryByRole('region', { name: 'Terminal override' })).toBeNull()
   })
 })

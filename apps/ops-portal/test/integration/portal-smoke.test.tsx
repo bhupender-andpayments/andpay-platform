@@ -112,7 +112,7 @@ const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
   { label: 'Master Data', heading: /^master data$/i },
   { label: 'Uploads', heading: /^uploads$/i },
   { label: 'Batches', heading: /^batches$/i },
-  { label: 'Actions', heading: /^operations$/i },
+  { label: 'Dispatches', heading: /^dispatches$/i },
   { label: 'Activation', heading: /^activation$/i },
 ]
 

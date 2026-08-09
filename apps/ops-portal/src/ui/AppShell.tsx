@@ -47,11 +47,14 @@ interface Section {
 // `Queues` keeps its name ON PURPOSE: it is dissolved into Command Center in a
 // later step, so renaming it now is churn toward a destination that deletes it.
 //
-// The old `Operations` page is labelled `Actions` instead. Not cosmetic: it sits
-// inside the Operations GROUP, and a group header repeating one of its own item
-// names is the confusion this redesign exists to remove. `Actions` is also the
+// `Actions` is GONE, and this is the sentence that predicted it: it was "the
 // honest description of what that page still is, a bag of verbs, and it empties
-// out as each verb moves onto the object it acts on.
+// out as each verb moves onto the object it acts on." It has now emptied.
+// Batch trigger went to Batches, hold and release to the pool entry, recompose
+// to the batch, and status correction and terminal override to the dispatch
+// they act on. What is left is the OBJECT, so the section is `Dispatches` and
+// it sits in Pipeline beside the other objects, which is where the ratified IA
+// (section 4) always had it.
 //
 // STEP 7 LANDED: `Merchants` is now present. It was absent because the ratified
 // nav ships only sections backed by a read that EXISTS, and there was no
@@ -64,7 +67,7 @@ const SECTIONS: readonly Section[] = [
   { to: '/batches', label: 'Batches', icon: IconFulfillment },
   { to: '/activation', label: 'Activation', icon: IconCheck },
   { to: '/uploads', label: 'Uploads', icon: IconUploads },
-  { to: '/operations', label: 'Actions', icon: IconOperations },
+  { to: '/dispatches', label: 'Dispatches', icon: IconOperations },
   { to: '/queues', label: 'Queues', icon: IconQueues },
   { to: '/reports', label: 'Reports', icon: IconReports },
   { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
@@ -80,8 +83,8 @@ const SECTIONS: readonly Section[] = [
 // rather than silently vanishing from the sidebar.
 const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = [
   { title: 'Overview', routes: ['/command-center'] },
-  { title: 'Pipeline', routes: ['/merchants', '/batches', '/activation'] },
-  { title: 'Operations', routes: ['/uploads', '/operations', '/queues'] },
+  { title: 'Pipeline', routes: ['/merchants', '/batches', '/dispatches', '/activation'] },
+  { title: 'Operations', routes: ['/uploads', '/queues'] },
   { title: 'Insights', routes: ['/reports'] },
   { title: 'Setup', routes: ['/masterdata'] },
 ]

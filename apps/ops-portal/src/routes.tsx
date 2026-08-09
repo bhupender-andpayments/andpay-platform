@@ -8,7 +8,7 @@ import { ReportPage } from './features/dashboards/ReportPage.js'
 import { QueuesPage } from './features/queues/QueuesPage.js'
 import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
 import { UploadsPage } from './features/uploads/UploadsPage.js'
-import { OperationsPage } from './features/operations/OperationsPage.js'
+import { DispatchesPage } from './features/dispatches/DispatchesPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
 import { MerchantsPage } from './features/merchants/MerchantsPage.js'
 import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
@@ -60,7 +60,10 @@ export function AppRoutes() {
           {/* Step 4: uploads are three linkable routes behind an index of
               cards, so `/uploads/*` is delegated to the feature. */}
           <Route path="/uploads/*" element={<UploadsPage />} />
-          <Route path="/operations" element={<OperationsPage />} />
+          {/* Section 4: Operations dissolved. Its two remaining verbs, status
+              correction and terminal override, are now actions on the dispatch
+              they act on, and recompose moved onto the batch. */}
+          <Route path="/dispatches" element={<DispatchesPage />} />
           <Route path="/queues" element={<QueuesPage />} />
           <Route path="/reports" element={<ReportPage />} />
           <Route path="/masterdata" element={<MasterDataPage />} />
@@ -70,6 +73,7 @@ export function AppRoutes() {
               land on the dashboard. `replace` so Back does not bounce. */}
           <Route path="/dashboards" element={<Navigate to="/command-center" replace />} />
           <Route path="/fulfillment" element={<Navigate to="/batches" replace />} />
+          <Route path="/operations" element={<Navigate to="/dispatches" replace />} />
 
           <Route path="/" element={<Navigate to="/command-center" replace />} />
           <Route path="*" element={<Navigate to="/command-center" replace />} />

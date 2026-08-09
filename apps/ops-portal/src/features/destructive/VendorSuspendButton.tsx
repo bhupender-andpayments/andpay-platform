@@ -41,7 +41,22 @@ export function VendorSuspendButton() {
     getVendors(client)
       .then((res) => {
         if (cancelled) return
-        setRows(res)
+        // Array.isArray, not a bare assignment. A non-array body (an error
+        // envelope, a proxy page, anything unexpected) previously became
+        // `rows`, and the first `.filter` on it threw during render and took
+        // THE WHOLE HOST PAGE down with it. That is the same defect already
+        // recorded against EntityPicker's host page.
+        //
+        // It survived this long because this control only ever rendered on a
+        // tab you had to click first, so an unlucky response killed a screen
+        // almost nobody was looking at. It now sits on an always-rendered page,
+        // which is how it surfaced.
+        //
+        // An unexpected body is treated as "no vendors" and reported, rather
+        // than crashing: the surrounding page has nothing to do with vendors
+        // and must not disappear because this lookup misbehaved.
+        if (Array.isArray(res)) setRows(res)
+        else setLoadError('Could not read the vendor list.')
       })
       .catch((err: unknown) => {
         if (cancelled) return

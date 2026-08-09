@@ -11,6 +11,7 @@ import {
   type BatchEntryRow,
 } from '../../api/endpoints.js'
 import { saveBlob } from '../../lib/saveBlob.js'
+import { RecomposeForm } from '../operations/RecomposeForm.js'
 import {
   PageHeader,
   Card,
@@ -248,6 +249,13 @@ export function BatchDetailPage() {
               emptyMessage="This batch has no records."
             />
           </Card>
+
+          {/* Section 4: "Recompose moves to the batch." It used to be a tab on
+              the Operations page, i.e. a verb with no object, reached by going
+              somewhere else entirely from the batch whose artifacts it
+              regenerates. It is the same component, unchanged, now sitting on
+              the thing it acts on. */}
+          <RecomposeForm />
         </>
       ) : null}
     </div>

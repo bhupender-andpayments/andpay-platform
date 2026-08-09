@@ -142,7 +142,7 @@ describe('ops-portal app shell + navigation', () => {
     // these links under headings, so document order is a presentation choice
     // while "which sections exist" is the invariant worth guarding.
     expect([...names].sort()).toEqual(
-      ['Actions', 'Activation', 'Batches', 'Command Center', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
+      ['Activation', 'Batches', 'Command Center', 'Dispatches', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })

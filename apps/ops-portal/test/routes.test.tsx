@@ -87,7 +87,7 @@ describe('ops-portal routing', () => {
     expect(screen.getByRole('link', { name: /reports/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /master data/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /uploads/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /actions/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /dispatches/i })).toBeTruthy()
 
     // The logged-in principal and a logout control are shown.
     expect(screen.getByText(/ops-1/)).toBeTruthy()

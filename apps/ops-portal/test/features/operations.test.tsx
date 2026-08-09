@@ -3,8 +3,7 @@ import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
-import { OperationsPage } from '../../src/features/operations/OperationsPage.js'
-import { BatchPage } from '../../src/features/operations/BatchPage.js'
+import { DispatchesPage } from '../../src/features/dispatches/DispatchesPage.js'
 import { StatusCorrectionForm } from '../../src/features/operations/StatusCorrectionForm.js'
 import { RecomposeForm } from '../../src/features/operations/RecomposeForm.js'
 import { DispatchHistoryPage } from '../../src/features/operations/DispatchHistoryPage.js'
@@ -25,19 +24,6 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 // StatusCorrectionForm is now driven ONLY by a shptId picked from a real
 // dispatch-history row - never a hand-typed value.
 
-// The real batch list the picker reads. The operator picks by what a batch IS
-// (size, status, trigger reason) rather than by an id they had to obtain
-// elsewhere, which is the whole point of the step.
-const BATCH_LIST = [{
-  id: 'btch_1', status: 'BORN', triggerReason: 'LOT_SIZE', unitCount: 12,
-  printVndr: null, triggeredByActor: null,
-  createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
-}]
-const BATCH_LIST_2 = [{
-  id: 'btch_2', status: 'BORN', triggerReason: 'LOT_SIZE', unitCount: 34,
-  printVndr: null, triggeredByActor: null,
-  createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
-}]
 
 interface Call {
   url: string
@@ -65,7 +51,7 @@ function withProviders(children: React.ReactNode) {
   )
 }
 
-describe('OperationsPage', () => {
+describe('DispatchesPage: Operations dissolved into the object it acts on', () => {
   beforeEach(() => {
     clearAccessToken()
     setAccessToken('tok-1')
@@ -75,149 +61,25 @@ describe('OperationsPage', () => {
     cleanup()
   })
 
-  // FIVE tabs now: Hold is gone (step 8), because holding is an action on the
-  // pool entry row it acts on rather than a form taking a typed id.
-  it('renders the Operations heading and its five tabs', () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})))
-    render(withProviders(<OperationsPage />))
-    expect(screen.getByRole('heading', { name: /operations/i })).toBeTruthy()
-    for (const label of ['Batch', 'Status Correction', 'Recompose', 'Dispatch History', 'Destructive']) {
-      expect(screen.getByRole('button', { name: label })).toBeTruthy()
+  // The old page had FIVE tabs and made correcting a status a four-step
+  // navigation that ended on a shipment identified only by a wire id. Section 4
+  // said it should dissolve; this asserts it did, and that nothing here is a tab
+  // any more.
+  it('has no tab strip at all', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ rows: [], watermark: { asOf: null, perTopic: {} } })))
+    render(withProviders(<DispatchesPage />))
+    expect(screen.getByRole('heading', { name: /dispatches/i })).toBeTruthy()
+    for (const gone of ['Batch', 'Status Correction', 'Recompose', 'Dispatch History', 'Destructive']) {
+      expect(screen.queryByRole('button', { name: gone })).toBeNull()
     }
   })
-})
 
-describe('BatchPage', () => {
-  beforeEach(() => {
-    clearAccessToken()
-    setAccessToken('tok-1')
-    vi.unstubAllGlobals()
-  })
-  afterEach(() => {
-    cleanup()
-  })
-
-  // The batch TRIGGER moved to the pending pool it acts on (step 3). Its
-  // coverage moved with it, to test/features/batchable-pools.test.tsx, which
-  // asserts the same POST body and Idempotency-Key plus the grouping rules the
-  // old form had no concept of.
-
-  it('downloads the dispatch sheet for a PICKED batch, hitting GET /ops/batches/:btchId/dispatch-excel with a Bearer token, and saves the exact served bytes', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.endsWith('/ops/batches')) return jsonResponse(BATCH_LIST)
-        if (url.includes('/dispatch-excel')) {
-          return new Response('xlsx-bytes', {
-            status: 200,
-            headers: {
-              'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-              'content-disposition': 'attachment; filename="dispatch-btch_1.xlsx"',
-            },
-          })
-        }
-        return jsonResponse({})
-      }),
-    )
-
-    const createObjectURL = vi.fn((_blob: Blob) => 'blob:mock-url')
-    const revokeObjectURL = vi.fn()
-    Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, writable: true, configurable: true })
-    Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectURL, writable: true, configurable: true })
-    const realCreateElement = document.createElement.bind(document)
-    vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
-      const el = realCreateElement(tag)
-      if (tag === 'a') (el as HTMLAnchorElement).click = vi.fn()
-      return el
-    }) as typeof document.createElement)
-
-    render(withProviders(<BatchPage />))
-
-    await userEvent.click(await screen.findByRole('button', { name: /12 records/ }))
-    await userEvent.click(screen.getByRole('button', { name: /download dispatch sheet/i }))
-
-    await vi.waitFor(() => {
-      expect(calls.some((c) => c.url.includes('/ops/batches/btch_1/dispatch-excel'))).toBe(true)
-    })
-    const call = calls.find((c) => c.url.includes('/ops/batches/btch_1/dispatch-excel'))!
-    expect(call.init.method === undefined || call.init.method === 'GET').toBe(true)
-    const headers = call.init.headers as Record<string, string>
-    expect(headers.Authorization).toBe('Bearer tok-1')
-
-    await vi.waitFor(() => {
-      expect(createObjectURL).toHaveBeenCalled()
-    })
-    // jsdom's Blob polyfill exposes only size/type (no async text()/arrayBuffer()),
-    // so size + content-type are the available proof the exact served bytes
-    // (not a re-derived or fabricated rendering of them) reached the download,
-    // matching exportCsv.test's own jsdom-limitation workaround.
-    const savedBlob = createObjectURL.mock.calls[0]![0]
-    expect(savedBlob.size).toBe('xlsx-bytes'.length)
-    expect(savedBlob.type).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-  })
-
-  it('downloads collateral for a PICKED batch + artifact type, hitting GET /ops/batches/:btchId/collateral/:artifactType', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.endsWith('/ops/batches')) return jsonResponse(BATCH_LIST_2)
-        if (url.includes('/collateral/')) {
-          return new Response('pdf-bytes', {
-            status: 200,
-            headers: {
-              'content-type': 'application/pdf',
-              'content-disposition': 'attachment; filename="SOUNDBOX_IMG-btch_2.pdf"',
-            },
-          })
-        }
-        return jsonResponse({})
-      }),
-    )
-    const createObjectURL = vi.fn(() => 'blob:mock-url')
-    Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, writable: true, configurable: true })
-    Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), writable: true, configurable: true })
-    const realCreateElement = document.createElement.bind(document)
-    vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
-      const el = realCreateElement(tag)
-      if (tag === 'a') (el as HTMLAnchorElement).click = vi.fn()
-      return el
-    }) as typeof document.createElement)
-
-    render(withProviders(<BatchPage />))
-
-    await userEvent.click(await screen.findByRole('button', { name: /34 records/ }))
-    await userEvent.selectOptions(screen.getByLabelText(/collateral type/i), 'SOUNDBOX_IMG')
-    await userEvent.click(screen.getByRole('button', { name: /download collateral/i }))
-
-    await vi.waitFor(() => {
-      expect(calls.some((c) => c.url.includes('/ops/batches/btch_2/collateral/SOUNDBOX_IMG'))).toBe(true)
-    })
-    await vi.waitFor(() => {
-      expect(createObjectURL).toHaveBeenCalled()
-    })
-  })
-
-  it('shows a not-found note (not an error) when the collateral route 404s', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (url.endsWith('/ops/batches')) return jsonResponse(BATCH_LIST)
-        if (url.includes('/collateral/')) return new Response(null, { status: 404 })
-        return jsonResponse({})
-      }),
-    )
-
-    render(withProviders(<BatchPage />))
-
-    await userEvent.click(await screen.findByRole('button', { name: /12 records/ }))
-    await userEvent.click(screen.getByRole('button', { name: /download collateral/i }))
-
-    expect(await screen.findByText(/no .*collateral/i)).toBeTruthy()
-    expect(screen.queryByRole('alert')).toBeNull()
+  // The correction form is ABSENT until a row asks for it, rather than being a
+  // destination that greets you with "No shipment selected, go elsewhere".
+  it('shows no correction form until a row is chosen', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ rows: [], watermark: { asOf: null, perTopic: {} } })))
+    render(withProviders(<DispatchesPage />))
+    expect(screen.queryByText(/no shipment selected/i)).toBeNull()
   })
 })
 
@@ -237,14 +99,14 @@ describe('StatusCorrectionForm (G-SHPT: driven only by a selected dispatch-histo
     expect(screen.getByText(/select a shipment/i)).toBeTruthy()
     expect(screen.queryByLabelText(/shipment/i)).toBeNull()
     expect(screen.queryByRole('textbox', { name: /shipment/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /submit correction/i })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Correct status' })).toBeNull()
   })
 
   it('with a selected row whose shptId is null: refuses to render a correctable form (guard)', () => {
     render(withProviders(<StatusCorrectionForm selectedRow={{ dispatchId: 'asgn_1', awb: 'AWB-9', shptId: null }} />))
 
     expect(screen.getByText(/no verified wire shipment id/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /submit correction/i })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Correct status' })).toBeNull()
   })
 
   it('with a selected row carrying a real shptId: renders it as static text (no editable input) and posts the SAME wire shptId to /ops/shipments/:id/correct', async () => {
@@ -462,7 +324,7 @@ describe('DispatchHistoryPage', () => {
   })
 })
 
-describe('OperationsPage integration: selecting a dispatch-history row drives Status Correction', () => {
+describe('DispatchesPage integration: selecting a dispatch-history row drives Status Correction', () => {
   beforeEach(() => {
     clearAccessToken()
     setAccessToken('tok-1')
@@ -472,7 +334,7 @@ describe('OperationsPage integration: selecting a dispatch-history row drives St
     cleanup()
   })
 
-  it('clicking Correct status on a real-shptId row switches to the Status Correction tab pre-selected with that row, and submitting sends the SAME wire shptId (not the row awb/dispatchId)', async () => {
+  it('clicking Correct status on a real-shptId row opens the correction form in place, pre-selected with that row, and submitting sends the SAME wire shptId (not the row awb/dispatchId)', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
@@ -494,20 +356,24 @@ describe('OperationsPage integration: selecting a dispatch-history row drives St
       }),
     )
 
-    render(withProviders(<OperationsPage />))
+    render(withProviders(<DispatchesPage />))
 
-    await userEvent.click(screen.getByRole('button', { name: 'Dispatch History' }))
     const row = (await screen.findByText('AWB-1')).closest('tr')!
     await userEvent.click(within(row).getByRole('button', { name: /correct status/i }))
 
-    // Now on the Status Correction tab, with the real shptId already shown.
-    expect(screen.getByRole('button', { name: 'Status Correction', pressed: true })).toBeTruthy()
-    expect(screen.getByText('shpt_from_row')).toBeTruthy()
+    // The form opened IN PLACE, with the real shptId already shown. No tab
+    // was entered, because there are none.
+    const correctionForm = within(screen.getByRole('region', { name: 'Correct status' }))
+    expect(correctionForm.getByRole('button', { name: /submit correction/i })).toBeTruthy()
+    // Appears twice now, in the form AND in the row it was taken from,
+    // because the form opens on the same page as the table. That is the
+    // point of the move, so assert presence rather than uniqueness.
+    expect(screen.getAllByText('shpt_from_row').length).toBeGreaterThan(0)
     expect(screen.queryByRole('textbox', { name: /shipment/i })).toBeNull()
 
-    await userEvent.selectOptions(screen.getByLabelText(/status/i), 'DELIVERED')
-    await userEvent.type(screen.getByLabelText(/courier timestamp/i), '2026-08-01T10:00')
-    await userEvent.click(screen.getByRole('button', { name: /submit correction/i }))
+    await userEvent.selectOptions(correctionForm.getByLabelText(/status/i), 'DELIVERED')
+    await userEvent.type(correctionForm.getByLabelText(/courier timestamp/i), '2026-08-01T10:00')
+    await userEvent.click(correctionForm.getByRole('button', { name: /submit correction/i }))
 
     await vi.waitFor(() => {
       expect(calls.some((c) => c.url.includes('/ops/shipments/shpt_from_row/correct'))).toBe(true)
@@ -531,15 +397,15 @@ describe('OperationsPage integration: selecting a dispatch-history row drives St
       }),
     )
 
-    render(withProviders(<OperationsPage />))
+    render(withProviders(<DispatchesPage />))
 
-    await userEvent.click(screen.getByRole('button', { name: 'Dispatch History' }))
     const row = (await screen.findByText('AWB-2')).closest('tr')!
     const button = within(row).getByRole('button', { name: /correct status/i }) as HTMLButtonElement
     expect(button.disabled).toBe(true)
 
-    // Still on Dispatch History; Status Correction tab was never entered.
-    expect(screen.getByRole('button', { name: 'Dispatch History', pressed: true })).toBeTruthy()
+    // The form never opened: there is no tab to be 'still on' any more, so
+    // the assertion is that the correction surface is simply absent.
+    expect(screen.queryByRole('region', { name: 'Correct status' })).toBeNull()
   })
 })
 
