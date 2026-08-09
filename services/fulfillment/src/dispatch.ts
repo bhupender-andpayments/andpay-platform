@@ -351,6 +351,63 @@ export async function consumeBatchFact(
       // DISPATCH step (idempotent per {btch_}|dispatch). Package availability is
       // produced on demand by package.ts (Task 7); this step advances state + fact.
       await onceWithin(tx, CONSUMER, `${p.btchId}|dispatch`, async () => {
+        // D-9a: BIND THE BATCH TO ITS PRINT VENDOR, HERE, IN THIS TRANSACTION.
+        //
+        // This step is the one BRD 5.4 describes as making the package
+        // available to the print vendor, and it is where records become
+        // "Sent to Print Vendor". Until now it did the second half only:
+        // `batch.print_vndr` was written by NO production code path, so every
+        // vendor pull resolved `'__none__'` and was scope-denied. Measured
+        // live: a real print vendor, with a real credential, got a 403 on a
+        // real batch. The whole vendor-facing half of the pipeline was
+        // unreachable, silently, because a NULL column reads as "not mine"
+        // rather than as an error.
+        //
+        // WHICH vendor (ruled by Bhupender 2026-08-09): the single ACTIVE
+        // PRINT vendor. The BRD says "the print vendor" throughout, singular,
+        // and describes dispatch as automatic on trigger, and single-partner
+        // scope is ratified. So this invents no config entity and no selection
+        // UI; it reads what is already there.
+        //
+        // NOT EXACTLY ONE IS A HARD FAILURE, on purpose. Advancing with a NULL
+        // vendor is precisely the bug above: the batch would look dispatched
+        // while no vendor could ever pull it. Throwing rolls back this whole
+        // transaction, including the inbox dedup, so nothing is marked sent.
+        // The fact then rides the normal retry ladder and, if the
+        // misconfiguration persists, lands in the DLQ, which is visible and
+        // replayable. That is the platform's standard poison path and it is
+        // the right one here: zero or several active print vendors is an
+        // operator configuration error, not something to paper over per batch.
+        // Read the batch FIRST, and treat its absence as a fault. A bare
+        // conditional UPDATE would have been the natural way to write this and
+        // it hides two different situations behind the same "0 rows affected":
+        // already bound (fine, a replay) and NO BATCH ROW AT ALL (a real bug,
+        // and exactly the silent-NULL failure this task exists to fix). Read,
+        // then decide.
+        const batchRows = await tx.$queryRaw<{ print_vndr: string | null }[]>`
+          SELECT print_vndr::text AS print_vndr FROM batch
+          WHERE id = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
+        `
+        if (batchRows.length !== 1) {
+          throw new Error(`dispatch ${p.btchId}: batch row not found, cannot bind a print vendor`)
+        }
+        // Already bound means this is a replay. Leave it alone and do NOT
+        // re-resolve: a batch a vendor has already pulled must never re-point
+        // because the vendor roster changed afterwards.
+        if (batchRows[0]!.print_vndr === null) {
+          const printVndrs = await tx.$queryRaw<{ id: string }[]>`
+            SELECT id::text AS id FROM vndr WHERE type = 'PRINT' AND status = 'ACTIVE'
+          `
+          if (printVndrs.length !== 1) {
+            throw new Error(
+              `dispatch ${p.btchId}: expected exactly 1 ACTIVE PRINT vendor, found ${String(printVndrs.length)}`,
+            )
+          }
+          await tx.$executeRaw`
+            UPDATE batch SET print_vndr = ${printVndrs[0]!.id}::uuid, updated_at = now()
+            WHERE id = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid AND print_vndr IS NULL
+          `
+        }
         await tx.$executeRaw`
           INSERT INTO saga_step (instance_id, name, status, attempts, idempotency_key, updated_at)
           VALUES (${btchUuid}::uuid, 'dispatch', 'completed', 1, ${stepKey(p.btchId, 'dispatch')}, now())

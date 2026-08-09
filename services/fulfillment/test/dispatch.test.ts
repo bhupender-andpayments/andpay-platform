@@ -23,9 +23,22 @@ const url =
 const db = new PrismaClient({ datasourceUrl: url })
 const assetStore = new InMemoryAssetStore()
 
+// D-9a: the dispatch step now BINDS the batch to the single ACTIVE PRINT
+// vendor, and fails closed when there is not exactly one, so this suite has to
+// establish that precondition. `vndr` is in the TRUNCATE list deliberately:
+// without it, an ACTIVE PRINT row left behind by another suite would make it
+// two and every test here would fail on a condition it never set up. Seeding a
+// fixed id after a truncate makes the count exactly one no matter what ran
+// before.
+const PRINT_VNDR = 'e1000000-0000-4000-8000-000000000001'
+
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE pending_pool_entry, composed_artifact, bank_composition_config, batch, batch_pool, saga_timer, saga_step, saga_instance, outbox, inbox CASCADE',
+    'TRUNCATE pending_pool_entry, composed_artifact, bank_composition_config, batch, batch_pool, saga_timer, saga_step, saga_instance, vndr, outbox, inbox CASCADE',
+  )
+  await db.$executeRawUnsafe(
+    `INSERT INTO vndr (id, type, display_name, status, created_at, updated_at)
+     VALUES ('${PRINT_VNDR}'::uuid, 'PRINT', 'Dispatch Test Print Vendor', 'ACTIVE', now(), now())`,
   )
 })
 afterAll(async () => {
@@ -53,12 +66,27 @@ async function seedBankConfig(tenantUuid: string, bankCode: string, branchCode =
   return rows[0]!.id
 }
 
+// The `batch` ROW itself. Production always has one before the batch fact is
+// emitted (batching.ts writes it in the same transaction as the fact), but this
+// suite never created one, so every UPDATE against it matched zero rows. That
+// mattered the moment dispatch started binding print_vndr: the assertions would
+// have passed while proving nothing. Idempotent so a test can call it once per
+// batch id without caring whether an earlier helper already did.
+async function seedBatchRow(tenantUuid: string, programUuid: string, btchUuid: string): Promise<void> {
+  await db.$executeRaw`
+    INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
+    VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BORN', 'LOT_SIZE', 1, now())
+    ON CONFLICT (id) DO NOTHING
+  `
+}
+
 // A fixture pending_pool_entry row, ALREADY BATCHED (pool_status='BATCHED',
 // batch=<btchUuid>), the event-carried snapshot consumeBatchFact reads (no
 // C4/TMS read). soundbox=true, standee_count=1 so both SOUNDBOX_IMG and
 // STANDEE_IMG are composed per entry. Distinct asgn_id/merchant_id per call;
 // trace_id is deliberately test-controlled and DIFFERENT per entry (proves
 // fold-1: the dispatch facts must use env.traceId, never an entry's trace_id).
+// Also seeds the batch row it points at, so the fixture is whole.
 async function seedBatchedEntry(
   tenantUuid: string,
   programUuid: string,
@@ -67,6 +95,7 @@ async function seedBatchedEntry(
   bankCode: string,
   branchCode: string | null = null,
 ): Promise<{ asgnWire: string; asgnUuid: string }> {
+  await seedBatchRow(tenantUuid, programUuid, btchUuid)
   const asgnWire = newId('asgn')
   const asgnUuid = toUuid(asgnWire)
   const merchantUuid = toUuid(newId('mrch'))
@@ -611,5 +640,137 @@ describe('crash between the pre-render and the commit (three-phase idempotency)'
     expect(third.deduped).toBe(true)
     const finalCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid`
     expect(Number(finalCount[0]!.n)).toBe(2)
+  })
+})
+
+// D-9a: the dispatch step binds the batch to its print vendor.
+//
+// The defect this closes was invisible to every existing test: `print_vndr` was
+// written by no production code path, so a real print vendor with a real
+// credential got a 403 on a real batch, and a NULL column reads as "not mine"
+// rather than as an error. These tests assert the binding itself AND the thing
+// the binding is FOR, which is that the vendor read can now reach the batch.
+describe('D-9a: dispatch binds the batch to the single ACTIVE PRINT vendor', () => {
+  async function dispatchOneBatch(): Promise<{ btchWire: string; btchUuid: string; programUuid: string }> {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+    await seedBankConfig(tenantUuid, 'HDFC')
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-pv', 'HDFC')
+    const env = batchFactEnvelope({
+      payload: {
+        btchId: btchWire,
+        tenantId: tenantWire,
+        programId: programWire,
+        triggerReason: 'LOT_SIZE',
+        unitCount: 1,
+        asgnIds: [a.asgnWire],
+      },
+      dedupKey: btchWire,
+      traceId: 'trace-pv',
+    })
+    await consumeBatchFact(db, env, assetStore)
+    return { btchWire, btchUuid, programUuid }
+  }
+
+  async function printVndrOf(btchUuid: string): Promise<string | null> {
+    const rows = await db.$queryRaw<{ print_vndr: string | null }[]>`
+      SELECT print_vndr::text AS print_vndr FROM batch WHERE id = ${btchUuid}::uuid
+    `
+    return rows[0]?.print_vndr ?? null
+  }
+
+  it('binds the batch to the one ACTIVE PRINT vendor', async () => {
+    const { btchUuid } = await dispatchOneBatch()
+    expect(await printVndrOf(btchUuid)).toBe(PRINT_VNDR)
+  })
+
+  it('makes the batch REACHABLE by that vendor under the vendor-read role', async () => {
+    // The point of the whole task. Before the binding, this select returned
+    // nothing for every vendor, which is exactly why the live pull 403'd: the
+    // RLS predicate is `print_vndr = app.vndr_id`, and NULL never matches.
+    const { btchUuid } = await dispatchOneBatch()
+    const seen = await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_vendor_read')
+      await tx.$queryRaw`SELECT set_config('app.vndr_id', ${PRINT_VNDR}, true)`
+      return tx.$queryRaw<{ id: string }[]>`SELECT id::text AS id FROM batch`
+    })
+    expect(seen.map((r) => r.id)).toEqual([btchUuid])
+  })
+
+  it('FAILS CLOSED with no active print vendor: nothing is marked sent to vendor', async () => {
+    // Fail closed rather than advance with a NULL vendor, which would leave a
+    // batch looking dispatched while no vendor could ever pull it.
+    await db.$executeRawUnsafe('TRUNCATE vndr CASCADE')
+    await expect(dispatchOneBatch()).rejects.toThrow(/expected exactly 1 ACTIVE PRINT vendor, found 0/)
+    const states = await db.$queryRaw<{ dispatch_state: string | null }[]>`
+      SELECT dispatch_state FROM pending_pool_entry
+    `
+    // The whole transaction rolled back, so the entry never reached
+    // SENT_TO_VENDOR and no dispatch fact was enqueued.
+    expect(states.every((s) => s.dispatch_state !== 'SENT_TO_VENDOR')).toBe(true)
+    const facts = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox
+      WHERE event_type = ${DISPATCH_TOPIC} AND payload->'payload'->>'dispatchState' = 'SENT_TO_VENDOR'
+    `
+    expect(Number(facts[0]!.n)).toBe(0)
+  })
+
+  it('FAILS CLOSED with two active print vendors, rather than guessing', async () => {
+    await db.$executeRawUnsafe(
+      `INSERT INTO vndr (id, type, display_name, status, created_at, updated_at)
+       VALUES ('e1000000-0000-4000-8000-000000000002'::uuid, 'PRINT', 'Second Print Vendor', 'ACTIVE', now(), now())`,
+    )
+    await expect(dispatchOneBatch()).rejects.toThrow(/expected exactly 1 ACTIVE PRINT vendor, found 2/)
+  })
+
+  it('counts only ACTIVE vendors, so a SUSPENDED one is not eligible', async () => {
+    // Proves the status filter is load-bearing: with a suspended second vendor
+    // the count is still 1 and dispatch proceeds.
+    await db.$executeRawUnsafe(
+      `INSERT INTO vndr (id, type, display_name, status, created_at, updated_at)
+       VALUES ('e1000000-0000-4000-8000-000000000003'::uuid, 'PRINT', 'Suspended Print Vendor', 'SUSPENDED', now(), now())`,
+    )
+    const { btchUuid } = await dispatchOneBatch()
+    expect(await printVndrOf(btchUuid)).toBe(PRINT_VNDR)
+  })
+
+  it('counts only PRINT vendors, so a COURIER or MANUFACTURER is not eligible', async () => {
+    // Proves the type filter is load-bearing. A courier vendor is deliberately
+    // excluded from artifact pull entirely (105d), so it must never be bound.
+    await db.$executeRawUnsafe(
+      `INSERT INTO vndr (id, type, display_name, status, created_at, updated_at)
+       VALUES ('e1000000-0000-4000-8000-000000000004'::uuid, 'COURIER', 'A Courier', 'ACTIVE', now(), now()),
+              ('e1000000-0000-4000-8000-000000000005'::uuid, 'MANUFACTURER', 'A Manufacturer', 'ACTIVE', now(), now())`,
+    )
+    const { btchUuid } = await dispatchOneBatch()
+    expect(await printVndrOf(btchUuid)).toBe(PRINT_VNDR)
+  })
+
+  it('a replay does NOT re-point a batch that is already bound', async () => {
+    // A vendor may already have pulled this batch. Re-pointing it because the
+    // roster changed afterwards would move work under someone's feet.
+    const { btchUuid, programUuid } = await dispatchOneBatch()
+    expect(await printVndrOf(btchUuid)).toBe(PRINT_VNDR)
+    await db.$executeRawUnsafe('TRUNCATE vndr CASCADE')
+    await db.$executeRawUnsafe(
+      `INSERT INTO vndr (id, type, display_name, status, created_at, updated_at)
+       VALUES ('e1000000-0000-4000-8000-000000000006'::uuid, 'PRINT', 'A Different Print Vendor', 'ACTIVE', now(), now())`,
+    )
+    // Drive the dispatch step directly against the SAME batch, bypassing the
+    // envelope dedup, to prove the guard is the print_vndr IS NULL check and
+    // not merely onceWithin.
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+      await tx.$queryRaw`SELECT set_config('app.program_id', ${programUuid}, true)`
+      await tx.$executeRaw`
+        UPDATE batch SET print_vndr = 'e1000000-0000-4000-8000-000000000006'::uuid
+        WHERE id = ${btchUuid}::uuid AND print_vndr IS NULL
+      `
+    })
+    expect(await printVndrOf(btchUuid)).toBe(PRINT_VNDR)
   })
 })

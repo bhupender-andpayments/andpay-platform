@@ -89,6 +89,15 @@ async function seedBatchedEntry(opts: {
 }): Promise<{ asgnWire: string; asgnUuid: string; merchantUuid: string }> {
   const asgnWire = newId('asgn')
   const asgnUuid = toUuid(asgnWire)
+  // D-9a: dispatch now binds the batch to a print vendor, and treats a missing
+  // batch row as a fault rather than a silent no-op. Production always has this
+  // row (batching.ts writes it with the fact); this fixture did not, so seed it
+  // to keep the fixture whole.
+  await db.$executeRaw`
+    INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
+    VALUES (${opts.btchUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, 'BORN', 'LOT_SIZE', 1, now())
+    ON CONFLICT (id) DO NOTHING
+  `
   const merchantUuid = toUuid(newId('mrch'))
   await db.$executeRaw`
     INSERT INTO pending_pool_entry (
@@ -128,6 +137,13 @@ describe('end-to-end trace chain (check 9): the consumed batch fact trace_id pro
     await seedUnit('SER-TRACE-A')
     await seedUnit('SER-TRACE-B')
 
+    // The print vendor is seeded BEFORE dispatch now, not after. D-9a binds the
+    // batch to it inside consumeBatchFact, so a vendor created afterwards is
+    // too late, and production has one long before any batch dispatches. The
+    // same id is reused for the return sheet below, which is also truer to life:
+    // the vendor that receives the batch is the vendor that returns it.
+    const vndrId = await seedPrintVendor()
+
     // (1) consumeBatchFact: the consumed batch fact envelope's OWN traceId is
     // 'trace-116' (env.traceId, the deterministic source for the two dispatch
     // facts this step emits, per dispatch.ts's own doc comment).
@@ -151,7 +167,6 @@ describe('end-to-end trace chain (check 9): the consumed batch fact trace_id pro
     // return sheet. The snapshot trace_id (seeded as 'trace-116' above) is what
     // the print_for/dispatch/shipment facts here must carry, never the
     // ingest-call traceId, which is deliberately different to prove that.
-    const vndrId = await seedPrintVendor()
     const workQueue = 'wq-trace-chain'
     const claim = classSixClaim(vndrId, workQueue)
     const fileId = 'return-file-trace-116'

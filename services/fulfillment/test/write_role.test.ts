@@ -127,6 +127,20 @@ async function seedPooledEntry(tenantUuid: string, programUuid: string): Promise
 }
 
 async function seedBatchedEntry(tenantUuid: string, programUuid: string, btchUuid: string): Promise<void> {
+  // D-9a: dispatch binds the batch to the single ACTIVE PRINT vendor and treats
+  // a missing batch row as a fault, so the fixture needs both. Production always
+  // has the batch row (batching.ts writes it with the fact) and a print vendor
+  // long before any batch dispatches.
+  await db.$executeRaw`
+    INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
+    VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BORN', 'LOT_SIZE', 1, now())
+    ON CONFLICT (id) DO NOTHING
+  `
+  await db.$executeRawUnsafe(
+    `INSERT INTO vndr (id, type, display_name, status, updated_at)
+     VALUES ('e2000000-0000-4000-8000-000000000001'::uuid, 'PRINT', 'Write Role Print Vendor', 'ACTIVE', now())
+     ON CONFLICT (id) DO NOTHING`,
+  )
   await db.$executeRaw`
     INSERT INTO pending_pool_entry (
       asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,

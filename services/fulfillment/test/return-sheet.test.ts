@@ -102,6 +102,15 @@ interface SeedEntryOpts {
 async function seedPendingEntry(opts: SeedEntryOpts): Promise<void> {
   const createdAt = opts.createdAt ?? new Date()
   const dispatchState = opts.dispatchState === undefined ? 'SENT_TO_VENDOR' : opts.dispatchState
+  // D-9a: dispatch now binds the batch to a print vendor, and treats a missing
+  // batch row as a fault rather than a silent no-op. Production always has this
+  // row (batching.ts writes it with the fact); this fixture did not, so seed it
+  // to keep the fixture whole.
+  await db.$executeRaw`
+    INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
+    VALUES (${opts.batchUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, 'BORN', 'LOT_SIZE', 1, now())
+    ON CONFLICT (id) DO NOTHING
+  `
   await db.$executeRaw`
     INSERT INTO pending_pool_entry (
       asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
