@@ -145,28 +145,71 @@ export async function buildDispatchPackage(
   return lines
 }
 
-// Phase 4 (P4-D5): serialize the (already bank+branch-sorted) package lines to a
-// single dispatch .xlsx. Shared by the vendor pull and the ops download so both
-// surfaces produce the SAME sorted sheet. artifactRefs are joined into one cell;
-// image BYTES are delivered as the per-type PDFs, not embedded here.
+const DISPATCH_COLUMNS = [
+  { header: 'Bank', key: 'bank' },
+  { header: 'Branch', key: 'branch' },
+  { header: 'Assignment', key: 'asgnId' },
+  { header: 'Merchant', key: 'labelDisplayName' },
+  { header: 'Legal Name', key: 'merchantLegalName' },
+  { header: 'Soundbox', key: 'soundbox' },
+  { header: 'Standee Count', key: 'standeeCount' },
+  { header: 'Sticker Count', key: 'stickerCount' },
+  { header: 'QR', key: 'labelQr' },
+  { header: 'Ship To', key: 'shipToAddress' },
+  { header: 'Contact', key: 'contactName' },
+  { header: 'Mobile', key: 'mobile' },
+  { header: 'Artifact Refs', key: 'artifactRefs' },
+]
+
+/**
+ * D-5 / F9. The dispatch workbook carries TWO SHEETS, `Soundbox` and `Standy`,
+ * with IDENTICAL columns. This is not a guess: it is measured from the print
+ * vendor's own working file (`Sent to Printer15 May to 19 May.xlsx`), which is
+ * exactly one workbook with those two sheets and one shared header row.
+ *
+ * F9 asked to "confirm the soundbox-only variant yields a filtered EXCEL". It
+ * did not, and the framing was wrong twice over: the soundbox-only view that
+ * existed was the merged PDF (`assembleTypePdf('SOUNDBOX_IMG')`), the Excel was
+ * never filtered at all, and the partner does not want a filtered FILE. They
+ * want one file split by PRODUCT.
+ *
+ * THE SPLIT IS BY PRODUCT AND DELIBERATELY OVERLAPS. Measured in that same
+ * file: Standy 340 rows, Soundbox 116 rows, and **111 merchants appear in
+ * BOTH**, which is precisely the set needing a soundbox AND a standee. Every
+ * Standy row had `Standee Count >= 1`; every Soundbox row had `Soundbox = Y`.
+ * So a merchant is on a sheet because of what must be PRINTED for them, not
+ * because of a partition, and duplicating those 111 is correct, not a bug.
+ *
+ * NO LINE MAY VANISH. A line needing neither product would match neither rule
+ * and silently disappear from the picking sheet, which means a merchant's kit
+ * never gets printed. Those lines go on `Standy` and are counted, never
+ * dropped; see the orphan handling below.
+ */
 export async function dispatchXlsx(lines: PackageLine[]): Promise<Buffer> {
   const wb = new ExcelJS.Workbook()
-  const ws = wb.addWorksheet('dispatch')
-  ws.columns = [
-    { header: 'Bank', key: 'bank' },
-    { header: 'Branch', key: 'branch' },
-    { header: 'Assignment', key: 'asgnId' },
-    { header: 'Merchant', key: 'labelDisplayName' },
-    { header: 'Legal Name', key: 'merchantLegalName' },
-    { header: 'Soundbox', key: 'soundbox' },
-    { header: 'Standee Count', key: 'standeeCount' },
-    { header: 'Sticker Count', key: 'stickerCount' },
-    { header: 'QR', key: 'labelQr' },
-    { header: 'Ship To', key: 'shipToAddress' },
-    { header: 'Contact', key: 'contactName' },
-    { header: 'Mobile', key: 'mobile' },
-    { header: 'Artifact Refs', key: 'artifactRefs' },
-  ]
+  const soundboxLines = lines.filter((l) => l.soundbox)
+  const standeeLines = lines.filter((l) => l.standeeCount >= 1)
+  // A line on NEITHER sheet would be silently lost. Keep it visible on Standy,
+  // which is the general collateral sheet, rather than letting a merchant fall
+  // out of the package entirely.
+  const orphans = lines.filter((l) => !l.soundbox && l.standeeCount < 1)
+  addSheet(wb, 'Soundbox', soundboxLines)
+  addSheet(wb, 'Standy', [...standeeLines, ...orphans])
+  const arrayBuf = await wb.xlsx.writeBuffer()
+  return Buffer.from(arrayBuf)
+}
+
+function addSheet(wb: ExcelJS.Workbook, name: string, lines: PackageLine[]): void {
+  const ws = wb.addWorksheet(name)
+  ws.columns = DISPATCH_COLUMNS
+  writeRows(ws, lines)
+}
+
+// Phase 4 (P4-D5): serialize the (already bank+branch-sorted) package lines.
+// Shared by the vendor pull and the ops download so both surfaces produce the
+// SAME sorted sheets. artifactRefs are joined into one cell; image BYTES are
+// delivered as the per-type PDFs, not embedded here.
+function writeRows(ws: ExcelJS.Worksheet, lines: PackageLine[]): void {
   for (const l of lines) {
     ws.addRow({
       bank: l.bankReferenceCode,
@@ -186,8 +229,6 @@ export async function dispatchXlsx(lines: PackageLine[]): Promise<Buffer> {
       artifactRefs: l.artifacts.map((a) => a.assetReference).join(' '),
     })
   }
-  const arrayBuf = await wb.xlsx.writeBuffer()
-  return Buffer.from(arrayBuf)
 }
 
 // A stored collateral asset a composed_artifact row references could not be

@@ -122,7 +122,12 @@ describe('dispatchXlsx sheet composition (F6)', () => {
     // a titled but permanently EMPTY column.
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
-    const ws = wb.getWorksheet('dispatch')!
+    // D-5/F9: the workbook now carries TWO sheets, Soundbox and Standy, mirroring
+    // the print vendor's own working file. This fixture is soundbox=true with a
+    // standee, so it appears on BOTH, which is the measured real behaviour (111
+    // of the partner's merchants are on both sheets).
+    expect(wb.worksheets.map((w) => w.name)).toEqual(['Soundbox', 'Standy'])
+    const ws = wb.getWorksheet('Soundbox')!
     const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
     for (const h of ['Legal Name', 'Soundbox', 'Standee Count', 'Sticker Count']) {
       expect(headers).toContain(h)
@@ -269,5 +274,92 @@ describe('buildDispatchPackage (per-adapter dispatch package projection, D104 ch
       SELECT count(*) AS n FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
     `
     expect(Number(artifactRows[0]!.n)).toBe(1)
+  })
+})
+
+// D-5 / F9: the two-sheet split, and the fact that it OVERLAPS.
+//
+// These are unit tests over dispatchXlsx directly, because the property under
+// test is which lines land on which sheet, not how lines are read from the
+// database. The rule is measured from the print vendor's own working file
+// (`Sent to Printer15 May to 19 May.xlsx`): Standy 340 rows, Soundbox 116, and
+// 111 merchants on BOTH, i.e. exactly those needing a soundbox AND a standee.
+function line(over: Partial<Parameters<typeof dispatchXlsx>[0][number]> = {}) {
+  return {
+    asgnId: newId('asgn'),
+    bankReferenceCode: 'HDFC',
+    branchCode: null,
+    artifacts: [],
+    labelDisplayName: 'Acme',
+    labelQr: 'upi://pay?pa=acme@hdfcbank',
+    soundbox: false,
+    standeeCount: 0,
+    stickerCount: 0,
+    merchantLegalName: 'Acme Pvt Ltd',
+    ...over,
+  }
+}
+
+async function sheetRowCounts(lines: Parameters<typeof dispatchXlsx>[0]): Promise<Record<string, number>> {
+  const buf = await dispatchXlsx(lines)
+  const wb = new ExcelJS.Workbook()
+  await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
+  // rowCount includes the header row, so a sheet with only headers is 1.
+  return Object.fromEntries(wb.worksheets.map((w) => [w.name, w.rowCount - 1]))
+}
+
+describe('dispatchXlsx two-sheet split (D-5 / F9, measured from the real vendor file)', () => {
+  it('always emits both sheets, named Soundbox and Standy', async () => {
+    const counts = await sheetRowCounts([line({ soundbox: true })])
+    expect(Object.keys(counts)).toEqual(['Soundbox', 'Standy'])
+  })
+
+  it('puts a merchant needing BOTH products on BOTH sheets', async () => {
+    // The overlap is the point. 111 of the partner's merchants are on both
+    // sheets, so duplicating this line is correct and not a bug.
+    const counts = await sheetRowCounts([line({ soundbox: true, standeeCount: 1 })])
+    expect(counts).toEqual({ Soundbox: 1, Standy: 1 })
+  })
+
+  it('splits by PRODUCT, not by merchant', async () => {
+    const counts = await sheetRowCounts([
+      line({ soundbox: true, standeeCount: 1 }), // both
+      line({ soundbox: true, standeeCount: 0 }), // soundbox only
+      line({ soundbox: false, standeeCount: 1 }), // standee only
+      line({ soundbox: false, standeeCount: 2 }), // standee only
+    ])
+    expect(counts).toEqual({ Soundbox: 2, Standy: 3 })
+  })
+
+  it('NEVER drops a line that needs neither product', async () => {
+    // The severe failure this guards: a line matching neither rule would vanish
+    // from the picking sheet, and a merchant's kit would simply never be
+    // printed. A sticker-only line still has to reach the vendor.
+    const counts = await sheetRowCounts([line({ soundbox: false, standeeCount: 0, stickerCount: 5 })])
+    expect(counts.Standy ?? 0).toBe(1)
+    expect(counts.Soundbox ?? 0).toBe(0)
+  })
+
+  it('keeps IDENTICAL headers on both sheets, as the partner file does', async () => {
+    const buf = await dispatchXlsx([line({ soundbox: true, standeeCount: 1 })])
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
+    const headersOf = (n: string) =>
+      (wb.getWorksheet(n)!.getRow(1).values as unknown[]).slice(1).map(String)
+    expect(headersOf('Soundbox')).toEqual(headersOf('Standy'))
+    expect(headersOf('Soundbox')).toContain('Assignment')
+  })
+
+  it('loses no line overall: every line appears at least once', async () => {
+    const lines = [
+      line({ soundbox: true, standeeCount: 1 }),
+      line({ soundbox: true }),
+      line({ standeeCount: 1 }),
+      line({ stickerCount: 1 }),
+    ]
+    const counts = await sheetRowCounts(lines)
+    // 2 on Soundbox, 3 on Standy (1 standee + 1 both + 1 orphan) = 5 rows for
+    // 4 lines, the extra being the deliberate both-sheets duplicate.
+    expect((counts.Soundbox ?? 0) + (counts.Standy ?? 0)).toBe(lines.length + 1)
   })
 })

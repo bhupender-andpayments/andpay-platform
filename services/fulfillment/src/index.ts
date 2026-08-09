@@ -13,6 +13,13 @@ export {
   updateVendorWithinTx,
   isCourierBatchMode,
 } from './vendor.js'
+export {
+  parseReturnWorkbook,
+  type ReturnSheetParseResult,
+  type ReturnSheetRowError,
+  type ReturnSheetRowErrorCode,
+  type ReturnSheetStructuralError,
+} from './return-sheet-adapter.js'
 export { projectDemandFact } from './pool.js'
 export {
   UNIT_STATUS_ORDER,
