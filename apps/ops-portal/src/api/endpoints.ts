@@ -610,7 +610,7 @@ export function getBatchingConfig(c: Client) {
 //   POST /ops/uploads/bank/preview     multipart `file`, no Idempotency-Key,
 //     writes nothing -> BankPreviewResult { rows, summary, structuralErrors }
 //   POST /ops/uploads/bank/commit      multipart `file`, Idempotency-Key
-//     -> { accepted, quarantined, duplicate, fileId }
+//     -> { accepted, quarantined, duplicate, qrMalformed, fileId }
 //   POST /ops/uploads/damage/preview   multipart `file`, no Idempotency-Key,
 //     writes nothing -> DamagePreviewResult { rows, summary, structuralErrors }
 //   POST /ops/uploads/damage/commit    multipart `file`, Idempotency-Key
@@ -672,6 +672,12 @@ export interface BankCommitResult {
   accepted: number
   quarantined: number
   duplicate: number
+  // D-8: how many rows the BANK sent with an HTML-escaped QR separator. Not an
+  // outcome count (those rows ingest normally and the payload is corrected
+  // downstream); it is the evidence the D4 ruling asks for so the defect can be
+  // raised with GSCB instead of staying silent. Rendered by PerRowErrors only
+  // when non-zero, so it disappears if the bank ever fixes their export.
+  qrMalformed: number
   fileId: string
 }
 

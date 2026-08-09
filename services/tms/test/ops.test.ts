@@ -228,6 +228,55 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     expect(await count('quarantine_row')).toBe(1)
   })
 
+  // D-8. The D4 ruling ends "This is a compensating control for a bank-side bug,
+  // not a fix. GSCB should still be told." This count is what there is to tell
+  // them. Fulfillment CORRECTS the payload at the artifact boundary; TMS only
+  // COUNTS, which is a format observation and not an alteration, so D117/T2 is
+  // untouched: the stored value and the emitted fact stay verbatim.
+  it('D-8: counts how many rows carried the bank malformed QR separator, without altering them', async () => {
+    const clientKey = randomUUID()
+    // Two malformed (the verbatim GSCB shape) and one already correct.
+    const malformed = 'upi://pay?ver=01&amp;mode=01&pa=a@gscb&pn=A&mc=5977'
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ qrValue: malformed }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'b@gscb', qrValue: malformed }),
+      requestCells({ bankMerchantReference: 'BM-3', vpaValue: 'c@gscb', qrValue: 'upi://pay?ver=01&mode=01&pa=c@gscb' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'requests.csv', clientKey, actorId: randomUUID(), traceId: 't-qr' })
+
+    expect(r.accepted).toBe(3)
+    expect(r.qrMalformed).toBe(2)
+
+    // D117/T2: TMS stores what the bank sent, byte for byte. The count is
+    // evidence ABOUT the file, never a licence to rewrite it.
+    const stored = await db.$queryRaw<{ qr_value: string }[]>`
+      SELECT qr_value FROM pending_row WHERE correlation_id LIKE ${clientKey + '|%'} ORDER BY correlation_id
+    `
+    expect(stored.filter((s) => s.qr_value === malformed)).toHaveLength(2)
+  })
+
+  it('D-8: a clean file reports zero, so the number means something when it is not zero', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [requestCells({ qrValue: 'upi://pay?ver=01&mode=01&pa=a@gscb' })])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'requests.csv', clientKey, actorId: randomUUID(), traceId: 't-qr0' })
+    expect(r.qrMalformed).toBe(0)
+  })
+
+  // Deliberate: the count is evidence about what GSCB SENT, so it is independent
+  // of whether we accepted the row. A row rejected for an unrelated reason still
+  // arrived with a malformed payload, and dropping it from the tally would
+  // understate the defect to the bank.
+  it('D-8: counts a malformed QR on a row that quarantines for an unrelated reason', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ qrValue: 'upi://pay?ver=01&amp;mode=01&pa=a@gscb', contactName: '' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'requests.csv', clientKey, actorId: randomUUID(), traceId: 't-qrq' })
+    expect(r.quarantined).toBe(1)
+    expect(r.accepted).toBe(0)
+    expect(r.qrMalformed).toBe(1)
+  })
+
   it('parses a .xlsx commit to the same outcome as the equivalent .csv', async () => {
     const clientKey = randomUUID()
     const xlsx = await toXlsx(REQUEST_HEADERS, [requestCells()])

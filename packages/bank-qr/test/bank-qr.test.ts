@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decodeBankQrPayload, hasEncodedSeparator } from '../src/qr-payload.js'
+import { decodeBankQrPayload, hasEncodedSeparator } from '../src/index.js'
 
 // The verbatim shape of all 360 rows in the GSCB sample file
 // (From Bank_GSCB_upi_Active_terminal_CWD_Data_from_14-May-2026_to_15-May-2026).
@@ -69,10 +69,38 @@ describe('hasEncodedSeparator', () => {
   })
 
   it('returns the same answer on repeated calls', () => {
-    // The matcher is a module-level /g regex, so .test() would otherwise carry
-    // lastIndex between calls and alternate true/false on the same input.
+    // A /g regex carries mutable lastIndex, so a shared instance would make
+    // .test() alternate true/false on the SAME input. Each call builds its own.
     expect(hasEncodedSeparator(REAL_GSCB_PAYLOAD)).toBe(true)
     expect(hasEncodedSeparator(REAL_GSCB_PAYLOAD)).toBe(true)
+    expect(hasEncodedSeparator(REAL_GSCB_PAYLOAD)).toBe(true)
+  })
+
+  // The invariant that justifies one shared home rather than a copy per context.
+  // TMS counts what fulfillment rewrites, so a detector that disagreed with the
+  // corrector would report evidence about a correction that never happened, or
+  // stay silent about one that did. Fails the moment the two drift apart.
+  it('detects EXACTLY what decoding would change, on every fixture', () => {
+    const fixtures = [
+      REAL_GSCB_PAYLOAD,
+      'upi://pay?ver=01&mode=01&pa=x@gscb',
+      'upi://pay?ver=01&amp;amp;mode=01',
+      'upi://pay?ver=01&amp;mode=01&pa=x@gscb&pn=SHAH &amp; SONS&mc=5977',
+      'upi://pay?pn=SHAH &amp; SONS',
+      '',
+      'upi://pay?pa=x@gscb',
+    ]
+    for (const raw of fixtures) {
+      expect(hasEncodedSeparator(raw)).toBe(decodeBankQrPayload(raw) !== raw)
+    }
+  })
+
+  // Interleaving is the specific way a shared /g instance fails: the .test()
+  // above would leave lastIndex mid-string and the .replace() below would then
+  // start from there. Order must not matter.
+  it('is unaffected by interleaving with decoding', () => {
+    expect(hasEncodedSeparator(REAL_GSCB_PAYLOAD)).toBe(true)
+    expect(decodeBankQrPayload(REAL_GSCB_PAYLOAD)).not.toBe(REAL_GSCB_PAYLOAD)
     expect(hasEncodedSeparator(REAL_GSCB_PAYLOAD)).toBe(true)
   })
 })

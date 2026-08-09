@@ -43,7 +43,7 @@ export const DEFAULT_REQUEST_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
   // (services/tms/src/internal.ts) says TMS validates format only and never
   // alters the value, so the fact stream keeps what the bank actually sent.
   // The correction happens at the artifact boundary in fulfillment, in
-  // services/fulfillment/src/qr-payload.ts, which documents the whole defect.
+  // the @andpay/bank-qr package, which documents the whole defect.
   qrValue: 'qrValue',
   soundbox: 'soundbox',
   standeeCount: 'standeeCount',

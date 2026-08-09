@@ -382,6 +382,12 @@ export class OpsController {
   // guard-only, NOT step-up-gated posture the old JSON route carried. A file
   // that fails structural parse throws BankFileParseError (kind:'invalid'),
   // which the app-wide OpsErrorFilter maps to a 400.
+  // qrMalformed (D-8) rides on the result: how many rows of THIS file arrived
+  // with the bank's HTML-escaped QR separator. It is the evidence the D4 ruling
+  // asks for in its own last line ("This is a compensating control for a
+  // bank-side bug, not a fix. GSCB should still be told"), surfaced at the
+  // moment the file is uploaded, which is the grain and the moment that
+  // conversation needs. Additive: no existing field changed.
   @Post('uploads/bank/commit')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   @HttpCode(200)
@@ -389,7 +395,7 @@ export class OpsController {
     @Req() req: EdgeRequest,
     @UploadedFile() file: UploadedSheet | undefined,
     @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ accepted: number; quarantined: number; duplicate: number; fileId: string }> {
+  ): Promise<{ accepted: number; quarantined: number; duplicate: number; qrMalformed: number; fileId: string }> {
     const g = await this.gate(req, 'ops:upload-bank-file', idem, [])
     if (!file) throw new BadRequestException('missing file')
     return commitBankFile(this.deps.tmsDb, {

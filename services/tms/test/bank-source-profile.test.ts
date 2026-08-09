@@ -97,7 +97,7 @@ describe('parseBankRequestFile over the REAL Annexure B layout (P3-3)', () => {
 
   it('carries the QR string VERBATIM, escaped separator included (D117/T2)', async () => {
     // TMS must never alter this value. The &amp; correction happens at the
-    // artifact boundary in fulfillment (qr-payload.ts), not here.
+    // artifact boundary in fulfillment (@andpay/bank-qr), not here.
     const res = await parseBankRequestFile(csv(ANNEXURE_B_HEADER, ANNEXURE_B_ROW), 'gscb.csv', 'file-1')
     expect(res.rows[0]!.qrValue).toContain('&amp;mode=01')
   })

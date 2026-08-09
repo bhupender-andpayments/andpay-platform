@@ -95,7 +95,7 @@ export const ANNEXURE_B_PROFILE: BankSourceProfile = {
       vpaValue: vpa,
       // Shipped VERBATIM, escaped separators and all: D117/T2 forbids TMS
       // altering it, and the correction happens at the artifact boundary in
-      // fulfillment (services/fulfillment/src/qr-payload.ts).
+      // fulfillment, using the shared @andpay/bank-qr rule.
       qrValue: rec['QR String'] ?? '',
       // The header SAYS Yes/No but the file ships single letters Y/N, and the
       // adapter's shared parseBoolean only accepts true|yes|1. Left as-is,

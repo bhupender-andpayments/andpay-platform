@@ -30,7 +30,7 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
   })
 
   it('encodes the DECODED bank payload into the QR (the GSCB escaped-separator defect)', async () => {
-    // Wiring assertion, not a restatement of qr-payload.test.ts. Rendering is
+    // Wiring assertion, not a restatement of @andpay/bank-qr's own tests. Rendering is
     // deterministic and a different qrValue yields different bytes, so if
     // decodeBankQrPayload is wired at the QR call site then the bank's escaped
     // payload and its hand-corrected twin must render BYTE-IDENTICAL. Drop the

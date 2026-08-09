@@ -1,6 +1,6 @@
 import QRCode from 'qrcode'
 import { PDFDocument, StandardFonts, rgb, degrees, type PDFFont, type PDFPage } from 'pdf-lib'
-import { decodeBankQrPayload } from '../qr-payload.js'
+import { decodeBankQrPayload } from '@andpay/bank-qr'
 
 // Phase 4 (BRD 5.3 FR-03): the PURE, in-house collateral renderer. Turns one
 // merchant artifact (soundbox / standee / sticker) into a print-ready VECTOR PDF

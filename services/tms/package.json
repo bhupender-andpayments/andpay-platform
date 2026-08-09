@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@andpay/audit": "workspace:*",
+    "@andpay/bank-qr": "workspace:*",
     "@andpay/envelope": "workspace:*",
     "@andpay/ids": "workspace:*",
     "@andpay/keys": "workspace:*",

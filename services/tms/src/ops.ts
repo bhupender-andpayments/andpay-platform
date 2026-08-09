@@ -2,6 +2,9 @@ import { onceWithin, enqueue } from '@andpay/outbox'
 import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
 import { instanceKey } from '@andpay/keys'
 import { toUuid } from '@andpay/ids'
+// D-8: DETECTION only. The same rule fulfillment corrects with, so the count
+// TMS reports is exactly what gets rewritten downstream. See the package.
+import { hasEncodedSeparator } from '@andpay/bank-qr'
 import type { TmsDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteRole, enterWriteScope } from './write-context.js'
@@ -176,16 +179,34 @@ export async function previewBankFile(fileBytes: Uint8Array, filename: string): 
 export async function commitBankFile(
   db: TmsDb,
   args: { fileBytes: Uint8Array; filename: string; clientKey: string; actorId: string; traceId: string },
-): Promise<{ accepted: number; quarantined: number; duplicate: number; fileId: string }> {
+): Promise<{ accepted: number; quarantined: number; duplicate: number; qrMalformed: number; fileId: string }> {
   const fileId = args.clientKey
   const parsed = await parseBankRequestFile(args.fileBytes, args.filename, fileId)
   if (parsed.errors.length > 0) throw new BankFileParseError(parsed.errors)
 
   const tally = { accepted: 0, quarantined: 0, duplicate: 0 }
+  // D-8. How many rows of THIS file arrived with the bank's HTML-escaped QR
+  // separator. The D4 ruling (BANK_FILE_DECISIONS_2026-08-07.md) ends "This is a
+  // compensating control for a bank-side bug, not a fix. GSCB should still be
+  // told", and this is the number to tell them. Without it the correction
+  // fulfillment applies is silent, so nobody would learn if GSCB fixed their
+  // export, or if they regressed after fixing it.
+  //
+  // COUNTING IS NOT ALTERING, so D117/T2 holds: TMS still stores and emits the
+  // bank string verbatim and the fact stream keeps a faithful record of what
+  // GSCB actually sent. The correction stays at fulfillment's artifact
+  // boundaries, using the SAME @andpay/bank-qr rule, so this counts exactly what
+  // that correction rewrites.
+  //
+  // Counted per ROW rather than per accepted row: the count is evidence about
+  // what the BANK SENT, so a row we quarantine for an unrelated reason still
+  // arrived malformed, and excluding it would understate the defect to GSCB.
+  let qrMalformed = 0
   await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
     await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:upload-bank-file'), async () => {
       for (const row of parsed.rows) {
+        if (hasEncodedSeparator(row.qrValue)) qrMalformed += 1
         const outcome = await ingestRequestRowWithinTx(tx, row, args.traceId)
         tally[outcome] += 1
       }
@@ -205,7 +226,7 @@ export async function commitBankFile(
       )
     })
   })
-  return { ...tally, fileId }
+  return { ...tally, qrMalformed, fileId }
 }
 
 // Phase 7 Task 7 (L11, FR08-3 decision item 11): the damage-file PREVIEW,

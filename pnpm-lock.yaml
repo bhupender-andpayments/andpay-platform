@@ -520,6 +520,8 @@ importers:
         specifier: ^5.9.6
         version: 5.10.0
 
+  packages/bank-qr: {}
+
   packages/bus:
     dependencies:
       '@andpay/envelope':
@@ -627,6 +629,9 @@ importers:
       '@andpay/authz':
         specifier: workspace:*
         version: link:../../packages/authz
+      '@andpay/bank-qr':
+        specifier: workspace:*
+        version: link:../../packages/bank-qr
       '@andpay/engine':
         specifier: workspace:*
         version: link:../../packages/engine
@@ -686,6 +691,9 @@ importers:
       '@andpay/audit':
         specifier: workspace:*
         version: link:../../packages/audit
+      '@andpay/bank-qr':
+        specifier: workspace:*
+        version: link:../../packages/bank-qr
       '@andpay/envelope':
         specifier: workspace:*
         version: link:../../packages/envelope

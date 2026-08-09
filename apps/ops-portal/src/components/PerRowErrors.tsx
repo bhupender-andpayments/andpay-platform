@@ -11,6 +11,14 @@ import { Link } from 'react-router-dom'
 // `invalid` (device-inventory only) never lands in any queue: FR-01a rows
 // missing a mandatory field are reported directly in the response and never
 // ingested at all, so it renders as a plain count, no link.
+// `qrMalformed` (bank commit only, D-8) is NOT an outcome count like the others:
+// those rows ingested normally. It reports how many rows the BANK sent with an
+// HTML-escaped QR separator, a known GSCB export defect that fulfillment
+// corrects automatically at the artifact boundary. It is surfaced because the D4
+// ruling ends "This is a compensating control for a bank-side bug, not a fix.
+// GSCB should still be told", and there was previously no number to tell them.
+// Rendered separately and never as a failure, so an operator is not trained to
+// read a clean upload as broken.
 export interface UploadResultBreakdown {
   accepted?: number
   replaced?: number
@@ -18,6 +26,7 @@ export interface UploadResultBreakdown {
   flagged?: number
   invalid?: number
   duplicate?: number
+  qrMalformed?: number
 }
 
 // Renders task 13's upload result breakdown with a link to the quarantine
@@ -25,7 +34,8 @@ export interface UploadResultBreakdown {
 // that failed.
 export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
   return (
-    <dl className="flex flex-wrap gap-6 text-sm">
+    <>
+      <dl className="flex flex-wrap gap-6 text-sm">
       {result.accepted !== undefined && (
         <div>
           <dt className="text-muted-foreground">Accepted</dt>
@@ -82,6 +92,15 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
           <dd className="text-lg font-semibold text-foreground">{result.duplicate}</dd>
         </div>
       )}
-    </dl>
+      </dl>
+      {result.qrMalformed !== undefined && result.qrMalformed > 0 && (
+        <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span className="font-semibold">{`${result.qrMalformed} of them`}</span>
+          {' arrived from the bank with a malformed QR separator. They were '}
+          <span className="font-semibold">corrected automatically</span>
+          {' before anything was printed, so no action is needed here. Worth raising with the bank so their export is fixed at source.'}
+        </p>
+      )}
+    </>
   )
 }
