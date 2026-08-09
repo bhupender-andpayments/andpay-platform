@@ -14,6 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { Select } from '../../ui/primitives.js'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ErrorNote, StatusPill } from '../../ui/primitives.js'
 import { FileDropZone } from '../../components/FileDropZone.js'
@@ -158,16 +159,19 @@ export function DeviceInventoryUploadPage() {
 
         <div className="space-y-2">
           <Label htmlFor="device-inventory-manufacturer">Manufacturer</Label>
-          {/* A native select, deliberately: the spec's Select (section 4.6) is a
-              Radix composite, and swapping it changes how this control is driven
-              in tests (userEvent.selectOptions stops applying). Tracked as a
-              follow-up so it lands with its test rewrite rather than as a
-              drive-by. Styled to the spec's input shape in the meantime. */}
-          <select
+          {/* Uses the SHARED Select primitive rather than a hand-styled raw
+              select. It was raw, with its own copy of the class list, and the
+              copy had already drifted: it kept rounded-lg on an opaque
+              background while the spec (4.6) asks for the Input's rounded-3xl
+              bg-input/50, so this control looked different from every other
+              field on the screen. Sharing the primitive is what stops that
+              happening again. Still a native select underneath: the spec's
+              Radix composite changes how the control is driven in tests, so it
+              lands with its test rewrite rather than as a drive-by. */}
+          <Select
             id="device-inventory-manufacturer"
             value={manufacturerVndrId}
             onChange={(e) => setManufacturerVndrId(e.target.value)}
-            className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm shadow-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
           >
             <option value="">Select a manufacturer...</option>
             {manufacturers.map((m) => (
@@ -175,7 +179,7 @@ export function DeviceInventoryUploadPage() {
                 {m.displayName}
               </option>
             ))}
-          </select>
+          </Select>
           <p className="text-xs text-muted-foreground">Required before the file can be submitted.</p>
         </div>
 

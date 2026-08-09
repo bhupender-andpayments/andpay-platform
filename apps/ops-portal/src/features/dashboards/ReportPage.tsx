@@ -210,8 +210,21 @@ export function ReportPage() {
               choose between "Report" and "Tile drilldown" BEFORE choosing the
               thing itself, which is our internal split leaking onto their
               screen. A drilldown arrives via ?tile= from Command Center. */}
+          {/* The Report field SPANS TWO COLUMNS, and the route to that was
+              instructive. Its longest label, "Soundbox delivery", needs 123px
+              while a track here is 142.66px minus padding, so it rendered as
+              "Soundbox deli". A min-width does NOT fix it: this container is a
+              fixed 6-column grid, so a wider box simply overflows its own track
+              and lands on top of the next one. Measured both wrong attempts in
+              the browser at a 17px overlap with the date input.
+              There are five fields in six columns, so the spare column is
+              already paid for and spanning it costs no other field anything.
+              NOTE this comment sits ABOVE the ternary on purpose: a JSX comment
+              inside a ternary branch is a SYNTAX ERROR, because the branch takes
+              exactly one expression. That is the step-7 landmine, and it bit
+              again here. */}
           {mode === 'report' ? (
-            <Field label="Report" htmlFor="report-name">
+            <Field label="Report" htmlFor="report-name" className="lg:col-span-2">
               <Select id="report-name" value={reportName} onChange={(e) => setReportName(e.target.value as ReportName)}>
                 {REPORT_DEFS.map((d) => (
                   <option key={d.value} value={d.value}>

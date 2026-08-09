@@ -93,9 +93,25 @@ export function PageHeader({ title, description, actions }: { title: string; des
 }
 
 // -- Form fields ----------------------------------------------------- //
-export function Field({ label, htmlFor, hint, children }: { label: string; htmlFor?: string; hint?: string; children: ReactNode }) {
+// `className` sizes the FIELD, which is the flex item inside Toolbar. Putting a
+// width on the control instead makes it overflow its own field: measured in the
+// browser, a min-width on the Report select pushed it 17px INTO the date input
+// beside it, because the select was then wider than the box holding it.
+export function Field({
+  label,
+  htmlFor,
+  hint,
+  children,
+  className,
+}: {
+  label: string
+  htmlFor?: string
+  hint?: string
+  children: ReactNode
+  className?: string
+}) {
   return (
-    <div className="space-y-2">
+    <div className={cn('space-y-2', className)}>
       <Label htmlFor={htmlFor}>{label}</Label>
       {children}
       {hint !== undefined && <p className="text-xs text-muted-foreground">{hint}</p>}
@@ -105,17 +121,31 @@ export function Field({ label, htmlFor, hint, children }: { label: string; htmlF
 export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return <ShadInput className={className} {...rest} />
 }
-// A native select, matching the spec's Input shape. The spec's own Select
-// (section 4.6) is a Radix composite; swapping it changes how the control is
-// driven in tests (userEvent.selectOptions stops applying), so it is tracked as
-// a follow-up that lands WITH its test rewrite rather than as a drive-by.
+// A native select whose TRIGGER now matches the spec (4.6: "same fill treatment
+// as Input, rounded-3xl bg-input/50 h-9").
+//
+// It did not, and the mismatch was visible: measured in the browser, this
+// control sat in the same toolbar as an Input with a 10px radius against the
+// Input's 22px, and an opaque white fill against the Input's translucent
+// bg-input/50. Two controls, side by side, one row apart, visibly different
+// shapes. That half of section 4.6 costs a class list and is fixed here.
+//
+// WHAT IS STILL DEFERRED, and it is now a much smaller thing than C-5 implied:
+// only the OPEN dropdown PANEL. That is OS-rendered for a native select and
+// cannot be styled, so matching the spec's "Select content" (rounded-3xl items
+// with a right-pinned check) needs the Radix composite in
+// components/ui/select.tsx. That swap breaks `userEvent.selectOptions` at 18
+// call sites across 7 test files and needs jsdom pointer-event and
+// scrollIntoView polyfills, so it must land WITH its test rewrite, never as a
+// drive-by.
 export function Select({ className, children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
       className={cn(
-        'h-9 w-full rounded-lg border border-border bg-background px-3 pr-8 text-sm shadow-sm outline-none',
+        'h-9 w-full rounded-3xl border border-transparent bg-input/50 px-3 pr-8 text-sm outline-none',
+        'transition-[color,box-shadow,background-color]',
         'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30',
-        'disabled:cursor-not-allowed disabled:opacity-50',
+        'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
       {...rest}
