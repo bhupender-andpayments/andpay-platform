@@ -678,6 +678,10 @@ export interface BankCommitResult {
   // raised with GSCB instead of staying silent. Rendered by PerRowErrors only
   // when non-zero, so it disappears if the bank ever fixes their export.
   qrMalformed: number
+  // D-2: rows whose VPA we have seen before, in this file or an earlier upload.
+  // A REVIEW FLAG, never a rejection: a repeat VPA is usually an additional
+  // soundbox request for a merchant we already have.
+  duplicateVpa: number
   fileId: string
 }
 

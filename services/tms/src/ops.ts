@@ -179,7 +179,7 @@ export async function previewBankFile(fileBytes: Uint8Array, filename: string): 
 export async function commitBankFile(
   db: TmsDb,
   args: { fileBytes: Uint8Array; filename: string; clientKey: string; actorId: string; traceId: string },
-): Promise<{ accepted: number; quarantined: number; duplicate: number; qrMalformed: number; fileId: string }> {
+): Promise<{ accepted: number; quarantined: number; duplicate: number; qrMalformed: number; duplicateVpa: number; fileId: string }> {
   const fileId = args.clientKey
   const parsed = await parseBankRequestFile(args.fileBytes, args.filename, fileId)
   if (parsed.errors.length > 0) throw new BankFileParseError(parsed.errors)
@@ -202,11 +202,47 @@ export async function commitBankFile(
   // what the BANK SENT, so a row we quarantine for an unrelated reason still
   // arrived malformed, and excluding it would understate the defect to GSCB.
   let qrMalformed = 0
+  // D-2. How many rows carry a VPA we have seen before, either earlier in THIS
+  // file or in an earlier upload. BRD 5.1b asks for exactly this ("detect
+  // duplicates (same VPA / Mobile) in same upload or recent uploads) and flag
+  // for review").
+  //
+  // A FLAG, NEVER A GATE, and that is Bhupender's ruling rather than a
+  // shortcut: "repeat VPA can be flagged in the ingestion part ... the
+  // additional soundbox request may or may not be." The same VPA arriving again
+  // is the legitimate additional-soundbox case at least as often as it is a
+  // mistake, so quarantining it would stall real orders waiting for a human,
+  // and auto-accepting it silently would hide real duplicates. Reporting the
+  // count is the only answer that serves both, which is why the BRD names the
+  // duplicate rule and the additional-soundbox rule in a single sentence.
+  //
+  // Counted per ROW like qrMalformed, and the FIRST sighting is not a repeat:
+  // only the second and later occurrences count, so a clean file reports 0.
+  let duplicateVpa = 0
   await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
     await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:upload-bank-file'), async () => {
+      // Seeded with the VPAs TMS already holds, so "recent uploads" is covered
+      // and not just "this file". Both tables are TMS's own (no cross-context
+      // read): pending_row is a row awaiting identity, assignment is one that
+      // already became an order. Read once rather than per row.
+      const seenVpa = new Set<string>()
+      const fileVpas = parsed.rows.map((r) => r.vpaValue).filter((v) => v !== '')
+      if (fileVpas.length > 0) {
+        const known = await tx.$queryRaw<{ vpa_value: string }[]>`
+          SELECT vpa_value FROM pending_row WHERE vpa_value = ANY(${fileVpas}::text[])
+          UNION
+          SELECT vpa_value FROM assignment WHERE vpa_value = ANY(${fileVpas}::text[])
+        `
+        for (const k of known) seenVpa.add(k.vpa_value)
+      }
+
       for (const row of parsed.rows) {
         if (hasEncodedSeparator(row.qrValue)) qrMalformed += 1
+        if (row.vpaValue !== '') {
+          if (seenVpa.has(row.vpaValue)) duplicateVpa += 1
+          seenVpa.add(row.vpaValue)
+        }
         const outcome = await ingestRequestRowWithinTx(tx, row, args.traceId)
         tally[outcome] += 1
       }
@@ -226,7 +262,7 @@ export async function commitBankFile(
       )
     })
   })
-  return { ...tally, qrMalformed, fileId }
+  return { ...tally, qrMalformed, duplicateVpa, fileId }
 }
 
 // Phase 7 Task 7 (L11, FR08-3 decision item 11): the damage-file PREVIEW,

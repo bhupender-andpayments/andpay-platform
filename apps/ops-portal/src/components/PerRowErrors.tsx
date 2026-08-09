@@ -27,6 +27,12 @@ export interface UploadResultBreakdown {
   invalid?: number
   duplicate?: number
   qrMalformed?: number
+  // `duplicateVpa` (bank commit only, D-2) is also NOT an outcome count: those
+  // rows ingested normally. It reports how many carried a VPA already seen, in
+  // this file or an earlier upload. Deliberately a REVIEW FLAG and never a
+  // rejection, because a repeat VPA is usually an additional soundbox request
+  // for a merchant we already have, and blocking it would stall a real order.
+  duplicateVpa?: number
 }
 
 // Renders task 13's upload result breakdown with a link to the quarantine
@@ -99,6 +105,14 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
           {' arrived from the bank with a malformed QR separator. They were '}
           <span className="font-semibold">corrected automatically</span>
           {' before anything was printed, so no action is needed here. Worth raising with the bank so their export is fixed at source.'}
+        </p>
+      )}
+      {result.duplicateVpa !== undefined && result.duplicateVpa > 0 && (
+        <p className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+          <span className="font-semibold">{`${result.duplicateVpa} of them`}</span>
+          {' repeat a VPA already seen, in this file or an earlier upload. They were '}
+          <span className="font-semibold">accepted, not held</span>
+          {': a repeat usually means an additional soundbox for a merchant we already have. Worth a look if you were not expecting one.'}
         </p>
       )}
     </>

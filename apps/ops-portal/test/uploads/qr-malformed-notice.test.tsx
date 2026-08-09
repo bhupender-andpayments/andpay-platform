@@ -57,3 +57,32 @@ describe('PerRowErrors: the malformed-QR notice (D-8)', () => {
     expect(screen.getByText('358')).toBeTruthy()
   })
 })
+
+// D-2, the repeat-VPA review flag. Same shape as the notice above and for the
+// same reason: nothing failed, so it must not read as a failure. The wording
+// carries the reason a repeat is usually FINE (an additional soundbox for an
+// existing merchant), because an operator who reads "duplicate" as "problem"
+// will start holding legitimate orders.
+describe('PerRowErrors: the repeat-VPA notice (D-2)', () => {
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('reports the count and says the rows were accepted, not held', () => {
+    renderResult({ accepted: 3, quarantined: 0, duplicate: 0, duplicateVpa: 1 })
+    expect(screen.getByText('1 of them')).toBeTruthy()
+    expect(screen.getByText(/accepted, not held/i)).toBeTruthy()
+  })
+
+  it('renders nothing when no VPA repeated', () => {
+    const { container } = renderResult({ accepted: 3, quarantined: 0, duplicate: 0, duplicateVpa: 0 })
+    expect(container.textContent).not.toMatch(/repeat/i)
+  })
+
+  // Both notices can be true of one file, and neither should swallow the other.
+  it('renders alongside the malformed-QR notice', () => {
+    renderResult({ accepted: 3, quarantined: 0, duplicate: 0, qrMalformed: 2, duplicateVpa: 1 })
+    expect(screen.getByText(/malformed QR separator/i)).toBeTruthy()
+    expect(screen.getByText(/accepted, not held/i)).toBeTruthy()
+  })
+})

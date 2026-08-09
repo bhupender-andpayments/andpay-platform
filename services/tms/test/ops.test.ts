@@ -277,6 +277,64 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     expect(r.qrMalformed).toBe(1)
   })
 
+  // Bhupender's ruling: "repeat VPA can be flagged in the ingestion part ...
+  // the additional soundbox request may or may not be." So a repeat is FLAGGED
+  // for review and never rejected, because the same VPA arriving again is the
+  // legitimate additional-soundbox case at least as often as it is a mistake.
+  // BRD 5.1b asks for exactly this ("detect duplicates ... and flag for review")
+  // and pairs it with the additional-soundbox rule in one breath, which is the
+  // clue that the two cannot be separated by an automatic rule.
+  it('D-2: flags a VPA repeated INSIDE one file, without blocking either row', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'same@gscb' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'same@gscb' }),
+      requestCells({ bankMerchantReference: 'BM-3', vpaValue: 'other@gscb' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-dup1' })
+
+    // The flag is a NOTICE, not a gate: all three rows still ingest, so an
+    // additional-soundbox order is never stalled waiting for someone to look.
+    expect(r.accepted).toBe(3)
+    expect(r.quarantined).toBe(0)
+    // The FIRST sighting is not a repeat; only the second is.
+    expect(r.duplicateVpa).toBe(1)
+    expect(await count('pending_row')).toBe(3)
+  })
+
+  // "in same upload or RECENT UPLOADS" (BRD 5.1b). A merchant who was ordered
+  // for last week and appears again today is the case that actually matters,
+  // and it is invisible to a within-file check.
+  it('D-2: flags a VPA already present from an EARLIER upload', async () => {
+    const first = randomUUID()
+    await commitBankFile(db, {
+      fileBytes: toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'seen@gscb' })]),
+      filename: 'a.csv', clientKey: first, actorId: randomUUID(), traceId: 't-dup2a',
+    })
+
+    const second = randomUUID()
+    const r = await commitBankFile(db, {
+      fileBytes: toCsv(REQUEST_HEADERS, [
+        requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'seen@gscb' }),
+        requestCells({ bankMerchantReference: 'BM-3', vpaValue: 'fresh@gscb' }),
+      ]),
+      filename: 'b.csv', clientKey: second, actorId: randomUUID(), traceId: 't-dup2b',
+    })
+
+    expect(r.accepted).toBe(2)
+    expect(r.duplicateVpa).toBe(1)
+  })
+
+  it('D-2: a file of distinct VPAs flags nothing, so a non-zero count means something', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'a1@gscb' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'a2@gscb' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-dup3' })
+    expect(r.duplicateVpa).toBe(0)
+  })
+
   it('parses a .xlsx commit to the same outcome as the equivalent .csv', async () => {
     const clientKey = randomUUID()
     const xlsx = await toXlsx(REQUEST_HEADERS, [requestCells()])
