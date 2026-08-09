@@ -54,7 +54,41 @@ export interface DeviceInventoryRow {
   deviceQr: string
 }
 
-export type DeviceInventoryRowErrorCode = 'missing_device_id' | 'missing_sim_no' | 'missing_device_qr'
+export type DeviceInventoryRowErrorCode =
+  | 'missing_device_id'
+  | 'missing_sim_no'
+  | 'missing_device_qr'
+  | 'malformed_device_id'
+  | 'malformed_sim_no'
+
+/**
+ * A-2 / D12, DELIBERATELY LOOSE. Tighten when a REAL CWD inventory file lands.
+ *
+ * Before this, the ONLY row check was non-empty, so `Device ID = ABCDEF` was
+ * accepted and became a real unit. These bounds close that without pretending
+ * to know a format we have not seen.
+ *
+ * WHY SO WIDE, measured 2026-08-09 against `docs/demo_files/`:
+ *  - The CWD `sample_150` file is MOCK data (confirmed by Bhupender, and
+ *    independently: its ICCIDs fail the Luhn check that real ICCIDs carry, and
+ *    its 150 IMEIs have 150 DIFFERENT TACs, which real hardware of one model
+ *    cannot). So its VALUES cannot found a rule, only its column shape.
+ *  - The only real device ids we hold are the 98 in
+ *    `Device id file from printer .xls`, and they are **12 OR 13 digits**, with
+ *    no fixed prefix and no check digit.
+ *  - A rule read off the mock file would have been `^784\d{10}$` (rejects 100%
+ *    of the real file) or `^\d{13}$` (rejects 6% of it). Hence a wide band, not
+ *    an exact length.
+ *  - Sim No and Device QR have NO real-world evidence at all: the real file has
+ *    neither column. Sim No is therefore charset-and-range only, and Device QR
+ *    stays non-empty ONLY. Validating an unseen payload shape is exactly the
+ *    mistake above.
+ *
+ * These are per-ROW errors, so a bad row is reported and quarantined while the
+ * rest of the file still ingests. Only a missing COLUMN fails the whole file.
+ */
+const DEVICE_ID_PATTERN = /^[0-9]{10,20}$/
+const SIM_NO_PATTERN = /^[0-9A-Za-z]{10,30}$/
 
 export interface DeviceInventoryRowError {
   rowNo: number
@@ -248,8 +282,17 @@ export async function parseDeviceInventoryFile(file: Uint8Array, filename: strin
     const deviceQr = (cells[deviceQrIdx] ?? '').trim()
 
     const errors: DeviceInventoryRowErrorCode[] = []
+    // Absent and malformed are DISTINCT codes, never collapsed: "the column was
+    // blank" and "the value is not a device id" are different corrections for
+    // the operator, and only the second suggests the file came from the wrong
+    // source. Malformed is reported only when something IS present, so a blank
+    // cell never produces both.
     if (deviceId === '') errors.push('missing_device_id')
+    else if (!DEVICE_ID_PATTERN.test(deviceId)) errors.push('malformed_device_id')
     if (simNo === '') errors.push('missing_sim_no')
+    else if (!SIM_NO_PATTERN.test(simNo)) errors.push('malformed_sim_no')
+    // Device QR stays non-empty ONLY, on purpose. See the note above the
+    // patterns: we have never seen a real one.
     if (deviceQr === '') errors.push('missing_device_qr')
 
     if (errors.length > 0) {

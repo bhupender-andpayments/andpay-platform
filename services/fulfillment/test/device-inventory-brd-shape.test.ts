@@ -58,7 +58,11 @@ describe('device inventory, BRD Annexure E shape', () => {
   })
 
   it('still accepts the legacy "SIM No" spelling', async () => {
-    const csv = 'Device ID,SIM No,Device QR\nD1,S1,{"DI":1}\n'
+    // This test's subject is the HEADER spelling, not the row values. Its
+    // original fixture used the toy values D1/S1, which passed only because the
+    // sole row check was non-empty; A-2's loose format check now rejects them.
+    // Real-shaped values keep the test measuring the thing it is named for.
+    const csv = 'Device ID,SIM No,Device QR\n1234567890123,8991867825623397596U,{"DI":1}\n'
     const r = await parseDeviceInventoryFile(new TextEncoder().encode(csv), 'legacy.csv')
     expect(r.structuralErrors).toEqual([])
     expect(r.validRows).toHaveLength(1)

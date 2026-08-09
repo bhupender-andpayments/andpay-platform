@@ -731,8 +731,17 @@ export interface DamagePreviewResult {
 // to type === 'MANUFACTURER' (never a raw uuid, never hand-typed).
 // -----------------------------------------------------------------------
 
-/** services/fulfillment/src/device-inventory-adapter.ts DeviceInventoryRowErrorCode. */
-export type DeviceInventoryRowErrorCode = 'missing_device_id' | 'missing_sim_no' | 'missing_device_qr'
+/**
+ * services/fulfillment/src/device-inventory-adapter.ts DeviceInventoryRowErrorCode.
+ * The `malformed_*` pair is A-2/D12's deliberately loose format check; the
+ * screen needs no label map for them because StatusPill humanises the code.
+ */
+export type DeviceInventoryRowErrorCode =
+  | 'missing_device_id'
+  | 'missing_sim_no'
+  | 'missing_device_qr'
+  | 'malformed_device_id'
+  | 'malformed_sim_no'
 
 export interface DeviceInventoryRowError {
   rowNo: number

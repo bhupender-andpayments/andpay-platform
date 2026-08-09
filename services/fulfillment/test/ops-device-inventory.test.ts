@@ -41,7 +41,7 @@ function toCsv(rows: string[][]): Buffer {
 describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
   it('validates manufacturerVndrId server-side: a non-MANUFACTURER vndr is OpsClientError(invalid), an unknown vndr is OpsClientError(not-found), with NO unit written either way', async () => {
     const printVndr = await seedVendor('PRINT')
-    const csv = toCsv([['DEV-1', 'SIM-1', 'QR-1']])
+    const csv = toCsv([['1234567890001', '8991000000000000101U', 'QR-1']])
 
     await expect(
       ingestOpsDeviceInventory(db, {
@@ -73,21 +73,26 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
 
   it('ingests valid rows at IN_STOCK (reusing the SAME dedup: duplicate serial + duplicate ICCID -> intake_exception), reports a mandatory-field-missing row as invalid (not ingested), writes the ledger row, and co-commits ONE ALLOW 6e; a same-clientKey replay is a no-op', async () => {
     const manufacturerVndr = await seedVendor('MANUFACTURER')
-    // A pre-existing unit already carrying SIM-EXIST, to prove the cross-unit
-    // ICCID-conflict path (Confirm 3, intake.ts) is reused unmodified: the
-    // conflicting device is still CREATED (a different real device), with its
-    // sim_no stored NULL and the conflict flagged separately.
+    // A pre-existing unit already carrying the ...009U ICCID, to prove the
+    // cross-unit ICCID-conflict path (Confirm 3, intake.ts) is reused
+    // unmodified: the conflicting device is still CREATED (a different real
+    // device), with its sim_no stored NULL and the conflict flagged separately.
+    //
+    // The values here are device-id and ICCID SHAPED rather than the old toy
+    // DEV-1/SIM-1, because A-2's loose row format check now rejects those. The
+    // subject of this test is dedup and the ledger, not formats, so the shapes
+    // changed and every assertion stayed.
     const existingUuid = toUuid(newId('unit'))
     await db.$executeRaw`
       INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, sim_no, updated_at)
-      VALUES (${existingUuid}::uuid, 'SERIALIZED', 'SOUNDBOX', ${toUuid(manufacturerVndr)}::uuid, 'IN_STOCK', 'DEV-EXIST', '{}'::jsonb, 'SIM-EXIST', now())
+      VALUES (${existingUuid}::uuid, 'SERIALIZED', 'SOUNDBOX', ${toUuid(manufacturerVndr)}::uuid, 'IN_STOCK', '1234567890009', '{}'::jsonb, '8991000000000000009U', now())
     `
 
     const csv = toCsv([
-      ['DEV-1', 'SIM-1', 'QR-1'], // valid, accepted
-      ['DEV-1', 'SIM-2', 'QR-2'], // duplicate device serial IN-FILE -> flagged, not created
-      ['DEV-3', 'SIM-EXIST', 'QR-3'], // duplicate ICCID vs an EXISTING unit -> flagged, still created (sim_no null)
-      ['', 'SIM-4', 'QR-4'], // missing Device ID -> invalid row, not ingested at all
+      ['1234567890001', '8991000000000000101U', 'QR-1'], // valid, accepted
+      ['1234567890001', '8991000000000000102U', 'QR-2'], // duplicate device serial IN-FILE -> flagged, not created
+      ['1234567890003', '8991000000000000009U', 'QR-3'], // duplicate ICCID vs an EXISTING unit -> flagged, still created (sim_no null)
+      ['', '8991000000000000104U', 'QR-4'], // missing Device ID -> invalid row, not ingested at all
     ])
     const clientKey = randomUUID()
     const actorId = randomUUID()
@@ -110,10 +115,10 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
 
     const units = await db.$queryRaw<
       { device_serial: string; status: string; product_type: string; sim_no: string | null }[]
-    >`SELECT device_serial, status, product_type, sim_no FROM unit WHERE device_serial IN ('DEV-1', 'DEV-3') ORDER BY device_serial`
+    >`SELECT device_serial, status, product_type, sim_no FROM unit WHERE device_serial IN ('1234567890001', '1234567890003') ORDER BY device_serial`
     expect(units).toEqual([
-      { device_serial: 'DEV-1', status: 'IN_STOCK', product_type: 'SOUNDBOX', sim_no: 'SIM-1' },
-      { device_serial: 'DEV-3', status: 'IN_STOCK', product_type: 'SOUNDBOX', sim_no: null },
+      { device_serial: '1234567890001', status: 'IN_STOCK', product_type: 'SOUNDBOX', sim_no: '8991000000000000101U' },
+      { device_serial: '1234567890003', status: 'IN_STOCK', product_type: 'SOUNDBOX', sim_no: null },
     ])
 
     const exceptions = await db.$queryRaw<{ reason_code: string }[]>`
@@ -179,7 +184,7 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
   // as a benign empty upload) regardless of how many data rows follow it.
   it('rejects a file with a wrong/missing header as OpsClientError(invalid), with NO unit, NO ledger row, and NO 6e', async () => {
     const manufacturerVndr = await seedVendor('MANUFACTURER')
-    const wrongHeaderCsv = Buffer.from('Serial,ICCID,QR\nDEV-1,SIM-1,QR-1\n', 'utf8')
+    const wrongHeaderCsv = Buffer.from('Serial,ICCID,QR\n1234567890001,8991000000000000101U,QR-1\n', 'utf8')
 
     await expect(
       ingestOpsDeviceInventory(db, {
@@ -257,7 +262,7 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
   // Fix round 1, Finding B: a malformed manufacturerVndrId must be a client
   // error (OpsClientError), never an uncaught InvalidIdError.
   it('rejects a malformed manufacturerVndrId as OpsClientError(invalid), not a raw throw', async () => {
-    const csv = toCsv([['DEV-1', 'SIM-1', 'QR-1']])
+    const csv = toCsv([['1234567890001', '8991000000000000101U', 'QR-1']])
     await expect(
       ingestOpsDeviceInventory(db, {
         fileBytes: csv,
