@@ -335,6 +335,76 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     expect(r.duplicateVpa).toBe(0)
   })
 
+  // BRD 5.1b asks for "same VPA / Mobile". Mobile is a DIFFERENT signal from
+  // VPA and is counted differently on purpose.
+  //
+  // A repeat VPA is the same merchant coming back, which is the
+  // additional-soundbox case. A repeat MOBILE on a DIFFERENT VPA is two
+  // distinct merchants sharing a contact number: one owner with two shops, a
+  // shared shopkeeper phone, or a typo. That is the case worth a human look,
+  // and it is invisible to the VPA check.
+  //
+  // MEASURED in the real 360-row GSCB file: 3 mobiles repeat, and all 3 are
+  // across DIFFERENT VPAs. So this is the flag that actually fires on real
+  // data, where the VPA flag never does.
+  it('D-2: flags one mobile shared by two DIFFERENT merchants', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'm1@gscb', mobile: '9811111111' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'm2@gscb', mobile: '9811111111' }),
+      requestCells({ bankMerchantReference: 'BM-3', vpaValue: 'm3@gscb', mobile: '9822222222' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-mob1' })
+
+    expect(r.accepted).toBe(3)
+    expect(r.duplicateMobile).toBe(1)
+    // Different merchants, so this is NOT a VPA repeat.
+    expect(r.duplicateVpa).toBe(0)
+  })
+
+  // The one that keeps the notice honest. The SAME merchant reappearing
+  // repeats its mobile too, by definition. Counting that as a mobile duplicate
+  // would double-report one benign situation and train an operator to ignore
+  // both flags.
+  it('D-2: does NOT flag the mobile when it is the same merchant returning', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'same@gscb', mobile: '9833333333' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'same@gscb', mobile: '9833333333' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-mob2' })
+
+    expect(r.duplicateVpa).toBe(1)
+    expect(r.duplicateMobile).toBe(0)
+  })
+
+  it('D-2: flags a mobile already used by a different merchant in an EARLIER upload', async () => {
+    const first = randomUUID()
+    await commitBankFile(db, {
+      fileBytes: toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'e1@gscb', mobile: '9844444444' })]),
+      filename: 'a.csv', clientKey: first, actorId: randomUUID(), traceId: 't-mob3a',
+    })
+
+    const second = randomUUID()
+    const r = await commitBankFile(db, {
+      fileBytes: toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'e2@gscb', mobile: '9844444444' })]),
+      filename: 'b.csv', clientKey: second, actorId: randomUUID(), traceId: 't-mob3b',
+    })
+
+    expect(r.accepted).toBe(1)
+    expect(r.duplicateMobile).toBe(1)
+  })
+
+  it('D-2: distinct mobiles flag nothing', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'd1@gscb', mobile: '9855555555' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'd2@gscb', mobile: '9866666666' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-mob4' })
+    expect(r.duplicateMobile).toBe(0)
+  })
+
   it('parses a .xlsx commit to the same outcome as the equivalent .csv', async () => {
     const clientKey = randomUUID()
     const xlsx = await toXlsx(REQUEST_HEADERS, [requestCells()])

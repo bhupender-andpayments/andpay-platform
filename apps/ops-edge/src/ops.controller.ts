@@ -395,7 +395,7 @@ export class OpsController {
     @Req() req: EdgeRequest,
     @UploadedFile() file: UploadedSheet | undefined,
     @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ accepted: number; quarantined: number; duplicate: number; qrMalformed: number; duplicateVpa: number; fileId: string }> {
+  ): Promise<{ accepted: number; quarantined: number; duplicate: number; qrMalformed: number; duplicateVpa: number; duplicateMobile: number; fileId: string }> {
     const g = await this.gate(req, 'ops:upload-bank-file', idem, [])
     if (!file) throw new BadRequestException('missing file')
     return commitBankFile(this.deps.tmsDb, {

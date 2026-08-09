@@ -682,6 +682,10 @@ export interface BankCommitResult {
   // A REVIEW FLAG, never a rejection: a repeat VPA is usually an additional
   // soundbox request for a merchant we already have.
   duplicateVpa: number
+  // Rows whose MOBILE was already used by a DIFFERENT merchant. A separate
+  // signal from duplicateVpa: that one is the same merchant returning, this is
+  // two merchants sharing a contact number.
+  duplicateMobile: number
   fileId: string
 }
 

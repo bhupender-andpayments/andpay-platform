@@ -33,6 +33,10 @@ export interface UploadResultBreakdown {
   // rejection, because a repeat VPA is usually an additional soundbox request
   // for a merchant we already have, and blocking it would stall a real order.
   duplicateVpa?: number
+  // `duplicateMobile` is a DIFFERENT signal from duplicateVpa and gets its own
+  // notice: a repeat VPA is one merchant returning, a repeat mobile on another
+  // VPA is two merchants sharing a contact number. Only the second is news.
+  duplicateMobile?: number
 }
 
 // Renders task 13's upload result breakdown with a link to the quarantine
@@ -113,6 +117,14 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
           {' repeat a VPA already seen, in this file or an earlier upload. They were '}
           <span className="font-semibold">accepted, not held</span>
           {': a repeat usually means an additional soundbox for a merchant we already have. Worth a look if you were not expecting one.'}
+        </p>
+      )}
+      {result.duplicateMobile !== undefined && result.duplicateMobile > 0 && (
+        <p className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+          <span className="font-semibold">{`${result.duplicateMobile} of them`}</span>
+          {' share a mobile number with a '}
+          <span className="font-semibold">different merchant</span>
+          {'. They were accepted, not held. Often one owner with two shops, sometimes a typo in the contact number, so worth checking.'}
         </p>
       )}
     </>

@@ -86,3 +86,33 @@ describe('PerRowErrors: the repeat-VPA notice (D-2)', () => {
     expect(screen.getByText(/accepted, not held/i)).toBeTruthy()
   })
 })
+
+// The mobile flag is a SEPARATE notice with separate wording, because it means
+// something different: not one merchant returning, but two merchants sharing a
+// contact number. Measured in the real GSCB file, this is the flag that
+// actually fires (3 shared mobiles, 0 repeated VPAs).
+describe('PerRowErrors: the shared-mobile notice (D-2)', () => {
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('names the different merchant rather than calling it a duplicate', () => {
+    renderResult({ accepted: 3, quarantined: 0, duplicate: 0, duplicateMobile: 2 })
+    expect(screen.getByText('2 of them')).toBeTruthy()
+    expect(screen.getByText(/different merchant/i)).toBeTruthy()
+  })
+
+  it('renders nothing when no mobile is shared', () => {
+    const { container } = renderResult({ accepted: 3, quarantined: 0, duplicate: 0, duplicateMobile: 0 })
+    expect(container.textContent).not.toMatch(/mobile/i)
+  })
+
+  // The two duplicate flags are independent and must both be visible: a file can
+  // contain a returning merchant AND a shared number, and they need different
+  // actions from whoever reads them.
+  it('renders independently of the repeat-VPA notice', () => {
+    renderResult({ accepted: 4, quarantined: 0, duplicate: 0, duplicateVpa: 1, duplicateMobile: 2 })
+    expect(screen.getByText(/additional soundbox/i)).toBeTruthy()
+    expect(screen.getByText(/different merchant/i)).toBeTruthy()
+  })
+})
