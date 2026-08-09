@@ -728,3 +728,142 @@ describe('POST /vendor/courier/status-file (FR-06 BATCH_FILE, multipart edge fro
     expect(vndrWire).not.toBe(otherWire)
   })
 })
+
+// D-4: the same /vendor/return route now also accepts the vendor's WORKBOOK.
+// Until this, the route parsed JSON only while the real artifact is a
+// spreadsheet, so BRD Phase 1 ("print vendor emails the Excel, AndPayments
+// uploads it") had no surface at all.
+describe('POST /vendor/return with a WORKBOOK (D-4, same route, chosen by extension)', () => {
+  const SECRET = 'apsk_test_print-wb-secret-eeeeeeeeeeeeeeee'
+
+  async function seedPrintCredential(vndrWire: string): Promise<void> {
+    await seedCredential({
+      apiId: newId('api'),
+      secret: SECRET,
+      vndrId: vndrWire,
+      workQueue: 'wq-print',
+      permissionSetRef: 'vset:vendor_print',
+    })
+  }
+
+  function csvOf(rows: string[][], headers: string[]): Buffer {
+    return Buffer.from([headers, ...rows].map((r) => r.join(',')).join('\n') + '\n', 'utf8')
+  }
+
+  it('pairs a Unit from a csv workbook, deriving vendor and work queue from the TOKEN', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    await seedPrintCredential(vndrWire)
+    const deviceSerial = 'SER-EDGE-WB-1'
+    await seedUnit(deviceSerial)
+    const asgnWire = newId('asgn')
+    await seedPendingEntry(asgnWire)
+
+    // NOTE the sheet declares no vndrId and no workQueue. It cannot: a workbook
+    // has nowhere to put them, and they are server-derived from the claim
+    // (D99/M7/S16), so a vendor cannot submit for anyone else by construction.
+    const res = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(SECRET))
+      .attach('file', csvOf([[asgnWire, deviceSerial, 'AWB-WB-1']], ['Assignment', 'Device ID', 'AWB']), 'return.csv')
+
+    expect(res.status).toBe(200)
+    expect(res.body.pairedUnitIds).toHaveLength(1)
+  })
+
+  it('accepts the portal/BRD column spelling too, closing the round-trip mismatch', async () => {
+    // dispatchXlsx sends "Assignment"; the portal parser wants "Dispatch ID".
+    // Both must work or a vendor returning our own sheet gets rejected.
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    await seedPrintCredential(vndrWire)
+    const deviceSerial = 'SER-EDGE-WB-2'
+    await seedUnit(deviceSerial)
+    const asgnWire = newId('asgn')
+    await seedPendingEntry(asgnWire)
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(SECRET))
+      .attach('file', csvOf([[asgnWire, deviceSerial, 'AWB-WB-2']], ['Dispatch ID', 'Device ID', 'AWB']), 'return.csv')
+
+    expect(res.status).toBe(200)
+    expect(res.body.pairedUnitIds).toHaveLength(1)
+  })
+
+  it('is IDEMPOTENT on the identical workbook, via the content hash', async () => {
+    // fileId is a hash of the bytes, so a resend dedups on {vndrId}|{fileId}
+    // without the vendor having to mint an id.
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    await seedPrintCredential(vndrWire)
+    const deviceSerial = 'SER-EDGE-WB-3'
+    await seedUnit(deviceSerial)
+    const asgnWire = newId('asgn')
+    await seedPendingEntry(asgnWire)
+    const body = csvOf([[asgnWire, deviceSerial, 'AWB-WB-3']], ['Assignment', 'Device ID', 'AWB'])
+    const send = () =>
+      request(app.getHttpServer()).post('/vendor/return').set('Authorization', bearer(SECRET)).attach('file', body, 'return.csv')
+
+    await send()
+    const second = await send()
+    expect(second.status).toBe(200)
+    expect(second.body.deduped).toBe(true)
+  })
+
+  it('reports quarantined rows alongside the result, so a partial file is visible', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    await seedPrintCredential(vndrWire)
+    const deviceSerial = 'SER-EDGE-WB-4'
+    await seedUnit(deviceSerial)
+    const asgnWire = newId('asgn')
+    await seedPendingEntry(asgnWire)
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(SECRET))
+      .attach(
+        'file',
+        csvOf(
+          [
+            [asgnWire, deviceSerial, 'AWB-WB-4'],
+            ['', 'SER-MISSING', ''], // no assignment, no awb
+          ],
+          ['Assignment', 'Device ID', 'AWB'],
+        ),
+        'return.csv',
+      )
+
+    expect(res.status).toBe(200)
+    expect(res.body.invalidRows).toEqual([{ rowNo: 2, errors: ['missing_assignment', 'missing_awb'] }])
+  })
+
+  it('400s a workbook missing the AWB column, with a schema_invalid DENY', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    await seedPrintCredential(vndrWire)
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(SECRET))
+      .attach('file', csvOf([['asgn_x', 'SER-X']], ['Assignment', 'Device ID']), 'return.csv')
+
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/"AWB"/)
+    const audits = await fulfillmentDb.$queryRaw<{ payload: { reasonCode?: string } }[]>`
+      SELECT payload FROM outbox WHERE event_type = 'authz.audit'
+    `
+    expect(audits.some((a) => a.payload.reasonCode === 'schema_invalid')).toBe(true)
+  })
+
+  it('400s a legacy .xls by name, telling the vendor to re-save as .xlsx', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    await seedPrintCredential(vndrWire)
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(SECRET))
+      .attach('file', Buffer.from([0xd0, 0xcf, 0x11, 0xe0]), 'from printer.xls')
+
+    // .xls is not a workbook extension we accept, so it falls to the JSON path
+    // and fails there as unparseable. Either way it is a clean 400, never a
+    // silent empty ingest.
+    expect(res.status).toBe(400)
+  })
+})

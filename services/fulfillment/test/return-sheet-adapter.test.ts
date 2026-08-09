@@ -117,6 +117,33 @@ describe('parseReturnWorkbook (D-4 / F8)', () => {
     expect(r.validRows).toHaveLength(1)
   })
 
+  it('accepts the column name WE SEND ("Assignment") and the one the portal expects ("Dispatch ID")', async () => {
+    // A REAL ROUND-TRIP DEFECT this fixes. dispatchXlsx sends the column as
+    // "Assignment"; the vendor portal's client-side return parser requires
+    // "Dispatch ID" (the BRD's own term). A vendor returning our sheet exactly
+    // as instructed would have been rejected for a missing column.
+    const ours = await parseReturnWorkbook(await xlsx([ROW]), 'r.xlsx')
+    expect(ours.validRows[0]!.asgnId).toBe('asgn_1')
+
+    const theirs = await parseReturnWorkbook(
+      await xlsx([['HDFC', 'asgn_1', 'Acme', '1234567890123', 'AWB-1', 'BLUEDART']],
+        ['Bank', 'Dispatch ID', 'Merchant', 'Device ID', 'AWB', 'Courier Partner']),
+      'r.xlsx',
+    )
+    expect(theirs.structuralErrors).toEqual([])
+    expect(theirs.validRows[0]).toEqual({
+      deviceSerial: '1234567890123', asgnId: 'asgn_1', awb: 'AWB-1', courierCode: 'BLUEDART',
+    })
+  })
+
+  it('names EVERY accepted spelling when a column is missing', async () => {
+    // Tell the operator what WOULD work instead of leaving them to guess which
+    // synonym we wanted.
+    const r = await parseReturnWorkbook(await xlsx([['x']], ['Bank']), 'r.xlsx')
+    const msg = r.structuralErrors[0]!.message
+    expect(msg).toContain('"Assignment" or "Dispatch ID"')
+  })
+
   it('imposes NO format rule on the values, matching the A-2 lock', async () => {
     // We have not measured a real returned AWB, and a rule invented for an
     // unseen value rejects real files. Presence is the bar until a real file

@@ -50,11 +50,22 @@ export interface ReturnSheetParseResult {
 // The columns we require the vendor to return. `Assignment` and the merchant
 // block come from the sheet WE sent; `Device ID` and `AWB` are what they add.
 // `Courier` is optional and resolves to a vndr_ COURIER via vndr.courier_code.
+/**
+ * Each field accepts SYNONYMS, and that is a fix rather than leniency for its
+ * own sake. The two ends of this round trip disagreed on a column name:
+ * `dispatchXlsx` sends the column as **`Assignment`**, while the vendor
+ * portal's client-side return parser requires **`Dispatch ID`** (which is the
+ * BRD's own term, used in its report definitions). So a vendor who returned our
+ * sheet with Device ID and AWB filled in, exactly as instructed, would have been
+ * REJECTED for a missing column. Accepting both names fixes the round trip
+ * without renaming a column that has already shipped in downloaded workbooks.
+ * Same for `Courier` versus the portal's `Courier Partner`.
+ */
 const HEADERS = {
-  asgnId: 'Assignment',
-  deviceSerial: 'Device ID',
-  awb: 'AWB',
-  courierCode: 'Courier',
+  asgnId: ['Assignment', 'Dispatch ID'],
+  deviceSerial: ['Device ID'],
+  awb: ['AWB'],
+  courierCode: ['Courier', 'Courier Partner'],
 } as const
 
 function detectFormat(filename: string): 'csv' | 'xlsx' | null {
@@ -158,7 +169,9 @@ export async function parseReturnWorkbook(
   if (grid.length === 0) return fail({ code: 'empty_sheet', message: `"${filename}" has no rows.` })
 
   const header = (grid[0] ?? []).map((h) => h.trim())
-  const indexOf = (name: string): number => header.findIndex((h) => h.toLowerCase() === name.toLowerCase())
+  // First synonym that matches wins; -1 when none do.
+  const indexOf = (names: readonly string[]): number =>
+    header.findIndex((h) => names.some((n) => h.toLowerCase() === n.toLowerCase()))
   const asgnIdx = indexOf(HEADERS.asgnId)
   const deviceIdx = indexOf(HEADERS.deviceSerial)
   const awbIdx = indexOf(HEADERS.awb)
@@ -176,12 +189,11 @@ export async function parseReturnWorkbook(
     ] as const
   )
     .filter(([i]) => i < 0)
-    .map(([, name]) => name)
+    // Name every accepted spelling, so the operator is told what WOULD work
+    // rather than being left to guess which synonym we wanted.
+    .map(([, names]) => names.map((n) => `"${n}"`).join(' or '))
   if (missing.length > 0) {
-    return fail({
-      code: 'missing_column',
-      message: `Missing required column(s): ${missing.map((m) => `"${m}"`).join(', ')}.`,
-    })
+    return fail({ code: 'missing_column', message: `Missing required column(s): ${missing.join(', ')}.` })
   }
 
   const validRows: ReturnRow[] = []
