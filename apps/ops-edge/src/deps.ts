@@ -3,7 +3,7 @@ import {
   type FulfillmentDb,
   loadOpsConfig,
   type AssetStore,
-  InMemoryAssetStore,
+  FilesystemAssetStore,
 } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient, type TmsDb } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient, type AnalyticsDb } from '@andpay/analytics-service'
@@ -53,9 +53,12 @@ export interface OpsEdgeDeps {
   portalOrigin: string
   // Phase 3 Task 5b: the T3 binary-asset storage port, injected once at
   // process start (the bank/branch logo upload route calls it in-process).
-  // The DEV adapter (InMemoryAssetStore) is the default everywhere today; a
-  // future AWS S3 adapter is a one-line change at the injection site, not a
-  // code change in the controller or the domain op.
+  // The DEV adapter (FilesystemAssetStore) is the default everywhere today.
+  // It is filesystem-backed rather than in-memory for a specific reason: the
+  // collateral this edge SERVES is rendered by the fulfillment consumer, a
+  // DIFFERENT process, so a per-process store cannot resolve it. A future AWS
+  // S3 adapter is a one-line change at the injection site, not a code change
+  // in the controller or the domain op.
   assetStore: AssetStore
 }
 
@@ -118,6 +121,10 @@ export function buildOpsEdgeDepsFromEnv(): OpsEdgeDeps {
     expectedMode,
     roleConfig: loadOpsConfig(),
     portalOrigin,
-    assetStore: new InMemoryAssetStore(),
+    // Filesystem-backed so the edge can serve collateral rendered by the
+    // fulfillment CONSUMER, which is a different process. With the in-memory
+    // adapter each process had its own empty map and every collateral
+    // download answered 500. E-5 (the S3 adapter) is still open.
+    assetStore: new FilesystemAssetStore(),
   }
 }

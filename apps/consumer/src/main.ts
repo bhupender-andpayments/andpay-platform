@@ -2,7 +2,7 @@ import { Kafka, logLevel } from 'kafkajs'
 import { runFactConsumer } from '@andpay/bus'
 import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
-import { PrismaClient as FulfillmentClient, InMemoryAssetStore } from '@andpay/fulfillment-service'
+import { PrismaClient as FulfillmentClient, FilesystemAssetStore } from '@andpay/fulfillment-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { PrismaClient as AuthClient } from '@andpay/auth-service'
 import { identityRoutes, tmsRoutes, fulfillmentRoutes, analyticsRoutes, authRoutes, groupIdFor, type ConsumerRoute } from './routes.js'
@@ -48,13 +48,19 @@ function buildContext(context: string): Built {
     }
     case 'fulfillment': {
       const db = new FulfillmentClient({ datasourceUrl: requireEnv('FULFILLMENT_DATABASE_URL') })
-      // GO-LIVE BLOCKER E-5, deliberately not solved here. consumeBatchFact
-      // renders collateral into this store, and in-process means the artifacts
-      // live in THIS process's memory: a restart loses them, and a second task
-      // cannot serve what the first one rendered. Production needs the S3
-      // adapter. The demo pump had the same limitation, so this is parity, not
-      // a regression, but it must not ship to production unnoticed.
-      const assetStore = new InMemoryAssetStore()
+      // GO-LIVE BLOCKER E-5 is still OPEN: production needs the S3 adapter,
+      // and this filesystem adapter is not it (no durability guarantee beyond
+      // the local disk, no lifecycle policy, no cross-host story).
+      //
+      // What it DOES fix is the half of E-5 that was breaking the running
+      // system rather than a future one. consumeBatchFact renders collateral
+      // into this store, and with the in-memory adapter those bytes lived in
+      // THIS process's memory, so the ops edge (a different process) could not
+      // serve what this one rendered: every collateral download answered 500
+      // while composed_artifact looked perfectly healthy. Both processes now
+      // resolve the same directory, so a reference minted here is readable
+      // there. See storage/fs-asset-store.ts.
+      const assetStore = new FilesystemAssetStore()
       return { route: fulfillmentRoutes(db, assetStore), disconnect: () => db.$disconnect() }
     }
     case 'analytics': {

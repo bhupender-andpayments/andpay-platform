@@ -168,6 +168,7 @@ export {
 } from './ops-read.js'
 export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
 export { InMemoryAssetStore } from './storage/dev-asset-store.js'
+export { FilesystemAssetStore, defaultAssetDir } from './storage/fs-asset-store.js'
 export {
   readShipments,
   readShipmentStatusTrail,

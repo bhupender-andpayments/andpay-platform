@@ -1,4 +1,4 @@
-import { PrismaClient as FulfillmentClient, InMemoryAssetStore, type FulfillmentDb, type AssetStore } from '@andpay/fulfillment-service'
+import { PrismaClient as FulfillmentClient, FilesystemAssetStore, type FulfillmentDb, type AssetStore } from '@andpay/fulfillment-service'
 import type { Mode } from '@andpay/authz'
 import type { JSONWebKeySet } from 'jose'
 
@@ -34,7 +34,7 @@ export interface EdgeDeps {
   vendorPortalOrigin: string
   // Phase 4 (P4-D6): the binary-asset store used by the dispatch-package
   // per-type PDF pull (assembleTypePdf reads the stored collateral bytes).
-  // Core infra like fulfillmentDb; the DEV adapter (InMemoryAssetStore) is the
+  // Core infra like fulfillmentDb; the DEV adapter (FilesystemAssetStore) is the
   // default, an S3 adapter later (same seam as ops-edge).
   assetStore: AssetStore
 }
@@ -82,6 +82,9 @@ export function buildEdgeDepsFromEnv(): EdgeDeps {
     jwks,
     expectedIss,
     vendorPortalOrigin,
-    assetStore: new InMemoryAssetStore(),
+    // Filesystem-backed: the collateral this edge serves to the print vendor
+    // is rendered by the fulfillment CONSUMER, a different process, so a
+    // per-process store cannot resolve it. E-5 (S3) is still open.
+    assetStore: new FilesystemAssetStore(),
   }
 }
