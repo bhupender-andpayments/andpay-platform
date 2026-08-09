@@ -84,6 +84,20 @@ export type DeviceInventoryRowErrorCode =
  *    stays non-empty ONLY. Validating an unseen payload shape is exactly the
  *    mistake above.
  *
+ * THE QR'S `DI` MIRRORS THE `Device ID` COLUMN. That is a BRD requirement
+ * (Annexure E shows one row with `Device QR = {"DI":7846237843772,...}` beside
+ * `Device ID = 7846237843772`), not an observation, so it is settled. Two
+ * consequences:
+ *  - The device id is taken from the `Device ID` COLUMN of the original file,
+ *    never parsed back out of the QR blob. That is what this adapter does.
+ *  - A cross-check (column must equal `DI`) is therefore AVAILABLE as a future
+ *    tightening, and is the single highest-value one, because it catches a file
+ *    whose two halves disagree. It is NOT applied yet, deliberately: the brief
+ *    is to keep ingestion adaptable until real CWD files have been seen.
+ *    Note the BRD's own example spells one key `" DOM"` WITH A LEADING SPACE
+ *    where the mock file spells it `DOM`, so any future parse of this payload
+ *    must be lenient about key spelling.
+ *
  * These are per-ROW errors, so a bad row is reported and quarantined while the
  * rest of the file still ingests. Only a missing COLUMN fails the whole file.
  */

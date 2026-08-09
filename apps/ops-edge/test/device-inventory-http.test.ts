@@ -137,8 +137,8 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
   it('a class-3 upload creates units at IN_STOCK, reports a mandatory-field-missing row as invalid, writes the ledger row, and co-commits ONE ALLOW 6e', async () => {
     const manufacturerVndr = await seedVendor('MANUFACTURER')
     const csv = toCsv([
-      ['DEV-1', 'SIM-1', 'QR-1'],
-      ['', 'SIM-2', 'QR-2'], // missing Device ID -> invalid, not ingested
+      ['1234567890001', '8991000000000000101U', 'QR-1'],
+      ['', '8991000000000000102U', 'QR-2'], // missing Device ID -> invalid, not ingested
     ])
     const token = await mint({})
     const idem = randomUUID()
@@ -160,7 +160,7 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
 
     expect(await unitCount()).toBe(1)
     const units = await fulfillmentDb.$queryRaw<{ status: string; product_type: string }[]>`
-      SELECT status, product_type FROM unit WHERE device_serial = 'DEV-1'`
+      SELECT status, product_type FROM unit WHERE device_serial = '1234567890001'`
     expect(units).toEqual([{ status: 'IN_STOCK', product_type: 'SOUNDBOX' }])
 
     const ledger = await ledgerRows()
@@ -171,7 +171,7 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
   })
 
   it('an unknown manufacturerVndrId -> 404 via the OpsErrorFilter, no domain effect', async () => {
-    const csv = toCsv([['DEV-9', 'SIM-9', 'QR-9']])
+    const csv = toCsv([['1234567890009', '8991000000000000109U', 'QR-9']])
     const token = await mint({})
     const res = await request(app.getHttpServer())
       .post('/ops/uploads/device-inventory')
@@ -185,7 +185,7 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
 
   it('rejects an unauthorized role with 403 + a durable DENY 6e, no domain effect', async () => {
     const manufacturerVndr = await seedVendor('MANUFACTURER')
-    const csv = toCsv([['DEV-1', 'SIM-1', 'QR-1']])
+    const csv = toCsv([['1234567890001', '8991000000000000101U', 'QR-1']])
     const token = await mint({ psr: 'role:not_ops' })
     const res = await request(app.getHttpServer())
       .post('/ops/uploads/device-inventory')
@@ -202,7 +202,7 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
 
   it('a request with NO Idempotency-Key -> 400 (not a 6e), no domain effect', async () => {
     const manufacturerVndr = await seedVendor('MANUFACTURER')
-    const csv = toCsv([['DEV-1', 'SIM-1', 'QR-1']])
+    const csv = toCsv([['1234567890001', '8991000000000000101U', 'QR-1']])
     const token = await mint({})
     const res = await request(app.getHttpServer())
       .post('/ops/uploads/device-inventory')
@@ -220,7 +220,7 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
   // ledger row and emit no 6e.
   it('a file with the wrong header -> 400 via OpsErrorFilter, NO ledger row, NO 6e', async () => {
     const manufacturerVndr = await seedVendor('MANUFACTURER')
-    const wrongHeaderCsv = Buffer.from('Serial,ICCID,QR\nDEV-1,SIM-1,QR-1\n', 'utf8')
+    const wrongHeaderCsv = Buffer.from('Serial,ICCID,QR\n1234567890001,8991000000000000101U,QR-1\n', 'utf8')
     const token = await mint({})
     const res = await request(app.getHttpServer())
       .post('/ops/uploads/device-inventory')
@@ -276,7 +276,7 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
   // 400 (OpsClientError, via the SAME OpsErrorFilter mapping), never an
   // uncaught InvalidIdError surfacing as a 500.
   it('a malformed manufacturerVndrId -> 400, not 500', async () => {
-    const csv = toCsv([['DEV-1', 'SIM-1', 'QR-1']])
+    const csv = toCsv([['1234567890001', '8991000000000000101U', 'QR-1']])
     const token = await mint({})
     const res = await request(app.getHttpServer())
       .post('/ops/uploads/device-inventory')
