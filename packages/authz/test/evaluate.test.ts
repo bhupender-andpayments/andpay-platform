@@ -74,3 +74,67 @@ describe('validateVendorSet (105d structural class-6 exclusion)', () => {
     expect(authorize(claim, 'batch:pull-artifacts', { vndrId: 'vndr_c1', workQueue: 'courier-status' }, cfg).reason).toBe('permission-denied')
   })
 })
+
+// D-9b: `authorize` gained an `enforceWorkQueue` override. The risk of adding a
+// parameter to a shared evaluator is that it silently changes every OTHER
+// caller, so these pin the default and the dispatch, not just the new path.
+describe('authorize: the enforceWorkQueue override (D-9b)', () => {
+  const cfg: RoleConfig = {
+    // Built through humanRole(), not a plain literal: HumanRole is BRANDED, so
+    // a literal is type-invalid even though it runs fine. The gate's typecheck
+    // project caught exactly that here and reported it as an Unhandled error
+    // with all 1702 tests still green, which is why the exit code is the only
+    // trustworthy signal.
+    roles: { admin: humanRole({ permissions: ['ops:thing'], ceiling: 'all-programs', requiredAcr: 'AAL2' }) },
+    vendorSets: { vendor_print: { permissions: ['batch:pull-artifacts'] } },
+  }
+  const cls6 = {
+    sub: 'api_1', cls: 6, mode: 'live', psr: 'vendor_print', epoch: 1,
+    scope: { vndr: 'vndr_1', wq: 'wq-print' },
+  } as unknown as LeanClaim
+
+  it('DEFAULTS to enforcing the work queue for class 6, unchanged for every existing caller', () => {
+    // The whole reason the override is opt-in. A resource with no workQueue
+    // still denies by default, which is what every submission call site relies
+    // on.
+    expect(authorize(cls6, 'batch:pull-artifacts', { vndrId: 'vndr_1' }, cfg)).toEqual({
+      allowed: false,
+      reason: 'scope-denied',
+    })
+  })
+
+  it('allows the same call when the axis is explicitly switched off', () => {
+    expect(
+      authorize(cls6, 'batch:pull-artifacts', { vndrId: 'vndr_1' }, cfg, { enforceWorkQueue: false }),
+    ).toEqual({ allowed: true })
+  })
+
+  it('still enforces the work queue when explicitly asked to, even for class 7', () => {
+    // The override goes BOTH ways, so it cannot be read as "class 7 semantics".
+    const cls7 = { ...cls6, cls: 7, psr: 'vendor_print' } as unknown as LeanClaim
+    expect(
+      authorize(cls7, 'batch:pull-artifacts', { vndrId: 'vndr_1' }, cfg, { enforceWorkQueue: true }),
+    ).toEqual({ allowed: false, reason: 'scope-denied' })
+  })
+
+  it('NEVER lets the override reroute a human claim into the vendor branch', () => {
+    // The reason this is an override on the dispatcher rather than a direct
+    // authorizeVendor call at the pull site: a human claim must still land in
+    // authorizeHuman and be rejected by the D6 class-6-in-human-context guard.
+    const human = {
+      sub: 'op_1', cls: 3, mode: 'live', psr: 'role:admin', epoch: 1, scope: {},
+    } as unknown as LeanClaim
+    expect(
+      authorize(human, 'batch:pull-artifacts', { vndrId: 'vndr_1' }, cfg, { enforceWorkQueue: false }),
+    ).toEqual({ allowed: false, reason: 'class6-in-human-context' })
+  })
+
+  it('the vendor-id axis is untouched by the override', () => {
+    // Isolation must not depend on the work-queue flag in any combination.
+    for (const enforceWorkQueue of [true, false]) {
+      expect(
+        authorize(cls6, 'batch:pull-artifacts', { vndrId: 'vndr_SOMEONE_ELSE' }, cfg, { enforceWorkQueue }),
+      ).toEqual({ allowed: false, reason: 'scope-denied' })
+    }
+  })
+})

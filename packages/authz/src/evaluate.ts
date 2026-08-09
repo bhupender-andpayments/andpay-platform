@@ -79,9 +79,24 @@ export function validateVendorSet(perms: readonly string[]): asserts perms is Cl
 // The Decision-2 two-gate evaluation: permission (RBAC, which operations) AND
 // scope (ABAC, which resources), both ANDed and evaluated LOCALLY (T4, 16.2). A
 // missing permission denies the operation; a scope miss denies the resource.
-export function authorize(claim: LeanClaim, operation: string, resource: AuthzResource, cfg: RoleConfig): AuthzDecision {
+//
+// `opts.enforceWorkQueue` overrides the per-class default for the ONE case where
+// the work-queue axis does not apply to the operation at all (D-9b). It is an
+// override on this dispatcher rather than a direct authorizeVendor call at the
+// call site, so the class dispatch and the D6 human-context guard below stay on
+// the path: a human claim must still reach authorizeHuman and be rejected there,
+// never be evaluated against the vendor sets.
+export function authorize(
+  claim: LeanClaim,
+  operation: string,
+  resource: AuthzResource,
+  cfg: RoleConfig,
+  opts: { enforceWorkQueue?: boolean } = {},
+): AuthzDecision {
   return claim.cls === 6 || claim.cls === 7
-    ? authorizeVendor(claim, operation, resource, cfg, { enforceWorkQueue: claim.cls === 6 })
+    ? authorizeVendor(claim, operation, resource, cfg, {
+        enforceWorkQueue: opts.enforceWorkQueue ?? claim.cls === 6,
+      })
     : authorizeHuman(claim, operation, resource, cfg)
 }
 

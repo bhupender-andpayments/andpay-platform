@@ -54,7 +54,33 @@ export async function pullDispatchPackageXlsx(
   // print_vndr, so the authorize denies (scope-denied) and we emit DENY. The
   // audit is IDs-and-enums only (S7/S10.5) and is awaited (durable) BEFORE the
   // .xlsx is returned or the PullDeniedError is thrown.
-  const decision = authorize(claim, PULL_OPERATION, { vndrId: printVndrWire ?? '__none__' }, loadFulfillmentConfig())
+  const decision = authorize(
+    claim,
+    PULL_OPERATION,
+    { vndrId: printVndrWire ?? '__none__' },
+    loadFulfillmentConfig(),
+    // D-9b: the work-queue axis DOES NOT APPLY to a pull, so it is switched off
+    // here rather than left to silently deny. Every other class-6 operation is a
+    // SUBMISSION, and takes the work queue from the artifact the vendor sends
+    // (`sheet.workQueue`, `file.workQueue`, `ev.workQueue`), which the vendor's
+    // credential must then match. A pull sends nothing, and a batch carries no
+    // work-queue column, so there is no value to compare against.
+    //
+    // Before this, both pull call sites passed a resource with NO workQueue
+    // while class 6 enforced that axis, and `credential_projection.work_queue`
+    // is NOT NULL, so a class-6 claim ALWAYS carried one: `undefined !== 'wq-x'`
+    // made every class-6 pull scope-denied BY CONSTRUCTION. The corpus grants
+    // `batch:pull-artifacts` to the MANUFACTURER and PRINT sets, so the code was
+    // contradicting the grant by making it inert; this aligns code to corpus
+    // rather than changing the corpus.
+    //
+    // NOTHING REAL IS LOST. Vendor isolation is carried by the vndrId axis,
+    // which still runs for both classes, and again at the database by the
+    // RESTRICTIVE `print_vndr = app.vndr_id` RLS policy. Class 7 already skips
+    // this axis on this very operation (14a Fork C), so the two classes now
+    // agree instead of differing for no stated reason.
+    { enforceWorkQueue: false },
+  )
   await emitVendorAuthzAudit(db, {
     principalId: claim.sub,
     cls: claim.cls,
@@ -116,7 +142,17 @@ export async function pullTypePdf(
     return pv ? fromUuid('vndr', pv) : null
   })
 
-  const decision = authorize(claim, PULL_OPERATION, { vndrId: printVndrWire ?? '__none__' }, loadFulfillmentConfig())
+  const decision = authorize(
+    claim,
+    PULL_OPERATION,
+    { vndrId: printVndrWire ?? '__none__' },
+    loadFulfillmentConfig(),
+    // D-9b: same as the xlsx pull above. The work-queue axis does not apply
+    // to a pull (nothing is submitted, and a batch carries no work queue), so it
+    // is switched off rather than left to silently deny. See the full reasoning
+    // at the first call site.
+    { enforceWorkQueue: false },
+  )
   await emitVendorAuthzAudit(db, {
     principalId: claim.sub,
     cls: claim.cls,

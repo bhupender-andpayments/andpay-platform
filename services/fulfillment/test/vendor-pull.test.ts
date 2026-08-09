@@ -166,3 +166,86 @@ describe('pullDispatchPackageXlsx (spec 14b task 5, FR-04 D104 disclosure surfac
     }
   })
 })
+
+// D-9b: the CLASS-6 pull, which had never once been exercised.
+//
+// Both test layers for this route minted class 7, where the work-queue axis is
+// skipped, so nobody noticed that class 6 could not pull AT ALL: vendor-pull.ts
+// passed a resource with no workQueue while class 6 enforced that axis, and
+// `credential_projection.work_queue` is NOT NULL, so a class-6 claim always
+// carried one and `undefined !== 'wq-x'` denied every time, by construction.
+//
+// The corpus grants `batch:pull-artifacts` to the class-6 MANUFACTURER and PRINT
+// sets, so the code was contradicting its own grant. These tests pin that a
+// class-6 vendor can pull its OWN batch and still cannot touch anyone else's.
+function mkClaim6(vndrWire: string, workQueue: string): LeanClaim {
+  return {
+    iss: 'andpay-auth',
+    sub: 'api_test',
+    aud: 'andpay:vendor',
+    iat: 0,
+    exp: 0,
+    nbf: 0,
+    jti: 'jti-test-6',
+    cls: 6,
+    mode: 'live',
+    // A class-6 credential ALWAYS carries a work queue: the column is NOT NULL.
+    // That is exactly what used to make this path impossible.
+    scope: { vndr: vndrWire, wq: workQueue },
+    psr: 'vendor_print',
+    epoch: 0,
+  } as unknown as LeanClaim
+}
+
+describe('D-9b: the class-6 pull works, and stays vendor-isolated', () => {
+  it('lets a class-6 print vendor pull its OWN batch, with an ALLOW audit', async () => {
+    const { btchV1Wire, v1Wire } = await seed()
+    const claim = mkClaim6(v1Wire, 'wq-print')
+
+    const res = await pullDispatchPackageXlsx(db, claim, btchV1Wire, 'trace-c6')
+
+    expect(res.xlsx.subarray(0, 2).toString('latin1')).toBe('PK')
+    const allow = (await readOutboxAuthzAudits()).find(
+      (a) => a.operation === 'batch:pull-artifacts' && a.decision === 'ALLOW',
+    )
+    expect(allow).toBeTruthy()
+    expect(allow!.cls).toBe(6)
+  })
+
+  it('works whatever the credential work queue happens to be', async () => {
+    // The axis is off for pull, so the specific queue is irrelevant. Pinning
+    // this stops someone "fixing" it later by matching a queue that a batch
+    // does not have.
+    const { btchV1Wire, v1Wire } = await seed()
+    for (const wq of ['wq-print', 'wq-anything-else', 'wq-map-a']) {
+      const res = await pullDispatchPackageXlsx(db, mkClaim6(v1Wire, wq), btchV1Wire, `trace-${wq}`)
+      expect(res.xlsx.subarray(0, 2).toString('latin1')).toBe('PK')
+    }
+  })
+
+  it('STILL rejects a cross-vndr class-6 pull: isolation is the vndr axis, not the queue', async () => {
+    // The load-bearing half. Switching off the work-queue axis must not have
+    // opened the door for one vendor to read another's batch.
+    const { btchV1Wire, v2Wire } = await seed()
+    const claim = mkClaim6(v2Wire, 'wq-print')
+
+    await expect(pullDispatchPackageXlsx(db, claim, btchV1Wire, 'trace-c6-cross')).rejects.toThrow(PullDeniedError)
+
+    const deny = (await readOutboxAuthzAudits()).find(
+      (a) => a.operation === 'batch:pull-artifacts' && a.decision === 'DENY',
+    )
+    expect(deny).toBeTruthy()
+    expect(deny!.reasonCode).toBe('scope-denied')
+  })
+
+  it('still denies a class-6 vendor set that lacks the permission', async () => {
+    // The permission gate is untouched: only the SCOPE axis changed. A courier
+    // is deliberately excluded from artifact pull (105d) and must stay excluded.
+    const { btchV1Wire, v1Wire } = await seed()
+    const courier = { ...mkClaim6(v1Wire, 'wq-print'), psr: 'vendor_courier' } as LeanClaim
+
+    await expect(pullDispatchPackageXlsx(db, courier, btchV1Wire, 'trace-c6-courier')).rejects.toThrow(PullDeniedError)
+    const deny = (await readOutboxAuthzAudits()).find((a) => a.decision === 'DENY')
+    expect(deny!.reasonCode).toBe('permission-denied')
+  })
+})
