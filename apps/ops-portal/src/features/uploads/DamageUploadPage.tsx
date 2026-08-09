@@ -84,7 +84,7 @@ export function DamageUploadPage() {
       <CardContent className="space-y-4">
         <div className="space-y-2">
           <Label htmlFor="damage-upload-file">Damage report file</Label>
-          <FileDropZone id="damage-upload-file" file={file} onPick={(f) => { void handleFile(f) }} disabled={previewing || committing} />
+          <FileDropZone id="damage-upload-file" file={file} onPick={(f) => { void handleFile(f) }} disabled={previewing || committing} done={commitResult !== null} />
         </div>
 
         {error !== null && <ErrorNote>{error}</ErrorNote>}

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, within } from '@testing-library/react'
+import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -51,18 +51,6 @@ const BATCH_ROW = {
   triggeredByActor: null,
   createdAt: '2026-05-02T00:00:00.000Z',
   updatedAt: '2026-05-02T00:00:00.000Z',
-}
-
-const DISPATCH_ROW = {
-  id: 'shpt_1',
-  awb: 'AWB-12345',
-  status: 'IN_TRANSIT',
-  courierPartner: null,
-  dispatchDate: '2026-05-03T00:00:00.000Z',
-  statusAt: null,
-  statusSource: 'WEBHOOK',
-  createdAt: '2026-05-03T00:00:00.000Z',
-  updatedAt: '2026-05-03T00:00:00.000Z',
 }
 
 function stubFetch(handler: (url: string) => Response): Call[] {
@@ -132,26 +120,13 @@ describe('FulfillmentPage', () => {
     })
   })
 
-  it('switching to Batches calls GET /ops/batches and shows the stored unit count', async () => {
+  it('the batches region calls GET /ops/batches and shows the stored unit count', async () => {
     const calls = stubFetch((url) => jsonResponse(url.includes('/ops/batches') ? [BATCH_ROW] : [POOL_ROW]))
     renderFulfillment()
     await screen.findByText('BRILLIANT PERFUME')
-    await userEvent.click(screen.getByRole('button', { name: 'Batches' }))
     expect(await screen.findByText('btch_abc')).toBeTruthy()
     expect(screen.getByText('42')).toBeTruthy()
     expect(calls.some((c) => c.url.includes('/ops/batches'))).toBe(true)
-  })
-
-  it('switching to Dispatches calls GET /ops/dispatches and sends ?status when filtered', async () => {
-    const calls = stubFetch((url) => jsonResponse(url.includes('/ops/dispatches') ? [DISPATCH_ROW] : [POOL_ROW]))
-    renderFulfillment()
-    await screen.findByText('BRILLIANT PERFUME')
-    await userEvent.click(screen.getByRole('button', { name: 'Dispatches' }))
-    expect(await screen.findByText('AWB-12345')).toBeTruthy()
-    await userEvent.selectOptions(screen.getByLabelText('Carrier status'), 'DELIVERED')
-    await vi.waitFor(() => {
-      expect(calls.some((c) => c.url.includes('status=DELIVERED'))).toBe(true)
-    })
   })
 
   it('renders NO recipient PII, because the server projection carries none', async () => {
@@ -223,8 +198,54 @@ describe('FulfillmentPage navigation', () => {
     stubFetch((url) => jsonResponse(url.includes('/ops/batches') ? [BATCH_ROW] : [POOL_ROW]))
     renderFulfillment()
     await screen.findByText('BRILLIANT PERFUME')
-    await userEvent.click(screen.getByRole('button', { name: 'Batches' }))
-    const table = await screen.findByRole('table')
-    expect(within(table).getByRole('button', { name: 'btch_abc' })).toBeTruthy()
+    // Two tables on screen now (pool and batches), so the batch link is found
+    // directly rather than by assuming there is only one table.
+    expect(await screen.findByRole('button', { name: 'btch_abc' })).toBeTruthy()
+  })
+})
+
+// Spec 7.2: "Two regions on one page." The tab strip was the same shape
+// principle 4 names as the defect and that the redesign had already removed
+// from Uploads and Operations. Worse here, because the pending pool and the
+// batches formed FROM it are two halves of one question.
+describe('Batches: two regions, no tab strip', () => {
+  beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
+  afterEach(() => { cleanup(); clearAccessToken() })
+
+  function stubBoth() {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/ops/batches')) {
+        return new Response(JSON.stringify([{
+          id: 'btch_1', status: 'BORN', triggerReason: 'MANUAL', unitCount: 3,
+          printVndr: null, triggeredByActor: null,
+          createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+        }]), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+  }
+
+  it('has no tab strip', async () => {
+    stubBoth()
+    renderFulfillment()
+    await screen.findByText(/pending pool/i)
+    for (const gone of ['Pending Pool', 'Dispatches']) {
+      expect(screen.queryByRole('button', { name: gone })).toBeNull()
+    }
+  })
+
+  it('shows the pool and the batches at the same time, not one at a time', async () => {
+    stubBoth()
+    renderFulfillment()
+    // Both region headings are on screen together.
+    expect(await screen.findByText(/records awaiting batching/i)).toBeTruthy()
+    expect(screen.getByText(/newest first\. select a batch/i)).toBeTruthy()
+  })
+
+  it('no longer carries the shipments list, which moved to /dispatches', async () => {
+    stubBoth()
+    renderFulfillment()
+    await screen.findByText(/pending pool/i)
+    expect(screen.queryByLabelText(/carrier status/i)).toBeNull()
   })
 })

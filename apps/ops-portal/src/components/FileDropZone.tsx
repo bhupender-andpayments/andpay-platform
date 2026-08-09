@@ -50,6 +50,7 @@ export function FileDropZone({
   accept = ACCEPT,
   constraint = 'CSV or XLSX, max 5 MiB',
   expects,
+  done = false,
 }: {
   id: string
   file: File | null
@@ -63,6 +64,11 @@ export function FileDropZone({
   // whole reason a correct file was ever rejected in the first place. Pass it
   // only where the canonical list is known; never guess a column name.
   expects?: readonly string[]
+  // True once this exact file has been accepted by the server, so the chip can
+  // stop claiming otherwise. Without it the chip still read "3.7 KB, ready to
+  // upload" AFTER a successful upload, next to the result counts it had just
+  // produced, which invites a second submit of a file that already landed.
+  done?: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
@@ -169,7 +175,10 @@ export function FileDropZone({
             <p className="truncate font-mono text-[13px] text-foreground" title={file.name}>
               {file.name}
             </p>
-            <p className="text-xs text-muted-foreground">{formatFileSize(file.size)}, ready to upload</p>
+            <p className="text-xs text-muted-foreground">
+              {formatFileSize(file.size)}
+              {done ? ', uploaded' : ', ready to upload'}
+            </p>
           </div>
           <button
             type="button"

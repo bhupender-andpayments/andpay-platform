@@ -84,7 +84,7 @@ export function BankUploadPage() {
       <CardContent className="space-y-4">
         <div className="space-y-2">
           <Label htmlFor="bank-upload-file">Bank request file</Label>
-          <FileDropZone id="bank-upload-file" file={file} onPick={(f) => { void handleFile(f) }} disabled={previewing || committing} />
+          <FileDropZone id="bank-upload-file" file={file} onPick={(f) => { void handleFile(f) }} disabled={previewing || committing} done={commitResult !== null} />
         </div>
 
         {error !== null && <ErrorNote>{error}</ErrorNote>}

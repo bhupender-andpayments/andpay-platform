@@ -191,6 +191,7 @@ export function DeviceInventoryUploadPage() {
             onPick={handleFile}
             disabled={busy}
             expects={EXPECTED_COLUMN_LIST}
+            done={result !== null}
           />
         </div>
 

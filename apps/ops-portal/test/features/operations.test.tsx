@@ -496,3 +496,39 @@ describe('DispatchHistoryPage: our field names and typed filters', () => {
     expect(calls.some((c) => c.url.includes('bank=GSCB'))).toBe(false)
   })
 })
+
+// Moved here from the Batches page's third tab. Batches is about what is
+// waiting and what formed; a shipment's carrier status is a property of the
+// DISPATCH, and section 4 lists getDispatches among this section's reads.
+describe('DispatchesPage: the shipments region', () => {
+  beforeEach(() => {
+    clearAccessToken()
+    setAccessToken('tok-1')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+  })
+
+  const SHIPMENT = {
+    id: 'shpt_1', awb: 'AWB-12345', status: 'IN_TRANSIT', courierPartner: 'BlueDart',
+    dispatchDate: '2026-08-01T00:00:00.000Z', statusAt: '2026-08-02T00:00:00.000Z', statusSource: 'WEBHOOK',
+  }
+
+  it('lists shipments and sends ?status when the carrier filter is used', async () => {
+    const calls: { url: string }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push({ url })
+      if (url.includes('/ops/dispatches')) return jsonResponse([SHIPMENT])
+      return jsonResponse({ rows: [], watermark: { asOf: null, perTopic: {} } })
+    }))
+
+    render(withProviders(<DispatchesPage />))
+
+    expect(await screen.findByText('AWB-12345')).toBeTruthy()
+    await userEvent.selectOptions(screen.getByLabelText(/carrier status/i), 'DELIVERED')
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('status=DELIVERED'))).toBe(true)
+    })
+  })
+})

@@ -245,6 +245,26 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
   // Reports under Insights. It read correctly only for the Operations group, by
   // coincidence.
   const group = GROUPED_NAV.find((g) => g.items.some((i) => i.to === section?.to))?.title ?? 'Ops Console'
+
+  // The crumb stopped at the SECTION, so every upload read "Operations /
+  // Uploads" no matter which of the three you were on, and the deep-linkable
+  // sub-routes step 4 introduced were invisible in it.
+  //
+  // The leaf is derived from the PATH SEGMENT, not from a table of labels: a
+  // sub-route added later gets a crumb automatically instead of silently
+  // falling back to its parent, which is the failure this is fixing.
+  //
+  // A segment that is a wire id is deliberately NOT shown. `/batches/btch_01kz...`
+  // would put 31 opaque characters in the crumb, and the batch page already
+  // prints the id under its own title, so it would be noise repeated.
+  const rest = section === undefined ? '' : pathname.slice(section.to.length).replace(/^\//, '')
+  const leafSlug = rest.split('/')[0] ?? ''
+  const leafIsWireId = /^[a-z]+_[0-9a-z]+$/i.test(leafSlug)
+  const leaf =
+    leafSlug === '' || leafIsWireId
+      ? null
+      : leafSlug.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase())
+
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/80 px-4 backdrop-blur lg:px-6">
       <button
@@ -258,7 +278,15 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
       <div className="flex min-w-0 items-center gap-2 text-[13px]">
         <span className="hidden text-muted-foreground sm:inline">{group}</span>
         <span className="hidden text-muted-foreground sm:inline">/</span>
-        <span className="truncate font-medium text-foreground">{current}</span>
+        {leaf === null ? (
+          <span className="truncate font-medium text-foreground">{current}</span>
+        ) : (
+          <>
+            <span className="hidden text-muted-foreground sm:inline">{current}</span>
+            <span className="hidden text-muted-foreground sm:inline">/</span>
+            <span className="truncate font-medium text-foreground">{leaf}</span>
+          </>
+        )}
       </div>
     </header>
   )

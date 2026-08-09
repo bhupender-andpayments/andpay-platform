@@ -1,11 +1,15 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { DispatchHistoryPage } from '../operations/DispatchHistoryPage.js'
 import { StatusCorrectionForm } from '../operations/StatusCorrectionForm.js'
 import { TerminalOverrideForm } from '../destructive/TerminalOverrideForm.js'
 import { VendorSuspendButton } from '../destructive/VendorSuspendButton.js'
 import { PageHeader, InfoNote } from '../../ui/primitives.js'
+import { useAuth } from '../../auth/AuthContext.js'
 import { IconShield } from '../../ui/icons.js'
-import type { ReportRow } from '../../api/endpoints.js'
+import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { getDispatches, type DispatchRow, type ReportRow } from '../../api/endpoints.js'
+import { Card, CardHeader, Field, Select, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
+import { fmtDateTime } from '../../ui/format.js'
 
 // Redesign section 4: "Operations dissolves entirely. Batch trigger moves to
 // Batches. Status correction moves to the dispatch it corrects. Recompose moves
@@ -32,9 +36,66 @@ import type { ReportRow } from '../../api/endpoints.js'
 // The step-up gate is UNCHANGED by the move. OPS_STEP_UP_GATED_OPERATIONS is
 // the source of truth for that, not the page layout (constraint 5), so a
 // terminal override re-prompts here exactly as it did on the Destructive tab.
+// shpt.status values (services/fulfillment prisma schema Shpt.status).
+// '' means "no filter".
+const DISPATCH_STATUSES = [
+  '',
+  'DISPATCHED_BY_VENDOR',
+  'PICKED_UP',
+  'IN_TRANSIT',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+  'FAILED',
+  'RETURNED',
+] as const
+
 export function DispatchesPage() {
+  const { client } = useAuth()
   const [correcting, setCorrecting] = useState<ReportRow | null>(null)
   const [overriding, setOverriding] = useState<ReportRow | null>(null)
+
+  // The carrier-level view, moved here from the Batches page's third tab.
+  // Batches is about what is waiting and what formed; a shipment's carrier
+  // status is a property of the DISPATCH, which is this page. Section 4 lists
+  // getDispatches among this section's backing reads for that reason.
+  const [shipments, setShipments] = useState<DispatchRow[]>([])
+  const [shipmentStatus, setShipmentStatus] = useState<string>('')
+  const [shipmentsLoading, setShipmentsLoading] = useState(true)
+  const [shipmentsError, setShipmentsError] = useState<string | null>(null)
+
+  const loadShipments = useCallback(async (): Promise<void> => {
+    setShipmentsLoading(true)
+    setShipmentsError(null)
+    try {
+      const rows = await getDispatches(client, shipmentStatus)
+      // Array.isArray for the same reason VendorSuspendButton needed it: a
+      // non-array body reaching a DataTable throws during render and takes the
+      // whole page with it, including the dispatch history and both action
+      // forms, which have nothing to do with shipments.
+      if (Array.isArray(rows)) setShipments(rows)
+      else {
+        setShipments([])
+        setShipmentsError('Could not read the shipment list.')
+      }
+    } catch (err) {
+      setShipmentsError(err instanceof Error ? err.message : 'Failed to load shipments.')
+    } finally {
+      setShipmentsLoading(false)
+    }
+  }, [client, shipmentStatus])
+
+  useEffect(() => {
+    void loadShipments()
+  }, [loadShipments])
+
+  const shipmentColumns: DataTableColumn<DispatchRow>[] = [
+    { key: 'awb', header: 'AWB', cell: (r) => r.awb },
+    { key: 'status', header: 'Status', cell: (r) => r.status },
+    { key: 'courierPartner', header: 'Courier', cell: (r) => r.courierPartner ?? '-' },
+    { key: 'dispatchDate', header: 'Dispatched', cell: (r) => fmtDateTime(r.dispatchDate) },
+    { key: 'statusAt', header: 'Last Update', cell: (r) => (r.statusAt === null ? '-' : fmtDateTime(r.statusAt)) },
+    { key: 'statusSource', header: 'Source', cell: (r) => r.statusSource ?? '-' },
+  ]
 
   // Only one action is open at a time. Two forms over one row, both able to
   // write to the same shipment, is a way to act twice by accident.
@@ -96,6 +157,35 @@ export function DispatchesPage() {
           decision would have silently removed a working control, which is worse
           than showing it in an imperfect place. It keeps its step-up gate
           either way. Needs Bhupender's ruling; moving it later is one import. */}
+      <Card>
+        <CardHeader
+          title="Shipments"
+          subtitle="Carrier view: one row per AWB, newest dispatch first."
+          actions={
+            <Field label="Carrier status" htmlFor="shipmentStatus">
+              <Select id="shipmentStatus" value={shipmentStatus} onChange={(e) => setShipmentStatus(e.target.value)}>
+                {DISPATCH_STATUSES.map((st) => (
+                  <option key={st === '' ? 'all' : st} value={st}>
+                    {st === '' ? 'All' : st}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          }
+        />
+        {shipmentsError !== null ? <ErrorNote>{shipmentsError}</ErrorNote> : null}
+        {shipmentsLoading ? (
+          <SkeletonRows rows={5} cols={6} />
+        ) : (
+          <DataTable
+            columns={shipmentColumns}
+            rows={shipments}
+            getRowKey={(r) => r.id}
+            emptyMessage="No shipments yet."
+          />
+        )}
+      </Card>
+
       <div className="space-y-4 border-t border-border pt-5">
         <VendorSuspendButton />
       </div>
