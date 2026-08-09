@@ -4,8 +4,9 @@ import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as FulfillmentClient, InMemoryAssetStore } from '@andpay/fulfillment-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
-import { identityRoutes, tmsRoutes, fulfillmentRoutes, analyticsRoutes, groupIdFor, type ConsumerRoute } from './routes.js'
-import { withLadder, ladderTopicsFor } from './ladder.js'
+import { PrismaClient as AuthClient } from '@andpay/auth-service'
+import { identityRoutes, tmsRoutes, fulfillmentRoutes, analyticsRoutes, authRoutes, groupIdFor, type ConsumerRoute } from './routes.js'
+import { withLadder, withRawLadder, ladderTopicsFor } from './ladder.js'
 
 // The per-context fact consumer (relay plan step 2).
 //
@@ -18,8 +19,9 @@ import { withLadder, ladderTopicsFor } from './ladder.js'
 // what stops a slow consumer from ever running inside relayOnce's claim
 // transaction (GO_LIVE_BLOCKERS 2.3).
 //
-// All four contexts are wired. An unknown CONSUMER_CONTEXT fails loudly rather
-// than starting a process that silently consumes nothing.
+// All FIVE contexts are wired (the four fact contexts plus auth, which appends
+// the 6e authorization-decision ledger). An unknown CONSUMER_CONTEXT fails
+// loudly rather than starting a process that silently consumes nothing.
 
 function requireEnv(name: string): string {
   const value = process.env[name]
@@ -59,9 +61,17 @@ function buildContext(context: string): Built {
       const db = new AnalyticsClient({ datasourceUrl: requireEnv('ANALYTICS_DATABASE_URL') })
       return { route: analyticsRoutes(db), disconnect: () => db.$disconnect() }
     }
+    case 'auth': {
+      // The 6e ledger consumer. It appends every authorization decision the
+      // other contexts emit to auth.authz_audit, which is what makes a
+      // permission denial durable and answerable ("who tried to reach what").
+      // Before this, the chain was simply never appended.
+      const db = new AuthClient({ datasourceUrl: requireEnv('AUTH_DATABASE_URL') })
+      return { route: authRoutes(db), disconnect: () => db.$disconnect() }
+    }
     default:
       throw new Error(
-        `CONSUMER_CONTEXT="${context}" is not a context. Expected one of: identity, tms, fulfillment, analytics.`,
+        `CONSUMER_CONTEXT="${context}" is not a context. Expected one of: identity, tms, fulfillment, analytics, auth.`,
       )
   }
 }
@@ -117,6 +127,23 @@ async function main(): Promise<void> {
         )
       },
     }),
+    // Only the auth context sets handleRaw, for the one non-envelope channel.
+    // Passed through the SAME ladder, so a failing audit append moves a rung
+    // instead of jamming the partition, exactly like every other consumer.
+    ...(route.handleRaw
+      ? {
+          onRawPayload: withRawLadder({
+            producer,
+            handle: route.handleRaw,
+            onRetry: (i) => {
+              console.warn(`[consumer:${context}] ${i.dedupKey} -> ${i.nextTopic}: ${i.reason}`)
+            },
+            onDeadLetter: (i) => {
+              console.error(`[consumer:${context}] DEAD-LETTERED ${i.dedupKey} to ${i.topic}: ${i.reason}`)
+            },
+          }),
+        }
+      : {}),
   })
 
   const stop = (): void => {

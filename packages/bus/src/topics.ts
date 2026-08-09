@@ -18,6 +18,18 @@ export interface TopicSpec {
 // rebuild window (E9, default 30 days).
 const THIRTY_DAYS_MS = String(30 * 24 * 60 * 60 * 1000)
 
+/**
+ * The 6e authorization-decision channel, named ONCE.
+ *
+ * It is referenced three times in this file's own logic (the topic spec, the
+ * raw-payload exemption, and now consumers subscribing to it), and a topic name
+ * that exists as three string literals is a rename waiting to half-land: the
+ * provisioner would create one name while the codec exemption still guarded
+ * another, and the mismatch would surface as a decode failure on a channel that
+ * looked correctly configured.
+ */
+export const AUTHZ_AUDIT_TOPIC = 'authz.audit'
+
 export const SOUNDBOX_TOPICS: TopicSpec[] = [
   { name: 'fct.identity.merchant.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.identity.tenant.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
@@ -46,7 +58,7 @@ export const SOUNDBOX_TOPICS: TopicSpec[] = [
   // (audit.ts). Kafka is transport only, not the system of record (the
   // append-only authz_audit table is), so a bounded retention sized to the
   // same E9 rebuild/redelivery window as the fact topics is sufficient.
-  { name: 'authz.audit', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  { name: AUTHZ_AUDIT_TOPIC, partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
 ]
 
 /**
@@ -74,7 +86,7 @@ export const SOUNDBOX_TOPICS: TopicSpec[] = [
  * Adding a topic to this set is a corpus-level decision, not a convenience: it
  * opts a channel out of the platform's wire contract.
  */
-const RAW_PAYLOAD_TOPICS: ReadonlySet<string> = new Set(['authz.audit'])
+const RAW_PAYLOAD_TOPICS: ReadonlySet<string> = new Set([AUTHZ_AUDIT_TOPIC])
 
 /**
  * True when `topic` carries an E4 envelope as its message value, which is

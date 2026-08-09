@@ -165,6 +165,9 @@ importers:
       '@andpay/analytics-service':
         specifier: workspace:*
         version: link:../../services/analytics
+      '@andpay/auth-service':
+        specifier: workspace:*
+        version: link:../../services/auth
       '@andpay/bus':
         specifier: workspace:*
         version: link:../../packages/bus

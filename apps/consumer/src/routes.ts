@@ -20,6 +20,8 @@ import {
   ANALYTICS_TOPICS,
   type PrismaClient as AnalyticsClient,
 } from '@andpay/analytics-service'
+import { consumeAuthzAudit, type PrismaClient as AuthClient } from '@andpay/auth-service'
+import { AUTHZ_AUDIT_TOPIC } from '@andpay/bus'
 
 /**
  * The fact routes, keyed by the context that OWNS THE WRITE.
@@ -43,6 +45,12 @@ import {
 export interface ConsumerRoute {
   readonly topics: readonly string[]
   readonly handle: (envelope: Envelope) => Promise<void>
+  /**
+   * Handler for a RAW-payload channel. Present only for `authz.audit`, the one
+   * topic that carries a bare record rather than an E4 envelope, so a route
+   * with this set has a `handle` that is never reached.
+   */
+  readonly handleRaw?: (payload: unknown) => Promise<void>
 }
 
 /**
@@ -212,6 +220,43 @@ export function analyticsRoutes(db: AnalyticsClient): ConsumerRoute {
     topics: [...ANALYTICS_TOPICS],
     handle: async (envelope: Envelope) => {
       await ingestEnvelope(db, envelope)
+    },
+  }
+}
+
+/**
+ * AUTH: the authorization-decision ledger (6e).
+ *
+ * Every context emits `authz.audit` records into its own outbox, the relay
+ * publishes them, and until now NOTHING read them back: the hash-chained
+ * ledger in `auth.authz_audit` was simply not being appended, so a permission
+ * denial left no durable trace. Measured live during D-9: a real 403 produced
+ * no ledger row.
+ *
+ * Bhupender asked for these to be kept in the database "so we can know who is
+ * trying to access the things not allowed to", which is what this route does.
+ *
+ * THE ONE RAW CHANNEL. `authz.audit` carries the bare record `{id, ...record}`,
+ * not an E4 envelope (see @andpay/bus topics.ts), so it arrives via `handleRaw`.
+ * `consumeAuthzAudit` dedups on the DELIVERED `payload.id`, so a redelivery
+ * appends nothing and the chain cannot fork.
+ *
+ * NOT the same thing as A-7. This drains the audit records the OTHER four
+ * contexts produce, which is ordinary bus traffic. A-7 is about draining
+ * `auth`'s OWN outbox, which carries credential-shaped facts and still needs an
+ * S4 decision. That stays open.
+ */
+export function authRoutes(db: AuthClient): ConsumerRoute {
+  return {
+    topics: [AUTHZ_AUDIT_TOPIC],
+    handle: async () => {
+      // Unreachable: isEnvelopeTopic routes this channel to handleRaw. Kept so
+      // a future change that starts sending envelopes here fails loudly instead
+      // of silently writing nothing.
+      throw new Error(`${AUTHZ_AUDIT_TOPIC} is a raw-payload channel and must be handled by handleRaw`)
+    },
+    handleRaw: async (payload: unknown) => {
+      await consumeAuthzAudit(db, payload as Parameters<typeof consumeAuthzAudit>[1])
     },
   }
 }

@@ -4,7 +4,7 @@ export {
   type SchemaRegistryPort,
   type CompatLevel,
 } from './schema-registry.js'
-export { SOUNDBOX_TOPICS, retryAndDlqTopics, isEnvelopeTopic, type TopicSpec } from './topics.js'
+export { SOUNDBOX_TOPICS, retryAndDlqTopics, isEnvelopeTopic, AUTHZ_AUDIT_TOPIC, type TopicSpec } from './topics.js'
 export { provisionTopics, type ProvisionResult } from './provision.js'
 export { KafkaPublisher } from './kafka-publisher.js'
 export { runFactConsumer, type ConsumerHandle } from './consumer.js'

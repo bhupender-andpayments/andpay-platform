@@ -56,10 +56,38 @@ const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r
  * decodes exactly as the first delivery did.
  */
 export function withLadder(opts: LadderOptions): (envelope: Envelope, raw: EachMessagePayload) => Promise<void> {
+  return makeLadder<Envelope>(opts, opts.handle, (e) => e.dedupKey)
+}
+
+/**
+ * The same ladder for the ONE raw-payload channel (`authz.audit`), which
+ * carries a bare record rather than an E4 envelope.
+ *
+ * Deliberately the SAME implementation rather than a second copy: the ladder's
+ * value is that a failure moves one rung instead of jamming the partition, and
+ * a second hand-maintained copy of that logic is exactly the drift this
+ * codebase has been bitten by. Only two things differ, and both are injected:
+ * the handler's argument type, and where the log line's identifier comes from
+ * (an audit record carries `id`, not `dedupKey`).
+ */
+export function withRawLadder(
+  opts: Omit<LadderOptions, 'handle'> & { handle: (payload: unknown) => Promise<void> },
+): (payload: unknown, raw: EachMessagePayload) => Promise<void> {
+  return makeLadder<unknown>(opts, opts.handle, (p) => {
+    const id = (p as { id?: unknown } | null)?.id
+    return typeof id === 'string' ? id : '(no id)'
+  })
+}
+
+function makeLadder<T>(
+  opts: Omit<LadderOptions, 'handle'>,
+  handle: (value: T) => Promise<void>,
+  dedupKeyOf: (value: T) => string,
+): (value: T, raw: EachMessagePayload) => Promise<void> {
   const retryLevels = opts.retryLevels ?? DEFAULT_RETRY_LEVELS
   const sleep = opts.sleep ?? realSleep
 
-  return async (envelope: Envelope, raw: EachMessagePayload): Promise<void> => {
+  return async (envelope: T, raw: EachMessagePayload): Promise<void> => {
     // Backoff happens on the CONSUME side because Kafka has no delayed
     // delivery. It blocks only this rung's partition, never the base topic's,
     // which is why the rungs are separate topics rather than a counter.
@@ -67,11 +95,11 @@ export function withLadder(opts: LadderOptions): (envelope: Envelope, raw: EachM
     if (delay > 0) await sleep(delay)
 
     try {
-      await opts.handle(envelope)
+      await handle(envelope)
       return
     } catch (err: unknown) {
       const reason = err instanceof Error ? err.message : String(err)
-      const dedupKey = envelope.dedupKey
+      const dedupKey = dedupKeyOf(envelope)
 
       // Defensive: nothing subscribes to a DLQ topic, so this should be
       // unreachable. If it ever is reached, stopping is right. Republishing a
