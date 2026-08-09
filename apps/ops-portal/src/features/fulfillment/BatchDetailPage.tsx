@@ -172,10 +172,21 @@ export function BatchDetailPage() {
       {!loading && !notFound && detail !== null ? (
         <>
           <Card>
-            <CardHeader
-              title="Summary"
-              subtitle={`${detail.batch.status} - formed ${fmtDateTime(detail.batch.createdAt)}`}
-            />
+            {/* `batch.status` is NOT shown, and that is the honest option
+                rather than the lazy one.
+                batching.ts inserts 'BORN' and NOTHING anywhere updates it, so
+                the column has exactly one value for the life of every batch.
+                This subtitle read "BORN - formed 10 Aug" and would have read
+                that forever, including after all six of its devices had
+                shipped and one had gone live. A word that cannot change is not
+                a status, and printing it beside a real timestamp implies a
+                lifecycle the domain does not have.
+                Adding the missing states (sent to vendor, closed) would be
+                inventing a state machine, which is a corpus decision, not a
+                portal one. So the portal stops asserting something untrue and
+                waits for the ruling. The column is untouched; when a real
+                lifecycle is ratified this becomes one line again. */}
+            <CardHeader title="Summary" subtitle={`Formed ${fmtDateTime(detail.batch.createdAt)}`} />
             {/* min-w-0 on every cell: a wire vndr_ id is 31 characters with no
                 spaces, so without it the grid cell refuses to shrink and the id
                 overflows into the next column. Caught in a real browser, not in

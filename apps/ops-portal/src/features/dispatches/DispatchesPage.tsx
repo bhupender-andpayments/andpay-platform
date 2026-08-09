@@ -186,9 +186,32 @@ export function DispatchesPage() {
         )}
       </Card>
 
-      <div className="space-y-4 border-t border-border pt-5">
-        <VendorSuspendButton />
-      </div>
+      {/* VENDOR SUSPEND IS PARKED HERE AND THIS IS STILL NOT ITS HOME.
+          Left where it is on purpose rather than moved, because BOTH candidate
+          homes are closed by a ratified decision and a portal change is not
+          the place to overrule either:
+            - Principle 1 says a write is reached from the page of the thing it
+              changes, which is the vendor registry. But L9 defers the whole
+              FR-11 vendor admin console and names SUSPEND in that deferral,
+              and MasterDataPage says outright "Do not add a write control to
+              any tab".
+            - Redesign section 4 enumerates where every Operations verb goes
+              and never mentions this one.
+          Deleting the page would have silently removed a working, step-up
+          gated control; inventing a new destination would be inventing IA.
+          So it stays reachable and is now clearly SEPARATED and LABELLED, so
+          it reads as a vendor action that happens to live here rather than as
+          something you do to a dispatch. Bhupender's ruling; moving it is one
+          import. */}
+      <Card>
+        <CardHeader
+          title="Vendor actions"
+          subtitle="Not part of a dispatch. Parked here until the vendor admin console (L9) is undeferred."
+        />
+        <div className="p-5">
+          <VendorSuspendButton />
+        </div>
+      </Card>
     </div>
   )
 }

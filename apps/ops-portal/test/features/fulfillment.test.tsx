@@ -249,3 +249,28 @@ describe('Batches: two regions, no tab strip', () => {
     expect(screen.queryByLabelText(/carrier status/i)).toBeNull()
   })
 })
+
+// `batch.status` is written once as 'BORN' by batching.ts and nothing anywhere
+// updates it, so it had exactly one value for the life of every batch. The
+// portal used to print it as a status beside a real timestamp ("BORN - formed
+// 10 Aug"), which asserts a lifecycle the domain does not have. Adding the
+// missing states would be inventing a state machine, so the portal stops
+// claiming instead.
+describe('Batches: a constant is not a status', () => {
+  beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
+  afterEach(() => { cleanup(); clearAccessToken() })
+
+  it('the batch list has no Status column', async () => {
+    stubFetch((url) => jsonResponse(url.includes('/ops/batches') ? [BATCH_ROW] : []))
+    renderFulfillment()
+    expect(await screen.findByRole('columnheader', { name: 'Trigger' })).toBeTruthy()
+    expect(screen.queryByRole('columnheader', { name: 'Status' })).toBeNull()
+  })
+
+  it('batch detail states when it formed, not a word that never changes', async () => {
+    stubFetch(() => jsonResponse({ batch: BATCH_ROW, entries: [], artifacts: [] }))
+    renderBatchDetail('btch_abc')
+    expect(await screen.findByText(/^Formed /)).toBeTruthy()
+    expect(screen.queryByText(/BORN/)).toBeNull()
+  })
+})

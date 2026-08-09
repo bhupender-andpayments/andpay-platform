@@ -106,7 +106,11 @@ export function FulfillmentPage() {
         </button>
       ),
     },
-    { key: 'status', header: 'Status', cell: (r) => r.status },
+    // No Status column: batching.ts writes 'BORN' once and nothing updates it,
+    // so this rendered the same word on every row forever. A constant column
+    // costs width and teaches an operator to ignore a field. See the note on
+    // BatchDetailPage; restoring it is one line once a batch lifecycle is
+    // actually ruled.
     { key: 'triggerReason', header: 'Trigger', cell: (r) => r.triggerReason },
     // The STORED batch.unit_count the batching PM maintains, never recomputed.
     { key: 'unitCount', header: 'Units', cell: (r) => r.unitCount },
