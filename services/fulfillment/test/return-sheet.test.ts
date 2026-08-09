@@ -839,14 +839,35 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     expect(row[0]!.courier_partner).toBe(courierUuid)
   })
 
-  it('quarantines a row whose courier code is unknown, and does NOT auto-create a vndr_ (103d)', async () => {
+  // CHANGED DELIBERATELY. This used to assert the row was QUARANTINED. The cost
+  // of that was measured on a real return file: sending `Courier = BlueDart`
+  // (the display name) instead of the code `BDE` quarantined ALL SIX rows and
+  // discarded six correct Device ID / AWB pairs. The published template marks
+  // Courier OPTIONAL and never says a code is expected or which codes exist.
+  //
+  // An OPTIONAL field must not be able to reject a row whose REQUIRED fields
+  // are good. The row is now kept with no courier, exactly as a row that named
+  // none would be, and the exception is still recorded so the mismatch stays
+  // visible. 103d's actual rule, never auto-create a vndr_, is unchanged and
+  // still asserted below.
+  it('keeps a row whose courier code is unknown, records the exception, and never auto-creates a vndr_ (103d)', async () => {
     const sheet = await buildValidSheet({ courierCode: 'NOT-A-COURIER' })
     const claim = classSixClaim(sheet.vndrId, sheet.workQueue)
     const res = await ingestReturnSheet(db, claim, sheet, 'trace-rs-unknown')
-    expect(res.rejected).toBeUndefined() // per-row quarantine, NOT a whole-file reject
-    expect(res.quarantined).toBe(1)
-    expect(res.shptIds).toHaveLength(0)
+    expect(res.rejected).toBeUndefined()
+    // The row survives: not quarantined, and it births its shipment.
+    expect(res.quarantined).toBe(0)
+    expect(res.shptIds).toHaveLength(1)
 
+    // The shipment carries NO courier partner, which is the honest outcome:
+    // the file named one we do not recognise, so we record none rather than
+    // guess.
+    const row = await db.$queryRaw<{ courier_partner: string | null }[]>`
+      SELECT courier_partner::text AS courier_partner FROM shpt WHERE id = ${toUuid(res.shptIds[0]!)}::uuid
+    `
+    expect(row[0]!.courier_partner).toBeNull()
+
+    // Still reported, so an operator can see the file used a bad code.
     const q = await db.$queryRaw<{ reason_code: string }[]>`
       SELECT reason_code FROM intake_exception WHERE file_id = ${sheet.fileId}
     `
@@ -875,8 +896,10 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     const sheet = await buildValidSheet({ courierCode: 'DORMANT' })
     const claim = classSixClaim(sheet.vndrId, sheet.workQueue)
     const res = await ingestReturnSheet(db, claim, sheet, 'trace-rs-suspended')
-    expect(res.quarantined).toBe(1)
-    expect(res.shptIds).toHaveLength(0)
+    // Kept, not quarantined: an unrecognised courier is an OPTIONAL field
+    // failing and must not reject a row whose required fields are good.
+    expect(res.quarantined).toBe(0)
+    expect(res.shptIds).toHaveLength(1)
   })
 
   // Review fix (untested non-COURIER resolver predicate): an ACTIVE vendor of
@@ -895,8 +918,11 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     const claim = classSixClaim(sheet.vndrId, sheet.workQueue)
     const res = await ingestReturnSheet(db, claim, sheet, 'trace-rs-nonCourier')
     expect(res.rejected).toBeUndefined()
-    expect(res.quarantined).toBe(1)
-    expect(res.shptIds).toHaveLength(0)
+    // Kept, not quarantined: an unrecognised courier is an OPTIONAL field
+    // failing, and it must not reject a row whose required fields are good.
+    // The vendor is still not matched, so the shipment carries no courier.
+    expect(res.quarantined).toBe(0)
+    expect(res.shptIds).toHaveLength(1)
 
     const q = await db.$queryRaw<{ reason_code: string }[]>`
       SELECT reason_code FROM intake_exception WHERE file_id = ${sheet.fileId}

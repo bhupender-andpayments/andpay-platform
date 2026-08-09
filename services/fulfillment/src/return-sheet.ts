@@ -280,10 +280,24 @@ export async function ingestReturnSheet(
         const batchUuid = entry.batch
         const merchantUuid = entry.merchant_id
 
-        // (2b) resolve the FR-05 courier partner, if the row names one. 103d:
-        // an unknown or inactive courier is QUARANTINED, never auto-created.
-        // vndr is permissive RLS, so no program context is needed for this
-        // read (and none has been set yet for this row).
+        // (2b) resolve the FR-05 courier partner, if the row names one. 103d
+        // still holds where it matters: an unknown or inactive courier is
+        // NEVER auto-created. vndr is permissive RLS, so no program context is
+        // needed for this read (and none has been set yet for this row).
+        //
+        // AN UNKNOWN COURIER NO LONGER DESTROYS THE ROW. It used to `continue`,
+        // quarantining a row whose REQUIRED fields were perfectly good, and the
+        // cost of that was measured: sending `Courier = BlueDart` (the display
+        // name) instead of the code `BDE` quarantined ALL SIX rows of a return
+        // file and threw away six correct Device ID / AWB pairs. The published
+        // template marks Courier OPTIONAL and never says a CODE is expected,
+        // nor which codes exist, so the vendor had no way to get it right.
+        //
+        // An optional field must not be able to reject a row its required
+        // fields satisfy. The courier is dropped, the row is ingested, and the
+        // exception is STILL recorded against the file so the mismatch is
+        // visible and fixable. The shipment simply carries no courier partner,
+        // which is exactly what a row that named none would produce.
         let courierUuid: string | null = null
         if (row.courierCode !== undefined) {
           const courierRows = await tx.$queryRaw<{ id: string }[]>`
@@ -295,12 +309,13 @@ export async function ingestReturnSheet(
               INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
               VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'unknown_courier'})
             `
-            quarantined++
-            continue
+            // Deliberately NOT `continue`, and NOT counted as quarantined: the
+            // row is being kept.
+          } else {
+            // Already ::text out of a uuid column, so this is a native uuid
+            // string. Do NOT toUuid it.
+            courierUuid = courierRows[0]!.id
           }
-          // Already ::text out of a uuid column, so this is a native uuid
-          // string. Do NOT toUuid it.
-          courierUuid = courierRows[0]!.id
         }
 
         // program-scoped writes below (shpt, pending_pool_entry): set fresh

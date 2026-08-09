@@ -49,6 +49,13 @@ export function StatusCorrectionForm({ selectedRow, onClearSelection }: StatusCo
   const [busy, setBusy] = useState(false)
 
   const shptId = selectedRow !== null ? reportRowShptId(selectedRow) : null
+  // Read off the SAME row the id came from, so it can never name one shipment
+  // and identify another. Absent on a row that carries no merchant, in which
+  // case the id stands alone exactly as before.
+  const merchant =
+    selectedRow !== null && typeof selectedRow['merchantDisplay'] === 'string'
+      ? selectedRow['merchantDisplay']
+      : null
 
   async function handleSubmit(e: FormEvent): Promise<void> {
     e.preventDefault()
@@ -124,7 +131,15 @@ export function StatusCorrectionForm({ selectedRow, onClearSelection }: StatusCo
         }}
         className="flex flex-wrap items-end gap-3 p-5 pt-4"
       >
+        {/* The MERCHANT leads, the wire id follows. The operator arrives here
+            from a Dispatch History row that named the merchant, and this form
+            used to show `shpt_01kzky467te26td6ena1y2rr18` and nothing else, so
+            the only way to be sure you were correcting the right shipment was
+            to go back and match an opaque string by eye. The id is still shown,
+            because it is what actually gets sent, but it no longer has to carry
+            the identification on its own. */}
         <Field label="Shipment">
+          {merchant !== null && <span className="block text-sm font-medium text-foreground">{merchant}</span>}
           <CodeChip>{shptId}</CodeChip>
         </Field>
         <Field label="Status" htmlFor="correct-status">

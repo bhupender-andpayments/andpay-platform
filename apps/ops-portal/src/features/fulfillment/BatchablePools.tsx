@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { getPoolEntries, triggerBatch, type PoolEntryRow } from '../../api/endpoints.js'
+import { getPoolEntries, triggerBatch, getDevices, type PoolEntryRow } from '../../api/endpoints.js'
 import { Card, CardHeader, Button, ErrorNote, InfoNote, CodeChip, SkeletonRows } from '../../ui/primitives.js'
 
 // Redesign step 3, the flagship. This replaces a form with two free-text boxes
@@ -81,6 +81,10 @@ export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<{ btchId: string } | null | undefined>(undefined)
+  // How many devices are actually in the warehouse. null means we could not
+  // find out, which is deliberately different from zero: an unknown stock level
+  // must never render as "0 in stock".
+  const [inStock, setInStock] = useState<number | null>(null)
 
   async function load(): Promise<void> {
     setLoadError(null)
@@ -88,6 +92,14 @@ export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
       setPools(groupBatchablePools(await getPoolEntries(client, 'POOLED')))
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Failed to load the pending pool.')
+    }
+    // Separately, and deliberately not fatal: a stock level we cannot read
+    // costs an advisory line, not the screen.
+    try {
+      const devices = await getDevices(client, 'IN_STOCK')
+      setInStock(Array.isArray(devices) ? devices.length : null)
+    } catch {
+      setInStock(null)
     }
   }
 
@@ -165,6 +177,26 @@ export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
                     {pool.banks === 1 ? 'bank' : 'banks'},{' '}
                     {days === 0 ? 'oldest added today' : `oldest ${days} ${days === 1 ? 'day' : 'days'} old`}
                   </span>
+                  {/* A STOCK WARNING, NOT A BLOCK, and the distinction is the
+                      ruling. Batching never touched `unit` and still does not:
+                      no device is reserved here, and the print vendor chooses
+                      the physical devices when it fulfils the batch. So a batch
+                      formed against thin stock is not INVALID, it is just
+                      likely to stall, and refusing it would invent a rule the
+                      domain does not have.
+                      What was actually wrong was silence: a batch for 6
+                      merchants could be formed with 0 devices in stock and
+                      nothing said a word, so the shortfall surfaced days later
+                      as a print vendor who could not fulfil.
+                      Shown only when we KNOW stock is short. An unreadable
+                      stock level says nothing rather than crying wolf. */}
+                  {inStock !== null && pool.records > inStock && (
+                    <span className="text-sm font-medium text-destructive">
+                      {inStock === 0
+                        ? 'No devices in stock. This batch can still be formed, but nothing can be printed against it yet.'
+                        : `Only ${inStock} ${inStock === 1 ? 'device' : 'devices'} in stock for ${pool.records} records. This batch can still be formed; the shortfall will stall at the print vendor.`}
+                    </span>
+                  )}
                 </div>
                 <Button
                   disabled={busyKey !== null}
