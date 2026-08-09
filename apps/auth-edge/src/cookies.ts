@@ -13,18 +13,53 @@
 // keeps them visible and un-negotiable.
 export const REFRESH_COOKIE_NAME = 'andpay_rt'
 
-// SameSite=Strict: the refresh cookie is NEVER sent on any cross-site request,
-// so a third-party page cannot trigger a silent refresh. Secure: HTTPS only.
-// HttpOnly: unreadable by page script. Path=/session: presented only on the
-// refresh/logout family, never on unrelated same-origin routes.
-export function serializeRefreshCookie(token: string, absoluteSec: number): string {
-  return `${REFRESH_COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/session; Max-Age=${absoluteSec}`
+// `Secure` is the ONLY negotiable flag here, and it defaults to on.
+//
+// WHY IT HAD TO BECOME NEGOTIABLE. A `Secure` cookie may only be stored and
+// re-sent over HTTPS. Over plain http:// a conforming client accepts the
+// response, DISCARDS the cookie, and says nothing. The local demo harness
+// serves the edges over http://localhost, so the refresh cookie was thrown away
+// at every login and every /session/refresh arrived with no cookie at all and
+// answered 401. The visible symptom was an operator being signed out a few
+// minutes after logging in, every time, with the 10-minute access token as the
+// real clock: silent renewal had never worked once.
+//
+// Proven rather than reasoned: `curl -c` against the running demo produced an
+// EMPTY cookie jar from a 200 login whose response carried a correct
+// Set-Cookie, because curl honours `Secure` strictly.
+//
+// PRODUCTION IS UNCHANGED AND MUST STAY THAT WAY. The default is `true`, so
+// every caller that does not think about it gets the secure cookie. Only a
+// deployment that KNOWS it is serving plain http, which in practice means the
+// local harness, passes false. Anything reachable off the machine is behind TLS
+// and has no business setting this.
+export interface RefreshCookieOptions {
+  /** Defaults to true. False ONLY for a local http:// dev harness. */
+  secure?: boolean
+}
+
+function flags({ secure = true }: RefreshCookieOptions = {}): string {
+  // SameSite=Strict: the refresh cookie is NEVER sent on any cross-site
+  // request, so a third-party page cannot trigger a silent refresh. HttpOnly:
+  // unreadable by page script. Path=/session: presented only on the
+  // refresh/logout family, never on unrelated same-origin routes. None of
+  // those three are configurable.
+  return `HttpOnly;${secure ? ' Secure;' : ''} SameSite=Strict; Path=/session`
+}
+
+export function serializeRefreshCookie(
+  token: string,
+  absoluteSec: number,
+  options: RefreshCookieOptions = {},
+): string {
+  return `${REFRESH_COOKIE_NAME}=${token}; ${flags(options)}; Max-Age=${absoluteSec}`
 }
 
 // The logout / rotation-clear counterpart (used by Tasks 10 to 11): the same
 // name, path, and flags with an empty value and Max-Age=0, so the browser
 // drops the cookie. The flags MUST match serializeRefreshCookie exactly or the
-// browser treats it as a different cookie and refuses to clear it.
-export function clearRefreshCookie(): string {
-  return `${REFRESH_COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/session; Max-Age=0`
+// browser treats it as a different cookie and refuses to clear it, which is
+// why both go through `flags()` and why `secure` has to be passed to BOTH.
+export function clearRefreshCookie(options: RefreshCookieOptions = {}): string {
+  return `${REFRESH_COOKIE_NAME}=; ${flags(options)}; Max-Age=0`
 }

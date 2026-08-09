@@ -60,6 +60,11 @@ export interface AuthEdgeDeps {
   roleConfig: RoleConfig
   // Access token TTL in seconds (600 in v1).
   accessTtlSec: number
+  // Whether the refresh cookie carries `Secure`. Defaults to true everywhere
+  // that does not deliberately set it: only a local http:// dev harness has any
+  // business turning it off, and a `Secure` cookie over plain http is silently
+  // DISCARDED by the client, which is what broke silent refresh in the demo.
+  cookieSecure?: boolean
   // Refresh-family idle window in seconds (1800 in v1).
   idleSec: number
   // Refresh-family absolute window in seconds (28800 in v1).

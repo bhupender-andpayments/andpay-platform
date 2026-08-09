@@ -101,7 +101,7 @@ export class LoginController {
       if (result.accessToken === undefined) throw new UnauthorizedException()
       // check 5: the refresh token rides ONLY in the HttpOnly cookie; the access
       // token rides ONLY in the JSON body. The two never cross transports.
-      res.setHeader('Set-Cookie', serializeRefreshCookie(result.refreshToken, this.deps.absoluteSec))
+      res.setHeader('Set-Cookie', serializeRefreshCookie(result.refreshToken, this.deps.absoluteSec, { secure: this.deps.cookieSecure ?? true }))
       return { accessToken: result.accessToken }
     } catch {
       // login already committed the 6e DENY synchronously before it threw. The

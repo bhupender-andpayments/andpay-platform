@@ -188,7 +188,7 @@ export class SessionController {
     // Max-Age is intentionally the full absolute lifetime again (the server-side
     // absoluteExpires, unchanged by rotateRefresh, is the real bound; the cookie
     // Max-Age is only the browser's retention hint).
-    res.setHeader('Set-Cookie', serializeRefreshCookie(refreshToken, this.deps.absoluteSec))
+    res.setHeader('Set-Cookie', serializeRefreshCookie(refreshToken, this.deps.absoluteSec, { secure: this.deps.cookieSecure ?? true }))
     return { accessToken }
   }
 
@@ -256,7 +256,7 @@ export class SessionController {
     // Rotate the cookie: a FRESH andpay_rt with the same security flags and the
     // full absolute lifetime as the browser retention hint (the server-side
     // absoluteExpires, unchanged by rotation, is the real bound).
-    res.setHeader('Set-Cookie', serializeRefreshCookie(refreshToken, this.deps.absoluteSec))
+    res.setHeader('Set-Cookie', serializeRefreshCookie(refreshToken, this.deps.absoluteSec, { secure: this.deps.cookieSecure ?? true }))
     return { accessToken }
   }
 
@@ -275,6 +275,6 @@ export class SessionController {
     // hashes the token or reads refresh_token. logoutByRefreshToken no-ops on an
     // unknown token, so this is safe to call whenever a cookie is present.
     if (presented) await logoutByRefreshToken(this.deps.authDb, presented, randomUUID())
-    res.setHeader('Set-Cookie', clearRefreshCookie())
+    res.setHeader('Set-Cookie', clearRefreshCookie({ secure: this.deps.cookieSecure ?? true }))
   }
 }
