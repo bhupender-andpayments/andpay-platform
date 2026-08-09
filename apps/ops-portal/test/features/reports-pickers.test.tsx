@@ -61,10 +61,45 @@ describe('Reports: the operator never picks a "kind"', () => {
     expect(screen.queryByText(/tile drilldown/i)).toBeNull()
   })
 
-  it('still lists every named report to choose from', () => {
+  // Strengthened when the dropdown became a rail. Asserting "a control labelled
+  // Report exists" was satisfied by a CLOSED select showing one option and
+  // hiding five, which is the principle-4 breach the redesign named. The real
+  // requirement is that all six are on screen at once, so that is what this
+  // now checks.
+  it('shows every named report at once rather than hiding five behind a control', () => {
     stub()
     renderAt('/reports')
-    expect(screen.getByLabelText(/report/i)).toBeTruthy()
+    for (const name of [
+      /soundbox delivery/i,
+      /^activation/i,
+      /damaged \/ replacement/i,
+      /print vendor pendency/i,
+      /courier pendency/i,
+      /^batching/i,
+    ]) {
+      expect(screen.getByRole('button', { name })).toBeTruthy()
+    }
+  })
+
+  it('marks the report being viewed as the current one', () => {
+    stub()
+    renderAt('/reports')
+    expect(screen.getByRole('button', { name: /soundbox delivery/i }).getAttribute('aria-current')).toBe('page')
+    expect(screen.getByRole('button', { name: /courier pendency/i }).getAttribute('aria-current')).toBeNull()
+  })
+
+  // The rail is the only way out of a drilldown now that the tile control is
+  // gone, so picking a report has to both load it and drop ?tile=.
+  it('leaves a tile drilldown when a report is picked', async () => {
+    const calls = stub()
+    renderAt('/reports?tile=deliveredNotActivated')
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/reports/tiles/deliveredNotActivated'))).toBe(true)
+    })
+    await userEvent.click(screen.getByRole('button', { name: /courier pendency/i }))
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('courier-pendency'))).toBe(true)
+    })
   })
 
   // The drilldown path survives, it is just never a choice the operator makes.

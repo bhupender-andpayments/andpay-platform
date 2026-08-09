@@ -34,9 +34,14 @@ import { COURIER_STATUSES } from './courierStatuses.js'
 // comment), not a SIM number; a real SIM serial lives in the fulfillment
 // device-inventory domain and is not projected into this report (C4, no
 // cross-context join) - see the task report for this documented gap.
-const REPORT_DEFS: ReadonlyArray<{ value: ReportName; label: string }> = [
+// `hint` is NOT invented copy. It is only ever the parenthetical that already
+// sat inside a label, lifted onto its own line now that a rail has room for two
+// lines per item. The other five reports get no hint precisely because nothing
+// in this codebase states what they contain, and guessing at a description an
+// operator would then rely on is worse than showing the name alone.
+const REPORT_DEFS: ReadonlyArray<{ value: ReportName; label: string; hint?: string }> = [
   { value: 'soundbox-delivery', label: 'Soundbox delivery' },
-  { value: 'activation', label: 'Activation (delivered, not activated worklist)' },
+  { value: 'activation', label: 'Activation', hint: 'Delivered, not activated' },
   { value: 'damaged-replacement', label: 'Damaged / replacement' },
   { value: 'print-vendor-pendency', label: 'Print vendor pendency' },
   { value: 'courier-pendency', label: 'Courier pendency' },
@@ -121,18 +126,24 @@ function buildColumns(rows: ReportRow[]): DataTableColumn<ReportRow>[] {
 
 export function ReportPage() {
   const { client } = useAuth()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const tileParam = searchParams.get('tile')
   const initialTile = isTileName(tileParam) ? tileParam : null
 
-  // Step 5: the mode is DERIVED from the URL, never chosen. Command Center
-  // links in with ?tile=<name> when an operator clicks a number, and they land
-  // on the rows behind it. There is no reason for them to know that "report"
-  // and "tile drilldown" are different things to us, so the control is gone and
-  // this is a plain constant for the life of the page.
-  const mode: 'report' | 'drilldown' = initialTile !== null ? 'drilldown' : 'report'
+  // Step 5: the mode is DERIVED, never chosen. Command Center links in with
+  // ?tile=<name> when an operator clicks a number, and they land on the rows
+  // behind it. There is no reason for them to know that "report" and "tile
+  // drilldown" are different things to us, so no control offers the choice.
+  //
+  // `tile` is STATE rather than a constant read of the URL for one reason: the
+  // report rail has to be able to get you OUT of a drilldown. Picking a report
+  // clears the tile (and the query param with it, so a reload agrees with the
+  // screen). The operator still never picks a tile, which is the actual rule.
+  //
+  // There is deliberately NO derived `mode` variable. `tile === null` IS the
+  // mode, and keeping a second name for it is how the two drift apart.
+  const [tile, setTile] = useState<TileName | null>(initialTile)
   const [reportName, setReportName] = useState<ReportName>('soundbox-delivery')
-  const [tileName, setTileName] = useState<TileName>(initialTile ?? 'requestsReceived')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [bank, setBank] = useState('')
@@ -153,14 +164,26 @@ export function ReportPage() {
     return filters
   }
 
-  async function load(): Promise<void> {
+  // `picked` is passed EXPLICITLY by the rail rather than read from state.
+  // setReportName is asynchronous, so a rail click that called load() bare
+  // would fetch the PREVIOUSLY selected report and the screen would trail one
+  // click behind. Nothing else needs it, so it stays optional.
+  async function load(picked?: { report: ReportName } | { tile: TileName }): Promise<void> {
     setLoading(true)
     setError(null)
     try {
+      let target: { report: ReportName } | { tile: TileName }
+      if (picked !== undefined) {
+        target = picked
+      } else if (tile !== null) {
+        target = { tile }
+      } else {
+        target = { report: reportName }
+      }
       const result =
-        mode === 'report'
-          ? await getReport(client, reportName, currentFilters())
-          : await getTileDrilldown(client, tileName, currentFilters())
+        'report' in target
+          ? await getReport(client, target.report, currentFilters())
+          : await getTileDrilldown(client, target.tile, currentFilters())
       setRows(result.rows)
       setWatermark(result.watermark.asOf)
     } catch (err) {
@@ -168,6 +191,22 @@ export function ReportPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // Picking a report from the rail loads it straight away. A list you click is
+  // a navigation, and making the operator then find a Search button to make
+  // anything happen is the kind of dead click that teaches people the screen is
+  // broken. The filters still wait for Search, because those DO come in sets.
+  function selectReport(value: ReportName): void {
+    setReportName(value)
+    if (tile !== null) {
+      setTile(null)
+      // Drop ?tile= too, so a reload shows what the screen is showing.
+      const next = new URLSearchParams(searchParams)
+      next.delete('tile')
+      setSearchParams(next, { replace: true })
+    }
+    void load({ report: value })
   }
 
   // Initial load only, for whatever mode/name the route landed on (including
@@ -206,10 +245,10 @@ export function ReportPage() {
   async function handleExport(): Promise<void> {
     try {
       const csv =
-        mode === 'report'
+        tile === null
           ? await getReportCsv(client, reportName, currentFilters())
-          : await getTileDrilldownCsv(client, tileName, currentFilters())
-      const filename = `${mode === 'report' ? reportName : tileName}.csv`
+          : await getTileDrilldownCsv(client, tile, currentFilters())
+      const filename = `${tile === null ? reportName : tile}.csv`
       downloadCsv(filename, csv)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not export this report.')
@@ -217,9 +256,9 @@ export function ReportPage() {
   }
 
   const activeLabel =
-    mode === 'report'
+    tile === null
       ? REPORT_DEFS.find((d) => d.value === reportName)?.label
-      : TILE_DEFS.find((d) => d.value === tileName)?.label
+      : TILE_DEFS.find((d) => d.value === tile)?.label
 
   return (
     <div className="space-y-6">
@@ -229,109 +268,134 @@ export function ReportPage() {
         actions={<WatermarkBadge watermark={watermark} />}
       />
 
-      <Card>
-        <div className="grid grid-cols-2 gap-4 p-5 sm:grid-cols-3 lg:grid-cols-6">
-          {/* ONE list of reports. The old "View" control asked the operator to
-              choose between "Report" and "Tile drilldown" BEFORE choosing the
-              thing itself, which is our internal split leaking onto their
-              screen. A drilldown arrives via ?tile= from Command Center. */}
-          {/* The Report field SPANS TWO COLUMNS, and the route to that was
-              instructive. Its longest label, "Soundbox delivery", needs 123px
-              while a track here is 142.66px minus padding, so it rendered as
-              "Soundbox deli". A min-width does NOT fix it: this container is a
-              fixed 6-column grid, so a wider box simply overflows its own track
-              and lands on top of the next one. Measured both wrong attempts in
-              the browser at a 17px overlap with the date input.
-              There are five fields in six columns, so the spare column is
-              already paid for and spanning it costs no other field anything.
-              NOTE this comment sits ABOVE the ternary on purpose: a JSX comment
-              inside a ternary branch is a SYNTAX ERROR, because the branch takes
-              exactly one expression. That is the step-7 landmine, and it bit
-              again here. */}
-          {mode === 'report' ? (
-            <Field label="Report" htmlFor="report-name" className="lg:col-span-2">
-              <Select id="report-name" value={reportName} onChange={(e) => setReportName(e.target.value as ReportName)}>
-                {REPORT_DEFS.map((d) => (
-                  <option key={d.value} value={d.value}>
-                    {d.label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          ) : (
-            <Field label="Showing" htmlFor="tile-name">
-              <Select id="tile-name" value={tileName} onChange={(e) => setTileName(e.target.value as TileName)}>
-                {TILE_DEFS.map((d) => (
-                  <option key={d.value} value={d.value}>
-                    {d.label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+      <div className="grid items-start gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+        {/* Step 5, finished. The report was chosen from a dropdown sitting in
+            the filter row, which said that picking WHICH REPORT and setting a
+            date range are the same kind of act. They are not: the report is the
+            subject of the page and the filters narrow it.
+            It also broke principle 4 outright, on the very screen the redesign
+            named: six equal choices, one arbitrarily preselected and five
+            hidden behind a closed control. A rail shows all six at once, which
+            is the same reason the Uploads cards read well.
+            The old dropdown carried a long comment about a two-column span and
+            a 17px overlap. That has gone with it: a rail item is a full-width
+            row, so nothing truncates and nothing can overlap a date input. */}
+        <Card className="p-2">
+          <nav aria-label="Reports" className="flex flex-col gap-1">
+            {REPORT_DEFS.map((d) => {
+              const active = tile === null && d.value === reportName
+              return (
+                <button
+                  key={d.value}
+                  type="button"
+                  onClick={() => {
+                    selectReport(d.value)
+                  }}
+                  aria-current={active ? 'page' : undefined}
+                  className={`rounded-2xl px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    active ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-muted'
+                  }`}
+                >
+                  <span className="block font-medium">{d.label}</span>
+                  {d.hint !== undefined && (
+                    <span className={`block text-xs ${active ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>
+                      {d.hint}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </nav>
+        </Card>
+
+        {/* min-w-0 so a wide result table scrolls inside its own card instead of
+            stretching this grid track and pushing the rail off screen. */}
+        <div className="min-w-0 space-y-6">
+          {tile !== null && (
+            <Card>
+              <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                    From Command Center
+                  </p>
+                  <p className="text-sm font-medium text-foreground">{activeLabel}</p>
+                </div>
+                <p className="text-sm text-muted-foreground">Choose a report on the left to leave this view.</p>
+              </div>
+            </Card>
           )}
-          <Field label="From" htmlFor="filter-from">
-            <Input id="filter-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          </Field>
-          <Field label="To" htmlFor="filter-to">
-            <Input id="filter-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          </Field>
-          {/* Both filters cover a KNOWN value set, so both are pickers. As free
-              text they were the typed-id problem again: get the string exactly
-              right or silently get nothing back, with no way to tell a real
-              empty result from a typo. The bank option's VALUE is the reference
-              code the edge filters on; its LABEL is the name a human uses. */}
-          <Field label="Bank" htmlFor="filter-bank">
-            <Select id="filter-bank" value={bank} onChange={(e) => setBank(e.target.value)}>
-              <option value="">Any bank</option>
-              {banks.map((b) => (
-                <option key={b.tnntId} value={b.bankReferenceCode}>
-                  {b.displayName}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Status" htmlFor="filter-status">
-            <Select id="filter-status" value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="">Any status</option>
-              {COURIER_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-        <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
-          <Button
-            variant="secondary"
-            onClick={() => {
-              void handleExport()
-            }}
-          >
-            <IconDownload width={16} height={16} />
-            Export CSV
-          </Button>
-          <Button
-            onClick={() => {
-              void load()
-            }}
-          >
-            <IconSearch width={16} height={16} />
-            Search
-          </Button>
-        </div>
-      </Card>
 
-      {error !== null && <ErrorNote>{error}</ErrorNote>}
+          <Card>
+            <div className="grid grid-cols-2 gap-4 p-5 sm:grid-cols-4">
+              <Field label="From" htmlFor="filter-from">
+                <Input id="filter-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+              </Field>
+              <Field label="To" htmlFor="filter-to">
+                <Input id="filter-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+              </Field>
+              {/* Both filters cover a KNOWN value set, so both are pickers. As
+                  free text they were the typed-id problem again: get the string
+                  exactly right or silently get nothing back, with no way to tell
+                  a real empty result from a typo. The bank option's VALUE is the
+                  reference code the edge filters on; its LABEL is the name a
+                  human uses. */}
+              <Field label="Bank" htmlFor="filter-bank">
+                <Select id="filter-bank" value={bank} onChange={(e) => setBank(e.target.value)}>
+                  <option value="">Any bank</option>
+                  {banks.map((b) => (
+                    <option key={b.tnntId} value={b.bankReferenceCode}>
+                      {b.displayName}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Status" htmlFor="filter-status">
+                <Select id="filter-status" value={status} onChange={(e) => setStatus(e.target.value)}>
+                  <option value="">Any status</option>
+                  {COURIER_STATUSES.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  void handleExport()
+                }}
+              >
+                <IconDownload width={16} height={16} />
+                Export CSV
+              </Button>
+              <Button
+                onClick={() => {
+                  void load()
+                }}
+              >
+                <IconSearch width={16} height={16} />
+                Search
+              </Button>
+            </div>
+          </Card>
 
-      <Card>
-        <CardHeader title={activeLabel ?? 'Results'} subtitle={`${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`} />
-        {loading ? (
-          <SkeletonRows rows={6} cols={6} />
-        ) : (
-          <DataTable columns={buildColumns(rows)} rows={rows} emptyMessage="No rows for the current filters." />
-        )}
-      </Card>
+          {error !== null && <ErrorNote>{error}</ErrorNote>}
+
+          <Card>
+            <CardHeader
+              title={activeLabel ?? 'Results'}
+              subtitle={`${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`}
+            />
+            {loading ? (
+              <SkeletonRows rows={6} cols={6} />
+            ) : (
+              <DataTable columns={buildColumns(rows)} rows={rows} emptyMessage="No rows for the current filters." />
+            )}
+          </Card>
+        </div>
+      </div>
     </div>
   )
 }

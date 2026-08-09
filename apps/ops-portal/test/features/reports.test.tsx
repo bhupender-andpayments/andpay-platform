@@ -199,7 +199,7 @@ describe('ReportPage', () => {
 
     renderReportPage()
 
-    await userEvent.selectOptions(await screen.findByLabelText(/^report$/i), 'activation')
+    await userEvent.click(await screen.findByRole('button', { name: /^activation/i }))
     await userEvent.click(screen.getByRole('button', { name: /search/i }))
 
     expect(await screen.findByText('dsp_activation_1')).toBeTruthy()
@@ -239,7 +239,7 @@ describe('ReportPage', () => {
     )
 
     renderReportPage()
-    await userEvent.selectOptions(await screen.findByLabelText(/^report$/i), 'damaged-replacement')
+    await userEvent.click(await screen.findByRole('button', { name: /damaged \/ replacement/i }))
     await userEvent.click(screen.getByRole('button', { name: /search/i }))
 
     expect(await screen.findByText('dsp_dmg_1')).toBeTruthy()
