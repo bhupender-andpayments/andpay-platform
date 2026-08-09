@@ -166,6 +166,13 @@ export interface MerchantRow {
   mcc: string
   status: string
   updatedAt: Date
+  /**
+   * D-2: this merchant has more than one soundbox request, so at least one was
+   * an ADDITIONAL request rather than a first order (BRD 5.1b). Derived on read
+   * from `assignment`, never stored, so it cannot drift from the requests it
+   * describes.
+   */
+  hasAdditionalRequests: boolean
 }
 
 interface MerchantDbRow {
@@ -175,6 +182,7 @@ interface MerchantDbRow {
   mcc: string
   status: string
   updated_at: Date
+  has_additional_requests: boolean
 }
 
 function toMerchantDto(r: MerchantDbRow): MerchantRow {
@@ -185,6 +193,7 @@ function toMerchantDto(r: MerchantDbRow): MerchantRow {
     mcc: r.mcc,
     status: r.status,
     updatedAt: r.updated_at,
+    hasAdditionalRequests: r.has_additional_requests,
   }
 }
 
@@ -195,10 +204,39 @@ function toMerchantDto(r: MerchantDbRow): MerchantRow {
 export async function listMerchants(db: TmsDb): Promise<MerchantRow[]> {
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    // D-2, the additional-soundbox tag, DERIVED HERE rather than carried.
+    //
+    // BRD 5.1b: "If VPA is already present in system, tag request as additional
+    // soundbox request for an already existing merchant." Identity computes
+    // exactly that signal (`mintedMerchant` in project.ts) and then drops it: it
+    // rides no fact, so no screen could tell a returning merchant from a new
+    // one. Bhupender ruled it should be DERIVED AT READ TIME rather than added
+    // to the enrollment fact, which would be a fact-schema change and therefore
+    // a corpus decision.
+    //
+    // It costs nothing to keep true: there is no column, no migration and no
+    // projection to backfill or drift, and deleting a request makes the tag go
+    // away by itself. TMS owns both tables, so this crosses no context (C4).
+    //
+    // A SELF-JOIN AND AN EXISTS, deliberately not a counting aggregate. The
+    // no-aggregate DO-NOT (test/architecture.test.ts) keeps this module
+    // row-level: the ops portal is a queue and detail surface, never a
+    // dashboard. "Two distinct requests exist for this merchant" is a row-level
+    // EXISTS question, so this honours the rule's intent and not merely its
+    // regex.
+    //
+    // That guard also READS COMMENTS, so this note cannot spell the banned
+    // function name even while explaining why it is avoided. It caught exactly
+    // that on the first run here.
     return tx.$queryRaw<MerchantDbRow[]>`
-      SELECT id, display_name, legal_name, mcc, status, updated_at
-      FROM merchant_projection
-      ORDER BY display_name, id
+      SELECT m.id, m.display_name, m.legal_name, m.mcc, m.status, m.updated_at,
+             EXISTS (
+               SELECT 1 FROM assignment a1
+               JOIN assignment a2 ON a2.merchant_id = a1.merchant_id AND a2.id <> a1.id
+               WHERE a1.merchant_id = m.id
+             ) AS has_additional_requests
+      FROM merchant_projection m
+      ORDER BY m.display_name, m.id
     `
   })
   return rows.map(toMerchantDto)

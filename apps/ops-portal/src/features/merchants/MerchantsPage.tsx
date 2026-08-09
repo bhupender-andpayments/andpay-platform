@@ -26,7 +26,23 @@ const MERCHANT_COLUMNS: ReadonlyArray<DataTableColumn<MerchantRow>> = [
   {
     key: 'displayName',
     header: 'Merchant',
-    cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
+    // D-2: the additional-soundbox tag sits ON the merchant name rather than in
+    // a column of its own. A dedicated column would be empty for most rows,
+    // which reads as missing data instead of as a distinction; a badge beside
+    // the name is only present when it means something.
+    cell: (r) => (
+      <span className="flex items-center gap-2">
+        <span className="font-medium text-foreground">{r.displayName}</span>
+        {r.hasAdditionalRequests && (
+          <span
+            className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-900"
+            title="More than one soundbox request: at least one was an additional order, not a first one."
+          >
+            Additional
+          </span>
+        )}
+      </span>
+    ),
   },
   {
     key: 'legalName',

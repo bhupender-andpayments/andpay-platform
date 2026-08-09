@@ -52,6 +52,39 @@ describe('MerchantsPage', () => {
     cleanup()
   })
 
+  // D-2. Before this, no screen could tell a returning merchant from a new one:
+  // the signal was computed during projection and thrown away. It is now derived
+  // on read and tagged here, so "is this an additional soundbox order" is
+  // answerable by looking rather than by asking someone.
+  it('tags a merchant that has ordered more than once, and only that one', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse([
+          { ...ROWS[0], hasAdditionalRequests: true },
+          { ...ROWS[1], hasAdditionalRequests: false },
+        ]),
+      ),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+
+    // Exactly one tag, on the repeat buyer. A tag on every row would tell an
+    // operator nothing.
+    const tags = screen.getAllByText(/additional/i)
+    expect(tags).toHaveLength(1)
+  })
+
+  it('shows no tag at all when every merchant ordered once', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(ROWS.map((r) => ({ ...r, hasAdditionalRequests: false })))),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+    expect(screen.queryByText(/additional/i)).toBeNull()
+  })
+
   it('lists merchants from the response, including SUSPENDED ones', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(ROWS)))
     renderPage()

@@ -46,6 +46,92 @@ async function removeMerchants(ids: string[]): Promise<void> {
   }
 }
 
+// D-2, the TAG, derived at READ TIME (Bhupender's ruling). An "additional
+// soundbox request" is a request for a merchant we already had, and the signal
+// for it (identity's `mintedMerchant`) is computed at projection time and
+// thrown away. Rather than push it onto the enrollment fact, which would be a
+// fact-schema change and therefore a corpus decision, it is worked out here
+// from what TMS already stores: a merchant with more than one assignment has
+// had additional requests.
+async function seedAssignment(merchantUuid: string, vpa: string): Promise<string> {
+  const asgnUuid = toUuid(newId('asgn'))
+  await db.$executeRaw`
+    INSERT INTO assignment (
+      id, merchant_id, program_id, tenant_id,
+      merchant_display_name, merchant_legal_name, merchant_mcc,
+      bank_reference_code, bank_display_name, ship_to_address,
+      qr_value, vpa_value, soundbox, standee_count, sticker_count,
+      billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, updated_at
+    ) VALUES (
+      ${asgnUuid}::uuid, ${merchantUuid}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
+      'Probe', 'Probe Pvt Ltd', '5411',
+      '3', 'GSCB', 'Addr',
+      ${'upi://pay?pa=' + vpa}, ${vpa}, ${true}, 1, 1,
+      ${true}, 'received', 'bank_file', ${'probe|' + vpa}, 'Contact', '9000000000', '30', now()
+    )
+  `
+  return asgnUuid
+}
+
+async function removeAssignments(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    await db.$executeRaw`DELETE FROM assignment WHERE id = ${id}::uuid`
+  }
+}
+
+describe('listMerchants: the additional-soundbox tag (D-2, derived at read time)', () => {
+  it('marks a merchant with more than one request, and leaves the others alone', async () => {
+    const repeat = await seedMerchant({ displayName: 'ZZ REPEAT BUYER' })
+    const once = await seedMerchant({ displayName: 'ZZ ONE ORDER' })
+    const none = await seedMerchant({ displayName: 'ZZ NO ORDERS' })
+    const asgns: string[] = []
+    try {
+      asgns.push(await seedAssignment(repeat.uuid, 'rep1@gscb'))
+      asgns.push(await seedAssignment(repeat.uuid, 'rep2@gscb'))
+      asgns.push(await seedAssignment(once.uuid, 'once@gscb'))
+
+      const rows = await listMerchants(db)
+      const byId = new Map(rows.map((r) => [r.mrchId, r]))
+
+      // The whole point: a second request for a merchant we already had.
+      expect(byId.get(repeat.wire)?.hasAdditionalRequests).toBe(true)
+      // One request is the merchant's FIRST, which is not "additional".
+      expect(byId.get(once.wire)?.hasAdditionalRequests).toBe(false)
+      // No requests at all must not read as "additional" either, which is the
+      // way a naive EXISTS on the assignment table gets this wrong.
+      expect(byId.get(none.wire)?.hasAdditionalRequests).toBe(false)
+    } finally {
+      await removeAssignments(asgns)
+      await removeMerchants([repeat.uuid, once.uuid, none.uuid])
+    }
+  })
+
+  // Derived, never stored: nothing was added to a fact, a migration or a
+  // projection. Deleting the extra request makes the tag go away by itself.
+  it('is a derivation, so removing the second request clears the tag', async () => {
+    const m = await seedMerchant({ displayName: 'ZZ DERIVED TAG' })
+    const asgns: string[] = []
+    try {
+      asgns.push(await seedAssignment(m.uuid, 'der1@gscb'))
+      const second = await seedAssignment(m.uuid, 'der2@gscb')
+      // Tracked for the finally too: source_event_id is UNIQUE, so a row this
+      // test leaves behind makes the NEXT run fail on a duplicate key rather
+      // than on anything real.
+      asgns.push(second)
+
+      const before = (await listMerchants(db)).find((r) => r.mrchId === m.wire)
+      expect(before?.hasAdditionalRequests).toBe(true)
+
+      await removeAssignments([second])
+      const after = (await listMerchants(db)).find((r) => r.mrchId === m.wire)
+      expect(after?.hasAdditionalRequests).toBe(false)
+    } finally {
+      await removeAssignments(asgns)
+      await removeMerchants([m.uuid])
+    }
+  })
+})
+
 describe('listMerchants: the ops Merchants list (redesign step 7)', () => {
   it('reads under tms_ops_read at all, which is what the new GRANT buys', async () => {
     // THE POINT OF THIS ASSERTION. listMerchants does SET LOCAL ROLE
@@ -104,8 +190,16 @@ describe('listMerchants: the ops Merchants list (redesign step 7)', () => {
       expect(row).toBeDefined()
       // An EXACT key set, not a subset check: a future column added to
       // merchant_projection cannot reach the wire unnoticed.
+      //
+      // `hasAdditionalRequests` was added deliberately (D-2) and this guard is
+      // what forced the decision to be conscious rather than incidental. It is
+      // safe to expose: a DERIVED boolean answering "does this merchant have
+      // more than one request", carrying no merchant PII and no column of its
+      // own. The list still holds no address, contact name or mobile, which is
+      // what D104 default-exclude is actually protecting.
       expect(Object.keys(row ?? {}).sort()).toEqual([
         'displayName',
+        'hasAdditionalRequests',
         'legalName',
         'mcc',
         'mrchId',

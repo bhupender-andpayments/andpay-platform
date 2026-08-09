@@ -497,6 +497,10 @@ export interface MerchantRow {
   mcc: string
   status: string
   updatedAt: string
+  // D-2: this merchant has more than one soundbox request, so at least one was
+  // an ADDITIONAL request rather than a first order. DERIVED on read from the
+  // requests themselves, never stored, so it cannot drift from them.
+  hasAdditionalRequests: boolean
 }
 
 // Redesign step 7 (ruling 1b). Every merchant, not only those with something in
