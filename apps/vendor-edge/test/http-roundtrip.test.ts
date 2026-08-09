@@ -584,3 +584,147 @@ describe('DO-NOT: the fronted handlers stay byte-identical', () => {
     expect(ingestReturnSheet.length).toBe(4) // (db, claim, sheet, _traceId)
   })
 })
+
+// FR-06 BATCH_FILE mode over real HTTP. Until this route existed,
+// `ingestStatusFile` had ZERO callers outside its own unit tests: the domain
+// half was built and tested while the transport half did not exist, so a
+// courier partner could not actually deliver a status file. These are the
+// transport-level proofs the webhook already had and this mode never did.
+async function setCourierMode(vndrWire: string, mode: string | null): Promise<void> {
+  await fulfillmentDb.$executeRaw`
+    UPDATE vndr SET integration_mode = ${mode}, updated_at = now() WHERE id = ${toUuid(vndrWire)}::uuid
+  `
+}
+
+describe('POST /vendor/courier/status-file (FR-06 BATCH_FILE, multipart edge fronting ingestStatusFile)', () => {
+  const SECRET = 'apsk_test_courier-file-secret-dddddddddddd'
+
+  async function seedBatchCourier(): Promise<{ vndrWire: string }> {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    await seedCourierVendor(vndrWire, `BATCHCO-${newId('vndr').slice(-8)}`)
+    await setCourierMode(vndrWire, 'BATCH')
+    await seedCredential({
+      apiId: newId('api'),
+      secret: SECRET,
+      vndrId: vndrWire,
+      workQueue: 'wq-courier',
+      permissionSetRef: 'vset:vendor_courier',
+    })
+    return { vndrWire }
+  }
+
+  function file(vndrWire: string, awb: string, status: string, ts: string, fileId = 'sf-1'): Buffer {
+    return Buffer.from(
+      JSON.stringify({
+        fileId,
+        vndrId: vndrWire,
+        workQueue: 'wq-courier',
+        rows: [{ awb, status, courierTimestamp: ts }],
+      }),
+      'utf8',
+    )
+  }
+
+  it('advances a shipment from a real multipart upload', async () => {
+    const { vndrWire } = await seedBatchCourier()
+    const awb = 'AWB-FILE-1'
+    await seedShipment(awb, vndrWire)
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/courier/status-file')
+      .set('Authorization', bearer(SECRET))
+      .attach('file', file(vndrWire, awb, 'PICKED_UP', '2026-08-09T10:00:00.000Z'), 'status.json')
+
+    expect(res.status).toBe(200)
+    expect(res.body.advanced).toBe(1)
+    expect(await shptStatus(awb)).toBe('PICKED_UP')
+  })
+
+  it('replays the same fileId as a no-op, so a resend cannot double-advance', async () => {
+    const { vndrWire } = await seedBatchCourier()
+    const awb = 'AWB-FILE-2'
+    await seedShipment(awb, vndrWire)
+    const send = () =>
+      request(app.getHttpServer())
+        .post('/vendor/courier/status-file')
+        .set('Authorization', bearer(SECRET))
+        .attach('file', file(vndrWire, awb, 'PICKED_UP', '2026-08-09T10:00:00.000Z', 'sf-dup'), 'status.json')
+
+    await send()
+    const second = await send()
+    expect(second.status).toBe(200)
+    expect(second.body.deduped).toBe(true)
+  })
+
+  it('REFUSES a courier configured for WEBHOOK, with an audited DENY', async () => {
+    // The mode gate. BRD FR-06 makes batch file the fallback "where webhook is
+    // unavailable", so one partner must not be able to send the same movement
+    // by both routes under two file ids.
+    const { vndrWire } = await seedBatchCourier()
+    await setCourierMode(vndrWire, 'WEBHOOK')
+    await seedShipment('AWB-FILE-3', vndrWire)
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/courier/status-file')
+      .set('Authorization', bearer(SECRET))
+      .attach('file', file(vndrWire, 'AWB-FILE-3', 'PICKED_UP', '2026-08-09T10:00:00.000Z'), 'status.json')
+
+    expect(res.status).toBe(403)
+    expect(await shptStatus('AWB-FILE-3')).toBe('DISPATCHED_BY_VENDOR')
+    const audits = await fulfillmentDb.$queryRaw<{ payload: { reasonCode?: string } }[]>`
+      SELECT payload FROM outbox WHERE event_type = 'authz.audit'
+    `
+    expect(audits.some((a) => a.payload.reasonCode === 'integration_mode_not_batch')).toBe(true)
+  })
+
+  it('FAILS CLOSED when the courier has no integration mode set at all', async () => {
+    // Nullable column, every pre-existing row predates the check, so absence
+    // must not read as "batch enabled". Turning it on is a deliberate ops edit.
+    const { vndrWire } = await seedBatchCourier()
+    await setCourierMode(vndrWire, null)
+    await seedShipment('AWB-FILE-4', vndrWire)
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/courier/status-file')
+      .set('Authorization', bearer(SECRET))
+      .attach('file', file(vndrWire, 'AWB-FILE-4', 'PICKED_UP', '2026-08-09T10:00:00.000Z'), 'status.json')
+
+    expect(res.status).toBe(403)
+    expect(await shptStatus('AWB-FILE-4')).toBe('DISPATCHED_BY_VENDOR')
+  })
+
+  it('rejects a malformed body 400 with exactly one schema_invalid DENY', async () => {
+    await seedBatchCourier()
+    const res = await request(app.getHttpServer())
+      .post('/vendor/courier/status-file')
+      .set('Authorization', bearer(SECRET))
+      .attach('file', Buffer.from('[1,2,3]', 'utf8'), 'status.json')
+
+    expect(res.status).toBe(400)
+    const audits = await fulfillmentDb.$queryRaw<{ payload: { reasonCode?: string; operation?: string } }[]>`
+      SELECT payload FROM outbox WHERE event_type = 'authz.audit'
+    `
+    const schemaDenies = audits.filter(
+      (a) => a.payload.reasonCode === 'schema_invalid' && a.payload.operation === 'shipment:submit-status',
+    )
+    expect(schemaDenies).toHaveLength(1)
+  })
+
+  it('rejects a cross-vendor file 403 and advances nothing', async () => {
+    // 105c own-vendor: the file declares someone else's vndrId.
+    const { vndrWire } = await seedBatchCourier()
+    const otherWire = fromUuid('vndr', toUuid(newId('vndr')))
+    await seedCourierVendor(otherWire, `OTHERCO-${newId('vndr').slice(-8)}`)
+    await setCourierMode(otherWire, 'BATCH')
+    await seedShipment('AWB-FILE-5', otherWire)
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/courier/status-file')
+      .set('Authorization', bearer(SECRET))
+      .attach('file', file(otherWire, 'AWB-FILE-5', 'PICKED_UP', '2026-08-09T10:00:00.000Z'), 'status.json')
+
+    expect(res.status).toBe(403)
+    expect(await shptStatus('AWB-FILE-5')).toBe('DISPATCHED_BY_VENDOR')
+    expect(vndrWire).not.toBe(otherWire)
+  })
+})

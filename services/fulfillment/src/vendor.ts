@@ -107,3 +107,29 @@ export async function createVendor(
     return createVendorWithinTx(tx, input, actor, traceId)
   })
 }
+
+/**
+ * FR-06 BATCH_FILE mode gate: is this courier configured to submit STATUS FILES
+ * rather than push webhooks?
+ *
+ * The BRD defines batch file as the fallback "where webhook is unavailable", so
+ * a courier that pushes must not also batch-upload: accepting both from one
+ * partner is how one movement arrives twice, by two routes, under two file ids.
+ * `vndr.integration_mode` has existed for exactly this since Phase 3 and was
+ * read by NOTHING, which makes it decorative config, a trap of the same family
+ * as a permission that can never succeed.
+ *
+ * FAILS CLOSED on absence and on type. The column is nullable and every row
+ * predates this check, so a courier with no mode set is NOT implicitly
+ * batch-enabled; enabling it is a deliberate ops edit. A non-COURIER vndr is
+ * false by construction.
+ *
+ * Lives here, not at the edge: no edge controller in this repository touches
+ * SQL, and this is a fact about a vendor, which is fulfillment's own data.
+ */
+export async function isCourierBatchMode(db: FulfillmentDb, vndrIdWire: string): Promise<boolean> {
+  const rows = await db.$queryRaw<{ integration_mode: string | null }[]>`
+    SELECT integration_mode FROM vndr WHERE id = ${toUuid(vndrIdWire)}::uuid AND type = 'COURIER'
+  `
+  return rows[0]?.integration_mode === 'BATCH'
+}

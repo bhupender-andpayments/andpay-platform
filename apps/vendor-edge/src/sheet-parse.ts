@@ -1,4 +1,4 @@
-import type { IntakeRow, IntakeSheet, ReturnRow, ReturnSheet } from '@andpay/fulfillment-service'
+import type { IntakeRow, IntakeSheet, ReturnRow, ReturnSheet, StatusFile, StatusRow } from '@andpay/fulfillment-service'
 
 // One typed parse error for every S8 schema-invalid body at the edge (a
 // missing/extra/mistyped field): mapped to HTTP 400 by the caller, never
@@ -122,5 +122,34 @@ export function parseReturnSheet(json: unknown): ReturnSheet {
   const workQueue = requireString(json, 'workQueue', 'return sheet')
   if (!Array.isArray(json.rows)) throw new EdgeParseError('return sheet: "rows" must be an array')
   const rows = json.rows.map((row: unknown, index: number) => parseReturnRow(row, index))
+  return { fileId, vndrId, workQueue, rows }
+}
+
+const STATUS_FILE_FIELDS = ['fileId', 'vndrId', 'workQueue', 'rows'] as const
+const STATUS_ROW_FIELDS = ['awb', 'status', 'courierTimestamp'] as const
+
+function parseStatusRow(row: unknown, index: number): StatusRow {
+  if (!isPlainObject(row)) throw new EdgeParseError(`status file row ${String(index)}: must be an object`)
+  const context = `status file row ${String(index)}`
+  assertOnlyKeys(row, STATUS_ROW_FIELDS, context)
+  const awb = requireString(row, 'awb', context)
+  const status = requireString(row, 'status', context)
+  const courierTimestamp = requireString(row, 'courierTimestamp', context)
+  return { awb, status, courierTimestamp }
+}
+
+// FR-06 BATCH_FILE mode. Strict S8, the same grammar as parseReturnSheet: the
+// row VOCABULARY is deliberately not checked here (an unknown status is a
+// per-row `unknown_status` QUARANTINE inland, not a whole-file rejection), and
+// neither is the timestamp's parseability, which ingestStatusFile's own
+// isStructurallyValid owns. The edge checks SHAPE; the domain owns MEANING.
+export function parseStatusFile(json: unknown): StatusFile {
+  if (!isPlainObject(json)) throw new EdgeParseError('status file must be a JSON object')
+  assertOnlyKeys(json, STATUS_FILE_FIELDS, 'status file')
+  const fileId = requireString(json, 'fileId', 'status file')
+  const vndrId = requireString(json, 'vndrId', 'status file')
+  const workQueue = requireString(json, 'workQueue', 'status file')
+  if (!Array.isArray(json.rows)) throw new EdgeParseError('status file: "rows" must be an array')
+  const rows = json.rows.map((row: unknown, index: number) => parseStatusRow(row, index))
   return { fileId, vndrId, workQueue, rows }
 }

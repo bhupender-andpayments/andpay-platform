@@ -11,6 +11,7 @@ export {
   createVendor,
   createVendorWithinTx,
   updateVendorWithinTx,
+  isCourierBatchMode,
 } from './vendor.js'
 export { projectDemandFact } from './pool.js'
 export {
