@@ -374,6 +374,24 @@ function ageDays(d: Date): number {
 }
 
 /**
+ * The same age, rounded for REPORTING (G-7).
+ *
+ * Found in a real browser: the Batching report rendered "Oldest Record Age
+ * Days" as `3.0118497337962964`, and the CSV export carried the identical raw
+ * float. Sixteen significant figures is not a measurement anyone asked for; the
+ * useful precision for "how old is the oldest thing in this pool" is a tenth of
+ * a day.
+ *
+ * Rounded HERE, at the point the number lands on a report row, and NOT inside
+ * `ageDays`: `ageingBucket` compares that value against 1, 3 and 7, so rounding
+ * at the source would move bucket boundaries and silently reclassify rows. This
+ * separation is the whole point, so the two must not be merged.
+ */
+function reportedAgeDays(d: Date): number {
+  return Math.round(ageDays(d) * 10) / 10
+}
+
+/**
  * Ageing bucket labels for the two pendency reports, computed at query time
  * from the relevant timestamp (sent_to_vendor_at / dispatched_at). Buckets are
  * a presentation choice, not a spec-mandated boundary; kept simple and stable.
@@ -469,7 +487,7 @@ function printVendorPendencyRow(r: DispatchDbRow): ReportRow {
     bankCode: r.bank_code,
     merchantDisplay: r.merchant_display,
     sentToVendorAt: iso(r.sent_to_vendor_at),
-    ageingDays: r.sent_to_vendor_at === null ? null : ageDays(r.sent_to_vendor_at),
+    ageingDays: r.sent_to_vendor_at === null ? null : reportedAgeDays(r.sent_to_vendor_at),
     ageingBucket: r.sent_to_vendor_at === null ? null : ageingBucket(r.sent_to_vendor_at),
   }
 }
@@ -482,7 +500,7 @@ function courierPendencyRow(r: DispatchDbRow): ReportRow {
     awb: r.awb,
     courierStatus: r.courier_status,
     dispatchedAt: iso(r.dispatched_at),
-    ageingDays: r.dispatched_at === null ? null : ageDays(r.dispatched_at),
+    ageingDays: r.dispatched_at === null ? null : reportedAgeDays(r.dispatched_at),
     ageingBucket: r.dispatched_at === null ? null : ageingBucket(r.dispatched_at),
   }
 }
@@ -522,7 +540,7 @@ function computeBatchingReport(rows: DispatchDbRow[], filters: ReportFilters): R
     out.push({
       bankCode,
       poolSize: list.length,
-      oldestRecordAgeDays: oldest === null ? null : ageDays(oldest),
+      oldestRecordAgeDays: oldest === null ? null : reportedAgeDays(oldest),
     })
   }
   return out

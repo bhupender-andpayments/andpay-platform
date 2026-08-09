@@ -66,6 +66,16 @@ describe('Task 6: the Batching report reconstruction (rule c)', () => {
     expect(hdfc.oldestRecordAgeDays as number).toBeGreaterThan(4.9)
     expect(hdfc.oldestRecordAgeDays as number).toBeLessThan(5.1)
     expect(watermark).toBeDefined()
+
+    // G-7. An age in days is a REPORTED QUANTITY, so it is rounded where it
+    // lands on the row. Found in a real browser: this rendered as
+    // "3.0118497337962964" on the Batching report, and the same raw float went
+    // into the CSV export, which is why rounding belongs here at the source
+    // rather than in the portal's formatter. `ageDays` itself STAYS fractional
+    // and is deliberately not touched: `ageingBucket` compares it against 1, 3
+    // and 7, so rounding it would move bucket boundaries.
+    const decimals = String(hdfc.oldestRecordAgeDays).split('.')[1] ?? ''
+    expect(decimals.length).toBeLessThanOrEqual(1)
   })
 
   it('has NO projectedTriggerDate field in any row (rule c: deferred to a follow-up)', async () => {

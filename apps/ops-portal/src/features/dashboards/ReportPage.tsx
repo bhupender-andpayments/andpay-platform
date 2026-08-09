@@ -67,9 +67,7 @@ function cellText(cell: ReportCell | undefined): string {
 
 // Humane column headers derived from the real backend keys (a text
 // transform of the actual field name, never an invented label); unknown keys
-// fall back to a title-cased version of the key itself. Numeric-ish columns
-// are right-aligned and rendered with tabular figures.
-const NUMERIC_KEYS = new Set(['ageingDays', 'poolSize', 'oldestRecordAgeDays'])
+// fall back to a title-cased version of the key itself.
 function humanHeader(key: string): string {
   return key
     .replace(/([A-Z])/g, ' $1')
@@ -97,9 +95,26 @@ function buildColumns(rows: ReportRow[]): DataTableColumn<ReportRow>[] {
     key,
     header: humanHeader(key),
     cell: (row: ReportRow) => {
-      const text = cellText(row[key])
+      const value = row[key]
+      const text = cellText(value)
       if (text === '') return <span className="text-muted-foreground">-</span>
-      return <span className={NUMERIC_KEYS.has(key) ? 'num' : undefined}>{text}</span>
+      // The `num` treatment (tabular monospace figures, so digits line up
+      // column-wise) comes from the VALUE's type, not from a hard-coded key
+      // list. The list it replaces happened to be complete on the day it was
+      // written, which is exactly the failure mode: a numeric column added to
+      // any of the 6 reports or 7 drilldowns afterwards would silently render
+      // as ordinary prose figures and nobody would notice. buildColumns above
+      // already derives columns from what the backend actually returned, for
+      // the same reason, so this makes the two halves agree.
+      //
+      // The comment this replaces claimed `num` right-aligns. It does not:
+      // index.css defines it as font-mono + tabular-nums + letter-spacing only.
+      //
+      // typeof, deliberately NOT a digits regex: a bank code, a pincode or an
+      // id is digits that are not a QUANTITY, and aligning those as figures
+      // reads as arithmetic the column does not support. The backend already
+      // sends real numbers as numbers.
+      return <span className={typeof value === 'number' ? 'num' : undefined}>{text}</span>
     },
   }))
 }
@@ -182,13 +197,23 @@ export function ReportPage() {
     }
   }, [client])
 
+  // The export must never fail silently. This is called as `void handleExport()`
+  // from the button, so without the catch a rejected request went nowhere: the
+  // operator clicked Export CSV, no file arrived, and nothing said why. The
+  // failure is reported through the SAME error surface the report load uses,
+  // rather than a second one, so there is one place on this screen that says
+  // something went wrong.
   async function handleExport(): Promise<void> {
-    const csv =
-      mode === 'report'
-        ? await getReportCsv(client, reportName, currentFilters())
-        : await getTileDrilldownCsv(client, tileName, currentFilters())
-    const filename = `${mode === 'report' ? reportName : tileName}.csv`
-    downloadCsv(filename, csv)
+    try {
+      const csv =
+        mode === 'report'
+          ? await getReportCsv(client, reportName, currentFilters())
+          : await getTileDrilldownCsv(client, tileName, currentFilters())
+      const filename = `${mode === 'report' ? reportName : tileName}.csv`
+      downloadCsv(filename, csv)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not export this report.')
+    }
   }
 
   const activeLabel =
