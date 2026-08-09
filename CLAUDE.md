@@ -57,8 +57,11 @@ something a spec does not grant, STOP and escalate to the architecture chat.
   (the 06.A idempotency key grammar), `@andpay/outbox` (transactional outbox and
   consumer inbox), `@andpay/envelope` (the E4 codec), `@andpay/bus` (the Kafka
   publisher and schema-registry ports), `@andpay/engine` (the D77 saga engine),
-  and `@andpay/authz` (the secret-free D3 verify, api_/apsk_ resolve, and D2
-  two-gate evaluator every context imports).
+  `@andpay/authz` (the secret-free D3 verify, api_/apsk_ resolve, and D2
+  two-gate evaluator every context imports), and `@andpay/bank-qr` (the one
+  known bank UPI-QR export defect: TMS DETECTS it to report per-file evidence,
+  fulfillment CORRECTS it at the artifact boundaries, one rule so the two
+  cannot drift).
 - `services/` per-context services (identity, tms, fulfillment, orchestrator,
   auth). Each carries a `prisma/` project pinned to its own schema;
   `services/auth` also holds the D121 stores and all D3 token and class-6
