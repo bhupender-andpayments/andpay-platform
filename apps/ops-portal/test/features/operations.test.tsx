@@ -542,3 +542,91 @@ describe('OperationsPage integration: selecting a dispatch-history row drives St
     expect(screen.getByRole('button', { name: 'Dispatch History', pressed: true })).toBeTruthy()
   })
 })
+
+// Dispatch History was the last table still showing our field names as its
+// column headers, and the last screen still asking the operator to TYPE a bank
+// and a status that both come from a known set. Redesign step 5 fixed exactly
+// those two filters on Reports; this is the same fix on the screen that was
+// missed.
+describe('DispatchHistoryPage: our field names and typed filters', () => {
+  const ROW = {
+    dispatchId: 'asgn_1',
+    programId: '11111111-1111-4111-8111-111111111111',
+    bankCode: '3',
+    merchantDisplay: 'Flow Alpha Store',
+    awb: 'AWB1',
+    shptId: 'shpt_1',
+  }
+  const BANKS = [{ tnntId: 'tnnt_1', bankReferenceCode: '3', displayName: 'GSCB', status: 'ACTIVE' }]
+
+  beforeEach(() => {
+    setAccessToken('t')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+    clearAccessToken()
+  })
+
+  function stubHistory(): { url: string }[] {
+    const calls: { url: string }[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push({ url })
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
+        return jsonResponse({ rows: [ROW], watermark: { asOf: null, perTopic: {} } })
+      }),
+    )
+    return calls
+  }
+
+  function renderHistory() {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <DispatchHistoryPage onCorrectStatus={() => {}} onOverrideTerminal={() => {}} />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+  }
+
+  it('gives every column a header a human reads, not the backend key', async () => {
+    stubHistory()
+    renderHistory()
+    expect(await screen.findByRole('columnheader', { name: 'Merchant Display' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Dispatch Id' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Bank Code' })).toBeTruthy()
+    // The raw camelCase key must not survive as a header.
+    expect(screen.queryByRole('columnheader', { name: 'merchantDisplay' })).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: 'dispatchId' })).toBeNull()
+  })
+
+  it('offers the real banks instead of a text box', async () => {
+    stubHistory()
+    renderHistory()
+    const bank = await screen.findByLabelText(/bank/i)
+    expect(bank.tagName).toBe('SELECT')
+    expect(await within(bank as HTMLSelectElement).findByRole('option', { name: 'GSCB' })).toBeTruthy()
+    expect(within(bank as HTMLSelectElement).getByRole('option', { name: /any bank/i })).toBeTruthy()
+  })
+
+  it('offers the real courier statuses instead of a text box', async () => {
+    stubHistory()
+    renderHistory()
+    const status = await screen.findByLabelText(/^status/i)
+    expect(status.tagName).toBe('SELECT')
+    expect(within(status as HTMLSelectElement).getByRole('option', { name: 'DELIVERED' })).toBeTruthy()
+  })
+
+  it('sends the picked bank CODE, not its display name', async () => {
+    const calls = stubHistory()
+    renderHistory()
+    await userEvent.selectOptions(await screen.findByLabelText(/bank/i), '3')
+    await userEvent.click(screen.getByRole('button', { name: /search/i }))
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('bank=3'))).toBe(true)
+    })
+    expect(calls.some((c) => c.url.includes('bank=GSCB'))).toBe(false)
+  })
+})

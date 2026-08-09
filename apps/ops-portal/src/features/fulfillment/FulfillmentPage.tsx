@@ -175,7 +175,7 @@ export function FulfillmentPage() {
       {/* Step 3: the pool is now actionable. The trigger used to live on a
           separate screen behind two typed wire ids; it belongs on the queue it
           acts on, where the operator can already see what is waiting. */}
-      {tab === 'pending' ? <BatchablePools /> : null}
+      {tab === 'pending' ? <BatchablePools onTriggered={() => void load()} /> : null}
 
       {tab === 'pending' ? (
         <Card>

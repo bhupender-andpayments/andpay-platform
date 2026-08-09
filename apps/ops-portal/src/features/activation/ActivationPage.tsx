@@ -4,6 +4,7 @@ import { getReport, markActivated, type ReportCell, type ReportRow } from '../..
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { PageHeader, Card, CardHeader, Button, ErrorNote, InfoNote, SkeletonRows, StatusPill } from '../../ui/primitives.js'
+import { fmtDateTime } from '../../ui/format.js'
 
 // FR-07 Phase-1 MANUAL activation SUCCESS mark (Phase 7 Task 11, D-H.1). CWD
 // activates the device+SIM out of band; this page is where ops marks it,
@@ -57,6 +58,21 @@ export function ActivationPage() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNote, setActionNote] = useState<string | null>(null)
+  // Dispatches this operator has just activated, which the WORKLIST may still
+  // be showing.
+  //
+  // This is not a missing refetch. handleActivate already re-reads, and it
+  // still came back with the row: the write lands in TMS, and this worklist
+  // reads the ANALYTICS projection, which is fed asynchronously by the fact
+  // rail. An immediate re-read is a read of a projection that has not caught up
+  // yet, so the operator saw a confirmation and the row they had just actioned
+  // sitting there, still offering the button.
+  //
+  // Holding the ids we accepted and hiding those rows is a read-your-own-write
+  // shim over an eventually consistent view. It self-heals: once the projection
+  // catches up the row is no longer in the response at all, and the id in this
+  // set simply stops matching anything.
+  const [locallyActivated, setLocallyActivated] = useState<ReadonlySet<string>>(new Set())
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -83,7 +99,11 @@ export function ActivationPage() {
     setBusyId(dispatchId)
     try {
       await markActivated(client, dispatchId, newIdempotencyKey())
-      setActionNote(`${dispatchId} marked activated.`)
+      setLocallyActivated((prev) => new Set(prev).add(dispatchId))
+      // Name the merchant, not the wire id. The operator picked a row that said
+      // "Flow Alpha Store" and telling them "asgn_01kz... marked activated"
+      // makes them go back and match an opaque string to be sure it was theirs.
+      setActionNote(`${stringField(row, 'merchantDisplay') ?? dispatchId} marked activated.`)
       await load()
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to mark activated.')
@@ -104,7 +124,14 @@ export function ActivationPage() {
         return ids.length === 0 ? '-' : ids.join(', ')
       },
     },
-    { key: 'deliveryDate', header: 'Delivered', cell: (row) => stringField(row, 'deliveryDate') ?? '-' },
+    {
+      key: 'deliveryDate',
+      header: 'Delivered',
+      // Was the raw ISO string, so this column read "2026-08-09T06:30:00.000Z".
+      // fmtDateTime already existed and is what every other table on the portal
+      // uses; there was no reason for this one to show the wire format.
+      cell: (row) => fmtDateTime(stringField(row, 'deliveryDate')),
+    },
     {
       key: 'simActivationStatus',
       header: 'SIM Status',
@@ -140,6 +167,14 @@ export function ActivationPage() {
     },
   ]
 
+  // What the operator should actually see: the worklist minus anything they
+  // have already actioned in this session. The count is derived from the SAME
+  // list, so the header can never claim a number the table does not show.
+  const visibleRows = rows.filter((row) => {
+    const id = stringField(row, 'dispatchId')
+    return id === null || !locallyActivated.has(id)
+  })
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -154,14 +189,14 @@ export function ActivationPage() {
       <Card>
         <CardHeader
           title="Delivered, awaiting activation"
-          subtitle={`${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`}
+          subtitle={`${visibleRows.length} ${visibleRows.length === 1 ? 'row' : 'rows'}`}
         />
         {loading ? (
           <SkeletonRows rows={6} cols={8} />
         ) : (
           <DataTable
             columns={columns}
-            rows={rows}
+            rows={visibleRows}
             getRowKey={(row, index) => stringField(row, 'dispatchId') ?? String(index)}
             emptyMessage="No delivered, not-yet-activated assignments."
           />

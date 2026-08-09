@@ -6,6 +6,7 @@ import {
   getBatchDetail,
   downloadDispatchExcel,
   downloadCollateral,
+  getVendors,
   type BatchDetailView,
   type BatchEntryRow,
 } from '../../api/endpoints.js'
@@ -45,6 +46,14 @@ export function BatchDetailPage() {
   const navigate = useNavigate()
 
   const [detail, setDetail] = useState<BatchDetailView | null>(null)
+  // vndr id -> the name a human calls it. The batch read returns only the
+  // wire id, so this summary showed `vndr_50000000008008...` where the
+  // vendor's NAME belongs, CSS-truncated at exactly the point that
+  // distinguishes one vendor from another (our seeded vendors differ only
+  // in the last character). Resolved here rather than by widening the batch
+  // endpoint: GET /ops/vendors already exists and is already used elsewhere
+  // in the portal for exactly this, so this needs no new route and no grant.
+  const [vendorNames, setVendorNames] = useState<ReadonlyMap<string, string>>(new Map())
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [notFound, setNotFound] = useState(false)
@@ -72,6 +81,23 @@ export function BatchDetailPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // Silent on failure, like every other lookup that only improves a label: if
+  // the vendor list does not arrive the summary falls back to the wire id,
+  // which is exactly what it showed before. A failed nicety must not put an
+  // error banner over a batch that loaded perfectly well.
+  useEffect(() => {
+    let cancelled = false
+    getVendors(client)
+      .then((list) => {
+        if (cancelled || !Array.isArray(list)) return
+        setVendorNames(new Map(list.map((v) => [v.id, v.displayName])))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [client])
 
   async function handleDispatchExcel(): Promise<void> {
     setDownloadError(null)
@@ -153,9 +179,20 @@ export function BatchDetailPage() {
                 spaces, so without it the grid cell refuses to shrink and the id
                 overflows into the next column. Caught in a real browser, not in
                 jsdom, which does not lay out. */}
-            <div className="grid grid-cols-2 gap-4 p-4 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-4 p-4 md:grid-cols-3">
+              {/* This tile said "Units", which is not true and is misleading in
+                  the one direction that matters. `unitCount` is the number of
+                  pooled MERCHANT RECORDS claimed when the batch formed; no
+                  physical device is attached to a batch at all until the print
+                  vendor's return sheet arrives and binds one. An operator
+                  reading "Units 6" would reasonably conclude six devices were
+                  committed to this batch, and none are.
+                  The separate "Records" tile that used to sit at the end of this
+                  row is gone with it: it showed detail.entries.length, the same
+                  6, and the Records card lower down already says "6 in this
+                  batch". Two tiles for one number, one of them untrue. */}
               <div className="min-w-0">
-                <div className="text-xs text-muted-foreground">Units</div>
+                <div className="text-xs text-muted-foreground">Records</div>
                 <div className="num text-lg">{detail.batch.unitCount}</div>
               </div>
               <div className="min-w-0">
@@ -164,13 +201,18 @@ export function BatchDetailPage() {
               </div>
               <div className="min-w-0">
                 <div className="text-xs text-muted-foreground">Print vendor</div>
-                <div className="truncate text-lg" title={detail.batch.printVndr ?? 'unassigned'}>
-                  {detail.batch.printVndr ?? 'unassigned'}
+                {/* The NAME, falling back to the id only when the vendor list
+                    has not arrived. The id stays in the title so it is still
+                    copyable, which is the spec's rule: a wire id is shown
+                    beside the name, never instead of it. */}
+                <div
+                  className="truncate text-lg"
+                  title={detail.batch.printVndr ?? 'unassigned'}
+                >
+                  {detail.batch.printVndr === null
+                    ? 'unassigned'
+                    : (vendorNames.get(detail.batch.printVndr) ?? detail.batch.printVndr)}
                 </div>
-              </div>
-              <div className="min-w-0">
-                <div className="text-xs text-muted-foreground">Records</div>
-                <div className="num text-lg">{detail.entries.length}</div>
               </div>
             </div>
           </Card>

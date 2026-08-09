@@ -157,3 +157,60 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     expect(screen.queryByRole('textbox')).toBeNull()
   })
 })
+
+// This component is NOT alone on the Batches page. Triggering re-read its own
+// groups and correctly showed "Nothing waiting to be batched", while the
+// pending-pool TABLE rendered right below it, owned by the parent and reading
+// the same endpoint, still listed those records as POOLED / not batched.
+// One screen, two halves, disagreeing in front of the operator.
+describe('BatchablePools: telling the rest of the page that the pool changed', () => {
+  beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
+  afterEach(() => { cleanup(); clearAccessToken() })
+
+  it('calls onTriggered after a successful trigger, so a sibling list can re-read', async () => {
+    stub([entry()])
+    const onTriggered = vi.fn()
+    render(withProviders(<BatchablePools onTriggered={onTriggered} />))
+
+    await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
+
+    await vi.waitFor(() => {
+      expect(onTriggered).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('does NOT call onTriggered when the trigger fails, because nothing changed', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      if (url.includes('/ops/batches/trigger')) {
+        return new Response(JSON.stringify({ message: 'nope' }), { status: 500 })
+      }
+      if (url.includes('/ops/pool')) return jsonResponse([entry()])
+      return jsonResponse({})
+    }))
+    const onTriggered = vi.fn()
+    render(withProviders(<BatchablePools onTriggered={onTriggered} />))
+
+    await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
+
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/batches/trigger'))).toBe(true)
+    })
+    expect(onTriggered).not.toHaveBeenCalled()
+  })
+
+  it('is optional, so a caller that does not need the signal still works', async () => {
+    stub([entry()])
+    render(withProviders(<BatchablePools />))
+    await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
+    expect(await screen.findByText(/btch_50000000008008000000000009/)).toBeTruthy()
+  })
+
+  it('counts in words that agree with the number, including at one', async () => {
+    stub([entry()])
+    render(withProviders(<BatchablePools />))
+    // One record, one bank: "1 records across 1 banks" was what it said.
+    expect(await screen.findByText(/1 record across 1 bank,/)).toBeTruthy()
+  })
+})

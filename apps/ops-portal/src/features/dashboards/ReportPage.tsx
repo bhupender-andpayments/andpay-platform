@@ -19,6 +19,7 @@ import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { downloadCsv } from './exportCsv.js'
 import { PageHeader, Card, CardHeader, Field, Select, Input, Button, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
 import { IconSearch, IconDownload } from '../../ui/icons.js'
+import { humanHeader } from '../../ui/format.js'
 import { COURIER_STATUSES } from './courierStatuses.js'
 
 // The six FR-10 reports. The Activation Report renders as the
@@ -70,15 +71,8 @@ function cellText(cell: ReportCell | undefined): string {
   return String(value)
 }
 
-// Humane column headers derived from the real backend keys (a text
-// transform of the actual field name, never an invented label); unknown keys
-// fall back to a title-cased version of the key itself.
-function humanHeader(key: string): string {
-  return key
-    .replace(/([A-Z])/g, ' $1')
-    .replace(/^./, (c) => c.toUpperCase())
-    .trim()
-}
+// humanHeader moved to ui/format.ts when Dispatch History turned out to need
+// the same transform: it was rendering raw backend keys as its headers.
 
 // Columns are the union of every row's keys, in first-seen order: the six
 // reports (and the seven drilldowns) each have a different, fixed column set

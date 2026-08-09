@@ -63,7 +63,18 @@ function ageInDays(iso: string): number {
   return Math.max(0, Math.floor(ms / 86_400_000))
 }
 
-export function BatchablePools() {
+/**
+ * `onTriggered` exists because this component is NOT the only thing on the page
+ * showing the pool. Triggering re-read its own groups and correctly said
+ * "Nothing waiting to be batched", while the pending-pool TABLE rendered
+ * directly below it still listed those same records as POOLED / not batched.
+ * Both were reading the same endpoint; only one of them knew anything had
+ * happened, so the page contradicted itself on screen.
+ *
+ * The parent already owns a `load` for that table and already hands it to
+ * PoolEntryActions as `onChanged`. This is the same wire, for the other write.
+ */
+export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
   const { client } = useAuth()
   const [pools, setPools] = useState<BatchablePool[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -99,6 +110,9 @@ export function BatchablePools() {
       setOutcome(res)
       // The pool has changed either way, so re-read rather than guess at it.
       await load()
+      // And tell the page, so the table below re-reads too. Without this the
+      // two halves of one screen disagree about what is still pooled.
+      onTriggered?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger the batch.')
     } finally {
@@ -142,8 +156,14 @@ export function BatchablePools() {
                   <span className="font-medium text-foreground">
                     {pool.bankNames.join(', ')}
                   </span>
+                  {/* Every count here is pluralised. It read "6 records across
+                      1 banks, oldest 0 days old" on the very first pool an
+                      operator sees, and text that cannot count reads as a
+                      screen nobody checked. */}
                   <span className="text-sm text-muted-foreground">
-                    {pool.records} records across {pool.banks} banks, oldest {days} days old
+                    {pool.records} {pool.records === 1 ? 'record' : 'records'} across {pool.banks}{' '}
+                    {pool.banks === 1 ? 'bank' : 'banks'},{' '}
+                    {days === 0 ? 'oldest added today' : `oldest ${days} ${days === 1 ? 'day' : 'days'} old`}
                   </span>
                 </div>
                 <Button

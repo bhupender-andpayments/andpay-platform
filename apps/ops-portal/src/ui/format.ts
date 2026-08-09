@@ -46,6 +46,26 @@ export function statusMeta(raw: string | null | undefined): { variant: PillVaria
   return { variant: 'neutral', label }
 }
 
+/**
+ * A backend field name as a column header a human reads: `merchantDisplay`
+ * becomes "Merchant Display", `awb` becomes "Awb".
+ *
+ * It is a TEXT TRANSFORM of the real key, never a lookup table of invented
+ * labels, so a column the backend adds tomorrow gets a reasonable header
+ * instead of silently reading as camelCase. That is the same reason the tables
+ * using it derive their COLUMNS from the response rather than from a hardcoded
+ * list: a list is only correct on the day it is written.
+ *
+ * Lives here because two tables need it. Dispatch History used the raw key as
+ * its header and read `dispatchId  programId  bankCode  merchantDisplay`.
+ */
+export function humanHeader(key: string): string {
+  return key
+    .replace(/([A-Z])/g, ' $1')
+    .replace(/^./, (c) => c.toUpperCase())
+    .trim()
+}
+
 export function fmtDate(iso: string | null | undefined): string {
   if (!iso) return '-'
   const d = new Date(iso)

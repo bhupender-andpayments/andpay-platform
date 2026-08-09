@@ -1,9 +1,19 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { getReport, reportRowShptId, type ReportCell, type ReportFilters, type ReportRow } from '../../api/endpoints.js'
+import {
+  getReport,
+  reportRowShptId,
+  getBankMasters,
+  type BankMasterRow,
+  type ReportCell,
+  type ReportFilters,
+  type ReportRow,
+} from '../../api/endpoints.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
-import { Card, CardHeader, Field, Input, Button, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
+import { Card, CardHeader, Field, Input, Select, Button, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
+import { humanHeader } from '../../ui/format.js'
+import { COURIER_STATUSES } from '../dashboards/courierStatuses.js'
 
 // Dispatch history (Phase 7 Task 9). REUSES the existing
 // getReport('soundbox-delivery', filters) endpoint (the Soundbox Delivery
@@ -55,7 +65,10 @@ function buildColumns(
       }
     }
   }
-  const dataColumns = keys.map((key) => ({ key, header: key, cell: (row: ReportRow) => cellText(row[key]) }))
+  // Same transform ReportPage uses. This read `dispatchId  programId
+  // bankCode  merchantDisplay` before, which is our field names on the
+  // operator's screen.
+  const dataColumns = keys.map((key) => ({ key, header: humanHeader(key), cell: (row: ReportRow) => cellText(row[key]) }))
   const actionsColumn: DataTableColumn<ReportRow> = {
     key: '__actions',
     header: 'Actions',
@@ -100,6 +113,8 @@ export function DispatchHistoryPage({ onCorrectStatus, onOverrideTerminal }: Dis
   const [bank, setBank] = useState('')
   const [status, setStatus] = useState('')
   const [rows, setRows] = useState<ReportRow[]>([])
+  // The real bank list, so Bank is a choice rather than a spelling test.
+  const [banks, setBanks] = useState<BankMasterRow[]>([])
   const [watermark, setWatermark] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -131,6 +146,22 @@ export function DispatchHistoryPage({ onCorrectStatus, onOverrideTerminal }: Dis
     void load()
   }, [])
 
+  // Loaded separately from the history itself, and deliberately silent on
+  // failure: a bank list that does not arrive must not stop the rows
+  // rendering, it just leaves the filter holding only "Any bank". Mirrors
+  // ReportPage, which does the same for the same reason.
+  useEffect(() => {
+    let cancelled = false
+    getBankMasters(client)
+      .then((list) => {
+        if (!cancelled && Array.isArray(list)) setBanks(list)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [client])
+
   return (
     <Card>
       <CardHeader title="Dispatch history" actions={<WatermarkBadge watermark={watermark} />} />
@@ -142,11 +173,31 @@ export function DispatchHistoryPage({ onCorrectStatus, onOverrideTerminal }: Dis
         <Field label="To" htmlFor="dispatch-to">
           <Input id="dispatch-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
         </Field>
+        {/* Both cover a KNOWN value set, so both are pickers, exactly as
+            redesign step 5 already made them on Reports. As free text they were
+            the typed-id problem: get the string exactly right or silently get
+            nothing back, with no way to tell a real empty result from a typo.
+            The bank option's VALUE is the reference code the edge filters on;
+            its LABEL is the name a human uses. */}
         <Field label="Bank" htmlFor="dispatch-bank">
-          <Input id="dispatch-bank" type="text" value={bank} onChange={(e) => setBank(e.target.value)} />
+          <Select id="dispatch-bank" value={bank} onChange={(e) => setBank(e.target.value)}>
+            <option value="">Any bank</option>
+            {banks.map((b) => (
+              <option key={b.tnntId} value={b.bankReferenceCode}>
+                {b.displayName}
+              </option>
+            ))}
+          </Select>
         </Field>
         <Field label="Status" htmlFor="dispatch-status">
-          <Input id="dispatch-status" type="text" value={status} onChange={(e) => setStatus(e.target.value)} />
+          <Select id="dispatch-status" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="">Any status</option>
+            {COURIER_STATUSES.map((cs) => (
+              <option key={cs} value={cs}>
+                {cs}
+              </option>
+            ))}
+          </Select>
         </Field>
         <Button
           onClick={() => {
