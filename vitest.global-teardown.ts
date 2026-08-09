@@ -76,6 +76,46 @@ const ALWAYS_SKIP = ['_prisma_migrations']
 const SKIP_ENV = 'ANDPAY_SKIP_TEST_TEARDOWN'
 const TAG = '[global-teardown]'
 
+/**
+ * THE SCOPED AUTH PASS (F-4), and why it is DELETE and never TRUNCATE.
+ *
+ * `auth` stays in NEVER_TRUNCATE above: that guard is not weakened, because
+ * emptying these tables really would destroy the demo login and the audit
+ * chain. But refusing to truncate is not the same as refusing to tidy, and the
+ * gap between the two was a leak that ran for months: 2047 principals, 2238
+ * enrollments, 2412 refresh tokens and 355 vendor operators had accumulated by
+ * 2026-08-09, growing every gate.
+ *
+ * The choke-point cleanup in the two auth edge helpers closed most of it, and
+ * principals reached their floor. It could not close the tail, because several
+ * suites mint these rows DIRECTLY rather than through a helper, and no fix that
+ * lives in a helper can cover a suite that does not call it. Fixing those one at
+ * a time is the same wrong unit of work this whole file exists to reject, and it
+ * does nothing about the next suite somebody writes.
+ *
+ * So the rule here is the exact inverse of the domain contexts': instead of
+ * "empty everything except a preserve list", it is "delete everything EXCEPT the
+ * demo login, and never look at the ledger at all".
+ *
+ * WHAT IS PROTECTED, AND HOW:
+ *   - `authz_audit` is HASH-CHAINED. It is not in the delete list, and its row
+ *     count is compared before and after so a future FK or a careless edit
+ *     cannot empty it silently. Rows there must never be removed to tidy up.
+ *   - `outbox` is deliberately untouched. It carries undrained credential facts
+ *     that A-7 (the missing auth relay) still has to reason about; deleting them
+ *     would destroy the evidence for an open decision.
+ *   - The demo operator principal and its MFA enrollment survive by handle.
+ *
+ * If the demo login is absent the pass still runs, because then every row IS
+ * residue, but it says so: a missing demo login means the guard protected
+ * nothing on this run, and `serve.mjs` re-provisions the operator on boot.
+ */
+const AUTH_SCHEMA = 'auth'
+const AUTH_URL_VAR = 'AUTH_DATABASE_URL'
+const DEMO_LOGIN_HANDLE = 'ops.admin'
+const AUTH_LEDGER = 'authz_audit'
+const AUTH_UNTOUCHED = [AUTH_LEDGER, 'outbox', '_prisma_migrations']
+
 function defaultUrl(schema: string): string {
   return `postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=${schema}`
 }
@@ -170,6 +210,60 @@ async function truncateContext(ctx: string, schema: string, urlVar: string): Pro
   }
 }
 
+async function cleanAuthScoped(): Promise<string> {
+  const db = await connect(AUTH_SCHEMA, AUTH_URL_VAR, AUTH_SCHEMA)
+  if (db === null) return 'auth: skipped (no client)'
+
+  try {
+    // The ledger's height before anything is deleted. Guard 3.
+    const ledgerBefore = await countRows(db, AUTH_SCHEMA, AUTH_LEDGER)
+
+    const keep = await db.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT count(*) AS n FROM "${AUTH_SCHEMA}"."internal_principal" WHERE login_handle = '${DEMO_LOGIN_HANDLE}'`,
+    )
+    const demoPresent = Number(keep[0]?.n ?? 0) > 0
+    if (!demoPresent) {
+      console.error(
+        `${TAG} WARNING: demo login "${DEMO_LOGIN_HANDLE}" not found in auth.internal_principal, so nothing was ` +
+          `preserved on this run. Restart serve.mjs to re-provision it.`,
+      )
+    }
+
+    // Children first: the auth schema declares NO foreign keys, so nothing
+    // cascades and an orphan would simply be left behind. Every DELETE is
+    // anchored to "does not belong to the demo login", never to a name shape.
+    const notDemo =
+      `principal_id NOT IN (SELECT id FROM "${AUTH_SCHEMA}"."internal_principal" ` +
+      `WHERE login_handle = '${DEMO_LOGIN_HANDLE}')`
+    const refresh = await db.$executeRawUnsafe(`DELETE FROM "${AUTH_SCHEMA}"."refresh_token" WHERE ${notDemo}`)
+    const mfa = await db.$executeRawUnsafe(`DELETE FROM "${AUTH_SCHEMA}"."mfa_enrollment" WHERE ${notDemo}`)
+    const principals = await db.$executeRawUnsafe(
+      `DELETE FROM "${AUTH_SCHEMA}"."internal_principal" WHERE login_handle <> '${DEMO_LOGIN_HANDLE}'`,
+    )
+    // No vendor_operator is ever seeded by the demo harness (checked against
+    // the live database and against serve.mjs, which provisions none), so every
+    // row is test residue.
+    const operators = await db.$executeRawUnsafe(`DELETE FROM "${AUTH_SCHEMA}"."vendor_operator"`)
+
+    const ledgerAfter = await countRows(db, AUTH_SCHEMA, AUTH_LEDGER)
+    if (ledgerAfter !== ledgerBefore) {
+      console.error(
+        `${TAG} ALERT: hash-chained "${AUTH_SCHEMA}.${AUTH_LEDGER}" went from ${String(ledgerBefore)} to ` +
+          `${String(ledgerAfter)} rows. The audit chain must never be trimmed by cleanup.`,
+      )
+    }
+
+    const n = principals + operators + mfa + refresh
+    return (
+      `auth: ${String(n)} residue rows deleted ` +
+      `(${String(principals)} principal, ${String(operators)} operator, ${String(mfa)} mfa, ${String(refresh)} refresh), ` +
+      `${AUTH_UNTOUCHED.join('/')} untouched`
+    )
+  } finally {
+    await db.$disconnect()
+  }
+}
+
 export async function teardown(): Promise<void> {
   // Escape hatch for the case where you WANT the rows: debugging a failing test
   // by inspecting what it left behind.
@@ -190,5 +284,15 @@ export async function teardown(): Promise<void> {
       results.push(`${ctx}: FAILED`)
     }
   }
-  console.log(`${TAG} ${results.join(' | ')}. auth and orchestrator untouched.`)
+  // auth is never TRUNCATEd (guard 1 still refuses it); it gets the scoped
+  // DELETE pass above instead, which preserves the demo login and the ledger.
+  try {
+    results.push(await cleanAuthScoped())
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`${TAG} FAILED for auth: ${msg}`)
+    results.push('auth: FAILED')
+  }
+
+  console.log(`${TAG} ${results.join(' | ')}. orchestrator untouched.`)
 }
