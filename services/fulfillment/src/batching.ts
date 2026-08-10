@@ -243,8 +243,8 @@ export async function triggerBatchWithinTx(
         const btchWire = fromUuid('btch', btchUuid)
 
         await tx.$executeRaw`
-          INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-          VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BORN', ${reason}, ${opts.actorUuid ?? null}::uuid, ${claimed.length}, now())
+          INSERT INTO batch (id, tenant_id, program_id, trigger_reason, triggered_by_actor, unit_count, updated_at)
+          VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${reason}, ${opts.actorUuid ?? null}::uuid, ${claimed.length}, now())
         `
 
         await enqueue(tx, {

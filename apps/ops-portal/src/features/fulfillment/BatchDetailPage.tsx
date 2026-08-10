@@ -149,6 +149,27 @@ export function BatchDetailPage() {
     },
   ]
 
+  // Derived batch progress. `dispatchState` is null until the print vendor's
+  // return sheet pairs a device and births a shipment for that record, so
+  // counting the non-null ones is exactly "how many of this batch have actually
+  // gone out".
+  const dispatched = (detail?.entries ?? []).filter((e) => e.dispatchState !== null).length
+  const total = detail?.entries.length ?? 0
+  const hasCollateral = (detail?.artifacts ?? []).length > 0
+  const formed = detail === null ? '' : `Formed ${fmtDateTime(detail.batch.createdAt)}`
+  // Phrased as what HAS happened rather than as a state name, because there is
+  // no state machine here and inventing vocabulary would imply one.
+  const progressLine =
+    detail === null
+      ? ''
+      : total === 0
+        ? formed
+        : dispatched === 0
+          ? `${formed} . ${hasCollateral ? 'Collateral ready, nothing dispatched yet' : 'Collateral not composed yet'}`
+          : dispatched === total
+            ? `${formed} . All ${total} ${total === 1 ? 'record' : 'records'} dispatched`
+            : `${formed} . ${dispatched} of ${total} dispatched`
+
   // The artifact types this batch actually has, in a stable order.
   const availableTypes = Array.from(new Set((detail?.artifacts ?? []).map((a) => a.artifactType))).sort()
 
@@ -172,21 +193,17 @@ export function BatchDetailPage() {
       {!loading && !notFound && detail !== null ? (
         <>
           <Card>
-            {/* `batch.status` is NOT shown, and that is the honest option
-                rather than the lazy one.
-                batching.ts inserts 'BORN' and NOTHING anywhere updates it, so
-                the column has exactly one value for the life of every batch.
-                This subtitle read "BORN - formed 10 Aug" and would have read
-                that forever, including after all six of its devices had
-                shipped and one had gone live. A word that cannot change is not
-                a status, and printing it beside a real timestamp implies a
-                lifecycle the domain does not have.
-                Adding the missing states (sent to vendor, closed) would be
-                inventing a state machine, which is a corpus decision, not a
-                portal one. So the portal stops asserting something untrue and
-                waits for the ruling. The column is untouched; when a real
-                lifecycle is ratified this becomes one line again. */}
-            <CardHeader title="Summary" subtitle={`Formed ${fmtDateTime(detail.batch.createdAt)}`} />
+            {/* The batch's state is DERIVED FROM ITS CHILDREN, never stored
+                (Bhupender, 2026-08-10). `batch.status` was write-once and
+                read-never, held 'BORN' for the life of every batch, and has
+                been dropped.
+                Everything below is computed from `detail.entries` and
+                `detail.artifacts`, which this page ALREADY fetched, so it costs
+                no query, no write and no migration. More importantly it cannot
+                drift: a stored status is a second copy of a truth that lives in
+                the children, and a second copy disagreeing with the first is
+                the exact failure this codebase kept producing. */}
+            <CardHeader title="Summary" subtitle={progressLine} />
             {/* min-w-0 on every cell: a wire vndr_ id is 31 characters with no
                 spaces, so without it the grid cell refuses to shrink and the id
                 overflows into the next column. Caught in a real browser, not in

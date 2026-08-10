@@ -198,7 +198,6 @@ model Batch {
   tenantId         String   @map("tenant_id") @db.Uuid
   programId        String   @map("program_id") @db.Uuid
   printVndr        String?  @map("print_vndr") @db.Uuid
-  status           String // BORN | ...(spec 08)
   triggerReason    String   @map("trigger_reason") // LOT_SIZE | MAX_WAIT | MANUAL
   triggeredByActor String?  @map("triggered_by_actor") @db.Uuid
   unitCount        Int      @map("unit_count")

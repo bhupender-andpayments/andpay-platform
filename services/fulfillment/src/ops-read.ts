@@ -363,7 +363,6 @@ export async function listBatchingConfigs(db: FulfillmentDb): Promise<BatchingCo
 
 export interface BatchRow {
   id: string
-  status: string
   triggerReason: string
   unitCount: number
   printVndr: string | null
@@ -374,7 +373,6 @@ export interface BatchRow {
 
 interface BatchDbRow {
   id: string
-  status: string
   trigger_reason: string
   unit_count: number
   print_vndr: string | null
@@ -386,7 +384,6 @@ interface BatchDbRow {
 function toBatchDto(r: BatchDbRow): BatchRow {
   return {
     id: fromUuid('btch', r.id),
-    status: r.status,
     triggerReason: r.trigger_reason,
     unitCount: Number(r.unit_count),
     printVndr: r.print_vndr === null ? null : fromUuid('vndr', r.print_vndr),
@@ -402,7 +399,7 @@ export async function listBatches(db: FulfillmentDb): Promise<BatchRow[]> {
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     return tx.$queryRaw<BatchDbRow[]>`
-      SELECT id::text AS id, status, trigger_reason, unit_count, print_vndr::text AS print_vndr,
+      SELECT id::text AS id, trigger_reason, unit_count, print_vndr::text AS print_vndr,
              triggered_by_actor::text AS triggered_by_actor, created_at, updated_at
       FROM batch
       ORDER BY created_at DESC
@@ -490,7 +487,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
   return db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     const header = await tx.$queryRaw<BatchDbRow[]>`
-      SELECT id::text AS id, status, trigger_reason, unit_count, print_vndr::text AS print_vndr,
+      SELECT id::text AS id, trigger_reason, unit_count, print_vndr::text AS print_vndr,
              triggered_by_actor::text AS triggered_by_actor, created_at, updated_at
       FROM batch WHERE id = ${btchUuid}::uuid
     `

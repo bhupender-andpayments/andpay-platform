@@ -1,0 +1,28 @@
+-- Drop `batch.status`. Ruled by Bhupender 2026-08-10: derive a batch's state
+-- from its children, do not store one.
+--
+-- The column was WRITE-ONCE AND READ-NEVER. batching.ts inserted 'BORN' and
+-- nothing anywhere updated it, so every batch carried the same value for its
+-- entire life. Batch detail printed it as a status beside a real timestamp and
+-- would have read "BORN" forever, including after every device in the batch had
+-- shipped and gone live.
+--
+-- Safe to drop, and this was checked rather than assumed:
+--   * It is NOT on the batch fact. BatchFactPayload carries btchId, unitCount
+--     and friends, no status, so the column never crossed a context boundary
+--     and removing it is not a fact-schema change.
+--   * Nothing consumes it. No consumer, no analytics projection, no saga, no
+--     policy. Its only reader was the ops-read DTO feeding the portal, which
+--     had already stopped displaying it.
+--
+-- What replaces it: nothing stored. A batch's real state is its children's
+-- (are its artifacts composed, how many of its records have dispatched), and
+-- readBatchDetail already returns both, so progress is derived at read time
+-- from data that is already on the wire. That cannot drift from the truth the
+-- way a second stored copy can, which is the failure mode this codebase kept
+-- producing: a stale list, a duplicate count, a constant posing as a status.
+--
+-- If a real batch lifecycle is ever ratified, it arrives as a designed state
+-- machine with named writers, not by reviving a column that only ever held one
+-- value.
+ALTER TABLE fulfillment.batch DROP COLUMN status;
