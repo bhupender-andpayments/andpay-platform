@@ -597,7 +597,17 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
   // NOT the 283.44 x 510.24 shared default (Task 7): a page-box match here can
   // only be explained by the master having been wired through, never by the
   // pre-existing fallback.
-  it('a master-backed compose renders at the master page box, not the default', async () => {
+  // Fix wave 2, Finding 1: this case used to codify the exact bug the
+  // effective-trim preflight now closes. A collateral master at 200 x 350
+  // with NO soundbox master used to compose fine, at TWO different page
+  // sizes (the master's 200 x 350 for STANDEE_IMG, the renderer's hard-coded
+  // 283.44 x 510.24 DEFAULT for SOUNDBOX_IMG), silently handing the print
+  // vendor two merged PDFs of unequal trim. The preflight now compares
+  // EFFECTIVE trims (a group's parsed master box, or DEFAULT_SIZE when its
+  // ref is unset) for every cfg, so a half-configured bank at a non-default
+  // trim fails loudly here instead of shipping unequal PDFs. See the WHY
+  // comment on the preflight in dispatch.ts for the full reasoning.
+  it('a HALF-configured bank (one master at a non-default trim, the other group unset) now fails the equal-trim preflight loudly, not compose at two sizes', async () => {
     const tenantWire = newId('tnnt')
     const programWire = newId('prog')
     const tenantUuid = toUuid(tenantWire)
@@ -614,6 +624,40 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       traceId: 'trace-master',
     })
 
+    const err = await consumeBatchFact(db, env, assetStore).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(TemplateTrimMismatchError)
+    expect((err as Error).message).toContain('HDFC')
+
+    // The preflight runs BEFORE any render, so nothing was composed.
+    const artifacts = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
+    `
+    expect(Number(artifacts[0]!.n)).toBe(0)
+  })
+
+  // The companion case: one master set, but AT the default trim, so its
+  // effective box equals the OTHER (unset) group's DEFAULT-SIZE effective
+  // box by construction. This must compose, proving the preflight does not
+  // over-reject a half-configured bank whose one master simply happens to
+  // match the shared default (mixed backgrounds: one page master-backed, one
+  // page drawn, both at the same trim).
+  it('one master set AT the default trim composes fine with the other group unset (mixed backgrounds, equal trim)', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+
+    const collateralRef = await seedMasterAsset('template/COLLATERAL/HDFC', 283.44, 510.24)
+    await seedBankConfig(tenantUuid, 'HDFC', '', { collateralTemplateRef: collateralRef })
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-default-master', 'HDFC')
+    const env = batchFactEnvelope({
+      payload: { btchId: btchWire, tenantId: tenantWire, programId: programWire, triggerReason: 'LOT_SIZE', unitCount: 1, asgnIds: [a.asgnWire] },
+      dedupKey: btchWire,
+      traceId: 'trace-default-master',
+    })
+
     const res = await consumeBatchFact(db, env, assetStore)
     expect(res.composed).toBe(2) // soundbox + standee
 
@@ -622,16 +666,15 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     `
     const byType = new Map(arts.map((r) => [r.artifact_type, r.asset_reference]))
 
-    // STANDEE_IMG reads collateral_template_ref, which IS set: trimmed to the
-    // master's own 200 x 350 box, not the 283.44 x 510.24 default.
+    // STANDEE_IMG is master-backed (collateral_template_ref IS set), but at
+    // exactly the default trim.
     const standeeRec = await assetStore.getByReference(byType.get('STANDEE_IMG')!)
     const standeePage = (await PDFDocument.load(standeeRec!.bytes)).getPage(0)
-    expect(standeePage.getWidth()).toBeCloseTo(200, 2)
-    expect(standeePage.getHeight()).toBeCloseTo(350, 2)
+    expect(standeePage.getWidth()).toBeCloseTo(283.44, 2)
+    expect(standeePage.getHeight()).toBeCloseTo(510.24, 2)
 
-    // SOUNDBOX_IMG reads soundbox_template_ref, which this config never set:
-    // the drawn layout still runs at the DEFAULT page size, exactly as before
-    // this task (the master is a strict addition, per type).
+    // SOUNDBOX_IMG is drawn (soundbox_template_ref never set), also at the
+    // default trim: same size, different background, exactly M2's guarantee.
     const soundboxRec = await assetStore.getByReference(byType.get('SOUNDBOX_IMG')!)
     const soundboxPage = (await PDFDocument.load(soundboxRec!.bytes)).getPage(0)
     expect(soundboxPage.getWidth()).toBeCloseTo(283.44, 2)

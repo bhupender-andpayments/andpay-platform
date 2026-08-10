@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId } from '@andpay/ids'
-import { PDFDocument } from 'pdf-lib'
+import { PDFDocument, degrees } from 'pdf-lib'
 import { PrismaClient } from '../generated/client/index.js'
-import { setBankTemplateMaster } from '../src/ops.js'
+import { setBankTemplateMaster, OpsClientError } from '../src/ops.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 
 // Task 6 (M2 dispatch trim ruling): setBankTemplateMaster, the audited upload
@@ -104,6 +104,35 @@ describe('setBankTemplateMaster (track B, the audited master upload)', () => {
         clientKey: 'k2',
       }),
     ).rejects.toThrow('template_not_pdf')
+
+    // A rejected preflight never opens the write transaction, so no row and
+    // no 6e are ever written for this clientKey.
+    const n = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM bank_composition_config`
+    expect(Number(n[0]!.n)).toBe(0)
+    expect(await auditRowsFor('ops:bank-template-master-set')).toHaveLength(0)
+  })
+
+  // Finding 3 (cheap door hardening): a designer PDF saved with /Rotate 90
+  // would embed unrotated and ship SIDEWAYS at swapped effective dimensions,
+  // so the door rejects it outright rather than accepting a candidate whose
+  // page box lies about the trim it will actually print at.
+  it('rejects a master whose page 0 carries a non-zero rotation', async () => {
+    const tenantWire = newId('tnnt')
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([283.44, 510.24])
+    page.setRotation(degrees(90))
+    const bytes = await doc.save()
+
+    const err = await setBankTemplateMaster(db, store, {
+      ...base,
+      tenantWire,
+      group: 'SOUNDBOX',
+      bytes,
+      clientKey: 'k-rot',
+    }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(OpsClientError)
+    expect((err as Error).message).toBe('template_rotated')
+    expect((err as OpsClientError).reasons).toEqual([{ code: 'template_rotated' }])
 
     // A rejected preflight never opens the write transaction, so no row and
     // no 6e are ever written for this clientKey.

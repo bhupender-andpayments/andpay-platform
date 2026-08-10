@@ -52,6 +52,21 @@ export interface OpsClientErrorReason {
   column?: string
 }
 
+// Fix wave 2 (Finding 2/3): the closed set of machine-readable codes the
+// bank-template upload door (setBankTemplateMaster) can throw, exactly the
+// DeviceInventoryStructuralErrorCode precedent (device-inventory-adapter.ts)
+// for turning a domain reject into a code the ops-edge OpsErrorFilter can ride
+// across the HTTP boundary via `reasons` (S4/5c: the code is server-owned and
+// caller-uninfluenced, never the domain message itself). Before this, both
+// checks below threw with only a human message riding `Error.message`, which
+// OpsErrorFilter deliberately NEVER returns (it can embed caller input on
+// other throw sites), so the two rejects were indistinguishable 400s on the
+// wire: a portal could not tell "not a PDF" from "trim mismatch" from
+// "rotated" without parsing prose. `template_rotated` (Finding 3) joins the
+// same closed set rather than inventing a parallel one, since all three are
+// the same upload door rejecting the same candidate for a different reason.
+export type TemplateMasterErrorCode = 'template_not_pdf' | 'template_trim_mismatch' | 'template_rotated'
+
 export class OpsClientError extends Error {
   constructor(
     public readonly kind: 'not-found' | 'invalid',
@@ -1245,11 +1260,29 @@ export async function setBankTemplateMaster(
   // Check 1 (template_not_pdf): the candidate must parse as a PDF with a
   // readable first page. A caught load failure or a zero-page document are
   // both treated as "not a PDF" -- neither has a page box to compare or ship.
+  // Fix wave 2 Finding 2: the reject now carries its code through
+  // OpsClientError.reasons (the same channel device-inventory-adapter's
+  // structural errors already ride), so the 400 is machine-readable rather
+  // than a bare "invalid request" indistinguishable from every other reject
+  // on this door.
   const candidate = await PDFDocument.load(args.bytes).catch(() => null)
   if (candidate === null || candidate.getPageCount() === 0) {
-    throw new OpsClientError('invalid', 'template_not_pdf')
+    throw new OpsClientError('invalid', 'template_not_pdf', [{ code: 'template_not_pdf' }])
   }
   const candidateBox = { w: candidate.getPage(0)!.getWidth(), h: candidate.getPage(0)!.getHeight() }
+
+  // Check 1b (template_rotated, Finding 3, cheap door hardening): a designer
+  // PDF saved with a page /Rotate other than 0 embeds unrotated (pdf-lib's
+  // embedPdf does not bake /Rotate into the drawn box) and would ship SIDEWAYS
+  // at swapped effective dimensions once composed into the group PDF. Reading
+  // page 0's own rotation is exactly what pdf-lib exposes for this (no new
+  // dependency), and rejecting it at the door is far cheaper than a print
+  // vendor discovering a sideways standee. Checked here, after the PDF parses
+  // but before the trim comparison, because a rotated master has nothing
+  // meaningful to compare trims against anyway.
+  if (candidate.getPage(0)!.getRotation().angle !== 0) {
+    throw new OpsClientError('invalid', 'template_rotated', [{ code: 'template_rotated' }])
+  }
 
   // Check 2 (template_trim_mismatch): read ONLY the other group's ref off this
   // EXACT row (fulfillment_ops_read, bare -- bank_composition_config is
@@ -1283,7 +1316,8 @@ export async function setBankTemplateMaster(
         const otherBox = { w: otherDoc.getPage(0)!.getWidth(), h: otherDoc.getPage(0)!.getHeight() }
         const widthOff = Math.abs(otherBox.w - candidateBox.w) > 0.01
         const heightOff = Math.abs(otherBox.h - candidateBox.h) > 0.01
-        if (widthOff || heightOff) throw new OpsClientError('invalid', 'template_trim_mismatch')
+        if (widthOff || heightOff)
+          throw new OpsClientError('invalid', 'template_trim_mismatch', [{ code: 'template_trim_mismatch' }])
       }
     }
   }

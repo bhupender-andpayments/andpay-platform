@@ -44,7 +44,11 @@ export interface ImageTemplate {
 // and is owed to the architecture corpus. The GUARANTEE is unchanged: one
 // size, both PDFs. When a template master is present its page box overrides
 // this entirely (resolveTemplate).
-const DEFAULT_SIZE = { widthPt: 283.44, heightPt: 510.24 }
+// Exported (fix wave 2, Finding 1): dispatch.ts's compose-time trim preflight
+// needs this EXACT number to compute a group's effective trim when no master
+// is set for it, and importing it here is the only way that can never drift
+// from a second hand-typed copy of 283.44 x 510.24 in dispatch.ts.
+export const DEFAULT_SIZE = { widthPt: 283.44, heightPt: 510.24 }
 
 const DEFAULTS = {
   headline: 'SCAN & PAY',
@@ -155,23 +159,45 @@ function readOverlayNumber(imageTemplate: unknown, group: string, key: string, f
   return readNumber(g, key) ?? fallback
 }
 
+// Fix wave 2, Finding 5: resolveOverlay applied NO range clamp on what it
+// read, so a bad config value (a typo, a fraction pasted from the wrong unit)
+// could push the QR box or a text baseline off the page entirely -- the
+// overlay path draws straight onto the master's own page with no outer
+// mount, so nothing else catches an out-of-range value before it reaches
+// pdf-lib. Every yFrac / sideFrac here is a FRACTION OF THE PAGE and is only
+// ever sane in (0, 1]: the page itself IS the 1.0 edge, so nothing above 1 is
+// meaningful, and 0 or below has no on-page position to draw at. Sizes are a
+// different axis (points, not a page fraction) and get the same defensive
+// treatment MIN_SIDE_PT already applies to the page dimensions above: floored
+// at a legibility minimum rather than clamped to a page-relative bound.
+const MIN_OVERLAY_FRAC = 0.01
+const MIN_OVERLAY_TEXT_PT = 4
+
+function clampFrac(v: number): number {
+  return Math.min(1, Math.max(MIN_OVERLAY_FRAC, v))
+}
+
+function clampOverlaySize(v: number): number {
+  return Math.max(MIN_OVERLAY_TEXT_PT, v)
+}
+
 export function resolveOverlay(imageTemplate: unknown): OverlayConfig {
   return {
     name: {
-      yFrac: readOverlayNumber(imageTemplate, 'name', 'yFrac', OVERLAY_DEFAULTS.name.yFrac),
-      size: readOverlayNumber(imageTemplate, 'name', 'size', OVERLAY_DEFAULTS.name.size),
+      yFrac: clampFrac(readOverlayNumber(imageTemplate, 'name', 'yFrac', OVERLAY_DEFAULTS.name.yFrac)),
+      size: clampOverlaySize(readOverlayNumber(imageTemplate, 'name', 'size', OVERLAY_DEFAULTS.name.size)),
     },
     legal: {
-      yFrac: readOverlayNumber(imageTemplate, 'legal', 'yFrac', OVERLAY_DEFAULTS.legal.yFrac),
-      size: readOverlayNumber(imageTemplate, 'legal', 'size', OVERLAY_DEFAULTS.legal.size),
+      yFrac: clampFrac(readOverlayNumber(imageTemplate, 'legal', 'yFrac', OVERLAY_DEFAULTS.legal.yFrac)),
+      size: clampOverlaySize(readOverlayNumber(imageTemplate, 'legal', 'size', OVERLAY_DEFAULTS.legal.size)),
     },
     qr: {
-      yFrac: readOverlayNumber(imageTemplate, 'qr', 'yFrac', OVERLAY_DEFAULTS.qr.yFrac),
-      sideFrac: readOverlayNumber(imageTemplate, 'qr', 'sideFrac', OVERLAY_DEFAULTS.qr.sideFrac),
+      yFrac: clampFrac(readOverlayNumber(imageTemplate, 'qr', 'yFrac', OVERLAY_DEFAULTS.qr.yFrac)),
+      sideFrac: clampFrac(readOverlayNumber(imageTemplate, 'qr', 'sideFrac', OVERLAY_DEFAULTS.qr.sideFrac)),
     },
     vpa: {
-      yFrac: readOverlayNumber(imageTemplate, 'vpa', 'yFrac', OVERLAY_DEFAULTS.vpa.yFrac),
-      size: readOverlayNumber(imageTemplate, 'vpa', 'size', OVERLAY_DEFAULTS.vpa.size),
+      yFrac: clampFrac(readOverlayNumber(imageTemplate, 'vpa', 'yFrac', OVERLAY_DEFAULTS.vpa.yFrac)),
+      size: clampOverlaySize(readOverlayNumber(imageTemplate, 'vpa', 'size', OVERLAY_DEFAULTS.vpa.size)),
     },
   }
 }

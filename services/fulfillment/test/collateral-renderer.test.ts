@@ -312,4 +312,26 @@ describe('template master background (track B)', () => {
     })
     expect(Buffer.compare(Buffer.from(a), Buffer.from(b))).not.toBe(0)
   })
+
+  // Fix wave 2, Finding 5: resolveOverlay now clamps every yFrac/sideFrac to
+  // (0, 1], so a wildly out-of-range config value (here sideFrac: 3, meaning
+  // "3x the page width") renders deterministically at the CLAMPED value
+  // (sideFrac 1) instead of pushing the QR off the page or corrupting the
+  // draw. Asserting equality against the explicitly-clamped render is the
+  // simplest honest check: it proves the clamp actually applies, not merely
+  // that rendering an out-of-range value happens not to throw.
+  it('an out-of-range sideFrac is clamped rather than pushing the QR off the page', async () => {
+    const master = { bytes: await testMaster() }
+    const outOfRange = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      imageTemplate: { overlay: { qr: { sideFrac: 3 } } },
+    })
+    const clamped = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      imageTemplate: { overlay: { qr: { sideFrac: 1 } } },
+    })
+    expect(Buffer.compare(Buffer.from(outOfRange), Buffer.from(clamped))).toBe(0)
+  })
 })

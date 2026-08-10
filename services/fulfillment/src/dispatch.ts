@@ -7,7 +7,7 @@ import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope } from './write-context.js'
 import { DISPATCH_TOPIC, dispatchFactEnvelope, type BatchFactPayload } from './events.js'
-import { renderCollateralPdf, type ArtifactType } from './collateral/renderer.js'
+import { renderCollateralPdf, DEFAULT_SIZE, type ArtifactType } from './collateral/renderer.js'
 import type { AssetStore } from './storage/asset-store.js'
 import { bankConfigCandidateKeys, selectBankConfig } from './config/bank-config-fallback.js'
 
@@ -210,23 +210,50 @@ async function preRenderArtifacts(
     return box
   }
 
-  // Run once per DISTINCT cfg, before rendering ANY of its entries: a cfg with
-  // both group masters set must agree on trim, or the vendor would receive two
-  // merged delivery PDFs of unequal size (M2's one-shared-trim guarantee).
+  // Run once per DISTINCT cfg, before rendering ANY of its entries: the two
+  // group masters must agree on EFFECTIVE trim, or the vendor would receive
+  // two merged delivery PDFs of unequal size (M2's one-shared-trim guarantee).
   // This whole pass runs BEFORE the render loop below, so a mismatch throws
   // before a single PDF of this batch is rendered or stored, not partway
   // through.
+  //
+  // WHY effective, not raw refs (fix wave 2, Finding 1): the ORIGINAL version
+  // of this check only compared when BOTH template refs were set, and skipped
+  // silently otherwise. That let a HALF-CONFIGURED bank through: one group's
+  // master uploaded at some trim, the other group's ref left null so its
+  // artifacts render at the renderer's hard-coded DEFAULT_SIZE. Nothing here
+  // ever compared "the set group's master trim" against "the DEFAULT the
+  // unset group actually renders at", so the vendor received two merged PDFs
+  // of unequal size, exactly the outcome this whole guarantee exists to
+  // prevent. The upload-time door check (ops.ts setBankTemplateMaster) cannot
+  // close this alone: it only ever compares against the OTHER group's ref, so
+  // a bank's FIRST master at a new trim has nothing yet to disagree with and
+  // is correctly accepted there (refusing it would make uploading a first
+  // master at a new trim impossible). The row only becomes unsafe once render
+  // time asks "what actually prints", which is here, so this is where the
+  // effective comparison has to live.
+  //
+  // The effective box per group is the parsed master page box when its ref is
+  // set and parses, else the renderer's own DEFAULT_SIZE (imported, never a
+  // second hand-typed copy of the number, so the two can never drift): a bank
+  // with NO masters compares DEFAULT against DEFAULT and passes by
+  // construction; a bank with one master AT the default trim compares DEFAULT
+  // against DEFAULT too (that trim IS the default, not a coincidence) and
+  // composes fine with mixed backgrounds; a bank with one master at ANY OTHER
+  // trim now fails loudly here instead of shipping the print vendor two
+  // unequal-size PDFs.
+  const DEFAULT_BOX = { w: DEFAULT_SIZE.widthPt, h: DEFAULT_SIZE.heightPt }
   const seenCfgIds = new Set<string>()
   for (const e of entries) {
     const cfg = cfgFor(e.bank_reference_code, e.branch_code)
     if (cfg === null || seenCfgIds.has(cfg.id)) continue
     seenCfgIds.add(cfg.id)
-    if (cfg.soundbox_template_ref === null || cfg.collateral_template_ref === null) continue
-    const soundboxBox = await boxFor(cfg.soundbox_template_ref)
-    const collateralBox = await boxFor(cfg.collateral_template_ref)
-    if (soundboxBox === undefined || collateralBox === undefined) continue
-    const widthOff = Math.abs(soundboxBox.w - collateralBox.w) > 0.01
-    const heightOff = Math.abs(soundboxBox.h - collateralBox.h) > 0.01
+    const soundboxBox = cfg.soundbox_template_ref === null ? undefined : await boxFor(cfg.soundbox_template_ref)
+    const collateralBox = cfg.collateral_template_ref === null ? undefined : await boxFor(cfg.collateral_template_ref)
+    const effSoundbox = soundboxBox ?? DEFAULT_BOX
+    const effCollateral = collateralBox ?? DEFAULT_BOX
+    const widthOff = Math.abs(effSoundbox.w - effCollateral.w) > 0.01
+    const heightOff = Math.abs(effSoundbox.h - effCollateral.h) > 0.01
     if (widthOff || heightOff) throw new TemplateTrimMismatchError(cfg.bank_code, cfg.branch_code)
   }
 
