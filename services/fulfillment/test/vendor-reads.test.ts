@@ -45,12 +45,12 @@ async function seed(): Promise<Seeded> {
   const btchV2Uuid = toUuid(newId('btch'))
 
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-    VALUES (${btchV1Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1Uuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 2, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchV1Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1Uuid}::uuid, 'LOT_SIZE', NULL, 2, now())
   `
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-    VALUES (${btchV2Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v2Uuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchV2Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v2Uuid}::uuid, 'LOT_SIZE', NULL, 1, now())
   `
 
   const entryV1A = toUuid(newId('asgn'))
@@ -103,7 +103,7 @@ describe('readVendorWorkQueue (spec 14b task 3)', () => {
     expect(rows.map((r) => r.btchId)).toEqual([btchV1Wire])
     expect(rows[0]!.openEntries).toBe(2)
     // PII-free: the row type has no ship_to* keys at all.
-    expect(Object.keys(rows[0]!)).toEqual(['btchId', 'unitCount', 'status', 'openEntries', 'createdAt'])
+    expect(Object.keys(rows[0]!)).toEqual(['btchId', 'unitCount', 'openEntries', 'createdAt'])
   })
 })
 
@@ -128,12 +128,12 @@ async function seedHistory(): Promise<HistorySeeded> {
   const btchV2Uuid = toUuid(newId('btch'))
 
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-    VALUES (${btchV1Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1Uuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchV1Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1Uuid}::uuid, 'LOT_SIZE', NULL, 1, now())
   `
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-    VALUES (${btchV2Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v2Uuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchV2Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v2Uuid}::uuid, 'LOT_SIZE', NULL, 1, now())
   `
 
   const shptV1Uuid = toUuid(newId('shpt'))

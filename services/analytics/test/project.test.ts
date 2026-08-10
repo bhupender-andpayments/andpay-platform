@@ -181,10 +181,43 @@ function replacementEnvelope(o: {
 // Read back the full modeled row content, EXCLUDING updated_at (a
 // materialization write-time stamp, not derived from facts). Ordered by
 // dispatch_id so two snapshots are directly deep-equal-comparable.
+// The COLLATERAL shipment fact (2026-08-10): one dispatch id can travel under
+// two AWBs, the soundbox kit under one and the standee under another. It rides
+// the EXISTING shipment topic on two additive optional fields, so no new topic
+// and no compatibility break; `collateral: true` is the discriminator and
+// asgnIds names the dispatch ids it covers, because a collateral consignment
+// has no unit and therefore no print_for row to be found by.
+function collateralShipmentEnvelope(o: {
+  shptId: string
+  awb: string
+  asgnIds: string[]
+  fileId?: string
+  ts: string
+}): Envelope {
+  return newEnvelope({
+    type: 'fct.fulfillment.shipment.v1',
+    version: 1,
+    subject: o.shptId,
+    // the file-scoped grammar the producer uses, mirrored here so the fixture
+    // cannot accidentally collide with a birth fact's bare shpt key.
+    dedupKey: `${o.shptId}|collateral|${o.fileId ?? 'return-file-1'}`,
+    traceId: 'trace-proj',
+    timestamp: o.ts,
+    payload: {
+      shptId: o.shptId,
+      awb: o.awb,
+      status: 'DISPATCHED_BY_VENDOR',
+      collateral: true,
+      asgnIds: o.asgnIds,
+    },
+  })
+}
+
 async function snapshotRows(): Promise<Record<string, unknown>[]> {
   return db.$queryRawUnsafe<Record<string, unknown>[]>(`
     SELECT dispatch_id, program_id::text AS program_id, bank_code, bank_display, branch,
-           merchant_display, device_ids, awb, shpt_id, dispatch_date, courier_status,
+           merchant_display, device_ids, awb, shpt_id, collateral_awb, collateral_shpt_id,
+           dispatch_date, courier_status,
            delivery_date, activation_status, sim_activation_status, activation_date,
            activation_failure_reason, pipeline_state, is_replacement, original_dispatch_id,
            damage_reason, replacement_dispatch_id, replacement_status, billable_flag,
@@ -311,6 +344,129 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
     const rebuilt = await snapshotRows()
 
     expect(rebuilt).toEqual(online) // byte-identical content (updated_at excluded)
+  })
+
+  // ONE DISPATCH ID, TWO AWBs (2026-08-10). The collateral parcel gets its own
+  // two columns and touches nothing else on the row.
+  it('a LATE collateral fact sets only the collateral columns and cannot regress a DELIVERED row', async () => {
+    // THE FAILURE THIS PREVENTS, and the reason applyFact early-returns rather
+    // than merging: fold order is occurred_at, so a standee shipped a week
+    // after the soundbox arrives LAST. Without the early return its
+    // DISPATCHED_BY_VENDOR status would overwrite courier_status on a record
+    // that is already delivered, and stamp dispatched_at a second time. The
+    // merchant's soundbox would appear to un-deliver itself because a poster
+    // went out late.
+    const asgnA = newId('asgn')
+    const progP = newId('prog') as ProgId
+    const unit = newId('unit')
+    const shpt = newId('shpt')
+    const collateralShpt = newId('shpt')
+
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnA, progId: progP, ts: '2026-07-01T00:00:00Z' }))
+    await ingestEnvelope(db, printForEnvelope({ asgnId: asgnA, unitId: unit, deviceId: 'DEV1', shptId: shpt, awb: 'AWB1', ts: '2026-07-01T13:00:00Z' }))
+    await ingestEnvelope(db, shipmentEnvelope({ shptId: shpt, awb: 'AWB1', status: 'DISPATCHED_BY_VENDOR', dispatchDate: '2026-07-01T00:00:00Z', ts: '2026-07-01T18:00:00Z' }))
+    await ingestEnvelope(db, shipmentEnvelope({ shptId: shpt, status: 'DELIVERED', courierTimestamp: '2026-07-03T00:00:00Z', ts: '2026-07-03T00:00:00Z' }))
+    await ingestEnvelope(db, collateralShipmentEnvelope({ shptId: collateralShpt, awb: 'AWB-STANDEE', asgnIds: [asgnA], ts: '2026-07-09T00:00:00Z' }))
+
+    const row = await db.dispatchRow.findUnique({ where: { dispatchId: asgnA } })
+    expect(row).not.toBeNull()
+    // the SECOND parcel, recorded where it belongs
+    expect(row!.collateralAwb).toBe('AWB-STANDEE')
+    expect(row!.collateralShptId).toBe(collateralShpt)
+    // and the device parcel's own columns, all untouched
+    expect(row!.awb).toBe('AWB1')
+    expect(row!.shptId).toBe(shpt)
+    expect(row!.courierStatus).toBe('DELIVERED')
+    expect(row!.pipelineState).toBe('DELIVERED')
+    expect(row!.deliveryDate).toEqual(new Date('2026-07-03T00:00:00Z'))
+    expect(row!.dispatchDate).toEqual(new Date('2026-07-01T00:00:00Z'))
+    expect(row!.deviceIds).toEqual(['DEV1'])
+
+    // A REBUILD MUST REPRODUCE IT. The collateral fact names its assignments on
+    // the fact, and the rebuild fold matches on exactly that, so the online row
+    // and the rebuilt row agree. Without the matching arm in foldAsgn's WHERE,
+    // the rebuild would silently CLEAR both columns, which is precisely the
+    // online/rebuild divergence D98 forbids.
+    const online = await snapshotRows()
+    await rebuildDispatchRows(db)
+    expect(await snapshotRows()).toEqual(online)
+  })
+
+  it('a collateral fact for an assignment with NO print_for still lands, because it names its own asgnIds', async () => {
+    // The standee-only case: nothing was printed for this dispatch id yet, so
+    // there is no print_for row and the shptId-through-print_for resolver would
+    // have found nobody. The fact carries its assignments for exactly this
+    // reason.
+    const asgnA = newId('asgn')
+    const progP = newId('prog') as ProgId
+    const collateralShpt = newId('shpt')
+
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnA, progId: progP, ts: '2026-07-01T00:00:00Z' }))
+    await ingestEnvelope(db, collateralShipmentEnvelope({ shptId: collateralShpt, awb: 'AWB-STANDEE-ONLY', asgnIds: [asgnA], ts: '2026-07-02T00:00:00Z' }))
+
+    const row = await db.dispatchRow.findUnique({ where: { dispatchId: asgnA } })
+    expect(row!.collateralAwb).toBe('AWB-STANDEE-ONLY')
+    expect(row!.collateralShptId).toBe(collateralShpt)
+    // the DEVICE parcel has not happened, and the row says so honestly rather
+    // than borrowing the collateral parcel's answers.
+    expect(row!.awb).toBeNull()
+    expect(row!.shptId).toBeNull()
+    expect(row!.courierStatus).toBeNull()
+    expect(row!.dispatchDate).toBeNull()
+    expect(row!.pipelineState).toBe('RECEIVED')
+
+    const online = await snapshotRows()
+    await rebuildDispatchRows(db)
+    expect(await snapshotRows()).toEqual(online)
+  })
+
+  it('ONE collateral fact covering TWO dispatch ids updates both rows', async () => {
+    // The consolidation case: twenty merchants' standees in one consignment.
+    const asgnA = newId('asgn')
+    const asgnB = newId('asgn')
+    const progP = newId('prog') as ProgId
+    const collateralShpt = newId('shpt')
+
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnA, progId: progP, ts: '2026-07-01T00:00:00Z' }))
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnB, progId: progP, ts: '2026-07-01T00:00:00Z' }))
+    await ingestEnvelope(db, collateralShipmentEnvelope({ shptId: collateralShpt, awb: 'AWB-CONSOLIDATED', asgnIds: [asgnA, asgnB], ts: '2026-07-02T00:00:00Z' }))
+
+    for (const asgn of [asgnA, asgnB]) {
+      const row = await db.dispatchRow.findUnique({ where: { dispatchId: asgn } })
+      expect(row!.collateralAwb).toBe('AWB-CONSOLIDATED')
+      expect(row!.collateralShptId).toBe(collateralShpt)
+    }
+
+    const online = await snapshotRows()
+    await rebuildDispatchRows(db)
+    expect(await snapshotRows()).toEqual(online)
+  })
+
+  it('applyFact leaves the collateral columns null for an ORDINARY shipment fact (absent flag is not collateral)', async () => {
+    // Pure-reducer pin: a shipment fact with no `collateral` key is the
+    // ordinary parcel, and must never be read as collateral by default.
+    const base = applyFact(null, 'fct.tms.assignment.v1', {
+      asgnId: 'asgn_x', progId: newId('prog'), bankReferenceCode: 'HDFC', bankDisplayName: 'HDFC Bank',
+      merchantDisplayName: 'Acme', billable: true,
+    }, new Date('2026-07-01T00:00:00Z'))
+    const shipped = applyFact(base, 'fct.fulfillment.shipment.v1', {
+      shptId: 'shpt_1', awb: 'AWB1', status: 'DISPATCHED_BY_VENDOR', dispatchDate: '2026-07-01T00:00:00Z',
+    }, new Date('2026-07-01T18:00:00Z'))
+    expect(shipped.collateralAwb).toBeNull()
+    expect(shipped.collateralShptId).toBeNull()
+    expect(shipped.awb).toBeNull() // awb comes from print_for, unchanged by this branch
+    expect(shipped.courierStatus).toBe('DISPATCHED_BY_VENDOR')
+    expect(shipped.pipelineState).toBe('DISPATCHED')
+
+    // and the collateral branch touches ONLY its two columns
+    const collateral = applyFact(shipped, 'fct.fulfillment.shipment.v1', {
+      shptId: 'shpt_2', awb: 'AWB-STANDEE', status: 'DISPATCHED_BY_VENDOR', collateral: true, asgnIds: ['asgn_x'],
+    }, new Date('2026-07-09T00:00:00Z'))
+    expect(collateral.collateralAwb).toBe('AWB-STANDEE')
+    expect(collateral.collateralShptId).toBe('shpt_2')
+    expect(collateral.courierStatus).toBe('DISPATCHED_BY_VENDOR')
+    expect(collateral.dispatchedAt).toEqual(shipped.dispatchedAt)
+    expect(collateral.pipelineState).toBe(shipped.pipelineState)
   })
 
   it('applyFact activated path sets ACTIVATED (exercised in tests only; the fact is never emitted in v1)', async () => {

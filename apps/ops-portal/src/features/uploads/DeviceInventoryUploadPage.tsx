@@ -126,7 +126,7 @@ export function DeviceInventoryUploadPage() {
     setStructuralErrors([])
     setBusy(true)
     try {
-      const res = await commitDeviceInventory(file, manufacturerVndrId, newIdempotencyKey())
+      const res = await commitDeviceInventory(client, file, manufacturerVndrId, newIdempotencyKey())
       setResult(res)
     } catch (err) {
       // A structural rejection is reported on its own, naming the offending

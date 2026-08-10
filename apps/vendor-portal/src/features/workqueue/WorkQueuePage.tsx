@@ -16,7 +16,6 @@ import { DownloadPackageButton } from '../pull/DownloadPackageButton.js'
 const COLUMNS: ReadonlyArray<DataTableColumn<WorkQueueRow>> = [
   { key: 'btchId', header: 'Batch', cell: (row) => row.btchId },
   { key: 'unitCount', header: 'Units', cell: (row) => row.unitCount },
-  { key: 'status', header: 'Status', cell: (row) => row.status },
   { key: 'openEntries', header: 'Open entries', cell: (row) => row.openEntries },
   { key: 'createdAt', header: 'Created', cell: (row) => row.createdAt },
   { key: 'package', header: 'Package', cell: (row) => <DownloadPackageButton btchId={row.btchId} /> },

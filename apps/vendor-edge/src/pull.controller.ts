@@ -39,24 +39,27 @@ export class PullController {
     }
   }
 
-  // GET vendor/batch/:btchId/collateral/:artifactType: the FR-04 per-type merged
-  // collateral PDF (SOUNDBOX_IMG = the soundbox-only view). Same D104 authz as
-  // the xlsx pull (own-batch, ALLOW/DENY 6e). 404 when the batch has no artifact
-  // of that type; the PDF is streamed and NEVER persisted or logged.
-  @Get('batch/:btchId/collateral/:artifactType')
+  // GET vendor/batch/:btchId/collateral/:collateralKey: the FR-04 merged
+  // collateral PDF for a DELIVERY GROUP, 'SOUNDBOX' (the soundbox-only view) or
+  // 'COLLATERAL' (sticker plus standee, one page per merchant). The three legacy
+  // artifact-type values still resolve to the group carrying that product, so a
+  // URL a vendor already holds keeps working. Same D104 authz as the xlsx pull
+  // (own-batch, ALLOW/DENY 6e). 404 when the batch has nothing in that group, or
+  // on an unknown key; the PDF is streamed and NEVER persisted or logged.
+  @Get('batch/:btchId/collateral/:collateralKey')
   @UseGuards(EdgeCredentialGuard)
   async collateral(
     @Param('btchId') btchId: string,
-    @Param('artifactType') artifactType: string,
+    @Param('collateralKey') collateralKey: string,
     @Req() req: EdgeRequest,
     @Res() res: EdgeResponse,
   ): Promise<void> {
     const traceId = randomUUID()
     try {
-      const { pdf } = await pullTypePdf(this.deps.fulfillmentDb, this.deps.assetStore, req.claim, btchId, artifactType, traceId)
+      const { pdf } = await pullTypePdf(this.deps.fulfillmentDb, this.deps.assetStore, req.claim, btchId, collateralKey, traceId)
       if (pdf === null) throw new NotFoundException()
       res.setHeader('Content-Type', 'application/pdf')
-      res.setHeader('Content-Disposition', `attachment; filename="${artifactType}-${btchId}.pdf"`)
+      res.setHeader('Content-Disposition', `attachment; filename="${collateralKey}-${btchId}.pdf"`)
       res.status(200).send(pdf)
     } catch (err) {
       if (err instanceof PullDeniedError) throw new ForbiddenException()

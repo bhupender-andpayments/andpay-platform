@@ -105,12 +105,24 @@ function parseReturnRow(row: unknown, index: number): ReturnRow {
   if (!isPlainObject(row)) throw new EdgeParseError(`return sheet row ${String(index)}: must be an object`)
   const context = `return sheet row ${String(index)}`
   assertOnlyKeys(row, RETURN_ROW_FIELDS, context)
-  const deviceSerial = requireString(row, 'deviceSerial', context)
+  // deviceSerial is handled EXACTLY like courierCode below: absent is allowed
+  // (a row with a dispatch id and an AWB but no serial reports a collateral-only
+  // consignment, since one dispatch id can travel under two AWBs), and when
+  // present it must be a non-empty control-char-free string like any other id
+  // field (m1). This edge checks SHAPE; the domain owns MEANING, so what an
+  // absent serial MEANS is ingestReturnSheet's business, not this function's.
+  const deviceSerial = row.deviceSerial === undefined ? undefined : requireString(row, 'deviceSerial', context)
   const asgnId = requireString(row, 'asgnId', context)
   const awb = requireString(row, 'awb', context)
-  if (row.courierCode === undefined) return { deviceSerial, asgnId, awb }
-  if (typeof row.courierCode !== 'string') throw new EdgeParseError(`${context}: "courierCode" must be a string`)
-  return { deviceSerial, asgnId, awb, courierCode: row.courierCode }
+  if (row.courierCode !== undefined && typeof row.courierCode !== 'string') {
+    throw new EdgeParseError(`${context}: "courierCode" must be a string`)
+  }
+  return {
+    ...(deviceSerial !== undefined ? { deviceSerial } : {}),
+    asgnId,
+    awb,
+    ...(typeof row.courierCode === 'string' ? { courierCode: row.courierCode } : {}),
+  }
 }
 
 // Strict S8, mirrors parseIntakeSheet's grammar for the return sheet's shape.

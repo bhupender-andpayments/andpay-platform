@@ -47,6 +47,14 @@ export interface DispatchRowState {
   deviceIds: string[]
   awb: string | null
   shptId: string | null
+  /**
+   * The SECOND parcel: one dispatch id can travel under two AWBs (kit under
+   * `awb`, standee under this one). Deliberately separate from awb/shptId so a
+   * collateral fact can never move courier_status, delivery_date or the
+   * pipeline rollup, all of which describe the DEVICE's parcel.
+   */
+  collateralAwb: string | null
+  collateralShptId: string | null
   /** The batch this record was folded into, null until a batch forms (D8). */
   batchId: string | null
   dispatchDate: Date | null
@@ -97,6 +105,8 @@ function freshState(dispatchId: string): DispatchRowState {
     deviceIds: [],
     awb: null,
     shptId: null,
+    collateralAwb: null,
+    collateralShptId: null,
     batchId: null,
     dispatchDate: null,
     courierStatus: null,
@@ -224,6 +234,22 @@ export function applyFact(
     }
     case T.SHIPMENT: {
       const p = payload as ShipmentFactView
+      // COLLATERAL FACTS EARLY-RETURN, and the early return is the whole safety
+      // property. A collateral fact is about the SECOND parcel, so it sets the
+      // two collateral columns and touches nothing else. Without this return a
+      // collateral fact arriving AFTER delivery would overwrite courier_status
+      // back to DISPATCHED_BY_VENDOR and stamp dispatched_at again, silently
+      // regressing a delivered record because a standee shipped late.
+      //
+      // Note this cannot be expressed as "ignore facts whose awb differs": fold
+      // order is by occurred_at, and the collateral fact is a legitimate later
+      // event on a legitimate different shpt. The producer marks it, and this
+      // branches on the mark.
+      if (p.collateral === true) {
+        s.collateralAwb = p.awb
+        s.collateralShptId = p.shptId
+        return s
+      }
       s.courierStatus = p.status // latest status wins by fold order
       if (p.status === 'DISPATCHED_BY_VENDOR') {
         if (p.dispatchDate) s.dispatchDate = new Date(p.dispatchDate)
@@ -261,6 +287,18 @@ interface RawRow {
  *   - replacement_raised where payload.asgnId = asgn OR payload.replacedAsgnId = asgn
  *   - batch / dispatch where asgn is in payload.asgnIds[]
  *   - shipment where payload.shptId is one of the shpt ids linked to asgn by print_for
+ *   - shipment where asgn is in payload.asgnIds[] (the COLLATERAL fact, which
+ *     names its assignments directly because it has no print_for to be found by)
+ *
+ * A KNOWN AND DELIBERATE LIMITATION. The `shpts` CTE is NOT widened to include
+ * collateral shpts, so a courier TRANSITION on a collateral-only parcel
+ * (PICKED_UP, DELIVERED and friends) is not folded into this row. Those
+ * transitions carry no `collateral` flag and no asgnIds (advanceShipmentStatus
+ * knows only the AWB), so including their shpt in the CTE would let a
+ * collateral DELIVERED write courier_status and delivery_date on a record whose
+ * SOUNDBOX is still in transit, which is a worse answer than a null. Tracking
+ * the collateral parcel's own carrier state is a separate column set and a
+ * separate decision; what is recorded today is which AWB it went out on.
  * Runs under the caller's tx (which holds analytics_write, SELECT on raw_event).
  * Returns null when no rows exist for the asgn.
  */
@@ -278,6 +316,14 @@ async function foldAsgn(tx: Tx, asgn: string): Promise<DispatchRowState | null> 
       OR (topic = ${T.REPLACEMENT} AND (payload->>'asgnId' = ${asgn} OR payload->>'replacedAsgnId' = ${asgn}))
       OR (topic IN (${T.BATCH}, ${T.DISPATCH}) AND jsonb_exists(payload->'asgnIds', ${asgn}))
       OR (topic = ${T.SHIPMENT} AND payload->>'shptId' IN (SELECT shpt_id FROM shpts))
+      -- A COLLATERAL shipment fact names its assignments on the fact itself. It
+      -- has to be matched this way and not through the shpts CTE: that CTE is built
+      -- from print_for rows, and a collateral consignment has no unit and
+      -- therefore no print_for, so it would never appear there. Without this arm
+      -- the ONLINE path would set the collateral columns (affectedAsgns resolves
+      -- the fact directly) and a REBUILD would silently clear them, which is
+      -- exactly the online/rebuild divergence D98 forbids.
+      OR (topic = ${T.SHIPMENT} AND jsonb_exists(payload->'asgnIds', ${asgn}))
     ORDER BY occurred_at ASC, envelope_id ASC
   `
   if (rows.length === 0) return null
@@ -298,6 +344,8 @@ function toUpsertInput(s: DispatchRowState): Prisma.DispatchRowUncheckedCreateIn
     deviceIds: s.deviceIds,
     awb: s.awb,
     shptId: s.shptId,
+    collateralAwb: s.collateralAwb,
+    collateralShptId: s.collateralShptId,
     batchId: s.batchId,
     dispatchDate: s.dispatchDate,
     courierStatus: s.courierStatus,
@@ -360,6 +408,13 @@ async function affectedAsgns(tx: Tx, env: Envelope): Promise<string[]> {
     case T.DISPATCH:
       return Array.isArray(payload.asgnIds) ? (payload.asgnIds as string[]) : []
     case T.SHIPMENT: {
+      // A COLLATERAL fact names its assignments directly, and MUST be resolved
+      // that way: its shpt was never named by a print_for row (there is no unit
+      // and therefore no print_for at all), so the print_for lookup below would
+      // return nothing and the fact would be dropped on the floor.
+      if (payload.collateral === true && Array.isArray(payload.asgnIds)) {
+        return payload.asgnIds as string[]
+      }
       const shptId = payload.shptId
       if (typeof shptId !== 'string') return []
       const rows = await tx.$queryRaw<{ asgn: string }[]>`

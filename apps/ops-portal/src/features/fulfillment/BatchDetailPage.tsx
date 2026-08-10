@@ -35,10 +35,20 @@ import { fmtDateTime } from '../../ui/format.js'
 // the download route and treating its 404 as "no artifact". A type with no
 // artifact is not offered at all.
 
-const ARTIFACT_LABELS: Record<string, string> = {
-  SOUNDBOX_IMG: 'Soundbox',
-  STANDEE_IMG: 'Standee',
-  STICKER_IMG: 'Sticker',
+// The print vendor receives TWO merged PDFs per batch, not three per-type ones:
+// a Soundbox PDF and a Collateral PDF combining sticker and standee. A merchant
+// wanting both a sticker and a standee gets ONE page in the collateral PDF,
+// because the two share the same branded artwork (BRD Annexure A) and a second
+// page would be one VPA's QR printed twice.
+//
+// The buttons are therefore GROUPS, derived from the artifact types the batch
+// actually has. Storage still holds the three types unchanged, which is why the
+// mapping lives here and in package.ts rather than in a migration. RecomposeForm
+// below still works on the three STORED types: a recompose targets a row, not a
+// delivery group.
+const COLLATERAL_GROUP_LABELS: Record<string, string> = {
+  SOUNDBOX: 'Soundbox',
+  COLLATERAL: 'Collateral',
 }
 
 export function BatchDetailPage() {
@@ -114,14 +124,17 @@ export function BatchDetailPage() {
     }
   }
 
-  async function handleCollateral(artifactType: string): Promise<void> {
+  async function handleCollateral(groupKey: string): Promise<void> {
     setDownloadError(null)
     setDownloadNote(null)
     setDownloading(true)
     try {
-      const file = await downloadCollateral(btchId, artifactType)
-      if (file === null) setDownloadNote(`No ${artifactType} collateral exists for this batch.`)
-      else saveBlob(file.filename, file.blob)
+      const file = await downloadCollateral(btchId, groupKey)
+      if (file === null) {
+        setDownloadNote(`No ${COLLATERAL_GROUP_LABELS[groupKey] ?? groupKey} collateral exists for this batch.`)
+      } else {
+        saveBlob(file.filename, file.blob)
+      }
     } catch (err) {
       setDownloadError(err instanceof Error ? err.message : 'Failed to download the collateral.')
     } finally {
@@ -170,8 +183,14 @@ export function BatchDetailPage() {
             ? `${formed} . All ${total} ${total === 1 ? 'record' : 'records'} dispatched`
             : `${formed} . ${dispatched} of ${total} dispatched`
 
-  // The artifact types this batch actually has, in a stable order.
-  const availableTypes = Array.from(new Set((detail?.artifacts ?? []).map((a) => a.artifactType))).sort()
+  // The delivery groups this batch actually has, in a stable order. At most two
+  // buttons: a batch with stickers AND standees offers ONE Collateral PDF, not
+  // one per type, because that is the single PDF the vendor is handed.
+  const artifactTypes = new Set((detail?.artifacts ?? []).map((a) => a.artifactType))
+  const availableGroups = [
+    ...(artifactTypes.has('SOUNDBOX_IMG') ? ['SOUNDBOX'] : []),
+    ...(artifactTypes.has('STANDEE_IMG') || artifactTypes.has('STICKER_IMG') ? ['COLLATERAL'] : []),
+  ]
 
   return (
     <div className="space-y-6">
@@ -244,6 +263,19 @@ export function BatchDetailPage() {
                 </div>
               </div>
             </div>
+            {/* BRD 5.3.4: the reason an operator gave for forcing this batch.
+                Rendered only when there is one, which in practice means only
+                for MANUAL: LOT_SIZE and MAX_WAIT batches carry a null note
+                because no human fired them, and a "Reason: none" line on every
+                automatic batch would be noise pretending to be a record.
+                Its own full-width line rather than a fourth tile in the grid
+                above: the tiles hold short values, and this is a sentence. */}
+            {detail.batch.triggerNote !== null && detail.batch.triggerNote !== '' ? (
+              <div className="border-t border-border px-4 py-3">
+                <div className="text-xs text-muted-foreground">Reason</div>
+                <div className="text-sm text-foreground">{detail.batch.triggerNote}</div>
+              </div>
+            ) : null}
           </Card>
 
           <Card>
@@ -255,12 +287,12 @@ export function BatchDetailPage() {
               <Button onClick={() => void handleDispatchExcel()} disabled={downloading}>
                 Dispatch sheet (.xlsx)
               </Button>
-              {availableTypes.map((t) => (
-                <Button key={t} variant="secondary" onClick={() => void handleCollateral(t)} disabled={downloading}>
-                  {ARTIFACT_LABELS[t] ?? t} PDF
+              {availableGroups.map((g) => (
+                <Button key={g} variant="secondary" onClick={() => void handleCollateral(g)} disabled={downloading}>
+                  {COLLATERAL_GROUP_LABELS[g] ?? g} PDF
                 </Button>
               ))}
-              {availableTypes.length === 0 ? (
+              {availableGroups.length === 0 ? (
                 <InfoNote>No collateral has been composed for this batch yet.</InfoNote>
               ) : null}
             </div>

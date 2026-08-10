@@ -53,12 +53,12 @@ async function seed(): Promise<Seeded> {
   const btchV1 = toUuid(newId('btch'))
   const btchV2 = toUuid(newId('btch'))
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-    VALUES (${btchV1}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchV1}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1}::uuid, 'LOT_SIZE', NULL, 1, now())
   `
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-    VALUES (${btchV2}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v2}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchV2}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v2}::uuid, 'LOT_SIZE', NULL, 1, now())
   `
 
   const entryV1 = toUuid(newId('asgn'))

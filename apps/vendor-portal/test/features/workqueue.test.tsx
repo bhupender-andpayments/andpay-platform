@@ -26,8 +26,8 @@ function headerValue(call: Call, name: string): string | null {
 }
 
 const WORK_QUEUE_ROWS = [
-  { btchId: 'btch_1', unitCount: 10, status: 'OPEN', openEntries: 3, createdAt: '2026-08-01T00:00:00.000Z' },
-  { btchId: 'btch_2', unitCount: 5, status: 'CLOSED', openEntries: 0, createdAt: '2026-08-02T00:00:00.000Z' },
+  { btchId: 'btch_1', unitCount: 10, openEntries: 3, createdAt: '2026-08-01T00:00:00.000Z' },
+  { btchId: 'btch_2', unitCount: 5, openEntries: 0, createdAt: '2026-08-02T00:00:00.000Z' },
 ]
 
 describe('WorkQueuePage', () => {
@@ -61,8 +61,11 @@ describe('WorkQueuePage', () => {
 
     expect(await screen.findByText('btch_1')).toBeTruthy()
     expect(screen.getByText('btch_2')).toBeTruthy()
-    expect(screen.getByText('OPEN')).toBeTruthy()
-    expect(screen.getByText('CLOSED')).toBeTruthy()
+    // The Status column is gone with batch.status (2026-08-10 ruling: derive a
+    // batch's state from its children). Open entries against units is what the
+    // vendor needs, and unlike the old write-once 'BORN' it cannot go stale.
+    expect(screen.getByText('3')).toBeTruthy()
+    expect(screen.queryByText('Status')).toBeNull()
 
     const call = calls.find((c) => c.url.includes('/vendor/work-queue'))
     expect(call).toBeTruthy()

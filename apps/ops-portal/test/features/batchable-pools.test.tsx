@@ -67,6 +67,23 @@ function stub(entries: PoolEntryRow[], triggerResult: unknown = { btchId: 'btch_
   return calls
 }
 
+// BRD 5.3.4 force dispatch: the trigger now REQUIRES a reason, and the button
+// is disabled until one is typed. Every test below that means to trigger fills
+// the row's Reason box first; the tests that assert the disabled state and the
+// posted body are further down.
+//
+// Note what did NOT come back: the free-text tnnt_/prog_ boxes. A reason is
+// prose an operator writes from their own head, not an id they have to go and
+// look up somewhere else, so it is the opposite of the friction this screen
+// removed.
+const A_REASON = 'bank collection cut-off is today'
+
+async function typeReason(text = A_REASON): Promise<HTMLElement> {
+  const boxes = await screen.findAllByLabelText(/reason/i)
+  await userEvent.type(boxes[0]!, text)
+  return boxes[0]!
+}
+
 describe('BatchablePools: trigger a batch without typing an id', () => {
   beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup(); clearAccessToken() })
@@ -109,6 +126,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
   it('posts the pool ids taken FROM THE ROW, with no id ever typed', async () => {
     const calls = stub([entry({ tenantId: 'tnnt_real', programId: 'prog_real' })])
     render(withProviders(<BatchablePools />))
+    await typeReason()
     await userEvent.click(await screen.findByRole('button', { name: /trigger/i }))
 
     const call = calls.find((c) => c.url.includes('/ops/batches/trigger'))
@@ -122,6 +140,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
   it('sends a fresh Idempotency-Key, so a double click cannot double batch', async () => {
     const calls = stub([entry()])
     render(withProviders(<BatchablePools />))
+    await typeReason()
     await userEvent.click(await screen.findByRole('button', { name: /trigger/i }))
     const call = calls.find((c) => c.url.includes('/ops/batches/trigger'))
     const headers = new Headers(call!.init.headers)
@@ -131,6 +150,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
   it('names the batch it created, so the operator can go find it', async () => {
     stub([entry()])
     render(withProviders(<BatchablePools />))
+    await typeReason()
     await userEvent.click(await screen.findByRole('button', { name: /trigger/i }))
     expect(await screen.findByText(/btch_50000000008008000000000009/)).toBeTruthy()
   })
@@ -139,6 +159,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
   it('says nothing was eligible rather than showing a failure', async () => {
     stub([entry()], null)
     render(withProviders(<BatchablePools />))
+    await typeReason()
     await userEvent.click(await screen.findByRole('button', { name: /trigger/i }))
     expect(await screen.findByText(/nothing to batch/i)).toBeTruthy()
   })
@@ -172,6 +193,7 @@ describe('BatchablePools: telling the rest of the page that the pool changed', (
     const onTriggered = vi.fn()
     render(withProviders(<BatchablePools onTriggered={onTriggered} />))
 
+    await typeReason()
     await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
 
     await vi.waitFor(() => {
@@ -192,6 +214,7 @@ describe('BatchablePools: telling the rest of the page that the pool changed', (
     const onTriggered = vi.fn()
     render(withProviders(<BatchablePools onTriggered={onTriggered} />))
 
+    await typeReason()
     await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
 
     await vi.waitFor(() => {
@@ -203,6 +226,7 @@ describe('BatchablePools: telling the rest of the page that the pool changed', (
   it('is optional, so a caller that does not need the signal still works', async () => {
     stub([entry()])
     render(withProviders(<BatchablePools />))
+    await typeReason()
     await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
     expect(await screen.findByText(/btch_50000000008008000000000009/)).toBeTruthy()
   })
@@ -212,5 +236,68 @@ describe('BatchablePools: telling the rest of the page that the pool changed', (
     render(withProviders(<BatchablePools />))
     // One record, one bank: "1 records across 1 banks" was what it said.
     expect(await screen.findByText(/1 record across 1 bank,/)).toBeTruthy()
+  })
+})
+
+// BRD 5.3.4 force dispatch: a manual trigger forms a batch BELOW the lot size
+// the pool was configured for. It is an operator overriding the pool's own
+// economics, so the record of it has to say why, not just who.
+describe('BatchablePools: the force-dispatch reason', () => {
+  beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
+  afterEach(() => { cleanup(); clearAccessToken() })
+
+  it('disables the trigger until a reason is typed, so the field is discovered by looking, not by being rejected', async () => {
+    stub([entry()])
+    render(withProviders(<BatchablePools />))
+    const button = await screen.findByRole('button', { name: /trigger batch/i })
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+
+    await typeReason()
+    expect((button as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('treats a whitespace-only reason as no reason at all', async () => {
+    stub([entry()])
+    render(withProviders(<BatchablePools />))
+    const button = await screen.findByRole('button', { name: /trigger batch/i })
+    await typeReason('   ')
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('posts the typed reason in the body, trimmed', async () => {
+    const calls = stub([entry()])
+    render(withProviders(<BatchablePools />))
+    await typeReason('  courier is collecting at 4pm  ')
+    await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
+
+    const call = calls.find((c) => c.url.includes('/ops/batches/trigger'))
+    expect(call).toBeTruthy()
+    const body = JSON.parse(String(call!.init.body)) as Record<string, string>
+    expect(body.reason).toBe('courier is collecting at 4pm')
+  })
+
+  // One shared box would carry whatever was typed for one pool into the trigger
+  // for another, which is precisely the audit trail this field exists to stop
+  // being wrong.
+  it('keeps the reason PER POOL, so typing for one pool does not arm the other', async () => {
+    const calls = stub([
+      entry({ asgnId: 'asgn_a', tenantId: 'tnnt_1', programId: 'prog_1' }),
+      entry({ asgnId: 'asgn_b', tenantId: 'tnnt_2', programId: 'prog_2' }),
+    ])
+    render(withProviders(<BatchablePools />))
+
+    const boxes = await screen.findAllByLabelText(/reason/i)
+    expect(boxes).toHaveLength(2)
+    await userEvent.type(boxes[1]!, 'only the second pool')
+
+    const buttons = await screen.findAllByRole('button', { name: /trigger batch/i })
+    expect((buttons[0] as HTMLButtonElement).disabled).toBe(true)
+    expect((buttons[1] as HTMLButtonElement).disabled).toBe(false)
+
+    await userEvent.click(buttons[1]!)
+    const call = calls.find((c) => c.url.includes('/ops/batches/trigger'))
+    const body = JSON.parse(String(call!.init.body)) as Record<string, string>
+    expect(body.tenantWire).toBe('tnnt_2')
+    expect(body.reason).toBe('only the second pool')
   })
 })

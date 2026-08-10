@@ -1,0 +1,53 @@
+-- BRD 5.3.4 force dispatch: the manual batch trigger must capture a REASON.
+--
+-- The trigger itself already existed (batching.ts triggerBatch with reason
+-- 'MANUAL', ops.ts manualBatch, POST /ops/batches/trigger) and already recorded
+-- WHO fired it in batch.triggered_by_actor. What was missing is WHY, which is
+-- the part the BRD asks for: a below-lot-size batch formed by hand is an
+-- operator overriding the pool's own economics, and an audit trail that says
+-- who and when but not why cannot answer the only question anyone asks later.
+--
+-- WHERE THE REASON LIVES, and why it is here and nowhere else.
+--
+--  * NOT on the co-committed authz audit record. The 6e authz_audit record is
+--    IDs and enums only, and this codebase already states that free-text
+--    operator reasons never ride it: apps/ops-edge/src/audit.ts and the
+--    terminal-override route both say the override's free-text reason lives
+--    ONLY on the domain row (DD1), and apps/ops-edge/test/ops-actions-http.ts
+--    asserts the reason string never appears anywhere in the emitted 6e
+--    payloads. A free-text field on the hash-chained ledger would also make
+--    every operator keystroke permanently unredactable.
+--
+--  * NOT on the batch fact. BatchFactPayload (services/fulfillment/src/events.ts)
+--    carries btchId, tenantId, programId, triggerReason, unitCount and asgnIds:
+--    ids and enums, no prose. No consumer needs the reason, and widening a fact
+--    that crosses a context boundary to carry operator free text would be a
+--    fact-schema change made for nobody's benefit (S7).
+--
+--  * THE PRECEDENT IS A DOMAIN COLUMN. shpt_status_event.override_reason
+--    (migration 20260727010000_ops_portal_columns_roles) is exactly this shape:
+--    the operator's free text for a privileged class-3 action, stored on the
+--    domain row the action produced, additive and nullable. batch.trigger_note
+--    is that same pattern for the same class of action.
+--
+-- NULLABLE, because two of the three trigger reasons have nothing to say.
+-- LOT_SIZE fires because the pool reached minLotSize and MAX_WAIT fires because
+-- a timer came due; neither has a human behind it, so both persist NULL and a
+-- NOT NULL column would force an invented placeholder onto every automatic
+-- batch. NULL here means "no human typed one", which is the truth.
+--
+-- Additive, reversible, no destructive DDL, no money surface (S20), S23
+-- expand-contract.
+--
+-- NO NEW GRANT IS NEEDED, and this was checked rather than assumed. Every
+-- existing grant on batch is TABLE-level, not column-scoped, so a new column is
+-- covered by them automatically:
+--   * fulfillment_write: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN
+--     SCHEMA fulfillment (20260727000100), and batch predates that migration.
+--   * fulfillment_read:       GRANT SELECT ON ... fulfillment.batch ... (20260727000200)
+--   * fulfillment_ops_read:   GRANT SELECT ON ... fulfillment.batch ... (20260727010000)
+--   * fulfillment_vendor_read: GRANT SELECT ON fulfillment.batch, ... (20260803140000)
+-- Contrast unit, whose grants ARE column-scoped (20260803140000, 20260810020000)
+-- and which therefore does need an explicit GRANT per newly-read column. This
+-- schema has no ALTER DEFAULT PRIVILEGES and does not add one.
+ALTER TABLE "batch" ADD COLUMN IF NOT EXISTS "trigger_note" TEXT;

@@ -4,7 +4,6 @@
 export interface WorkQueueRow {
   btchId: string
   unitCount: number
-  status: string
   openEntries: number
   createdAt: string
 }

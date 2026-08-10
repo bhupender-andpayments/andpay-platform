@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { getPoolEntries, triggerBatch, getDevices, type PoolEntryRow } from '../../api/endpoints.js'
-import { Card, CardHeader, Button, ErrorNote, InfoNote, CodeChip, SkeletonRows } from '../../ui/primitives.js'
+import { Card, CardHeader, Button, ErrorNote, InfoNote, CodeChip, SkeletonRows, Field, Input } from '../../ui/primitives.js'
+
+// The cap the ops-edge enforces on the trigger reason (BRD 5.3.4). Mirrored
+// here so the operator hits a maxLength on the keyboard rather than a 400 after
+// submitting; the edge and the domain both re-check it, this is only courtesy.
+const MAX_REASON_LENGTH = 500
 
 // Redesign step 3, the flagship. This replaces a form with two free-text boxes
 // labelled `tnnt_...` and `prg_...`.
@@ -81,6 +86,11 @@ export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<{ btchId: string } | null | undefined>(undefined)
+  // BRD 5.3.4 force dispatch: the reason, PER POOL, keyed the same way busyKey
+  // is. One shared box would carry whatever was typed for one pool into the
+  // trigger for another, which is precisely the audit trail this field exists to
+  // stop being wrong.
+  const [reasons, setReasons] = useState<Record<string, string>>({})
   // How many devices are actually in the warehouse. null means we could not
   // find out, which is deliberately different from zero: an unknown stock level
   // must never render as "0 in stock".
@@ -110,13 +120,17 @@ export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
 
   async function handleTrigger(pool: BatchablePool): Promise<void> {
     const key = `${pool.tenantId}|${pool.programId}`
+    // Trimmed here as well as at the edge, so a box holding only spaces is
+    // treated as the empty box it is rather than posted and 400ed.
+    const reason = (reasons[key] ?? '').trim()
+    if (reason === '') return
     setError(null)
     setOutcome(undefined)
     setBusyKey(key)
     try {
       const res = await triggerBatch(
         client,
-        { tenantWire: pool.tenantId, programWire: pool.programId },
+        { tenantWire: pool.tenantId, programWire: pool.programId, reason },
         newIdempotencyKey(),
       )
       setOutcome(res)
@@ -198,15 +212,41 @@ export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
                     </span>
                   )}
                 </div>
-                <Button
-                  disabled={busyKey !== null}
-                  loading={busyKey === key}
-                  onClick={() => {
-                    void handleTrigger(pool)
-                  }}
-                >
-                  Trigger batch
-                </Button>
+                {/* BRD 5.3.4 force dispatch. A manual trigger forms a batch
+                    BELOW the lot size the pool was configured for, so it is an
+                    operator overriding the pool's own economics, and the reason
+                    is the only part of that decision a reader can reconstruct
+                    later. The button is disabled until it is typed rather than
+                    letting the click 400: the operator finds out the field is
+                    required by looking at the row, not by being rejected.
+                    Per pool, never one shared box (see `reasons` above). */}
+                <div className="flex flex-wrap items-end gap-3">
+                  <Field
+                    label="Reason"
+                    htmlFor={`trigger-reason-${pool.tenantId}-${pool.programId}`}
+                    hint="Recorded on the batch for audit."
+                  >
+                    <Input
+                      id={`trigger-reason-${pool.tenantId}-${pool.programId}`}
+                      value={reasons[key] ?? ''}
+                      maxLength={MAX_REASON_LENGTH}
+                      placeholder="Why this pool is being batched now"
+                      onChange={(e) => {
+                        const next = e.target.value
+                        setReasons((prev) => ({ ...prev, [key]: next }))
+                      }}
+                    />
+                  </Field>
+                  <Button
+                    disabled={busyKey !== null || (reasons[key] ?? '').trim() === ''}
+                    loading={busyKey === key}
+                    onClick={() => {
+                      void handleTrigger(pool)
+                    }}
+                  >
+                    Trigger batch
+                  </Button>
+                </div>
               </li>
             )
           })}

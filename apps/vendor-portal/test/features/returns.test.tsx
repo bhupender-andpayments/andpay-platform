@@ -221,4 +221,89 @@ describe('return upload', () => {
     expect(fetchMock.mock.calls.some(([url]: [string]) => url.includes('/vendor/return'))).toBe(false)
     expect(screen.queryByRole('button', { name: /submit return sheet/i })).toBeNull()
   })
+
+  // ONE DISPATCH ID, TWO AWBs (2026-08-10). The soundbox kit ships under one
+  // AWB and the standee under another, so a row with a BLANK Device ID is a
+  // collateral report rather than a broken row. It used to throw and take the
+  // whole file with it.
+  it('accepts a BLANK Device ID as a collateral row, omitting the key so the edge reads it as collateral', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init })
+        if (url.includes('/session/login')) return jsonResponse({ accessToken: FAKE_TOKEN })
+        if (url.includes('/vendor/return')) {
+          return jsonResponse({ pairedUnitIds: ['unit_1'], quarantined: 0, shptIds: ['shpt_1'], collateralLinked: 1, deduped: false })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    renderHarness()
+
+    const collateralCsv = [
+      'Dispatch ID,Device ID,AWB,Courier Partner,Dispatch Date',
+      'asgn_1,dev-serial-1,AWB123,DTDC,2026-08-01',
+      'asgn_1,,AWB-STANDEE,DTDC,2026-08-01',
+    ].join('\n')
+
+    const input = (await screen.findByLabelText(/return sheet file/i)) as HTMLInputElement
+    await userEvent.upload(input, makeFile(collateralCsv, 'return.csv'))
+    expect(await screen.findByText(/2 row\(s\) parsed/i)).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: /submit return sheet/i }))
+    expect(await screen.findByText(/collateral/i)).toBeTruthy()
+
+    const call = calls.find((c) => c.url.includes('/vendor/return'))!
+    const rows = (JSON.parse(await readFormFileText(call.init.body as FormData)) as { rows: Record<string, unknown>[] }).rows
+    expect(rows).toHaveLength(2)
+    // The KEY must be ABSENT on the collateral row, not ''. The edge's
+    // requireString rejects an empty string, and only an absent key means
+    // collateral, so sending '' would 400 the whole file.
+    expect(Object.keys(rows[1]!).sort()).toEqual(['asgnId', 'awb', 'courierCode'])
+    expect(rows[1]).toEqual({ asgnId: 'asgn_1', awb: 'AWB-STANDEE', courierCode: 'DTDC' })
+  })
+
+  it('still rejects a row missing Dispatch ID or AWB, naming only those two', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/session/login')) return jsonResponse({ accessToken: FAKE_TOKEN })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderHarness()
+
+    const input = (await screen.findByLabelText(/return sheet file/i)) as HTMLInputElement
+    const badCsv = ['Dispatch ID,Device ID,AWB', 'asgn_1,dev-serial-1,'].join('\n')
+    await userEvent.upload(input, makeFile(badCsv, 'bad.csv'))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toMatch(/Dispatch ID or AWB/i)
+    // Device ID must NOT be named as a required value any more.
+    expect(alert.textContent).not.toMatch(/Device ID/i)
+    expect(fetchMock.mock.calls.some(([url]: [string]) => url.includes('/vendor/return'))).toBe(false)
+  })
+
+  it('surfaces the collateral count in the result banner', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/session/login')) return jsonResponse({ accessToken: FAKE_TOKEN })
+        if (url.includes('/vendor/return')) {
+          return jsonResponse({ pairedUnitIds: ['unit_1', 'unit_2'], quarantined: 0, shptIds: ['shpt_1'], collateralLinked: 3, deduped: false })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    renderHarness()
+
+    const input = (await screen.findByLabelText(/return sheet file/i)) as HTMLInputElement
+    await userEvent.upload(input, makeFile(RETURN_CSV, 'return.csv'))
+    await screen.findByText(/2 row\(s\) parsed/i)
+    await userEvent.click(screen.getByRole('button', { name: /submit return sheet/i }))
+
+    const collateralTerm = await screen.findByText(/^Collateral$/i)
+    expect(collateralTerm.nextElementSibling?.textContent).toBe('3')
+  })
 })

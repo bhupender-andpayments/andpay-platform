@@ -728,6 +728,14 @@ export async function releaseRecord(
  * the minted btchId only when one exists (IDs only; there is nothing to add
  * when no batch was born).
  *
+ * The BRD 5.3.4 force-dispatch REASON does not appear in that 6e at all, and
+ * that is deliberate: the record is IDs and enums, so the free-text reason is
+ * never appended to `resourceIds` (which would smuggle prose into an id list)
+ * and never added as a field. It lives on `batch.trigger_note` only, exactly as
+ * `overrideTerminal`'s free text lives only on
+ * `shpt_status_event.override_reason` (DD1). The emitted ALLOW is byte-identical
+ * to what it was before the reason existed.
+ *
  * Returns the `triggerBatchWithinTx` result on a first run, and `null` on a
  * same-clientKey replay (the outer dedup form), matching the prior return
  * contract the ops HTTP edge (T9, `apps/ops-edge/src/ops.controller.ts`)
@@ -736,10 +744,40 @@ export async function releaseRecord(
  */
 type ManualBatchResult = { btchId: string; unitCount: number } | null
 
+// BRD 5.3.4: the cap on the force-dispatch reason. 500 characters is the same
+// order as any other operator note field and exists so a paste of a whole email
+// thread (or a script) cannot write an unbounded string into the domain row. The
+// reason is stored, never interpolated into SQL (it rides as a bound parameter)
+// and never logged, so this is a size bound, not a sanitiser.
+const MAX_TRIGGER_NOTE_LENGTH = 500
+
 export async function manualBatch(
   db: FulfillmentDb,
-  args: { tenantWire: string; programWire: string; clientKey: string; actorId: string; traceId: string },
+  args: {
+    tenantWire: string
+    programWire: string
+    // BRD 5.3.4: REQUIRED, unlike every other field the trigger takes. A manual
+    // batch is an operator overriding the pool's own lot-size economics, and
+    // the reason is the whole point of auditing it. Stored on batch.trigger_note
+    // (the shpt_status_event.override_reason precedent); deliberately NOT added
+    // to the ALLOW 6e below, which stays IDs-only (DD1).
+    reason: string
+    clientKey: string
+    actorId: string
+    traceId: string
+  },
 ): Promise<{ btchId: string } | null> {
+  // Validated HERE as well as at the edge, and before anything else runs: the
+  // edge check is the one that produces a good operator-facing message, this one
+  // is the domain's own guarantee that no MANUAL batch row is ever written with
+  // a blank or unbounded note, whichever caller invoked it. Same shape as
+  // overrideTerminal's own override_reason check above.
+  const reason = args.reason.trim()
+  if (reason === '') throw new OpsClientError('invalid', 'trigger reason required')
+  if (reason.length > MAX_TRIGGER_NOTE_LENGTH) {
+    throw new OpsClientError('invalid', `trigger reason must be at most ${MAX_TRIGGER_NOTE_LENGTH} characters`)
+  }
+
   const programUuid = toUuid(args.programWire)
 
   // The transaction callback is given an EXPLICIT return type annotation
@@ -758,6 +796,9 @@ export async function manualBatch(
         batchResult = await triggerBatchWithinTx(tx, args.tenantWire, args.programWire, 'MANUAL', {
           epoch: args.clientKey,
           actorUuid: args.actorId,
+          // The TRIMMED reason, written to batch.trigger_note in the same
+          // transaction as the batch itself and the ALLOW 6e below.
+          triggerNote: reason,
         })
         // Co-commit the ALLOW 6e (spec 10c CC-1b / S15-T2 ruling): unconditional,
         // regardless of whether a batch was born. This callback only runs on a

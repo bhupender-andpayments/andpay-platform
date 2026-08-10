@@ -3,7 +3,9 @@ import { newId, toUuid, fromUuid } from '@andpay/ids'
 import type { LeanClaim } from '@andpay/authz'
 import type { AuthzAuditRecord } from '@andpay/audit'
 import { PrismaClient } from '../generated/client/index.js'
-import { pullDispatchPackageXlsx, PullDeniedError } from '../src/vendor-pull.js'
+import { PDFDocument } from 'pdf-lib'
+import { pullDispatchPackageXlsx, pullTypePdf, PullDeniedError } from '../src/vendor-pull.js'
+import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 
 // Spec 14b Task 5: the FR-04 dispatch-package pull, a D104 PII-disclosure
 // surface. Proves: (1) an own-vndr pull returns a real .xlsx AND emits a
@@ -65,8 +67,8 @@ async function seed(): Promise<Seeded> {
   const btchV1Uuid = toUuid(btchV1Wire)
 
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-    VALUES (${btchV1Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1Uuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchV1Uuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1Uuid}::uuid, 'LOT_SIZE', NULL, 1, now())
   `
 
   const entryV1 = toUuid(newId('asgn'))
@@ -238,6 +240,17 @@ describe('D-9b: the class-6 pull works, and stays vendor-isolated', () => {
     expect(deny!.reasonCode).toBe('scope-denied')
   })
 
+  it('still denies a class-6 vendor set that lacks the permission (collateral pull)', async () => {
+    // The image half of the same disclosure surface. The denial path must not
+    // have loosened when the path parameter widened from an artifact type to a
+    // delivery group: the group is resolved AFTER the authorize, never before.
+    const { btchV1Wire, v1Wire } = await seed()
+    const courier = { ...mkClaim6(v1Wire, 'wq-print'), psr: 'vendor_courier' } as LeanClaim
+    await expect(
+      pullTypePdf(db, new InMemoryAssetStore(), courier, btchV1Wire, 'COLLATERAL', 'trace-c6-courier-pdf'),
+    ).rejects.toThrow(PullDeniedError)
+  })
+
   it('still denies a class-6 vendor set that lacks the permission', async () => {
     // The permission gate is untouched: only the SCOPE axis changed. A courier
     // is deliberately excluded from artifact pull (105d) and must stay excluded.
@@ -247,5 +260,112 @@ describe('D-9b: the class-6 pull works, and stays vendor-isolated', () => {
     await expect(pullDispatchPackageXlsx(db, courier, btchV1Wire, 'trace-c6-courier')).rejects.toThrow(PullDeniedError)
     const deny = (await readOutboxAuthzAudits()).find((a) => a.decision === 'DENY')
     expect(deny!.reasonCode).toBe('permission-denied')
+  })
+})
+
+// The merged-PDF half of the pull, now keyed on a DELIVERY GROUP. The batch goes
+// to the print vendor as two merged PDFs (soundbox, and sticker plus standee),
+// so this proves the vendor can actually fetch the collateral one, that a legacy
+// artifact-type URL still lands on the same document, and that widening the path
+// parameter did not weaken the denial.
+//
+// The shared seed() above stores an UNRESOLVABLE asset reference on purpose (the
+// xlsx path never reads the bytes), so this block seeds its own batch with real
+// stored PDF bytes.
+describe('pullTypePdf: the merged collateral PDF, by delivery group', () => {
+  const assetStore = new InMemoryAssetStore()
+
+  async function seedWithStoredCollateral(): Promise<{ btchWire: string; v1Wire: string; v2Wire: string }> {
+    const v1Wire = newId('vndr')
+    const v2Wire = newId('vndr')
+    const tnnt = toUuid(newId('tnnt'))
+    const prog = toUuid(newId('prog'))
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+
+    await db.$executeRaw`
+      INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+      VALUES (${btchUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${toUuid(v1Wire)}::uuid, 'LOT_SIZE', NULL, 1, now())
+    `
+    const asgnUuid = toUuid(newId('asgn'))
+    await db.$executeRaw`
+      INSERT INTO pending_pool_entry (
+        asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable,
+        merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+        ship_to_address, ship_to_contact_name, ship_to_mobile, qr_value, vpa_value, pool_status, batch, dispatch_state,
+        source_event_id, trace_id, updated_at
+      ) VALUES (
+        ${asgnUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, false, 1, 1, true,
+        'Acme Store', 'Acme Pvt Ltd', '5814', 'HDFC-001', 'HDFC Bank',
+        ${SHIP_TO_ADDRESS}, 'Sherlock Holmes', '9999999999', 'acme@hdfcbank', 'acme@hdfcbank', 'BATCHED',
+        ${btchUuid}::uuid, 'SENT_TO_VENDOR', 'evt-pdf-1', 'trace-pdf-1', now()
+      )
+    `
+    // Both collateral rows for ONE merchant: the merged PDF must still be one
+    // page, because the two share the same artwork.
+    for (const artifactType of ['STANDEE_IMG', 'STICKER_IMG']) {
+      const doc = await PDFDocument.create()
+      doc.setCreationDate(new Date(0))
+      doc.setModificationDate(new Date(0))
+      doc.addPage([288, 432])
+      const put = await assetStore.put(`artifact/${btchWire}/${asgnUuid}/${artifactType}`, await doc.save(), {
+        contentType: 'application/pdf',
+        filename: `${artifactType}.pdf`,
+      })
+      await db.$executeRaw`
+        INSERT INTO composed_artifact (
+          asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference,
+          label_display_name, label_qr, created_at
+        ) VALUES (
+          ${asgnUuid}::uuid, ${btchUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${artifactType}, ${put.reference},
+          'Acme Store', 'acme@hdfcbank', now()
+        )
+      `
+    }
+    return { btchWire, v1Wire, v2Wire }
+  }
+
+  it('returns the merged COLLATERAL bytes to the batch owner, one page for a merchant holding both products', async () => {
+    const { btchWire, v1Wire } = await seedWithStoredCollateral()
+    const res = await pullTypePdf(db, assetStore, mkClaim7(v1Wire), btchWire, 'COLLATERAL', 'trace-pdf-allow')
+
+    expect(res.btchId).toBe(btchWire)
+    expect(res.pdf).toBeInstanceOf(Buffer)
+    expect(res.pdf!.subarray(0, 5).toString('latin1')).toBe('%PDF-')
+    expect((await PDFDocument.load(res.pdf!)).getPageCount()).toBe(1)
+
+    const allow = (await readOutboxAuthzAudits()).find(
+      (a) => a.operation === 'batch:pull-artifacts' && a.decision === 'ALLOW',
+    )
+    expect(allow).toBeTruthy()
+  })
+
+  it('a LEGACY artifact-type key returns the same bytes, so a URL a vendor already holds keeps working', async () => {
+    const { btchWire, v1Wire } = await seedWithStoredCollateral()
+    const group = await pullTypePdf(db, assetStore, mkClaim7(v1Wire), btchWire, 'COLLATERAL', 'trace-pdf-group')
+    for (const legacyKey of ['STANDEE_IMG', 'STICKER_IMG']) {
+      const legacy = await pullTypePdf(db, assetStore, mkClaim7(v1Wire), btchWire, legacyKey, `trace-pdf-${legacyKey}`)
+      expect(legacy.pdf!.equals(group.pdf!)).toBe(true)
+    }
+    // this batch has no soundbox, so that group is a legitimate empty (the
+    // caller's 404), not a fault and not a fallback to the other PDF.
+    const soundbox = await pullTypePdf(db, assetStore, mkClaim7(v1Wire), btchWire, 'SOUNDBOX', 'trace-pdf-sb')
+    expect(soundbox.pdf).toBeNull()
+    // and an unknown key takes that same null path rather than throwing.
+    const unknown = await pullTypePdf(db, assetStore, mkClaim7(v1Wire), btchWire, 'NOT_A_GROUP', 'trace-pdf-unknown')
+    expect(unknown.pdf).toBeNull()
+  })
+
+  it('STILL denies a cross-vndr collateral pull, with a DENY audit and no bytes', async () => {
+    const { btchWire, v2Wire } = await seedWithStoredCollateral()
+    await expect(
+      pullTypePdf(db, assetStore, mkClaim7(v2Wire), btchWire, 'COLLATERAL', 'trace-pdf-deny'),
+    ).rejects.toThrow(PullDeniedError)
+
+    const deny = (await readOutboxAuthzAudits()).find(
+      (a) => a.operation === 'batch:pull-artifacts' && a.decision === 'DENY',
+    )
+    expect(deny).toBeTruthy()
+    expect(deny!.reasonCode).toBe('scope-denied')
   })
 })

@@ -21,8 +21,19 @@ import {
 // it travels on, keyed by AWB. S8-untrusted: verified class-6 identity and
 // schema BEFORE any state change; an unverifiable or schema-invalid sheet is
 // rejected whole, exactly like intake.ts.
+//
+// ONE DISPATCH ID CAN TRAVEL UNDER TWO AWBs. The soundbox and its stickers go
+// under one AWB, the standee under another, and the sheet had one AWB column
+// and one Device ID column per row, so the second consignment could not be
+// reported at all. The mechanism (ruled 2026-08-10) is the sheet we already
+// publish: the Device ID VALUE becomes optional. A row carrying Dispatch ID and
+// AWB with NO serial reports a COLLATERAL consignment for that dispatch id. The
+// Device ID COLUMN stays required in the header, so the round trip is unchanged.
 export interface ReturnRow {
-  deviceSerial: string
+  // OPTIONAL. Absent means this row reports a collateral-only consignment (see
+  // the collateral branch in the loop below), never "the vendor forgot": a
+  // present-but-empty value is rejected as schema-invalid by isStructurallyValid.
+  deviceSerial?: string
   asgnId: string
   awb: string
   courierCode?: string // FR-05 Courier Partner: resolves to a vndr_ COURIER via vndr.courier_code (spec 09)
@@ -43,6 +54,9 @@ export interface ReturnResult {
   // newly-BORN shpt ids only (mirrors createdUnitIds's semantics in intake.ts):
   // a row whose AWB dedups onto an already-existing shpt does not add here.
   shptIds: string[]
+  // How many assignments gained a collateral shipment link in THIS call
+  // (additive; a file with no serial-less row reports zero, exactly as before).
+  collateralLinked: number
   // true when the file was already processed (the {vendor}|{file_id} inbox key
   // hit): fn did not run, so every count above reports zero even though the
   // ORIGINAL ingest may have paired units and born shipments.
@@ -50,7 +64,7 @@ export interface ReturnResult {
 }
 
 function emptyResult(rejected: 'unauthorized' | 'schema_invalid'): ReturnResult {
-  return { rejected, pairedUnitIds: [], quarantined: 0, shptIds: [], deduped: false }
+  return { rejected, pairedUnitIds: [], quarantined: 0, shptIds: [], collateralLinked: 0, deduped: false }
 }
 
 // Whole-file schema validation: a row missing a required field fails the
@@ -60,11 +74,17 @@ function emptyResult(rejected: 'unauthorized' | 'schema_invalid'): ReturnResult 
 // here. The vndr_ COURIER resolution happens per row inside the transaction
 // (it needs a db handle). Per-courier AWB FORMAT validation stays deferred to
 // step 9 (D3).
+//
+// `deviceSerial` is now OPTIONAL in the same shape `courierCode` already was:
+// ABSENT is a meaning (a collateral-only row), PRESENT-BUT-EMPTY is still
+// schema-invalid. Those two must stay distinguishable, because "" is what a
+// blank spreadsheet cell produces when an adapter forgets to omit the key, and
+// silently reading that as "collateral" would turn a vendor's typo into a
+// shipment nobody ordered.
 function isStructurallyValid(row: ReturnRow): boolean {
   const r = row as unknown as Record<string, unknown>
   return (
-    typeof r.deviceSerial === 'string' &&
-    r.deviceSerial.length > 0 &&
+    (r.deviceSerial === undefined || (typeof r.deviceSerial === 'string' && r.deviceSerial.length > 0)) &&
     typeof r.asgnId === 'string' &&
     r.asgnId.length > 0 &&
     typeof r.awb === 'string' &&
@@ -84,6 +104,20 @@ interface ShptBirth {
   awb: string
   dispatchDate: Date
   unitIds: string[]
+  entries: RowEntrySnapshot[]
+}
+
+// One shpt that gained COLLATERAL links in this file. Unlike ShptBirth this is
+// NOT restricted to newly-born shpts: a later file can legitimately attach more
+// assignments to a collateral shpt an earlier file already born, and that is a
+// real event which must still be reported.
+interface CollateralShipment {
+  awb: string
+  // set only when THIS call born the shpt. A pre-existing shpt's dispatch date
+  // belongs to whoever born it, and inventing one here would put a fabricated
+  // timestamp on the wire.
+  bornAt: Date | null
+  asgnWires: string[]
   entries: RowEntrySnapshot[]
 }
 
@@ -149,6 +183,7 @@ export async function ingestReturnSheet(
   const vndrUuid = toUuid(sheet.vndrId)
   const pairedUnitIds: string[] = []
   let quarantined = 0
+  let collateralLinked = 0
 
   // Newly-born shpts in THIS call, keyed by shpt wire id: accumulates every
   // unit that resolves onto that shpt across the whole file (even a LATER row
@@ -157,6 +192,13 @@ export async function ingestReturnSheet(
   // pre-existing row (born by a DIFFERENT, earlier ingest) never enters this
   // map, so no shipment fact fires for it here (no carrier transition, D106c).
   const shptBirths = new Map<string, ShptBirth>()
+
+  // Collateral shipments touched in THIS call, keyed by shpt wire id. Kept
+  // separate from shptBirths because the two answer different questions: that
+  // map is "which shpts were born here" (so the birth fact carries every unit
+  // that landed on them), this one is "which shpts gained a collateral link
+  // here", which includes a shpt an EARLIER file born.
+  const collateralShipments = new Map<string, CollateralShipment>()
 
   // Covered-asgn grouping for the post-loop dispatch UPDATE + fact (fold
   // correction 1): SET LOCAL app.program_id is transaction-scoped, so a single
@@ -189,42 +231,54 @@ export async function ingestReturnSheet(
         const row = sheet.rows[i]!
         const rowRef = `row-${i}`
 
-        // (1) find `unit` by device_serial, ALSO reading its current shipment
-        // (used by the already-paired guard right below); if none found,
-        // quarantine (D103d: NO auto-create, ever). unit is permissive RLS,
-        // no program context needed.
-        const unitRows = await tx.$queryRaw<{ id: string; shipment: string | null }[]>`
-          SELECT id::text AS id, shipment::text AS shipment FROM unit WHERE device_serial = ${row.deviceSerial}
-        `
-        if (unitRows.length === 0) {
-          await tx.$executeRaw`
-            INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
-            VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'device_not_in_inventory'})
-          `
-          quarantined++
-          continue
-        }
-        const unitUuid = unitRows[0]!.id
-        const unitWire = fromUuid('unit', unitUuid)
+        // THE ROW'S KIND, and the only thing that distinguishes them: a row
+        // with a Device ID reports the device kit, a row without one reports a
+        // collateral-only consignment for the same dispatch id. Everything
+        // between here and the shpt birth is shared by both, deliberately: the
+        // asgn guard, the snapshot lookup, the courier resolution, the program
+        // context, and the AWB dedup must behave identically or the second AWB
+        // would quietly get weaker rules than the first.
+        const deviceSerial = row.deviceSerial
+        let device: { unitUuid: string; unitWire: string; serial: string } | null = null
 
-        // Review fix (orphan shpt guard): a unit that is ALREADY paired
-        // (unit.shipment IS NOT NULL, persisted from an earlier successful
-        // row, same file or an earlier one) is quarantined HERE, BEFORE the
-        // shpt birth below. Without this guard the SAME device_serial
-        // reappearing with a NEW awb would still INSERT a real shpt row and
-        // emit a real (zero-unit) shipment fact: the per-unit onceWithin
-        // below would no-op (the unit is already paired, so its body never
-        // runs again), so the newly-born shpt would collect no units at all,
-        // while unit.shipment keeps pointing at the ORIGINAL awb's shpt.
-        // Reading persisted unit.shipment (not an in-process set) catches
-        // this whether the repeat is within THIS file or in a later one.
-        if (unitRows[0]!.shipment !== null) {
-          await tx.$executeRaw`
-            INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
-            VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'unit_already_paired'})
+        if (deviceSerial !== undefined) {
+          // (1) find `unit` by device_serial, ALSO reading its current shipment
+          // (used by the already-paired guard right below); if none found,
+          // quarantine (D103d: NO auto-create, ever). unit is permissive RLS,
+          // no program context needed.
+          const unitRows = await tx.$queryRaw<{ id: string; shipment: string | null }[]>`
+            SELECT id::text AS id, shipment::text AS shipment FROM unit WHERE device_serial = ${deviceSerial}
           `
-          quarantined++
-          continue
+          if (unitRows.length === 0) {
+            await tx.$executeRaw`
+              INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+              VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'device_not_in_inventory'})
+            `
+            quarantined++
+            continue
+          }
+
+          // Review fix (orphan shpt guard): a unit that is ALREADY paired
+          // (unit.shipment IS NOT NULL, persisted from an earlier successful
+          // row, same file or an earlier one) is quarantined HERE, BEFORE the
+          // shpt birth below. Without this guard the SAME device_serial
+          // reappearing with a NEW awb would still INSERT a real shpt row and
+          // emit a real (zero-unit) shipment fact: the per-unit onceWithin
+          // below would no-op (the unit is already paired, so its body never
+          // runs again), so the newly-born shpt would collect no units at all,
+          // while unit.shipment keeps pointing at the ORIGINAL awb's shpt.
+          // Reading persisted unit.shipment (not an in-process set) catches
+          // this whether the repeat is within THIS file or in a later one.
+          if (unitRows[0]!.shipment !== null) {
+            await tx.$executeRaw`
+              INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+              VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'unit_already_paired'})
+            `
+            quarantined++
+            continue
+          }
+          const unitUuid = unitRows[0]!.id
+          device = { unitUuid, unitWire: fromUuid('unit', unitUuid), serial: deviceSerial }
         }
 
         // row.asgnId is genuinely untrusted file content (unlike sheet.vndrId,
@@ -257,10 +311,14 @@ export async function ingestReturnSheet(
             merchant_id: string | null
             trace_id: string
             created_at: Date
+            standee_count: number
+            sticker_count: number
+            collateral_shipment: string | null
           }[]
         >`
           SELECT id::text AS id, tenant_id::text AS tenant_id, program_id::text AS program_id,
-                 batch::text AS batch, merchant_id::text AS merchant_id, trace_id, created_at
+                 batch::text AS batch, merchant_id::text AS merchant_id, trace_id, created_at,
+                 standee_count, sticker_count, collateral_shipment::text AS collateral_shipment
           FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
         `
         const entry = entryRows[0]
@@ -279,6 +337,40 @@ export async function ingestReturnSheet(
         const tenantUuid = entry.tenant_id
         const batchUuid = entry.batch
         const merchantUuid = entry.merchant_id
+        const asgnWire = fromUuid('asgn', asgnUuid)
+
+        // (2c) THE TWO COLLATERAL-ONLY GUARDS, and they sit HERE, before the
+        // shpt birth, for the same reason the already-paired guard above does:
+        // a row quarantined AFTER an INSERT would leave a real shpt row behind
+        // that nothing points at.
+        if (device === null) {
+          // (2c-i) A collateral AWB for an assignment that ordered no
+          // collateral is vendor error, not a new kind of shipment. The demand
+          // truth is on this very row (standee and sticker demand, both zero
+          // here), so this is answerable without guessing.
+          if (entry.standee_count === 0 && entry.sticker_count === 0) {
+            await tx.$executeRaw`
+              INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+              VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'no_collateral_on_asgn'})
+            `
+            quarantined++
+            continue
+          }
+          // (2c-ii) THE CAP: exactly ONE collateral AWB per dispatch id, so an
+          // assignment carries at most TWO AWBs in total. Reading the PERSISTED
+          // column (not an in-process set) catches the repeat whether it is a
+          // second row in THIS file, where the earlier row's UPDATE has already
+          // committed within this transaction and is therefore visible to this
+          // read, or a row in a later file.
+          if (entry.collateral_shipment !== null) {
+            await tx.$executeRaw`
+              INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+              VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'collateral_already_linked'})
+            `
+            quarantined++
+            continue
+          }
+        }
 
         // (2b) resolve the FR-05 courier partner, if the row names one. 103d
         // still holds where it matters: an unknown or inactive courier is
@@ -368,8 +460,46 @@ export async function ingestReturnSheet(
           entryId: entry.id,
         }
 
+        // THE COLLATERAL BRANCH. No unit is inserted, no unit status advances,
+        // and the assignment's dispatch_state is deliberately NOT touched:
+        // DISPATCHED_BY_VENDOR means the device kit left the vendor, and a
+        // standee-only consignment does not make that true. Marking it would
+        // report a merchant as dispatched while their soundbox is still on the
+        // print floor, which is the single most misleading thing this ingest
+        // could do.
+        if (device === null) {
+          // Per-assignment idempotency, keyed exactly like the `${unitWire}|print_for`
+          // precedent above: one collateral link per dispatch id, ever, whether
+          // the repeat arrives in this file or a later one.
+          await onceWithin(tx, CONSUMER, `${asgnWire}|collateral_shipment`, async () => {
+            // `AND collateral_shipment IS NULL` is the concurrency guard, in the
+            // same style as the monotonic dispatch_state advance below: the
+            // read in (2c-ii) can go stale between statements, this cannot.
+            const linked = await tx.$queryRaw<{ asgn_id: string }[]>`
+              UPDATE pending_pool_entry SET collateral_shipment = ${finalShptUuid}::uuid, updated_at = now()
+              WHERE asgn_id = ${asgnUuid}::uuid AND program_id = ${programUuid}::uuid
+                AND collateral_shipment IS NULL
+              RETURNING asgn_id::text AS asgn_id
+            `
+            if (linked.length === 0) return // lost the race; the row that won owns the link
+            collateralLinked++
+            let link = collateralShipments.get(shptWire)
+            if (!link) {
+              link = { awb: row.awb, bornAt: born.length > 0 ? dispatchDate : null, asgnWires: [], entries: [] }
+              collateralShipments.set(shptWire, link)
+            }
+            link.asgnWires.push(asgnWire)
+            link.entries.push(entrySnap)
+          })
+          continue
+        }
+
         // (4)+(5)+(6): per-unit idempotency wraps the unit UPDATE + the
         // print_for enqueue, so a re-upload of the SAME unit is a no-op.
+        // Destructured OUT of `device` before the closure: narrowing a `let`
+        // does not survive into a callback body, and these three are all the
+        // print_for path needs.
+        const { unitUuid, unitWire, serial } = device
         await onceWithin(tx, CONSUMER, `${unitWire}|print_for`, async () => {
           await tx.$executeRaw`
             UPDATE unit SET batch = ${batchUuid}::uuid, printed_for_merchant = ${merchantUuid}::uuid,
@@ -396,7 +526,7 @@ export async function ingestReturnSheet(
               payload: {
                 unitId: unitWire,
                 asgnId: row.asgnId,
-                deviceId: row.deviceSerial,
+                deviceId: serial,
                 printedForMerchant: fromUuid('mrch', merchantUuid),
                 shptId: shptWire,
                 awb: row.awb,
@@ -473,6 +603,14 @@ export async function ingestReturnSheet(
       // Post-loop: per newly-born shpt, ONE shipment fact carrying every unit
       // that resolved onto it across the whole file.
       for (const [shptWire, birth] of shptBirths) {
+        // A shpt born by a COLLATERAL row alone has no unit and no covered
+        // device entry, so there is no snapshot to derive a trace from and
+        // nothing for this fact to say. Its report is the collateral fact
+        // below. (A shpt born by a collateral row and LATER joined by a device
+        // row in the same file does have entries by now, and emits both, which
+        // is correct: one AWB carrying a kit and someone else's collateral is
+        // two true statements about the same parcel.)
+        if (birth.entries.length === 0) continue
         await enqueue(tx, {
           aggregateType: 'shpt',
           aggregateId: shptWire,
@@ -491,8 +629,54 @@ export async function ingestReturnSheet(
           }),
         })
       }
+
+      // Post-loop: per shpt that gained COLLATERAL links in this file, ONE fact
+      // carrying every dispatch id whose collateral it carries.
+      for (const [shptWire, link] of collateralShipments) {
+        await enqueue(tx, {
+          aggregateType: 'shpt',
+          aggregateId: shptWire,
+          eventType: SHIPMENT_TOPIC,
+          partitionKey: shptWire,
+          payload: shipmentFactEnvelope({
+            payload: {
+              shptId: shptWire,
+              awb: link.awb,
+              // Present only when this call born the shpt, so no fabricated
+              // timestamp ever rides a fact for a parcel someone else born.
+              ...(link.bornAt !== null ? { dispatchDate: link.bornAt.toISOString() } : {}),
+              // What HAPPENED is that the vendor handed this collateral to the
+              // courier, which is exactly DISPATCHED_BY_VENDOR. It is not a
+              // claim about where the parcel has since reached: `collateral`
+              // marks this fact as being about the collateral link, and a
+              // consumer that folds courier status must branch on that flag
+              // before touching a primary status (see the analytics
+              // projection's early return for the worked example).
+              status: 'DISPATCHED_BY_VENDOR',
+              collateral: true,
+              asgnIds: link.asgnWires,
+            },
+            // FILE-SCOPED, and that is load-bearing rather than cosmetic. A
+            // LATER file can legitimately attach a NEW assignment's collateral
+            // to a shpt an earlier file already born; that is a real event with
+            // a different asgnIds payload, and a bare `${shptWire}|collateral`
+            // key would let a downstream onceWithin consumer drop it as a
+            // duplicate of the first. Same reasoning, same grammar, as the
+            // partial-batch dispatch dedupKey above. A re-upload of the SAME
+            // file still dedups: the file-level onceWithin no-ops it whole.
+            dedupKey: `${shptWire}|collateral|${sheet.fileId}`,
+            traceId: oldestTraceId(link.entries),
+          }),
+        })
+      }
     })
   })
 
-  return { pairedUnitIds, quarantined, shptIds: [...shptBirths.keys()], deduped: !ran }
+  return {
+    pairedUnitIds,
+    quarantined,
+    shptIds: [...shptBirths.keys()],
+    collateralLinked,
+    deduped: !ran,
+  }
 }

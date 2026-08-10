@@ -121,15 +121,16 @@ describe('runDueBatchTimers: single-cycle MAX_WAIT trigger on the D77 engine (ch
     // exactly one timer fired: the single due timer seeded above.
     expect(fired).toEqual([timerId])
 
-    // exactly one BORN/MAX_WAIT batch, unit_count = the POOLED count.
+    // exactly one MAX_WAIT batch, unit_count = the POOLED count. No status is
+    // asserted: migration 20260810040000 dropped batch.status, and a batch's
+    // state is now derived from its children.
     const batches = await db.$queryRaw<
-      { id: string; status: string; trigger_reason: string; unit_count: number }[]
+      { id: string; trigger_reason: string; unit_count: number }[]
     >`
-      SELECT id::text AS id, status, trigger_reason, unit_count FROM batch
+      SELECT id::text AS id, trigger_reason, unit_count FROM batch
       WHERE tenant_id = ${anchor.tenantUuid}::uuid AND program_id = ${anchor.programUuid}::uuid
     `
     expect(batches).toHaveLength(1)
-    expect(batches[0]!.status).toBe('BORN')
     expect(batches[0]!.trigger_reason).toBe('MAX_WAIT')
     expect(batches[0]!.unit_count).toBe(3)
     const btchUuid = batches[0]!.id
@@ -206,7 +207,7 @@ describe('runDueBatchTimers: concurrency proof, FOR UPDATE SKIP LOCKED exclusivi
   // interleave at the row level. Both outcomes are valid proof of exclusivity. What is
   // asserted is invariant under either outcome: the two RETURNED arrays are disjoint, their
   // concatenation accounts for every one of the N timers exactly once, and each pool ends up
-  // with EXACTLY one BORN/MAX_WAIT batch (0 double-fire, 0 skip).
+  // with EXACTLY one MAX_WAIT batch (0 double-fire, 0 skip).
   it('N pools, one due max_wait timer each: two concurrent runDueBatchTimers workers never double-fire and never skip a timer', async () => {
     const N = 6
     const pools: (PoolAnchor & { timerId: string })[] = []
@@ -242,16 +243,17 @@ describe('runDueBatchTimers: concurrency proof, FOR UPDATE SKIP LOCKED exclusivi
     expect(new Set([...firedA, ...firedB]).size).toBe(N) // no skip
     expect(new Set([...firedA, ...firedB])).toEqual(new Set(pools.map((pl) => pl.timerId)))
 
-    // SECONDARY proof: exactly one BORN/MAX_WAIT batch per pool, and the global union of
-    // batch ids has no duplicate (0 double-fire at the batch level too).
+    // SECONDARY proof: exactly one MAX_WAIT batch per pool, and the global union of
+    // batch ids has no duplicate (0 double-fire at the batch level too). No status is
+    // asserted: migration 20260810040000 dropped batch.status, and a batch's state is
+    // now derived from its children.
     const allBatchIds: string[] = []
     for (const pool of pools) {
-      const batches = await db.$queryRaw<{ id: string; status: string; trigger_reason: string }[]>`
-        SELECT id::text AS id, status, trigger_reason FROM batch
+      const batches = await db.$queryRaw<{ id: string; trigger_reason: string }[]>`
+        SELECT id::text AS id, trigger_reason FROM batch
         WHERE tenant_id = ${pool.tenantUuid}::uuid AND program_id = ${pool.programUuid}::uuid
       `
       expect(batches).toHaveLength(1)
-      expect(batches[0]!.status).toBe('BORN')
       expect(batches[0]!.trigger_reason).toBe('MAX_WAIT')
       allBatchIds.push(batches[0]!.id)
     }

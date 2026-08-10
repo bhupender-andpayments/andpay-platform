@@ -208,6 +208,14 @@ export interface QuarantineRowView {
   fileId: string
   rowNo: number
   reasonCode: string
+  /**
+   * Per-reason structured evidence (ruling 2026-08-10). Null for every reason
+   * but `duplicate_vpa_soundbox`, which carries `duplicateOf` so the queue can
+   * name the original the row collides with. See
+   * services/tms/src/ops-read.ts QuarantineRowDetail. `DuplicateVpaOriginal` is
+   * declared in the uploads section further down this file.
+   */
+  detail: { duplicateOf?: DuplicateVpaOriginal } | null
   createdAt: string
   resolvedAt: string | null
   resolvedByActor: string | null
@@ -423,6 +431,9 @@ export interface BatchRow {
   unitCount: number
   printVndr: string | null
   triggeredByActor: string | null
+  // BRD 5.3.4: the operator's reason for a MANUAL trigger, null for LOT_SIZE
+  // and MAX_WAIT (nothing human fired those).
+  triggerNote: string | null
   createdAt: string
   updatedAt: string
 }
@@ -478,6 +489,13 @@ export interface DispatchRow {
   dispatchDate: string
   statusAt: string | null
   statusSource: string | null
+  // What is IN the parcel. One dispatch id can travel under two AWBs (soundbox
+  // kit under one, standee under another), so this list contains rows carrying
+  // no device at all, and a collateral-only shipment would otherwise be
+  // indistinguishable from one whose devices had gone missing. Booleans rather
+  // than counts because the ops read is row-level only, never an aggregate.
+  hasUnits: boolean
+  hasCollateral: boolean
   createdAt: string
   updatedAt: string
 }
@@ -672,6 +690,21 @@ export type RequestRowRejectReason =
   | 'invalid_branch_code_format'
   | 'invalid_standee_count'
   | 'invalid_sticker_count'
+  | 'duplicate_vpa_soundbox'
+
+/**
+ * services/tms/src/ingest.ts DuplicateVpaOriginal: the record a held soundbox
+ * row collides with (ruling 2026-08-10). `reference` is per-kind and is already
+ * display-ready: a WIRE asgn id for an `assignment`, the `{file_id}|{row_no}`
+ * correlation id for a `pending_row`, and a plain row number for a `file_row`
+ * (an earlier row of the very file being previewed or committed).
+ * `merchantDisplayName` is null when the original has no name to show.
+ */
+export interface DuplicateVpaOriginal {
+  kind: 'assignment' | 'pending_row' | 'file_row'
+  reference: string
+  merchantDisplayName: string | null
+}
 
 /** services/tms/src/ops.ts PreviewRowResult: one row's preview verdict. */
 export interface PreviewRowResult {
@@ -679,6 +712,11 @@ export interface PreviewRowResult {
   valid: boolean
   errors: RequestRowRejectReason[]
   row: BankRequestRow
+  // Present only on a `duplicate_vpa_soundbox` verdict. A SIBLING of `row` and
+  // never a field inside it: BankUploadPage derives the preview table's columns
+  // reflectively from Object.keys(row), so anything added to `row` would become
+  // a phantom bank-file column.
+  duplicateOf?: DuplicateVpaOriginal
 }
 
 /** services/tms/src/bank-file-adapter.ts StructuralParseError: a whole-file problem. */
@@ -706,9 +744,16 @@ export interface BankCommitResult {
   // when non-zero, so it disappears if the bank ever fixes their export.
   qrMalformed: number
   // D-2: rows whose VPA we have seen before, in this file or an earlier upload.
-  // A REVIEW FLAG, never a rejection: a repeat VPA is usually an additional
-  // soundbox request for a merchant we already have.
+  // Every repeat is counted here, HELD OR NOT: it is evidence about what the
+  // file contained. Since the 2026-08-10 ruling this is no longer the same thing
+  // as "accepted": subtract duplicateVpaHeld.length to get the flag-only
+  // remainder that really did ingest (PerRowErrors does exactly that).
   duplicateVpa: number
+  // Ruling 2026-08-10: the SOUNDBOX rows this file HELD for a repeat VPA, each
+  // naming the record it collides with. A sticker/standee row is never held for
+  // a repeat, so a file that repeats a VPA only on collateral rows reports an
+  // empty list here and a non-zero duplicateVpa above.
+  duplicateVpaHeld: { rowNo: number; duplicateOf: DuplicateVpaOriginal }[]
   // Rows whose MOBILE was already used by a DIFFERENT merchant. A separate
   // signal from duplicateVpa: that one is the same merchant returning, this is
   // two merchants sharing a contact number.
@@ -859,7 +904,22 @@ function opsBaseUrl(): string {
 // Content-Type: application/json), and an optional Idempotency-Key header
 // for the commit routes (a preview route never sends one; it is a pure
 // read).
+// ROUTED THROUGH THE CLIENT, NOT RAW fetch.
+//
+// This used to call `fetch` directly, which meant the upload routes were the
+// only calls in the portal that did NOT get client.ts's refresh-on-401-and-
+// retry. With a 600 second access token that made every upload fail about ten
+// minutes after the last refresh, with a hard 401 and no retry. It was found by
+// driving the real system: a bank file would not save, and auth.authz_audit
+// showed no ops:upload-bank-file decision at all, only `authenticate` DENYs.
+// The request never reached the authorization gate.
+//
+// Going through the client also fixes a second defect for free. The old line
+// was `Bearer ${getAccessToken()}` with no null check, and client.ts sets the
+// token to null after a failed refresh, so a later upload sent the literal
+// string "Bearer null". sendOnce omits the header entirely when no token is held.
 async function postFile<T>(
+  c: Client,
   path: string,
   file: File,
   idempotencyKey?: string,
@@ -870,38 +930,35 @@ async function postFile<T>(
   if (extraFields !== undefined) {
     for (const [key, value] of Object.entries(extraFields)) form.append(key, value)
   }
-  const headers: Record<string, string> = { Authorization: `Bearer ${getAccessToken()}` }
-  if (idempotencyKey !== undefined) headers['Idempotency-Key'] = idempotencyKey
-  const res = await fetch(`${opsBaseUrl()}${path}`, { method: 'POST', headers, body: form })
-  const text = await res.text()
-  if (!res.ok) {
-    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
-  }
-  return (text === '' ? null : JSON.parse(text)) as T
+  // The SAME FormData instance is reused if the client retries after a refresh.
+  // That is deliberate and safe: FormData holds the File by reference and is
+  // re-serialised per attempt, so the retry carries the whole payload again.
+  return c.request<T>({ method: 'POST', path, formBody: form, ...(idempotencyKey !== undefined ? { idempotencyKey } : {}) })
 }
 
-export function previewBank(file: File): Promise<BankPreviewResult> {
-  return postFile<BankPreviewResult>('/ops/uploads/bank/preview', file)
+export function previewBank(c: Client, file: File): Promise<BankPreviewResult> {
+  return postFile<BankPreviewResult>(c, '/ops/uploads/bank/preview', file)
 }
 
-export function commitBank(file: File, idempotencyKey: string): Promise<BankCommitResult> {
-  return postFile<BankCommitResult>('/ops/uploads/bank/commit', file, idempotencyKey)
+export function commitBank(c: Client, file: File, idempotencyKey: string): Promise<BankCommitResult> {
+  return postFile<BankCommitResult>(c, '/ops/uploads/bank/commit', file, idempotencyKey)
 }
 
-export function previewDamage(file: File): Promise<DamagePreviewResult> {
-  return postFile<DamagePreviewResult>('/ops/uploads/damage/preview', file)
+export function previewDamage(c: Client, file: File): Promise<DamagePreviewResult> {
+  return postFile<DamagePreviewResult>(c, '/ops/uploads/damage/preview', file)
 }
 
-export function commitDamage(file: File, idempotencyKey: string): Promise<DamageCommitResult> {
-  return postFile<DamageCommitResult>('/ops/uploads/damage/commit', file, idempotencyKey)
+export function commitDamage(c: Client, file: File, idempotencyKey: string): Promise<DamageCommitResult> {
+  return postFile<DamageCommitResult>(c, '/ops/uploads/damage/commit', file, idempotencyKey)
 }
 
 export function commitDeviceInventory(
+  c: Client,
   file: File,
   manufacturerVndrId: string,
   idempotencyKey: string,
 ): Promise<DeviceInventoryUploadResult> {
-  return postFile<DeviceInventoryUploadResult>('/ops/uploads/device-inventory', file, idempotencyKey, {
+  return postFile<DeviceInventoryUploadResult>(c, '/ops/uploads/device-inventory', file, idempotencyKey, {
     manufacturerVndrId,
   })
 }
@@ -918,6 +975,10 @@ export function commitDeviceInventory(
 export interface BatchTriggerBody {
   tenantWire: string
   programWire: string
+  // BRD 5.3.4 force dispatch: REQUIRED, and the edge 400s a blank or >500
+  // character value before it even runs the authorization gate. Free text; it
+  // is stored on the batch row, never on the 6e authz record.
+  reason: string
 }
 
 export function triggerBatch(c: Client, body: BatchTriggerBody, idempotencyKey: string) {

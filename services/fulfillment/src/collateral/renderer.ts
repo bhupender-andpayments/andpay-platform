@@ -16,6 +16,14 @@ export type ArtifactType = 'SOUNDBOX_IMG' | 'STANDEE_IMG' | 'STICKER_IMG'
 // The per-product-type template contract (P4-D2). imageTemplates JSONB is unshaped
 // today, so the renderer is TOLERANT: it reads what is present and defaults the
 // rest. All sizes are PDF points (72pt = 1 inch).
+//
+// A BANK OVERRIDING widthPt/heightPt MUST SET THE SAME DIMENSIONS ON ALL THREE
+// PRODUCT KEYS (SOUNDBOX, STANDEE, STICKER). The batch is delivered to the print
+// vendor as TWO merged PDFs (a soundbox one and a combined sticker-plus-standee
+// one, see package.ts assembleGroupPdf) and those two must share one page size.
+// The shared default below guarantees that by construction; a per-key override
+// that differs across the three keys is the one way to break it, and it would
+// give the vendor two PDFs of unequal trim.
 export interface ImageTemplate {
   widthPt: number
   heightPt: number
@@ -25,13 +33,14 @@ export interface ImageTemplate {
   accentColorHex: string
 }
 
-// Per-type default page sizes chosen for print (overridable by imageTemplates):
-// sticker small, soundbox medium, standee large.
-const DEFAULT_SIZES: Record<ArtifactType, { widthPt: number; heightPt: number }> = {
-  STICKER_IMG: { widthPt: 216, heightPt: 216 }, // 3in x 3in
-  SOUNDBOX_IMG: { widthPt: 288, heightPt: 432 }, // 4in x 6in
-  STANDEE_IMG: { widthPt: 432, heightPt: 648 }, // 6in x 9in
-}
+// ONE shared default page size for every product type, so the two merged
+// delivery PDFs are equal-dimension by construction rather than by convention.
+// 288 x 432 (4in x 6in) is the SOUNDBOX size that was already in production: the
+// middle of the three former sizes, already proven for this QR band layout, so
+// nothing new is invented here and no artwork is being scaled into an untested
+// box. Sticker (216 sq) and standee (432 x 648) are retired as page sizes; the
+// product distinction lives in the delivery grouping, not in the trim.
+const DEFAULT_SIZE = { widthPt: 288, heightPt: 432 }
 
 const DEFAULTS = {
   headline: 'SCAN & PAY',
@@ -42,6 +51,13 @@ const DEFAULTS = {
 
 export interface CollateralInput {
   artifactType: ArtifactType
+  // The wire `asgn_` id of the dispatch this artwork belongs to, printed small
+  // on the page. The print vendor receives one merged PDF per group with one
+  // page per merchant and no other handle on a page, so without this there is
+  // nothing on the sheet to reconcile a page against, and nothing to report an
+  // AWB back against either. REQUIRED, not optional: a page that reaches the
+  // vendor without it is a page they cannot account for.
+  dispatchId: string
   qrValue: string // the UPI QR string, encoded into the QR (composed_artifact.label_qr)
   vpa: string // the UPI ID shown as text under the QR
   merchantDisplayName: string
@@ -81,10 +97,9 @@ function readNumber(obj: unknown, key: string): number | undefined {
 const MIN_SIDE_PT = 144
 
 export function resolveTemplate(input: CollateralInput): ImageTemplate {
-  const size = DEFAULT_SIZES[input.artifactType]
   return {
-    widthPt: Math.max(MIN_SIDE_PT, readNumber(input.imageTemplate, 'widthPt') ?? size.widthPt),
-    heightPt: Math.max(MIN_SIDE_PT, readNumber(input.imageTemplate, 'heightPt') ?? size.heightPt),
+    widthPt: Math.max(MIN_SIDE_PT, readNumber(input.imageTemplate, 'widthPt') ?? DEFAULT_SIZE.widthPt),
+    heightPt: Math.max(MIN_SIDE_PT, readNumber(input.imageTemplate, 'heightPt') ?? DEFAULT_SIZE.heightPt),
     headline:
       readString(input.imageTemplate, 'headline') ?? readString(input.brandingParams, 'headline') ?? DEFAULTS.headline,
     bgColorHex: readString(input.brandingParams, 'bgColor') ?? DEFAULTS.bgColorHex,
@@ -145,7 +160,34 @@ function drawCenteredClamped(
   page.drawText(t, { x: (page.getWidth() - w) / 2, y: opts.y, size: opts.size, font: opts.font, color: opts.color })
 }
 
+// Shrink a font size until the text fits `maxLen`, stopping at a legibility
+// floor. Used for the rotated dispatch id, which is a 31-character wire id that
+// has to sit alongside a QR box that can be as short as the MIN_SIDE page
+// allows. Purely arithmetic over the embedded font metrics: no clock, no
+// randomness, so the render stays deterministic. At the floor the caller still
+// clamps, so the id truncates rather than running off the artwork.
+const ID_SIZE_MAX_PT = 7
+const ID_SIZE_MIN_PT = 4
+const ID_SIZE_STEP_PT = 0.5
+
+function fitSize(text: string, font: PDFFont, maxLen: number): number {
+  let size = ID_SIZE_MAX_PT
+  while (size > ID_SIZE_MIN_PT && font.widthOfTextAtSize(text, size) > maxLen) {
+    size -= ID_SIZE_STEP_PT
+  }
+  return size
+}
+
 // Render ONE collateral artifact to a single-page PDF. Deterministic.
+//
+// THE PAGE IS THE ARTWORK. The page box is exactly the resolved template size,
+// the background rectangle is drawn full bleed (0,0 to W,H), and every element
+// is positioned inside that box, so there is no outer mount and no margin of
+// page around the artwork. That is what lets package.ts merge these pages
+// straight through: copyPages carries the page box across unchanged and never
+// recentres. `margin` below is the artwork's own INTERNAL padding, not a page
+// margin: zero it and the bank name, merchant name and marks line would sit on
+// the trim edge.
 export async function renderCollateralPdf(input: CollateralInput): Promise<Uint8Array> {
   const tpl = resolveTemplate(input)
   const doc = await PDFDocument.create()
@@ -278,6 +320,27 @@ export async function renderCollateralPdf(input: CollateralInput): Promise<Uint8
 
   // bank code as small vertical text to the RIGHT of the QR box (BRD 5.3)
   page.drawText(winAnsiSafe(input.bankCode), { x: qrX + qrSide + 4, y: qrY, size: 8, font, color: ink, rotate: degrees(90) })
+
+  // The dispatch id, mirroring that strip on the LEFT of the QR box. Small and
+  // rotated because it is a reconciliation handle for the print vendor, not
+  // merchant-facing artwork: it must be readable off the printed page without
+  // competing with the QR or the names. A wire asgn_ id is 31 characters, so the
+  // size is fitted to the QR side and clamped, which keeps it on the artwork
+  // even on a page at the MIN_SIDE floor.
+  const idText = winAnsiSafe(input.dispatchId)
+  const idSize = fitSize(idText, font, qrSide)
+  page.drawText(clampText(idText, idSize, font, qrSide), {
+    // Rotated 90 degrees the glyphs rise leftward from this x, so sitting 4pt
+    // clear of the QR box puts the whole strip outside it, exactly as the bank
+    // code sits 4pt clear on the other side. Floored at 2 so a pathologically
+    // narrow override cannot push it off the page entirely.
+    x: Math.max(2, qrX - 4),
+    y: qrY,
+    size: idSize,
+    font,
+    color: ink,
+    rotate: degrees(90),
+  })
 
   // --- bottom texts (all clamped to the content width) ---
   drawCenteredClamped(page, input.vpa, { y: vpaY, size: vpaSize, font, color: ink, maxWidth: contentW })

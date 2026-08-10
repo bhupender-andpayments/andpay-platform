@@ -115,12 +115,14 @@ describe('runBatchingTick (Phase 6 scheduler: the process that CALLS the already
 
     const tenantUuid = toUuid(tenantWire)
     const programUuid = toUuid(programWire)
-    const batches = await db.$queryRaw<{ status: string; trigger_reason: string }[]>`
-      SELECT status, trigger_reason FROM batch
+    // No status is asserted: migration 20260810040000 dropped batch.status, and
+    // a batch's state is now derived from its children. trigger_reason is what
+    // this test is actually about (the tick fired the max_wait timer).
+    const batches = await db.$queryRaw<{ trigger_reason: string }[]>`
+      SELECT trigger_reason FROM batch
       WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid
     `
     expect(batches).toHaveLength(1)
-    expect(batches[0]!.status).toBe('BORN')
     expect(batches[0]!.trigger_reason).toBe('MAX_WAIT')
   })
 

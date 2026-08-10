@@ -5,7 +5,7 @@ import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
 import { newId, toUuid } from '@andpay/ids'
-import { PrismaClient as FulfillmentClient, loadOpsConfig, InMemoryAssetStore } from '@andpay/fulfillment-service'
+import { PrismaClient as FulfillmentClient, loadOpsConfig, InMemoryAssetStore, ensurePool } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { PrismaClient as IdentityClient } from '@andpay/identity-service'
@@ -769,5 +769,155 @@ describe('ops-edge actions: courier master completion (Phase 3 Task 2, BRD FR-11
       .set('Idempotency-Key', randomUUID())
       .send({ displayName: 'Ghost' })
     expect(res.status).toBe(404)
+  })
+})
+
+// BRD 5.3.4 force dispatch: the manual batch trigger must capture a REASON.
+// The route already recorded WHO fired it; the reason is WHY, and it is
+// validated at the edge BEFORE the authorization gate so a malformed request
+// leaves no 6e behind at all (an ALLOW for an action that then 400s would put a
+// permanent record of an authorized action that never happened on the chain).
+//
+// batch, batch_pool and the saga tables are NOT in this file's beforeEach
+// truncate list, so every test here mints fresh tnnt_/prog_ wire ids and deletes
+// the batch rows it created in a `finally`, the same discipline the vndr and
+// damage_reason blocks above use. The pool's own max_wait timer is left in place
+// deliberately: it is due in 7 days (DEFAULT_POOL_CFG), so it can never fire
+// inside a test run, and the global teardown truncates the schema afterwards.
+describe('ops-edge batch trigger: the BRD 5.3.4 reason (force dispatch)', () => {
+  async function seedPoolWithOneEntry(): Promise<{ tenantWire: string; programWire: string; tenantUuid: string }> {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    // The anchor must exist: triggerBatchWithinTx throws PoolNotFound without it.
+    await ensurePool(fulfillmentDb, tenantWire, programWire)
+    await fulfillmentDb.$executeRaw`
+      INSERT INTO pending_pool_entry (
+        asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable,
+        merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+        ship_to_address, qr_value, vpa_value, pool_status, source_event_id, trace_id, created_at, updated_at
+      ) VALUES (
+        ${toUuid(newId('asgn'))}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, true, 1, 1, true,
+        'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
+        'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'POOLED', 'file-1|1', 'trace-1', now(), now()
+      )
+    `
+    return { tenantWire, programWire, tenantUuid }
+  }
+
+  async function batchesFor(tenantUuid: string) {
+    return fulfillmentDb.$queryRaw<{ trigger_reason: string; trigger_note: string | null }[]>`
+      SELECT trigger_reason, trigger_note FROM batch WHERE tenant_id = ${tenantUuid}::uuid
+    `
+  }
+
+  async function dropBatchesFor(tenantUuid: string): Promise<void> {
+    await fulfillmentDb.$executeRaw`DELETE FROM batch WHERE tenant_id = ${tenantUuid}::uuid`
+  }
+
+  it('POST batches/trigger with NO reason -> 400, no batch, and NO 6e (checked before the gate)', async () => {
+    const { tenantWire, programWire, tenantUuid } = await seedPoolWithOneEntry()
+    try {
+      const token = await mint({})
+      const res = await request(app.getHttpServer())
+        .post('/ops/batches/trigger')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ tenantWire, programWire })
+      expect(res.status).toBe(400)
+      expect(await batchesFor(tenantUuid)).toHaveLength(0)
+      // Neither ALLOW nor DENY: the reason check runs before this.gate.
+      expect(await auditRows()).toHaveLength(0)
+    } finally {
+      await dropBatchesFor(tenantUuid)
+    }
+  })
+
+  it('POST batches/trigger with a WHITESPACE-ONLY reason -> 400, treated as the empty box it is', async () => {
+    const { tenantWire, programWire, tenantUuid } = await seedPoolWithOneEntry()
+    try {
+      const token = await mint({})
+      const res = await request(app.getHttpServer())
+        .post('/ops/batches/trigger')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ tenantWire, programWire, reason: '   ' })
+      expect(res.status).toBe(400)
+      expect(await batchesFor(tenantUuid)).toHaveLength(0)
+      expect(await auditRows()).toHaveLength(0)
+    } finally {
+      await dropBatchesFor(tenantUuid)
+    }
+  })
+
+  it('POST batches/trigger with a reason over 500 characters -> 400; exactly 500 is accepted', async () => {
+    const tooLong = await seedPoolWithOneEntry()
+    try {
+      const token = await mint({})
+      const res = await request(app.getHttpServer())
+        .post('/ops/batches/trigger')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ tenantWire: tooLong.tenantWire, programWire: tooLong.programWire, reason: 'x'.repeat(501) })
+      expect(res.status).toBe(400)
+      expect(await batchesFor(tooLong.tenantUuid)).toHaveLength(0)
+      expect(await auditRows()).toHaveLength(0)
+    } finally {
+      await dropBatchesFor(tooLong.tenantUuid)
+    }
+
+    const atCap = await seedPoolWithOneEntry()
+    try {
+      // A UUID sub, unlike the file's default 'user_ops_1'. batch.triggered_by_actor
+      // is @db.Uuid and manualBatch stores req.claim.sub in it directly, so a
+      // non-uuid subject fails the ::uuid cast. In production a sub IS a uuid
+      // (internal_principal.id is @db.Uuid); the file's fake string has survived
+      // only because no test here had ever driven a write that records the actor.
+      const token = await mint({ sub: randomUUID() })
+      const reason = 'y'.repeat(500)
+      const res = await request(app.getHttpServer())
+        .post('/ops/batches/trigger')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ tenantWire: atCap.tenantWire, programWire: atCap.programWire, reason })
+      expect(res.status).toBe(200)
+      const rows = await batchesFor(atCap.tenantUuid)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.trigger_note).toBe(reason)
+    } finally {
+      await dropBatchesFor(atCap.tenantUuid)
+    }
+  })
+
+  it('POST batches/trigger WITH a reason -> 200, the batch carries the TRIMMED reason, and the 6e does not', async () => {
+    const { tenantWire, programWire, tenantUuid } = await seedPoolWithOneEntry()
+    try {
+      // A uuid sub, for the ::uuid cast on triggered_by_actor. See the note above.
+      const token = await mint({ sub: randomUUID() })
+      const res = await request(app.getHttpServer())
+        .post('/ops/batches/trigger')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ tenantWire, programWire, reason: '  bank collection cut-off is today  ' })
+      expect(res.status).toBe(200)
+      expect(res.body.btchId).toBeTruthy()
+
+      const rows = await batchesFor(tenantUuid)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.trigger_reason).toBe('MANUAL')
+      expect(rows[0]!.trigger_note).toBe('bank collection cut-off is today')
+
+      // The 6e is unchanged: IDs only, and the free text is nowhere in it (DD1),
+      // the same rule the terminal-override assertion above enforces.
+      const audit = await auditRows()
+      expect(audit).toHaveLength(1)
+      expect(audit[0]!.decision).toBe('ALLOW')
+      expect(audit[0]!.operation).toBe('ops:manual-batch-trigger')
+      expect(audit[0]!.resourceIds).toEqual([tenantWire, programWire, res.body.btchId])
+      expect(JSON.stringify(await rawAuditRows())).not.toContain('collection cut-off')
+    } finally {
+      await dropBatchesFor(tenantUuid)
+    }
   })
 })

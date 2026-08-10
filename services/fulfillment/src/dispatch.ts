@@ -160,6 +160,14 @@ async function preRenderArtifacts(
     for (const artifactType of artifactTypesFor(e)) {
       const pdfBytes = await renderCollateralPdf({
         artifactType,
+        // The WIRE asgn_ id, printed on the page so the print vendor can
+        // reconcile a page in a merged PDF and report an AWB against it.
+        // e.asgn_id is the native uuid (selected `::text` off a uuid column),
+        // so it converts via the same fromUuid('asgn', ...) this file already
+        // uses for the dispatch fact's asgnIds. Deterministic input, so the
+        // render stays byte-stable and the re-render on redelivery still
+        // matches (see the SAFE TO REPEAT note above).
+        dispatchId: fromUuid('asgn', e.asgn_id),
         qrValue: e.qr_value,
         vpa: e.vpa_value,
         merchantDisplayName: e.merchant_display_name,

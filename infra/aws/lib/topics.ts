@@ -230,6 +230,12 @@ export const FACT_SCHEMAS: FactSchema[] = [
         dispatchDate: { type: 'string' }, unitIds: { type: 'array', items: { type: 'string' } },
         status: { type: 'string' },
         courierTimestamp: { type: 'string' }, statusSource: { type: 'string' },
+        // The collateral consignment: one dispatch id can travel under two
+        // AWBs (soundbox kit under one, standee under another). Additive and
+        // OPTIONAL, `required` unchanged, so the registered schema stays FULL
+        // compatible. Mirrors services/fulfillment/src/fact-schemas.ts.
+        collateral: { type: 'boolean' },
+        asgnIds: { type: 'array', items: { type: 'string' } },
       },
       required: ['shptId', 'awb', 'status'],
     },

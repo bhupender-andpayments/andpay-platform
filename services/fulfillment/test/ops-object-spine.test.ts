@@ -19,14 +19,14 @@ afterAll(async () => {
 })
 
 async function seedBatch(
-  opts: { status?: string; triggerReason?: string; unitCount?: number; createdAt?: string } = {},
+  opts: { triggerReason?: string; unitCount?: number; createdAt?: string } = {},
 ): Promise<{ wire: string; uuid: string }> {
   const wire = newId('btch')
   const uuid = toUuid(wire)
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, unit_count, created_at, updated_at)
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, unit_count, created_at, updated_at)
     VALUES (${uuid}::uuid, ${TENANT}::uuid, ${PROGRAM}::uuid, NULL,
-            ${opts.status ?? 'BORN'}, ${opts.triggerReason ?? 'LOT_SIZE'}, ${opts.unitCount ?? 3},
+            ${opts.triggerReason ?? 'LOT_SIZE'}, ${opts.unitCount ?? 3},
             ${opts.createdAt ?? '2026-05-01T00:00:00Z'}::timestamptz, now())
   `
   return { wire, uuid }
@@ -106,7 +106,7 @@ describe('P2-1 ops object-spine reads: listBatches', () => {
 
 describe('P2-1 ops object-spine reads: readBatchDetail', () => {
   it('returns the header, its entries and its artifacts', async () => {
-    const b = await seedBatch({ unitCount: 1, status: 'BORN' })
+    const b = await seedBatch({ unitCount: 1 })
     const e = await seedPoolEntry({ batchUuid: b.uuid, poolStatus: 'BATCHED' })
     await seedArtifact(e.asgnUuid, b.uuid, 'STANDEE_IMG')
     await seedArtifact(e.asgnUuid, b.uuid, 'STICKER_IMG')
@@ -114,7 +114,12 @@ describe('P2-1 ops object-spine reads: readBatchDetail', () => {
     const detail = await readBatchDetail(db, b.wire)
     expect(detail).not.toBeNull()
     expect(detail!.batch.id).toBe(b.wire)
-    expect(detail!.batch.status).toBe('BORN')
+    // The header no longer carries a status: migration 20260810040000 dropped
+    // batch.status, and a batch's state is now derived from its children (its
+    // entries' dispatchState and its artifacts, both asserted below). Assert
+    // the header fields that still exist and that this test seeded.
+    expect(detail!.batch.triggerReason).toBe('LOT_SIZE')
+    expect(detail!.batch.unitCount).toBe(1)
     expect(detail!.entries.map((x) => x.asgnId)).toEqual([e.asgnWire])
     expect(detail!.artifacts.map((a) => a.artifactType)).toEqual(['STANDEE_IMG', 'STICKER_IMG'])
   })

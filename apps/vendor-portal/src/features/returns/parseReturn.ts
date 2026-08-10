@@ -1,12 +1,18 @@
 // Client-side parse of the FR-05 return-sheet CSV into the exact ReturnSheet
 // JSON shape `parseReturnSheet` (apps/vendor-edge/src/sheet-parse.ts) accepts:
 // `{ fileId, vndrId, workQueue, rows }` with each row EXACTLY
-// `{ deviceSerial, asgnId, awb, courierCode? }` (assertOnlyKeys, no extras).
+// `{ deviceSerial?, asgnId, awb, courierCode? }` (assertOnlyKeys, no extras).
 // This is presentation-only parsing (D117-style): the edge is the real
 // schema/authz gate (S8), this client only maps CSV columns to field names.
 
 export interface ReturnRow {
-  deviceSerial: string
+  // OPTIONAL, mirroring apps/vendor-edge/src/sheet-parse.ts exactly: a row with
+  // a Dispatch ID and an AWB but a BLANK Device ID reports a collateral-only
+  // consignment for that dispatch id (one dispatch id can travel under two
+  // AWBs, the soundbox kit under one and the standee under another). The key is
+  // OMITTED when blank rather than sent as '', because the edge rejects an
+  // empty string and only treats an ABSENT key as collateral.
+  deviceSerial?: string
   asgnId: string
   awb: string
   courierCode?: string
@@ -145,11 +151,20 @@ export function parseReturnCsv(text: string, vndrId: string, fileId: string): Re
     const deviceSerial = (r[deviceIdx] ?? '').trim()
     const asgnId = (r[dispatchIdx] ?? '').trim()
     const awb = (r[awbIdx] ?? '').trim()
-    if (deviceSerial === '' || asgnId === '' || awb === '') {
-      throw new ReturnParseError(`Row ${String(idx + 1)} is missing a required value (Device ID, Dispatch ID, or AWB).`)
+    // A BLANK Device ID no longer throws: it is how the vendor reports the
+    // second AWB (collateral only) for a dispatch id. Dispatch ID and AWB are
+    // still required, because without them there is nothing to attach the
+    // consignment to.
+    if (asgnId === '' || awb === '') {
+      throw new ReturnParseError(`Row ${String(idx + 1)} is missing a required value (Dispatch ID or AWB).`)
     }
     const courierCode = courierIdx >= 0 ? (r[courierIdx] ?? '').trim() : ''
-    return courierCode === '' ? { deviceSerial, asgnId, awb } : { deviceSerial, asgnId, awb, courierCode }
+    return {
+      ...(deviceSerial === '' ? {} : { deviceSerial }),
+      asgnId,
+      awb,
+      ...(courierCode === '' ? {} : { courierCode }),
+    }
   })
 
   return { fileId, vndrId, workQueue: 'vendor-portal', rows }

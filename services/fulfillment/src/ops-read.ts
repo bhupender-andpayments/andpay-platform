@@ -367,6 +367,14 @@ export interface BatchRow {
   unitCount: number
   printVndr: string | null
   triggeredByActor: string | null
+  // BRD 5.3.4: the operator's reason for a MANUAL (force-dispatch) trigger.
+  // Always null for LOT_SIZE and MAX_WAIT, which have no human behind them.
+  //
+  // Projected despite the D104 default-exclude posture noted above because it is
+  // not recipient PII: it is an operator's own note about an operator's own
+  // action, written by the operator who is now reading it back. Withholding it
+  // would leave the reason recorded and unreadable, which audits nothing.
+  triggerNote: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -377,6 +385,7 @@ interface BatchDbRow {
   unit_count: number
   print_vndr: string | null
   triggered_by_actor: string | null
+  trigger_note: string | null
   created_at: Date
   updated_at: Date
 }
@@ -388,6 +397,7 @@ function toBatchDto(r: BatchDbRow): BatchRow {
     unitCount: Number(r.unit_count),
     printVndr: r.print_vndr === null ? null : fromUuid('vndr', r.print_vndr),
     triggeredByActor: r.triggered_by_actor,
+    triggerNote: r.trigger_note,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -400,7 +410,7 @@ export async function listBatches(db: FulfillmentDb): Promise<BatchRow[]> {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     return tx.$queryRaw<BatchDbRow[]>`
       SELECT id::text AS id, trigger_reason, unit_count, print_vndr::text AS print_vndr,
-             triggered_by_actor::text AS triggered_by_actor, created_at, updated_at
+             triggered_by_actor::text AS triggered_by_actor, trigger_note, created_at, updated_at
       FROM batch
       ORDER BY created_at DESC
     `
@@ -488,7 +498,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     const header = await tx.$queryRaw<BatchDbRow[]>`
       SELECT id::text AS id, trigger_reason, unit_count, print_vndr::text AS print_vndr,
-             triggered_by_actor::text AS triggered_by_actor, created_at, updated_at
+             triggered_by_actor::text AS triggered_by_actor, trigger_note, created_at, updated_at
       FROM batch WHERE id = ${btchUuid}::uuid
     `
     if (header.length === 0) return null
@@ -499,10 +509,30 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
       FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
       ORDER BY bank_reference_code, branch_code, asgn_id
     `
+    // BANK then BRANCH then assignment, the one ordering every dispatch asset
+    // uses (the entries list above, the dispatch sheet, and the merged delivery
+    // PDFs, which all sort on those same three columns). This list was the
+    // residual gap: it ordered by artifact type first, so the same batch read
+    // back in a different order here than it printed in, and an operator
+    // checking a page against this list was comparing two different sequences.
+    //
+    // The sort columns live on pending_pool_entry, hence the join, on the
+    // already-unique pending_pool_entry.asgn_id. LEFT, not INNER: an artifact
+    // whose entry is missing must still be listed rather than silently
+    // disappearing from the batch, so the response shape is unchanged and only
+    // the order moves. Both tables are in the fulfillment schema (intra-context,
+    // not a cross-context join, C4), and this stays row-level: a join and an
+    // ORDER BY, no aggregation (the guard scans this file).
+    //
+    // Superseded rows are deliberately KEPT here, unlike the delivery path in
+    // package.ts: this read projects supersededAt precisely so an operator can
+    // see that an artifact was recomposed.
     const artifacts = await tx.$queryRaw<BatchArtifactDbRow[]>`
-      SELECT asgn_id::text AS asgn_id, artifact_type, asset_reference, superseded_at
-      FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
-      ORDER BY artifact_type, asgn_id
+      SELECT ca.asgn_id::text AS asgn_id, ca.artifact_type, ca.asset_reference, ca.superseded_at
+      FROM composed_artifact ca
+      LEFT JOIN pending_pool_entry ppe ON ppe.asgn_id = ca.asgn_id
+      WHERE ca.btch_id = ${btchUuid}::uuid
+      ORDER BY ppe.bank_reference_code, ppe.branch_code, ca.asgn_id, ca.artifact_type
     `
     return {
       batch: toBatchDto(header[0]!),
@@ -586,6 +616,20 @@ export async function listPoolEntries(
 // The ops dispatch list: every shipment, unscoped by program (the class-3
 // operator sees the whole platform, unlike read.ts's readShipments which is the
 // program-scoped class-2 TENANT read). PII-free by construction.
+//
+// WHAT'S IN THE PARCEL, and why it is two booleans rather than two numbers.
+// One dispatch id can travel under TWO AWBs: the soundbox kit under one, the
+// standee under another. So this list now contains rows that carry no device at
+// all, and before these flags a collateral-only shipment appeared as an
+// ordinary row with nothing in it: same AWB column, same status, no way to tell
+// it apart from a shipment whose devices had gone missing.
+//
+// EXISTS, never an aggregate. This module is covered by the no-aggregate guard
+// in test/architecture.test.ts (the ops portal is a queue and detail surface,
+// not a dashboard), and the guard scans the file's TEXT, comments included. That
+// is not an obstacle worked around here, it is the right shape anyway: the
+// question the operator asks of a list row is "does this parcel have devices in
+// it", which is a yes or no. How MANY is a detail-view question.
 export interface DispatchRow {
   id: string
   awb: string
@@ -594,6 +638,10 @@ export interface DispatchRow {
   dispatchDate: Date
   statusAt: Date | null
   statusSource: string | null
+  /** true when at least one unit travels on this shipment. */
+  hasUnits: boolean
+  /** true when at least one assignment's collateral travels on this shipment. */
+  hasCollateral: boolean
   createdAt: Date
   updatedAt: Date
 }
@@ -606,6 +654,8 @@ interface DispatchDbRow {
   dispatch_date: Date
   status_at: Date | null
   status_source: string | null
+  has_units: boolean
+  has_collateral: boolean
   created_at: Date
   updated_at: Date
 }
@@ -615,17 +665,21 @@ export async function listDispatches(db: FulfillmentDb, { status }: { status?: s
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     if (status !== undefined) {
       return tx.$queryRaw<DispatchDbRow[]>`
-        SELECT id::text AS id, awb, status, courier_partner::text AS courier_partner, dispatch_date,
-               status_at, status_source, created_at, updated_at
-        FROM shpt WHERE status = ${status}
-        ORDER BY dispatch_date DESC
+        SELECT s.id::text AS id, s.awb, s.status, s.courier_partner::text AS courier_partner, s.dispatch_date,
+               s.status_at, s.status_source, s.created_at, s.updated_at,
+               EXISTS (SELECT 1 FROM unit u WHERE u.shipment = s.id) AS has_units,
+               EXISTS (SELECT 1 FROM pending_pool_entry p WHERE p.collateral_shipment = s.id) AS has_collateral
+        FROM shpt s WHERE s.status = ${status}
+        ORDER BY s.dispatch_date DESC
       `
     }
     return tx.$queryRaw<DispatchDbRow[]>`
-      SELECT id::text AS id, awb, status, courier_partner::text AS courier_partner, dispatch_date,
-             status_at, status_source, created_at, updated_at
-      FROM shpt
-      ORDER BY dispatch_date DESC
+      SELECT s.id::text AS id, s.awb, s.status, s.courier_partner::text AS courier_partner, s.dispatch_date,
+             s.status_at, s.status_source, s.created_at, s.updated_at,
+             EXISTS (SELECT 1 FROM unit u WHERE u.shipment = s.id) AS has_units,
+             EXISTS (SELECT 1 FROM pending_pool_entry p WHERE p.collateral_shipment = s.id) AS has_collateral
+      FROM shpt s
+      ORDER BY s.dispatch_date DESC
     `
   })
   return rows.map((r) => ({
@@ -636,6 +690,8 @@ export async function listDispatches(db: FulfillmentDb, { status }: { status?: s
     dispatchDate: r.dispatch_date,
     statusAt: r.status_at,
     statusSource: r.status_source,
+    hasUnits: r.has_units,
+    hasCollateral: r.has_collateral,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }))

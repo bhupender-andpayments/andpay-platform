@@ -1,0 +1,46 @@
+-- One dispatch id can travel under TWO AWBs.
+--
+-- THE REAL SHAPE OF THE PROBLEM. A bank file row becomes one assignment, and
+-- that assignment can order a soundbox AND a standee. The print vendor does not
+-- always ship those in one parcel: the soundbox and its stickers go under one
+-- AWB, the standee under another. The return sheet has exactly one AWB column
+-- and one Device ID column per row, so the second consignment had nowhere to be
+-- reported at all. It was not mis-modelled, it was absent.
+--
+-- WHAT THIS COLUMN IS. The dispatch id's SECOND shipment: the collateral-only
+-- parcel. Nullable, and it stays nullable, because most assignments ship once.
+--
+-- WHY IT HANGS OFF pending_pool_entry RATHER THAN unit, which was the obvious
+-- first answer and is the wrong one:
+--   * D103d is enforced in the very function that would have to create it
+--     ("NO auto-create, ever"), and the Unit model's own comment says units are
+--     born ONLY at manufacturer intake. A serial-less return row has no unit to
+--     find, so "find or birth" would be pure birth, every time. That would make
+--     this the first write in the system to violate a ratified rule.
+--   * Per D106 a quantity-line unit is one row per product TYPE plus batch with
+--     running counts. A serial-less sheet row carries no product type at all, so
+--     the type would have to be guessed. Guessing an aggregate's identity to
+--     satisfy a foreign key is not a link, it is a fabrication.
+--   * pending_pool_entry is ALREADY the per-assignment dispatch snapshot this
+--     ingest mutates, is already program-scoped with the RLS write gate that
+--     ingest already exercises per row, and already carries standee_count and
+--     sticker_count. That is the demand truth this shipment answers, sitting on
+--     the same row.
+--
+-- It holds shpt.id, a uuid, exactly like unit.shipment does, and never the AWB
+-- string: one AWB is one shpt (D106c) and the AWB is not a key of anything else.
+-- No FK is declared, mirroring unit.shipment's own choice in this schema.
+--
+-- NO GRANT IS NEEDED HERE, and this was checked rather than assumed. This
+-- schema has no ALTER DEFAULT PRIVILEGES, so a newly READ table needs its own
+-- explicit grant (see 20260810020000). A new COLUMN on an already-granted table
+-- is different: every grant that reaches pending_pool_entry is TABLE-level, not
+-- column-scoped, so it covers this column the moment it exists.
+--   * fulfillment_write: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
+--     IN SCHEMA fulfillment (20260727000100).
+--   * fulfillment_read, fulfillment_ops_read, fulfillment_vendor_read: table
+--     level GRANT SELECT on fulfillment.pending_pool_entry (20260727000200,
+--     20260727010000, 20260803140000).
+-- Additive only (S23 expand-contract): one nullable column, no DROP, no ALTER of
+-- an existing column, no RLS change, no money surface.
+ALTER TABLE "pending_pool_entry" ADD COLUMN IF NOT EXISTS "collateral_shipment" uuid;

@@ -97,7 +97,7 @@ describe('onDemandAccrued / triggerBatch (batching pool anchor and lot-size trig
     expect(timers[0]!.purpose).toBe('max_wait')
   })
 
-  it('at minLotSize: exactly one BORN/LOT_SIZE batch, entries flip to BATCHED, one batch fact with the oldest trace_id and the asgn_id set; timers supersede-and-re-arm (C2); a second call with no new POOLED entries creates no second batch', async () => {
+  it('at minLotSize: exactly one LOT_SIZE batch with a NULL trigger_note, entries flip to BATCHED, one batch fact with the oldest trace_id and the asgn_id set; timers supersede-and-re-arm (C2); a second call with no new POOLED entries creates no second batch', async () => {
     const tenantWire = newId('tnnt')
     const programWire = newId('prog')
     const tenantUuid = toUuid(tenantWire)
@@ -150,16 +150,20 @@ describe('onDemandAccrued / triggerBatch (batching pool anchor and lot-size trig
     const batches = await db.$queryRaw<
       {
         id: string
-        status: string
         trigger_reason: string
+        trigger_note: string | null
         unit_count: number
         tenant_id: string
         program_id: string
       }[]
-    >`SELECT id::text AS id, status, trigger_reason, unit_count, tenant_id::text AS tenant_id, program_id::text AS program_id FROM batch`
+    >`SELECT id::text AS id, trigger_reason, trigger_note, unit_count, tenant_id::text AS tenant_id, program_id::text AS program_id FROM batch`
     expect(batches).toHaveLength(1)
-    expect(batches[0]!.status).toBe('BORN')
     expect(batches[0]!.trigger_reason).toBe('LOT_SIZE')
+    // BRD 5.3.4: the trigger note is the MANUAL force-dispatch reason and
+    // nothing else. A LOT_SIZE batch fired because the pool reached its lot
+    // size, with no human behind it, so it carries NULL rather than a
+    // manufactured string standing in for a reason nobody gave.
+    expect(batches[0]!.trigger_note).toBeNull()
     expect(batches[0]!.unit_count).toBe(minLotSize)
     expect(batches[0]!.tenant_id).toBe(tenantUuid)
     expect(batches[0]!.program_id).toBe(programUuid)
@@ -427,8 +431,8 @@ describe('onDemandAccrued / triggerBatch (batching pool anchor and lot-size trig
           expect(claimed).toHaveLength(1) // the seeded row was really claimed
 
           await tx.$executeRaw`
-            INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-            VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BORN', ${reason}, ${null}::uuid, ${claimed.length}, now())
+            INSERT INTO batch (id, tenant_id, program_id, trigger_reason, triggered_by_actor, trigger_note, unit_count, updated_at)
+            VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${reason}, ${null}::uuid, ${null}, ${claimed.length}, now())
           `
 
           const btchWire = fromUuid('btch', btchUuid)

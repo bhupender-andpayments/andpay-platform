@@ -94,9 +94,19 @@ export async function buildDispatchPackage(
     FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
   `
 
+  // superseded_by IS NULL: a class-3 recompose (ops.ts recomposeArtifact) INSERTs
+  // a REPLACEMENT composed_artifact row and stamps superseded_by/superseded_at on
+  // the old one, so after one recompose an assignment has TWO rows of the same
+  // type. Unfiltered, the merged delivery PDF printed that merchant's page twice
+  // and the sheet's artifact-ref cell listed a reference that has been retired.
+  // The current row is the only one the vendor should ever produce.
+  //
+  // ops-read.ts deliberately does NOT filter here: that read projects
+  // supersededAt so an operator can SEE the history. This is the delivery path,
+  // where history is a duplicate page.
   const artifacts = await db.$queryRaw<{ asgn_id: string; artifact_type: string; asset_reference: string }[]>`
     SELECT asgn_id::text AS asgn_id, artifact_type, asset_reference
-    FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
+    FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid AND superseded_by IS NULL
     ORDER BY artifact_type
   `
 
@@ -169,7 +179,7 @@ const DISPATCH_COLUMNS = [
  *
  * F9 asked to "confirm the soundbox-only variant yields a filtered EXCEL". It
  * did not, and the framing was wrong twice over: the soundbox-only view that
- * existed was the merged PDF (`assembleTypePdf('SOUNDBOX_IMG')`), the Excel was
+ * existed was the merged PDF (the SOUNDBOX group below), the Excel was
  * never filtered at all, and the partner does not want a filtered FILE. They
  * want one file split by PRODUCT.
  *
@@ -243,21 +253,82 @@ export class AssetResolutionError extends Error {
   }
 }
 
-// Phase 4 (P4-D5): assemble ONE merged PDF for a single product type across the
-// whole batch, in bank + branch order, by merging the stored per-collateral PDFs
-// (the single source of truth is the bytes generated at composition, Task 2).
-// artifactType 'SOUNDBOX_IMG' yields the FR-04 step-10 soundbox-only view.
-// Returns null ONLY when the batch has no composed_artifact of that type. If a
-// referenced asset exists as a row but does not resolve or is not a readable
-// PDF, that is a FAULT and throws AssetResolutionError -- it must NEVER be
-// collapsed into an empty/404, or a merchant's label would silently vanish from
-// the dispatch package (Task-3/4 review, Important). Reads no PII ('print' view).
-export async function assembleTypePdf(
+/**
+ * THE DELIVERY GROUPING. A batch is handed to the print vendor as TWO merged
+ * PDFs, not three per-type ones:
+ *
+ *   SOUNDBOX   -> one page per merchant that asked for a soundbox.
+ *   COLLATERAL -> one page per merchant that asked for a sticker OR a standee,
+ *                 and exactly ONE page for a merchant that asked for BOTH.
+ *
+ * The both case is the whole reason this is a grouping and not a concatenation.
+ * Sticker and standee carry the SAME branded artwork (BRD Annexure A), so a
+ * second page would be the same QR for the same VPA printed twice, which the
+ * ruling forbids. Hence AT MOST ONE artifact per line per group, taken in the
+ * ORDER below.
+ *
+ * STANDEE_IMG comes before STICKER_IMG for the same reason dispatchXlsx puts
+ * orphan lines on `Standy`: the standee is the general collateral sheet.
+ *
+ * STORAGE IS UNCHANGED, DELIBERATELY. composed_artifact.artifact_type keeps its
+ * three values. Regrouping at the merge layer instead of at rest means no data
+ * migration, `recomposeArtifact`/`resolvePriorArtifact` keep working on
+ * historical rows (they key on asgn plus artifact TYPE, which is a stored row,
+ * never a delivery group), the `artifact/${btchId}/${asgn_id}/${artifactType}`
+ * asset key and the stored reference format stay byte-identical, and legacy
+ * vendor URLs naming an artifact type still resolve.
+ */
+export type CollateralGroup = 'SOUNDBOX' | 'COLLATERAL'
+
+const GROUP_ARTIFACT_TYPES: Record<CollateralGroup, readonly string[]> = {
+  SOUNDBOX: ['SOUNDBOX_IMG'],
+  COLLATERAL: ['STANDEE_IMG', 'STICKER_IMG'],
+}
+
+// Map a path parameter to a delivery group. Accepts the two group keys AND the
+// three legacy artifact-type strings, so a URL a vendor or an operator already
+// holds keeps resolving to the PDF that now carries that product. Anything else
+// returns null, and every caller maps that to the same 404 an unknown type
+// produced before.
+export function resolveCollateralGroup(key: string): CollateralGroup | null {
+  switch (key) {
+    case 'SOUNDBOX':
+    case 'SOUNDBOX_IMG':
+      return 'SOUNDBOX'
+    case 'COLLATERAL':
+    case 'STANDEE_IMG':
+    case 'STICKER_IMG':
+      return 'COLLATERAL'
+    default:
+      return null
+  }
+}
+
+// Phase 4 (P4-D5): assemble ONE merged PDF for a delivery group across the whole
+// batch, in bank + branch order, by merging the stored per-collateral PDFs (the
+// single source of truth is the bytes generated at composition, Task 2). Group
+// 'SOUNDBOX' yields the FR-04 step-10 soundbox-only view.
+//
+// The order comes from buildDispatchPackage's ONE sorted array, which the
+// dispatch Excel also serializes, so the merged pages and the sheet rows cannot
+// drift into two different bank/branch orders.
+//
+// Returns null ONLY when the batch has no composed_artifact in that group, and
+// for an unrecognized key. If a referenced asset exists as a row but does not
+// resolve or is not a readable PDF, that is a FAULT and throws
+// AssetResolutionError -- it must NEVER be collapsed into an empty/404, or a
+// merchant's label would silently vanish from the dispatch package (Task-3/4
+// review, Important). Reads no PII ('print' view).
+export async function assembleGroupPdf(
   db: FulfillmentDb,
   assetStore: AssetStore,
   btchId: string,
-  artifactType: string,
+  key: string,
 ): Promise<Uint8Array | null> {
+  const group = resolveCollateralGroup(key)
+  if (group === null) return null
+  const order = GROUP_ARTIFACT_TYPES[group]
+
   const lines = await buildDispatchPackage(db, btchId, 'print')
   const merged = await PDFDocument.create()
   // Fixed metadata so the merged output is deterministic for a fixed input set.
@@ -268,22 +339,27 @@ export async function assembleTypePdf(
 
   let matched = 0
   for (const line of lines) {
-    for (const art of line.artifacts) {
-      if (art.artifactType !== artifactType) continue
-      matched++
-      const rec = await assetStore.getByReference(art.assetReference)
-      if (rec === null) {
-        throw new AssetResolutionError(`stored collateral not found for a ${artifactType} artifact in batch ${btchId}`)
-      }
-      let src: PDFDocument
-      try {
-        src = await PDFDocument.load(rec.bytes)
-      } catch {
-        throw new AssetResolutionError(`stored collateral is not a readable PDF for a ${artifactType} artifact in batch ${btchId}`)
-      }
-      const pages = await merged.copyPages(src, src.getPageIndices())
-      for (const pg of pages) merged.addPage(pg)
+    // AT MOST ONE artifact per line: the first type present in the group's
+    // order. A merchant holding both a standee and a sticker row gets the
+    // standee and nothing else, which is one page of shared artwork rather than
+    // the same QR printed twice.
+    const art = order
+      .map((t) => line.artifacts.find((a) => a.artifactType === t))
+      .find((a) => a !== undefined)
+    if (art === undefined) continue
+    matched++
+    const rec = await assetStore.getByReference(art.assetReference)
+    if (rec === null) {
+      throw new AssetResolutionError(`stored collateral not found for a ${art.artifactType} artifact in batch ${btchId}`)
     }
+    let src: PDFDocument
+    try {
+      src = await PDFDocument.load(rec.bytes)
+    } catch {
+      throw new AssetResolutionError(`stored collateral is not a readable PDF for a ${art.artifactType} artifact in batch ${btchId}`)
+    }
+    const pages = await merged.copyPages(src, src.getPageIndices())
+    for (const pg of pages) merged.addPage(pg)
   }
   if (matched === 0) return null
   return await merged.save()

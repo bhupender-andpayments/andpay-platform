@@ -147,6 +147,20 @@ export interface TriggerBatchOpts {
   /** The class-3 actor for a MANUAL trigger (Task 10); recorded on batch.triggered_by_actor. */
   actorUuid?: string
   /**
+   * The operator's free-text reason for a MANUAL trigger (BRD 5.3.4 force
+   * dispatch); recorded on batch.trigger_note. Optional on this shape and
+   * absent from both automatic callers: LOT_SIZE fires because the pool reached
+   * minLotSize and MAX_WAIT because a timer came due, so neither has a human
+   * behind it and both persist NULL. `manualBatch` (src/ops.ts) is the only
+   * caller that sets it, and it REQUIRES the reason of its own callers and
+   * validates it before this point.
+   *
+   * Stays on the domain row only: it is never added to the batch fact (fact
+   * payloads are IDs and enums, S7) and never to the co-committed 6e authz
+   * record (DD1, the same rule shpt_status_event.override_reason follows).
+   */
+  triggerNote?: string
+  /**
    * The triggering demand fact's traceId (LOT_SIZE only). Deliberately NOT
    * used for the batch fact's traceId: to keep trace derivation uniform and
    * testable across every trigger reason, triggerBatch always derives the
@@ -242,9 +256,12 @@ export async function triggerBatchWithinTx(
         const oldestTraceId = sorted[0]!.trace_id
         const btchWire = fromUuid('btch', btchUuid)
 
+        // trigger_note is the BRD 5.3.4 force-dispatch reason and is set only by
+        // the MANUAL ops path; `?? null` is what makes a LOT_SIZE or MAX_WAIT
+        // batch persist a NULL note rather than an invented placeholder.
         await tx.$executeRaw`
-          INSERT INTO batch (id, tenant_id, program_id, trigger_reason, triggered_by_actor, unit_count, updated_at)
-          VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${reason}, ${opts.actorUuid ?? null}::uuid, ${claimed.length}, now())
+          INSERT INTO batch (id, tenant_id, program_id, trigger_reason, triggered_by_actor, trigger_note, unit_count, updated_at)
+          VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${reason}, ${opts.actorUuid ?? null}::uuid, ${opts.triggerNote ?? null}, ${claimed.length}, now())
         `
 
         await enqueue(tx, {

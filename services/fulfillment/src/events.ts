@@ -49,6 +49,16 @@ export interface PrintForFactPayload {
 // relaxation makes TypeScript match the ratified wire rather than change it
 // (no v2, D120). courierTimestamp and statusSource are transition-only.
 // status is the discriminator: DISPATCHED_BY_VENDOR is the birth.
+// A COLLATERAL shipment rides this same topic on two further optional fields,
+// deliberately NOT a new topic and NOT the print_for fact:
+//   * a new topic needs a corpus decision, and this carries no new kind of
+//     information: it is a shipment, born the same way, keyed by the same AWB.
+//   * print_for's required set is unitId + asgnId + shptId, and a collateral
+//     consignment has NO unit, so it could not satisfy that contract without
+//     inventing a unit id.
+// Both fields are additive and optional, and the registered required set is
+// UNCHANGED, so compatibility stays FULL (D120, E3, E8). A consumer that has
+// never heard of collateral reads exactly what it read before.
 export interface ShipmentFactPayload {
   shptId: string
   awb: string
@@ -58,6 +68,13 @@ export interface ShipmentFactPayload {
   status: string
   courierTimestamp?: string
   statusSource?: string // WEBHOOK | BATCH_FILE | OPS_MANUAL
+  // true when this shpt carries collateral for the assignments below and no
+  // device. The discriminator a consumer keys off, so a collateral fact can
+  // never be mistaken for the primary kit's dispatch.
+  collateral?: boolean
+  // the asgn_ ids this collateral consignment covers. Present ONLY on a
+  // collateral fact: one AWB can legitimately cover many dispatch ids.
+  asgnIds?: string[]
 }
 
 interface FactInput<T> {

@@ -22,6 +22,12 @@ export interface ApiRequest {
   // raw response text, for a text/csv body that is not valid JSON. Nothing
   // else in sendOnce, attempt, or the 401/403 interceptors branches on this.
   responseType?: 'json' | 'text'
+  // Multipart uploads. Kept SEPARATE from `body` for two reasons: FormData must
+  // never be JSON.stringify'd, and the Content-Type must NOT be set by hand
+  // because it carries the multipart boundary the browser generates. Upload
+  // routes used to bypass this client entirely and call fetch directly, which
+  // silently opted them out of the 401 refresh-and-retry below.
+  formBody?: FormData
 }
 
 export interface ApiResult {
@@ -49,7 +55,13 @@ export async function sendOnce(deps: ApiClientDeps, req: ApiRequest): Promise<Ap
   const init: RequestInit = {
     method: req.method,
     headers,
-    ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
+    // formBody wins and is sent AS IS, with no Content-Type of ours: see the
+    // note on ApiRequest.formBody. A request carries one or the other, never both.
+    ...(req.formBody !== undefined
+      ? { body: req.formBody }
+      : req.body !== undefined
+        ? { body: JSON.stringify(req.body) }
+        : {}),
     ...(req.withCookie ? { credentials: 'include' } : {}),
   }
   const res = await fetch(`${base}${req.path}`, init)

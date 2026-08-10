@@ -1,4 +1,5 @@
 import { enqueue } from '@andpay/outbox'
+import { fromUuid } from '@andpay/ids'
 import type { TmsDb } from './db.js'
 import { rowFactEnvelope, ROW_FACT_TYPE } from './row-fact.js'
 import { validateQrVpaFormat, type Tx } from './internal.js'
@@ -52,6 +53,21 @@ export interface BankRequestRow {
 // and D3 requires BOTH. So this is a pure split, nothing dropped.
 //
 // P-A: the source-agnostic rules PLUS the D3 per-column patterns.
+//
+// `duplicate_vpa_soundbox` (ruling 2026-08-10) is the ONE member that is not a
+// format rule, and it is deliberately in this union rather than beside it: it
+// is a row-level reject reason, it lands in quarantine_row.reason_code like
+// every other member, and the ops portal renders it from the same list. It is
+// NOT produced by requestRowRejectReason below, which stays pure and DB-free
+// (that purity is exactly why preview and commit can share it); the duplicate
+// gate needs a read, so it is decided by seedKnownVpaOriginals plus
+// duplicateVpaVerdicts and applied by ingestRequestRowWithinTx.
+//
+// NOTE for whoever edits this union next: test/reject_reason_parity.test.ts
+// compares it TEXTUALLY against the hand-kept copy in
+// apps/ops-portal/src/api/endpoints.ts and slices the declaration at the first
+// BLANK LINE. Keep the members in one unbroken run of lines, and add the same
+// spelling to the portal union in the same change.
 export type RequestRowRejectReason =
   | 'invalid_qr_vpa_format'
   | 'missing_display_name'
@@ -66,6 +82,7 @@ export type RequestRowRejectReason =
   | 'invalid_branch_code_format'
   | 'invalid_standee_count'
   | 'invalid_sticker_count'
+  | 'duplicate_vpa_soundbox'
 
 // D11 RULED (Bhupender, 2026-08-07): GSCB is the ONLY tenant in scope, so its
 // dialect IS the platform's dialect and the D3 patterns are enforced right here,
@@ -133,6 +150,198 @@ export function requestRowRejectReason(row: BankRequestRow): RequestRowRejectRea
   return null
 }
 
+// ---------------------------------------------------------------------------
+// The soundbox duplicate-VPA gate (ruling 2026-08-10).
+//
+// D-2 read BRD 5.1b as "a flag, never a gate", and for a sticker/standee row it
+// still is. For a SOUNDBOX row it is now a gate: asking for a second soundbox on
+// a VPA we already serve is the case an operator has to look at BEFORE a device
+// ships, not after, so the row is quarantined with `duplicate_vpa_soundbox` and
+// the quarantine record NAMES the original.
+//
+// What is NOT gated, deliberately: the same merchant ordering with a DIFFERENT
+// VPA. Merchant identity is VPA-derived today (`v1:vpa:<lower(vpa)>`, the D1
+// interim in bank-source-profile.ts), so a different VPA is a different merchant
+// as far as this repo can tell, and holding it would hold a legitimate order on
+// a guess.
+// ---------------------------------------------------------------------------
+
+/**
+ * The record a held row collides with, as the operator needs to read it.
+ *
+ * `reference` is deliberately per-kind rather than one uniform id, because the
+ * three originals are three different things and no single id spans them:
+ *   - `assignment`  the original already became an order. The WIRE asgn id
+ *                   (D-A: reads emit wire ids), never the raw uuid.
+ *   - `pending_row` the original is ingested and awaiting identity. Its
+ *                   correlation_id, which is `{file_id}|{row_no}`, so it names
+ *                   the upload and the line inside it.
+ *   - `file_row`    the original is an EARLIER row of the same file. The row
+ *                   number as a string, which also works in preview, where no
+ *                   real fileId exists yet.
+ *
+ * `merchantDisplayName` is null when the original carries no name to show:
+ * pending_row has no display-name column at all (see schema.prisma), and a
+ * file_row original may have an empty one.
+ */
+export interface DuplicateVpaOriginal {
+  kind: 'assignment' | 'pending_row' | 'file_row'
+  reference: string
+  merchantDisplayName: string | null
+}
+
+// The VPA key. Trimmed and lowercased because merchant identity is
+// `v1:vpa:<lower(vpa)>` (D1 interim), so two casings of one VPA are ONE
+// merchant, and a gate that missed that would be trivially defeated by an
+// upper-case letter in the bank's export.
+function vpaKey(vpaValue: string): string {
+  return vpaValue.trim().toLowerCase()
+}
+
+/**
+ * Everything TMS ALREADY holds for the given VPAs, folded to one original per
+ * VPA key. ONE read for the whole file rather than one per row (a 360-row GSCB
+ * file would otherwise mean 720 scans), and it takes a `Tx` so both surfaces can
+ * call it: the commit path inside its tms_write transaction, the preview path
+ * inside its read-only tms_ops_read transaction.
+ *
+ * Both tables are TMS's own (no cross-context read, C4): `assignment` is a row
+ * that already became an order, `pending_row` one still awaiting identity.
+ *
+ * FIRST-WINS by (kind, created_at): an `assignment` beats a `pending_row`
+ * because it is the further-along record and the one an operator can actually
+ * act on, and within a kind the EARLIEST row wins because the original is the
+ * first sighting, not the most recent one. The ordering is done in SQL so the
+ * fold is a plain first-wins insert and the precedence cannot drift between the
+ * two call sites.
+ *
+ * Matches on lower(vpa_value), which is what the two functional indexes added in
+ * 20260810100000_tms_duplicate_vpa_quarantine cover.
+ *
+ * `excludeSourceRef` is the `{file_id}|{row_no}` of a row that must not be
+ * allowed to find ITSELF. It exists for the per-row lookup in
+ * ingestRequestRowWithinTx, which runs AFTER earlier calls may have already
+ * ingested this exact row: re-ingesting `file-1|1` would otherwise match the
+ * pending_row (or the assignment) that the FIRST ingest of `file-1|1` created,
+ * and a row would be held as a duplicate of itself instead of returning the
+ * plain 'duplicate' its correlation_id dedup already means. Both tables carry
+ * the same value under different names (`pending_row.correlation_id`,
+ * `assignment.source_event_id`), so one argument covers both. The whole-file
+ * callers pass nothing: they read the seed BEFORE writing any row, so no row of
+ * the file is in it yet.
+ */
+export async function seedKnownVpaOriginals(
+  tx: Tx,
+  vpas: readonly string[],
+  excludeSourceRef: string | null = null,
+): Promise<Map<string, DuplicateVpaOriginal>> {
+  const found = new Map<string, DuplicateVpaOriginal>()
+  const keys = [...new Set(vpas.map(vpaKey).filter((k) => k !== ''))]
+  if (keys.length === 0) return found
+
+  // IS DISTINCT FROM rather than <>, so a null exclusion excludes nothing: both
+  // columns are NOT NULL, and `x IS DISTINCT FROM NULL` is true for every x.
+  const rows = await tx.$queryRaw<{ kind: string; ref: string; display_name: string | null; vpa_key: string }[]>`
+    SELECT 0 AS kind_rank, 'assignment' AS kind, id::text AS ref, merchant_display_name AS display_name,
+           lower(vpa_value) AS vpa_key, created_at AS origin_created_at
+      FROM assignment
+      WHERE lower(vpa_value) = ANY(${keys}::text[]) AND source_event_id IS DISTINCT FROM ${excludeSourceRef}
+    UNION ALL
+    SELECT 1 AS kind_rank, 'pending_row' AS kind, correlation_id AS ref, NULL::text AS display_name,
+           lower(vpa_value) AS vpa_key, created_at AS origin_created_at
+      FROM pending_row
+      WHERE lower(vpa_value) = ANY(${keys}::text[]) AND correlation_id IS DISTINCT FROM ${excludeSourceRef}
+    ORDER BY kind_rank ASC, origin_created_at ASC
+  `
+  for (const r of rows) {
+    if (found.has(r.vpa_key)) continue
+    found.set(
+      r.vpa_key,
+      r.kind === 'assignment'
+        ? { kind: 'assignment', reference: fromUuid('asgn', r.ref), merchantDisplayName: r.display_name }
+        : { kind: 'pending_row', reference: r.ref, merchantDisplayName: null },
+    )
+  }
+  return found
+}
+
+/**
+ * The verdict for every row of one file, keyed by rowNo. PURE and deterministic:
+ * given the same rows and the same seed it returns the same answer, which is
+ * what lets PREVIEW show exactly the verdict COMMIT will reach.
+ *
+ * Walks in FILE ORDER, so "the original" is always the earlier row. Every row's
+ * VPA seeds the rows after it REGARDLESS of that row's own verdict, which is the
+ * same walk the D-2 duplicateVpa counter already does: a held row is still a
+ * sighting of that VPA, and pretending otherwise would let a third occurrence
+ * point at a row that was itself held.
+ *
+ * A verdict is produced ONLY for a soundbox row. A sticker/standee row still
+ * seeds (so a soundbox row after it is correctly held), but is never itself
+ * held: D-2's flag-never-gate reading stands for it untouched.
+ *
+ * The FIRST occurrence of a VPA is never a duplicate, by construction: it is the
+ * one that does the seeding.
+ */
+export function duplicateVpaVerdicts(
+  rows: readonly BankRequestRow[],
+  seed: ReadonlyMap<string, DuplicateVpaOriginal>,
+): Map<number, DuplicateVpaOriginal> {
+  const seen = new Map<string, DuplicateVpaOriginal>(seed)
+  const verdicts = new Map<number, DuplicateVpaOriginal>()
+  for (const row of rows) {
+    const key = vpaKey(row.vpaValue)
+    // An empty VPA is not an identity, so it can neither collide nor seed. Such
+    // a row is rejected by requestRowRejectReason (invalid_qr_vpa_format) long
+    // before this verdict would be consulted.
+    if (key === '') continue
+    const original = seen.get(key)
+    if (original === undefined) {
+      seen.set(key, {
+        kind: 'file_row',
+        reference: String(row.rowNo),
+        merchantDisplayName: row.displayName.trim() === '' ? null : row.displayName,
+      })
+      continue
+    }
+    if (row.soundbox) verdicts.set(row.rowNo, original)
+  }
+  return verdicts
+}
+
+// The one quarantine INSERT, extracted so BOTH reject paths (a format failure
+// and a soundbox duplicate-VPA hold) write the identical record and the
+// `ingest_file.row_rejected` bump cannot drift between them. Behaviour is
+// unchanged from the inline version it replaces: the same
+// `ON CONFLICT (file_id, row_no) DO NOTHING` dedup, so a re-quarantine of the
+// same (file, row) returns 'duplicate' and bumps NO counter a second time
+// (check 3), and the same ingest_file upsert.
+//
+// `duplicateOf` is the only detail any reason carries today; null writes SQL
+// NULL rather than an empty object, so "no detail" stays distinguishable from
+// "detail with nothing in it".
+async function quarantineRowWithinTx(
+  tx: Tx,
+  row: BankRequestRow,
+  reasonCode: RequestRowRejectReason,
+  duplicateOf: DuplicateVpaOriginal | null,
+): Promise<'quarantined' | 'duplicate'> {
+  const detail = duplicateOf === null ? null : JSON.stringify({ duplicateOf })
+  const won = await tx.$queryRaw<{ id: string }[]>`
+    INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code, detail)
+    VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_request'}, ${reasonCode}, ${detail}::jsonb)
+    ON CONFLICT (file_id, row_no) DO NOTHING
+    RETURNING id
+  `
+  if (won.length === 0) return 'duplicate' // already quarantined: no second counter bump (check 3)
+  await tx.$executeRaw`
+    INSERT INTO ingest_file (file_id, source, tenant_reference, row_total, row_rejected, status)
+    VALUES (${row.fileId}, ${'bank_request'}, ${row.bankReferenceCode}, 1, 1, ${'received'})
+    ON CONFLICT (file_id) DO UPDATE SET row_total = ingest_file.row_total + 1, row_rejected = ingest_file.row_rejected + 1
+  `
+  return 'quarantined'
+}
+
 // Ingest one bank request-file row (S8-untrusted, D116). Validates FORMAT only
 // (D117). On accept: stashes the TMS-owned slice in pending_row and emits
 // fct.tms.bank_file_row.v1 (identity slice + vpaHint only, S7/S5) in the same
@@ -146,32 +355,49 @@ export function requestRowRejectReason(row: BankRequestRow): RequestRowRejectRea
 // per call: whichever sub-path runs, it runs alone, in one transaction, same as
 // before. This lets a later ops API run the effect plus the E6 inbox dedup and
 // a server-resolved write scope together in a single transaction.
+//
+// `duplicateVpaOriginal` (ruling 2026-08-10) has THREE meanings, and the
+// difference between the first two matters:
+//   - `undefined`  the caller did not precompute, so look this ONE row up here.
+//                  This is what makes resolveQuarantineRow work for free: an
+//                  operator re-submitting a corrected row that is STILL a
+//                  soundbox duplicate re-quarantines with a named original,
+//                  without that route needing to know the gate exists.
+//   - `null`       the caller DID precompute and this row is not a duplicate.
+//                  No lookup, no read.
+//   - an object    precomputed and it IS a duplicate: quarantine and name it.
 export async function ingestRequestRowWithinTx(
   tx: Tx,
   row: BankRequestRow,
   traceId: string,
+  duplicateVpaOriginal?: DuplicateVpaOriginal | null,
 ): Promise<'accepted' | 'duplicate' | 'quarantined'> {
   const correlationId = `${row.fileId}|${row.rowNo}`
 
   // S8 row-level validation (the SAME rules the preview surface runs): a
   // failure quarantines the row via the reject/report path.
+  //
+  // FORMAT WINS FIRST, and that ordering is deliberate: first-error-wins is
+  // preserved, so a duplicate row that ALSO has an empty contact name is
+  // reported as missing_contact_name, which is the error the operator can
+  // actually fix. The duplicate is still there after the fix and is caught on
+  // the re-submission.
   const rejectReason = requestRowRejectReason(row)
-  if (rejectReason) {
-    let quarantined = false
-    const won = await tx.$queryRaw<{ id: string }[]>`
-      INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
-      VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_request'}, ${rejectReason})
-      ON CONFLICT (file_id, row_no) DO NOTHING
-      RETURNING id
-    `
-    if (won.length === 0) return 'duplicate' // already quarantined: no second counter bump (check 3)
-    quarantined = true
-    await tx.$executeRaw`
-      INSERT INTO ingest_file (file_id, source, tenant_reference, row_total, row_rejected, status)
-      VALUES (${row.fileId}, ${'bank_request'}, ${row.bankReferenceCode}, 1, 1, ${'received'})
-      ON CONFLICT (file_id) DO UPDATE SET row_total = ingest_file.row_total + 1, row_rejected = ingest_file.row_rejected + 1
-    `
-    return quarantined ? 'quarantined' : 'duplicate'
+  if (rejectReason) return quarantineRowWithinTx(tx, row, rejectReason, null)
+
+  // The soundbox duplicate-VPA gate (ruling 2026-08-10), reached only by a
+  // FORMAT-VALID row. A sticker/standee row (soundbox false) never enters here
+  // at all: D-2's flag-never-gate reading is untouched for it.
+  if (row.soundbox) {
+    let original = duplicateVpaOriginal ?? null
+    if (duplicateVpaOriginal === undefined) {
+      // Excluding THIS row's own correlation id: a re-ingest of `file-1|1` must
+      // still return the plain 'duplicate' its correlation_id dedup means, not
+      // be held as a duplicate of the pending_row its own first ingest created.
+      const seed = await seedKnownVpaOriginals(tx, [row.vpaValue], correlationId)
+      original = seed.get(vpaKey(row.vpaValue)) ?? null
+    }
+    if (original !== null) return quarantineRowWithinTx(tx, row, 'duplicate_vpa_soundbox', original)
   }
 
   let outcome: 'accepted' | 'duplicate' = 'duplicate'

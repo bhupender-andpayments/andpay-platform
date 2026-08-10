@@ -164,6 +164,45 @@ describe('parseReturnSheet', () => {
   it('rejects non-array rows', () => {
     expect(() => parseReturnSheet({ ...baseReturn(), rows: {} })).toThrow(EdgeParseError)
   })
+
+  // deviceSerial became OPTIONAL (2026-08-10): a row with a dispatch id and an
+  // AWB but no serial reports a COLLATERAL-only consignment, because one
+  // dispatch id can travel under two AWBs. It is handled exactly like
+  // courierCode: absent is allowed, present must be a non-empty
+  // control-char-free string. This edge checks SHAPE only; what an absent
+  // serial MEANS is the domain's business.
+  it('accepts a row with NO deviceSerial (the collateral row) and omits the key', () => {
+    const parsed = parseReturnSheet({ ...baseReturn(), rows: [{ asgnId: 'a1', awb: 'awb1' }] })
+    expect(parsed.rows).toHaveLength(1)
+    expect('deviceSerial' in parsed.rows[0]!).toBe(false)
+    expect(parsed.rows[0]!.asgnId).toBe('a1')
+    expect(parsed.rows[0]!.awb).toBe('awb1')
+  })
+
+  it('still rejects a PRESENT but empty deviceSerial (absent is a meaning, "" is a bug)', () => {
+    expect(() =>
+      parseReturnSheet({ ...baseReturn(), rows: [{ deviceSerial: '', asgnId: 'a1', awb: 'awb1' }] }),
+    ).toThrow(EdgeParseError)
+  })
+
+  it('still rejects a control character in a PRESENT deviceSerial (m1 survives the optionality)', () => {
+    expect(() =>
+      parseReturnSheet({ ...baseReturn(), rows: [{ deviceSerial: 'd\x1e1', asgnId: 'a1', awb: 'awb1' }] }),
+    ).toThrow(EdgeParseError)
+  })
+
+  it('still rejects a collateral row missing asgnId or awb', () => {
+    expect(() => parseReturnSheet({ ...baseReturn(), rows: [{ awb: 'awb1' }] })).toThrow(EdgeParseError)
+    expect(() => parseReturnSheet({ ...baseReturn(), rows: [{ asgnId: 'a1' }] })).toThrow(EdgeParseError)
+  })
+
+  it('keeps courierCode working on a collateral row', () => {
+    const parsed = parseReturnSheet({
+      ...baseReturn(),
+      rows: [{ asgnId: 'a1', awb: 'awb1', courierCode: 'BLUEDART' }],
+    })
+    expect(parsed.rows[0]).toEqual({ asgnId: 'a1', awb: 'awb1', courierCode: 'BLUEDART' })
+  })
 })
 
 describe('parseWebhookBody', () => {

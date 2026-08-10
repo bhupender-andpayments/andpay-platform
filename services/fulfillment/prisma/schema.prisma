@@ -188,6 +188,15 @@ model PendingPoolEntry {
   // Spec 10c: additive class-3 ops release stamp (nullable, expand-contract).
   releasedByActor     String?  @map("released_by_actor") @db.Uuid
   releasedAt          DateTime? @map("released_at") @db.Timestamptz(6)
+  // The SECOND AWB this dispatch id travels under: the collateral-only parcel
+  // (a standee shipped apart from the soundbox kit). Holds shpt.id, a uuid,
+  // exactly as unit.shipment does, and NEVER the AWB string (one AWB is one
+  // shpt, D106c). Null until a serial-less return row reports it, and at most
+  // ONE per dispatch id, so an assignment carries at most two AWBs in total.
+  // It hangs here rather than on a Unit because a serial-less row has no unit
+  // to find and D103d forbids birthing one; see migration
+  // 20260810120000_collateral_shipment_link for the full reasoning.
+  collateralShipment  String?  @map("collateral_shipment") @db.Uuid
 
   @@map("pending_pool_entry")
 }
@@ -200,6 +209,12 @@ model Batch {
   printVndr        String?  @map("print_vndr") @db.Uuid
   triggerReason    String   @map("trigger_reason") // LOT_SIZE | MAX_WAIT | MANUAL
   triggeredByActor String?  @map("triggered_by_actor") @db.Uuid
+  /// BRD 5.3.4: the operator's free-text reason for a MANUAL (force-dispatch)
+  /// trigger. NULL for LOT_SIZE and MAX_WAIT, which have no human behind them.
+  /// The domain-column precedent is shpt_status_event.override_reason: operator
+  /// free text lives on the domain row, never on the IDs-only 6e authz record
+  /// (DD1) and never on the batch fact.
+  triggerNote      String?  @map("trigger_note")
   unitCount        Int      @map("unit_count")
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)

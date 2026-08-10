@@ -104,8 +104,56 @@ describe('parseReturnWorkbook (D-4 / F8)', () => {
   })
 
   it('reports every missing field on one row together', async () => {
+    // Device ID is NOT among them any more: a blank device cell is a collateral
+    // report, not a missing value. Assignment and AWB are still required,
+    // because without them there is nothing to attach a consignment to.
     const r = await parseReturnWorkbook(await xlsx([['HDFC', '', 'Acme', '', '', '']]), 'r.xlsx')
-    expect(r.invalidRows[0]!.errors).toEqual(['missing_assignment', 'missing_device_id', 'missing_awb'])
+    expect(r.invalidRows[0]!.errors).toEqual(['missing_assignment', 'missing_awb'])
+  })
+
+  // ONE DISPATCH ID, TWO AWBs (2026-08-10). The soundbox kit ships under one
+  // AWB and the standee under another; the sheet has one AWB column per row, so
+  // the second parcel is reported as its own row with the Device ID cell left
+  // blank. The COLUMN stays required, only the VALUE became optional.
+  it('accepts a blank Device ID as a COLLATERAL row, omitting the key rather than sending an empty string', async () => {
+    const r = await parseReturnWorkbook(
+      await xlsx([['HDFC', 'asgn_1', 'Acme', '', 'AWB-COLLATERAL', 'BLUEDART']]),
+      'r.xlsx',
+    )
+    expect(r.structuralErrors).toEqual([])
+    expect(r.invalidRows).toEqual([])
+    expect(r.validRows).toHaveLength(1)
+    // The KEY must be absent, not ''. ingestReturnSheet reads absent as
+    // "collateral" and present-but-empty as schema-invalid, so an empty string
+    // here would fail the whole file instead of reporting a parcel.
+    expect('deviceSerial' in r.validRows[0]!).toBe(false)
+    expect(r.validRows[0]).toEqual({ asgnId: 'asgn_1', awb: 'AWB-COLLATERAL', courierCode: 'BLUEDART' })
+  })
+
+  it('still fails the WHOLE file when the Device ID COLUMN is absent, not just its values', async () => {
+    // The column and the value answer different questions. Getting the column
+    // back proves the vendor returned OUR workbook; a blank cell inside it is a
+    // deliberate report. Dropping the column requirement would read every row
+    // of a device-less sheet as collateral.
+    const r = await parseReturnWorkbook(
+      await xlsx([['HDFC', 'asgn_1', 'Acme', 'AWB-1']], ['Bank', 'Assignment', 'Merchant', 'AWB']),
+      'no-device-column.xlsx',
+    )
+    expect(r.structuralErrors[0]!.code).toBe('missing_column')
+    expect(r.structuralErrors[0]!.message).toMatch(/"Device ID"/)
+    expect(r.validRows).toEqual([])
+  })
+
+  it('keeps a collateral row and a device row side by side in one file', async () => {
+    const r = await parseReturnWorkbook(
+      await xlsx([ROW, ['HDFC', 'asgn_1', 'Acme', '', 'AWB-2', '']]),
+      'r.xlsx',
+    )
+    expect(r.invalidRows).toEqual([])
+    expect(r.validRows).toHaveLength(2)
+    expect(r.validRows[0]!.deviceSerial).toBe('1234567890123')
+    expect(r.validRows[1]!.deviceSerial).toBeUndefined()
+    expect(r.validRows[1]!.awb).toBe('AWB-2')
   })
 
   it('matches headers case-insensitively, because a human retypes them', async () => {

@@ -609,7 +609,11 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
       .post('/ops/batches/trigger')
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', idem)
-      .send({ tenantWire, programWire })
+      // BRD 5.3.4: the manual trigger now requires a reason, validated at the
+      // edge before the gate. Sent here so this test still exercises the
+      // AUTHORIZED path it is about; the reason lands on batch.trigger_note and
+      // is asserted to stay off the 6e in apps/ops-edge/test/ops-actions-http.test.ts.
+      .send({ tenantWire, programWire, reason: 'audit chain regression fixture' })
     expect(first.status).toBe(200)
     // Nothing POOLED: no batch was born, yet the authorized attempt is still
     // audited (S15/T2): the 6e does not gate on triggerBatchWithinTx's
@@ -631,7 +635,7 @@ describe('6e authz-audit chain e2e for ops mutation decisions (task 10 + CC-1, L
       .post('/ops/batches/trigger')
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', idem)
-      .send({ tenantWire, programWire })
+      .send({ tenantWire, programWire, reason: 'audit chain regression fixture' })
     expect(replay.status).toBe(200)
     expect(replay.text).toBe('')
     expect(await readFulfillmentAudit()).toHaveLength(1)

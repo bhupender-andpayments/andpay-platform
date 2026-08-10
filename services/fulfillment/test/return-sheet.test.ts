@@ -6,6 +6,8 @@ import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { ingestReturnSheet, type ReturnSheet, type ReturnRow } from '../src/return-sheet.js'
 import { consumeBatchFact } from '../src/dispatch.js'
+import { listDispatches } from '../src/ops-read.js'
+import { readShipments } from '../src/read.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 import { CONSUMER, setProgramContext } from '../src/internal.js'
 import {
@@ -94,6 +96,12 @@ interface SeedEntryOpts {
   // simulate a return-sheet arriving BEFORE compose ever ran on the covered
   // asgn (dispatch_state still NULL).
   dispatchState?: string | null
+  // the COLLATERAL demand on this assignment. Defaults to standee 1 / sticker 0
+  // (the shape every pre-existing fixture in this file already carried), which
+  // is what makes a collateral AWB legal for it. Pass both as 0 to exercise the
+  // no_collateral_on_asgn guard.
+  standeeCount?: number
+  stickerCount?: number
 }
 
 // A fixture pending_pool_entry, already SENT_TO_VENDOR (as if the dispatch PM,
@@ -106,9 +114,14 @@ async function seedPendingEntry(opts: SeedEntryOpts): Promise<void> {
   // batch row as a fault rather than a silent no-op. Production always has this
   // row (batching.ts writes it with the fact); this fixture did not, so seed it
   // to keep the fixture whole.
+  //
+  // `status` is NOT set: migration 20260810040000 dropped batch.status (ruled
+  // 2026-08-10, derive a batch's state from its children rather than storing a
+  // constant). This fixture still named the column afterwards, which no longer
+  // parses.
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
-    VALUES (${opts.batchUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, 'BORN', 'LOT_SIZE', 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, trigger_reason, unit_count, updated_at)
+    VALUES (${opts.batchUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, 'LOT_SIZE', 1, now())
     ON CONFLICT (id) DO NOTHING
   `
   await db.$executeRaw`
@@ -119,7 +132,8 @@ async function seedPendingEntry(opts: SeedEntryOpts): Promise<void> {
       created_at, updated_at
     ) VALUES (
       ${opts.asgnUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, ${opts.merchantUuid}::uuid,
-      true, 1, 0, true, 'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
+      true, ${opts.standeeCount ?? 1}, ${opts.stickerCount ?? 0}, true,
+      'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
       'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${opts.batchUuid}::uuid, ${dispatchState}::text,
       'file-1|1', ${opts.traceId}, ${createdAt}, now()
     )
@@ -934,5 +948,540 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
       SELECT count(*) AS c FROM vndr WHERE courier_code = 'PRINTCO' AND type = 'COURIER'
     `
     expect(Number(v[0]!.c)).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ONE DISPATCH ID, TWO AWBs (ruled 2026-08-10).
+//
+// A bank file row becomes one assignment, and that assignment can order a
+// soundbox AND a standee. The print vendor does not always ship those together:
+// the kit goes under one AWB, the standee under another. The return sheet has
+// one AWB column and one Device ID column per row, so the second consignment
+// could not be reported at all.
+//
+// The mechanism is the sheet we already publish: the Device ID VALUE becomes
+// optional, and a row carrying Dispatch ID plus AWB with NO serial records a
+// COLLATERAL consignment for that dispatch id.
+//
+// THE PINS THIS BLOCK EXISTS TO HOLD, all of them corpus-level and all
+// re-asserted below rather than assumed:
+//   * NO Unit is ever born here (D103d, enforced in this very ingest).
+//   * shpt.awb stays UNIQUE, one AWB is one shpt (D106c).
+//   * unit.shipment and pending_pool_entry.collateral_shipment both hold shpt
+//     UUIDs, never the AWB string. The AWB is not a key of anything.
+//   * no new ID prefix is minted: the collateral parcel IS a shpt_.
+//   * a collateral consignment never advances dispatch_state, because
+//     DISPATCHED_BY_VENDOR means the DEVICE kit left the vendor.
+// ---------------------------------------------------------------------------
+
+interface AsgnFixture {
+  asgnWire: string
+  asgnUuid: string
+  tenantUuid: string
+  programUuid: string
+  merchantUuid: string
+  batchUuid: string
+}
+
+let collSeq = 0
+
+// A pending_pool_entry with NO unit and NO device serial: the assignment a
+// collateral row reports against. Defaults to standee 1 / sticker 0, the
+// collateral demand that makes a collateral AWB legal for it.
+async function seedAssignment(
+  o: {
+    traceId?: string
+    standeeCount?: number
+    stickerCount?: number
+    tenantUuid?: string
+    programUuid?: string
+    batchUuid?: string
+    createdAt?: Date
+  } = {},
+): Promise<AsgnFixture> {
+  collSeq++
+  const asgnWire = newId('asgn')
+  const asgnUuid = toUuid(asgnWire)
+  const tenantUuid = o.tenantUuid ?? toUuid(newId('tnnt'))
+  const programUuid = o.programUuid ?? toUuid(newId('prog'))
+  const merchantUuid = toUuid(newId('mrch'))
+  const batchUuid = o.batchUuid ?? toUuid(newId('btch'))
+  await seedPendingEntry({
+    asgnUuid,
+    tenantUuid,
+    programUuid,
+    merchantUuid,
+    batchUuid,
+    traceId: o.traceId ?? `trace-coll-${collSeq}`,
+    createdAt: o.createdAt,
+    standeeCount: o.standeeCount,
+    stickerCount: o.stickerCount,
+  })
+  return { asgnWire, asgnUuid, tenantUuid, programUuid, merchantUuid, batchUuid }
+}
+
+async function shipmentFacts(): Promise<ShipmentOutboxRow[]> {
+  return db.$queryRaw<ShipmentOutboxRow[]>`
+    SELECT event_type, partition_key, payload FROM outbox WHERE event_type = ${SHIPMENT_TOPIC}
+    ORDER BY created_at ASC, id ASC
+  `
+}
+async function collateralLinkOf(asgnUuid: string): Promise<string | null> {
+  const r = await db.$queryRaw<{ collateral_shipment: string | null }[]>`
+    SELECT collateral_shipment::text AS collateral_shipment FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
+  `
+  return r[0]!.collateral_shipment
+}
+async function exceptionsOf(fileId: string): Promise<{ row_ref: string; reason_code: string }[]> {
+  return db.$queryRaw<{ row_ref: string; reason_code: string }[]>`
+    SELECT row_ref, reason_code FROM intake_exception WHERE file_id = ${fileId} ORDER BY row_ref
+  `
+}
+async function shptCount(): Promise<number> {
+  const r = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM shpt`
+  return Number(r[0]!.n)
+}
+
+describe('ingestReturnSheet collateral rows (one dispatch id, two AWBs)', () => {
+  it('(k) a serial-less row births the shpt, links it to the dispatch id, births NO unit, leaves dispatch_state alone, and emits the collateral fact', async () => {
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-coll-k'
+    const claim = classSixClaim(vndrId, workQueue)
+    const fx = await seedAssignment({ traceId: 'trace-coll-k' })
+
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-k',
+      vndrId,
+      workQueue,
+      rows: [{ asgnId: fx.asgnWire, awb: 'AWB-COLL-K' }],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-k')
+    expect(res.rejected).toBeUndefined()
+    expect(res.quarantined).toBe(0)
+    expect(res.pairedUnitIds).toHaveLength(0)
+    expect(res.collateralLinked).toBe(1)
+    expect(res.shptIds).toHaveLength(1)
+    const shptWire = res.shptIds[0]!
+
+    // THE LINK, and it holds a shpt uuid. Never the AWB string: the AWB is a
+    // property of the shipment, not a key of the assignment.
+    expect(await collateralLinkOf(fx.asgnUuid)).toBe(toUuid(shptWire))
+    expect(await collateralLinkOf(fx.asgnUuid)).not.toBe('AWB-COLL-K')
+
+    // D103d: no unit is ever born by a return sheet, and a serial-less row is
+    // no exception. If this ever fails, the ratified rule has been broken.
+    const units = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
+    expect(Number(units[0]!.n)).toBe(0)
+
+    // dispatch_state UNTOUCHED. A standee-only consignment does not mean the
+    // merchant's soundbox has shipped, and saying so would be the single most
+    // misleading thing this ingest could do.
+    const entry = await db.$queryRaw<{ dispatch_state: string | null }[]>`
+      SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${fx.asgnUuid}::uuid
+    `
+    expect(entry[0]!.dispatch_state).toBe('SENT_TO_VENDOR')
+    const dispatchRows = await db.$queryRaw<DispatchOutboxRow[]>`
+      SELECT event_type, partition_key, payload FROM outbox WHERE event_type = ${DISPATCH_TOPIC}
+    `
+    expect(dispatchRows).toHaveLength(0)
+
+    // ONE fact, on the EXISTING shipment topic, marked collateral and naming
+    // the dispatch ids it covers.
+    const facts = await shipmentFacts()
+    expect(facts).toHaveLength(1)
+    const f = facts[0]!
+    expect(f.payload.payload.collateral).toBe(true)
+    expect(f.payload.payload.asgnIds).toEqual([fx.asgnWire])
+    expect(f.payload.payload.shptId).toBe(shptWire)
+    expect(f.payload.payload.awb).toBe('AWB-COLL-K')
+    expect(f.payload.payload.unitIds).toBeUndefined() // there is no unit to name
+    expect(f.payload.payload.status).toBe('DISPATCHED_BY_VENDOR')
+    expect(f.payload.dedupKey).toBe(`${shptWire}|collateral|${sheet.fileId}`)
+    expect(f.payload.traceId).toBe('trace-coll-k') // the asgn's OWN snapshot trace, not the call's
+    expect(f.partition_key).toBe(shptWire)
+
+    // the shpt is a real, program-bound row born the ordinary way. No new id
+    // prefix was minted for collateral: it IS a shpt_.
+    const shpt = await db.$queryRaw<{ awb: string; status: string; program_id: string }[]>`
+      SELECT awb, status, program_id::text AS program_id FROM shpt
+    `
+    expect(shpt).toHaveLength(1)
+    expect(shpt[0]!.awb).toBe('AWB-COLL-K')
+    expect(shpt[0]!.status).toBe('DISPATCHED_BY_VENDOR')
+    expect(shpt[0]!.program_id).toBe(fx.programUuid)
+    expect(shptWire.startsWith('shpt_')).toBe(true)
+  })
+
+  it('(l) ONE collateral AWB covering TWO assignments gives ONE shpt, ONE fact naming both, and both links', async () => {
+    // The consolidation case, and the reason asgnIds is a LIST: a vendor putting
+    // twenty merchants' standees in one consignment sends twenty rows carrying
+    // the same AWB.
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-coll-l'
+    const claim = classSixClaim(vndrId, workQueue)
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    const batchUuid = toUuid(newId('btch'))
+    const base = new Date('2026-02-01T00:00:00.000Z')
+    const a = await seedAssignment({ tenantUuid, programUuid, batchUuid, traceId: 'trace-coll-l-a', createdAt: base })
+    const b = await seedAssignment({
+      tenantUuid, programUuid, batchUuid, traceId: 'trace-coll-l-b', createdAt: new Date(base.getTime() + 1000),
+    })
+
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-l',
+      vndrId,
+      workQueue,
+      rows: [
+        { asgnId: a.asgnWire, awb: 'AWB-CONSOLIDATED' },
+        { asgnId: b.asgnWire, awb: 'AWB-CONSOLIDATED' },
+      ],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-l')
+    expect(res.rejected).toBeUndefined()
+    expect(res.collateralLinked).toBe(2)
+    expect(res.shptIds).toHaveLength(1) // D106c: one AWB, one shpt
+    expect(await shptCount()).toBe(1)
+
+    const shptWire = res.shptIds[0]!
+    expect(await collateralLinkOf(a.asgnUuid)).toBe(toUuid(shptWire))
+    expect(await collateralLinkOf(b.asgnUuid)).toBe(toUuid(shptWire))
+
+    const facts = await shipmentFacts()
+    expect(facts).toHaveLength(1) // ONE fact per shpt, not one per row
+    expect(facts[0]!.payload.payload.asgnIds).toEqual([a.asgnWire, b.asgnWire])
+    // the deterministic oldest-covered trace, exactly as the device path derives it
+    expect(facts[0]!.payload.traceId).toBe('trace-coll-l-a')
+  })
+
+  it('(m) a device AWB and a DIFFERENT collateral AWB on the same dispatch id give two shpts, both held as uuids and never as AWB strings', async () => {
+    const fx = await fullFixture('SER-COLL-M', 'trace-coll-m')
+    const claim = classSixClaim(fx.vndrId, fx.workQueue)
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-m',
+      vndrId: fx.vndrId,
+      workQueue: fx.workQueue,
+      rows: [
+        { deviceSerial: 'SER-COLL-M', asgnId: fx.asgnWire, awb: 'AWB-KIT' },
+        { asgnId: fx.asgnWire, awb: 'AWB-STANDEE' },
+      ],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-m')
+    expect(res.rejected).toBeUndefined()
+    expect(res.quarantined).toBe(0)
+    expect(res.pairedUnitIds).toHaveLength(1)
+    expect(res.collateralLinked).toBe(1)
+    expect(res.shptIds).toHaveLength(2)
+
+    const shpts = await db.$queryRaw<{ id: string; awb: string }[]>`SELECT id::text AS id, awb FROM shpt ORDER BY awb`
+    expect(shpts.map((s) => s.awb)).toEqual(['AWB-KIT', 'AWB-STANDEE'])
+    const kitId = shpts.find((s) => s.awb === 'AWB-KIT')!.id
+    const standeeId = shpts.find((s) => s.awb === 'AWB-STANDEE')!.id
+
+    const unit = await db.$queryRaw<{ shipment: string | null }[]>`
+      SELECT shipment::text AS shipment FROM unit WHERE device_serial = 'SER-COLL-M'
+    `
+    expect(unit[0]!.shipment).toBe(kitId)
+    expect(unit[0]!.shipment).not.toBe('AWB-KIT')
+    expect(await collateralLinkOf(fx.asgnUuid)).toBe(standeeId)
+    expect(await collateralLinkOf(fx.asgnUuid)).not.toBe('AWB-STANDEE')
+    // the two parcels are DISTINCT rows; the kit's shipment is not the standee's
+    expect(unit[0]!.shipment).not.toBe(standeeId)
+
+    // the DEVICE row is what advances the dispatch, and it still does.
+    const entry = await db.$queryRaw<{ dispatch_state: string | null }[]>`
+      SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${fx.asgnUuid}::uuid
+    `
+    expect(entry[0]!.dispatch_state).toBe('DISPATCHED_BY_VENDOR')
+
+    // two shipment facts: the kit's birth fact (carrying the unit) and the
+    // standee's collateral fact (carrying the asgn).
+    const facts = await shipmentFacts()
+    expect(facts).toHaveLength(2)
+    const kitFact = facts.find((r) => r.payload.payload.awb === 'AWB-KIT')!
+    const standeeFact = facts.find((r) => r.payload.payload.awb === 'AWB-STANDEE')!
+    expect(kitFact.payload.payload.collateral).toBeUndefined()
+    expect(kitFact.payload.payload.unitIds).toEqual(res.pairedUnitIds)
+    expect(standeeFact.payload.payload.collateral).toBe(true)
+    expect(standeeFact.payload.payload.asgnIds).toEqual([fx.asgnWire])
+  })
+
+  it('(n) a collateral AWB EQUAL to the device AWB dedups onto ONE shpt and emits both facts under distinct dedupKeys', async () => {
+    // Legal under one-AWB-one-shpt: the standee simply travelled in the same
+    // parcel as the kit. Nothing about the model has to bend for it.
+    const fx = await fullFixture('SER-COLL-N', 'trace-coll-n')
+    const claim = classSixClaim(fx.vndrId, fx.workQueue)
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-n',
+      vndrId: fx.vndrId,
+      workQueue: fx.workQueue,
+      rows: [
+        { deviceSerial: 'SER-COLL-N', asgnId: fx.asgnWire, awb: 'AWB-ONE-PARCEL' },
+        { asgnId: fx.asgnWire, awb: 'AWB-ONE-PARCEL' },
+      ],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-n')
+    expect(res.rejected).toBeUndefined()
+    expect(res.quarantined).toBe(0)
+    expect(res.pairedUnitIds).toHaveLength(1)
+    expect(res.collateralLinked).toBe(1)
+    expect(res.shptIds).toHaveLength(1)
+    expect(await shptCount()).toBe(1)
+
+    const shptWire = res.shptIds[0]!
+    const unit = await db.$queryRaw<{ shipment: string | null }[]>`
+      SELECT shipment::text AS shipment FROM unit WHERE device_serial = 'SER-COLL-N'
+    `
+    expect(unit[0]!.shipment).toBe(toUuid(shptWire))
+    expect(await collateralLinkOf(fx.asgnUuid)).toBe(toUuid(shptWire)) // the SAME parcel
+
+    // Two facts about one parcel, which is two true statements rather than a
+    // duplicate: it carried a device kit, and it carried this dispatch id's
+    // collateral. Distinct dedupKeys keep a downstream consumer from dropping
+    // the second as a repeat of the first.
+    const facts = await shipmentFacts()
+    expect(facts).toHaveLength(2)
+    const keys = facts.map((r) => r.payload.dedupKey).sort()
+    expect(keys).toEqual([`${shptWire}`, `${shptWire}|collateral|${sheet.fileId}`].sort())
+  })
+
+  it('(o) a SECOND collateral AWB for the same dispatch id is quarantined collateral_already_linked, within one file and across files, and births no orphan shpt', async () => {
+    // THE CAP: exactly one collateral AWB per dispatch id, so an assignment
+    // carries at most two AWBs in total. Reading the PERSISTED column is what
+    // makes the within-file case work: the first row's UPDATE has already run
+    // inside this transaction and is visible to the second row's read.
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-coll-o'
+    const claim = classSixClaim(vndrId, workQueue)
+    const fx = await seedAssignment({ traceId: 'trace-coll-o' })
+
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-o-1',
+      vndrId,
+      workQueue,
+      rows: [
+        { asgnId: fx.asgnWire, awb: 'AWB-COLL-O-1' },
+        { asgnId: fx.asgnWire, awb: 'AWB-COLL-O-2' }, // the same dispatch id, a SECOND collateral AWB
+      ],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-o')
+    expect(res.rejected).toBeUndefined()
+    expect(res.collateralLinked).toBe(1)
+    expect(res.quarantined).toBe(1)
+    expect(res.shptIds).toHaveLength(1)
+    // no orphan shpt for the rejected AWB: the guard sits BEFORE the birth.
+    expect(await shptCount()).toBe(1)
+    const exc = await exceptionsOf('return-file-coll-o-1')
+    expect(exc).toEqual([{ row_ref: 'row-1', reason_code: 'collateral_already_linked' }])
+    const firstLink = await collateralLinkOf(fx.asgnUuid)
+    expect(firstLink).toBe(toUuid(res.shptIds[0]!)) // the FIRST row's shpt stands
+
+    // ACROSS FILES: a later file repeating the attempt is rejected the same way.
+    const later: ReturnSheet = {
+      fileId: 'return-file-coll-o-2',
+      vndrId,
+      workQueue,
+      rows: [{ asgnId: fx.asgnWire, awb: 'AWB-COLL-O-3' }],
+    }
+    const res2 = await ingestReturnSheet(db, claim, later, 'trace-ingest-coll-o-2')
+    expect(res2.deduped).toBe(false) // a genuinely new file, it DID run
+    expect(res2.collateralLinked).toBe(0)
+    expect(res2.quarantined).toBe(1)
+    expect(await shptCount()).toBe(1)
+    expect(await collateralLinkOf(fx.asgnUuid)).toBe(firstLink) // unchanged
+    expect(await exceptionsOf('return-file-coll-o-2')).toEqual([
+      { row_ref: 'row-0', reason_code: 'collateral_already_linked' },
+    ])
+  })
+
+  it('(p) a collateral row for an assignment that ordered NO collateral is quarantined no_collateral_on_asgn', async () => {
+    // A collateral AWB for a soundbox-only assignment is vendor error, and it
+    // is answerable without guessing because the demand is on the very row the
+    // ingest already reads.
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-coll-p'
+    const claim = classSixClaim(vndrId, workQueue)
+    const fx = await seedAssignment({ traceId: 'trace-coll-p', standeeCount: 0, stickerCount: 0 })
+
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-p',
+      vndrId,
+      workQueue,
+      rows: [{ asgnId: fx.asgnWire, awb: 'AWB-COLL-P' }],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-p')
+    expect(res.rejected).toBeUndefined() // the ROW is quarantined, never the file
+    expect(res.collateralLinked).toBe(0)
+    expect(res.quarantined).toBe(1)
+    expect(res.shptIds).toHaveLength(0)
+    expect(await shptCount()).toBe(0)
+    expect(await collateralLinkOf(fx.asgnUuid)).toBeNull()
+    expect(await exceptionsOf('return-file-coll-p')).toEqual([
+      { row_ref: 'row-0', reason_code: 'no_collateral_on_asgn' },
+    ])
+    expect(await shipmentFacts()).toHaveLength(0)
+  })
+
+  it('(q) a collateral row with a malformed or unknown dispatch id quarantines exactly like a device row does', async () => {
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-coll-q'
+    const claim = classSixClaim(vndrId, workQueue)
+    const orphanAsgn = newId('asgn') // well-formed, but no pending_pool_entry
+
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-q',
+      vndrId,
+      workQueue,
+      rows: [
+        { asgnId: 'malformed-asgn-id', awb: 'AWB-COLL-Q-1' },
+        { asgnId: orphanAsgn, awb: 'AWB-COLL-Q-2' },
+      ],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-q')
+    expect(res.rejected).toBeUndefined() // a malformed id NEVER throws the file away
+    expect(res.collateralLinked).toBe(0)
+    expect(res.quarantined).toBe(2)
+    expect(await shptCount()).toBe(0)
+    expect(await exceptionsOf('return-file-coll-q')).toEqual([
+      { row_ref: 'row-0', reason_code: 'invalid_asgn_id' },
+      { row_ref: 'row-1', reason_code: 'asgn_not_found' },
+    ])
+  })
+
+  it('(r) a whole-file replay of a collateral file is a no-op: no second shpt, no second link, no second fact', async () => {
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-coll-r'
+    const claim = classSixClaim(vndrId, workQueue)
+    const fx = await seedAssignment({ traceId: 'trace-coll-r' })
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-r',
+      vndrId,
+      workQueue,
+      rows: [{ asgnId: fx.asgnWire, awb: 'AWB-COLL-R' }],
+    }
+
+    const first = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-r')
+    expect(first.collateralLinked).toBe(1)
+
+    const again = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-r-2')
+    expect(again.deduped).toBe(true)
+    expect(again.collateralLinked).toBe(0)
+    expect(again.quarantined).toBe(0)
+    expect(again.shptIds).toHaveLength(0)
+
+    expect(await shptCount()).toBe(1)
+    expect(await shipmentFacts()).toHaveLength(1)
+    expect(await collateralLinkOf(fx.asgnUuid)).toBe(toUuid(first.shptIds[0]!))
+  })
+
+  it('(s) a LATER file attaching a NEW dispatch id to a pre-existing collateral shpt emits a SECOND fact, not a dropped duplicate', async () => {
+    // This is why the collateral dedupKey is file-scoped. The second file's
+    // fact carries a DIFFERENT asgnIds payload; a bare `${shpt}|collateral` key
+    // would let a downstream onceWithin consumer discard it as a repeat, and
+    // that merchant's standee would never be recorded as shipped.
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-coll-s'
+    const claim = classSixClaim(vndrId, workQueue)
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    const batchUuid = toUuid(newId('btch'))
+    const a = await seedAssignment({ tenantUuid, programUuid, batchUuid, traceId: 'trace-coll-s-a' })
+    const b = await seedAssignment({ tenantUuid, programUuid, batchUuid, traceId: 'trace-coll-s-b' })
+
+    const file1: ReturnSheet = {
+      fileId: 'return-file-coll-s-1',
+      vndrId,
+      workQueue,
+      rows: [{ asgnId: a.asgnWire, awb: 'AWB-SHARED' }],
+    }
+    const res1 = await ingestReturnSheet(db, claim, file1, 'trace-ingest-coll-s-1')
+    expect(res1.shptIds).toHaveLength(1)
+    const shptWire = res1.shptIds[0]!
+
+    const file2: ReturnSheet = {
+      fileId: 'return-file-coll-s-2',
+      vndrId,
+      workQueue,
+      rows: [{ asgnId: b.asgnWire, awb: 'AWB-SHARED' }],
+    }
+    const res2 = await ingestReturnSheet(db, claim, file2, 'trace-ingest-coll-s-2')
+    expect(res2.collateralLinked).toBe(1)
+    expect(res2.shptIds).toHaveLength(0) // nothing NEW was born, the AWB already existed
+    expect(await shptCount()).toBe(1)
+    expect(await collateralLinkOf(b.asgnUuid)).toBe(toUuid(shptWire))
+
+    const facts = await shipmentFacts()
+    expect(facts).toHaveLength(2)
+    expect(facts.map((f) => f.payload.dedupKey)).toEqual([
+      `${shptWire}|collateral|return-file-coll-s-1`,
+      `${shptWire}|collateral|return-file-coll-s-2`,
+    ])
+    expect(facts[0]!.payload.payload.asgnIds).toEqual([a.asgnWire])
+    expect(facts[1]!.payload.payload.asgnIds).toEqual([b.asgnWire])
+    // the second fact carries NO dispatchDate: it did not birth this parcel and
+    // must not invent a timestamp for one somebody else born.
+    expect(facts[1]!.payload.payload.dispatchDate).toBeUndefined()
+  })
+
+  it('(t) the ops dispatch list distinguishes a device parcel, a collateral parcel, and one carrying both', async () => {
+    // Before this, a collateral-only shipment read as an ordinary dispatch row
+    // with nothing in it, which is indistinguishable from a shipment whose
+    // devices had gone missing.
+    const fx = await fullFixture('SER-COLL-T', 'trace-coll-t')
+    const claim = classSixClaim(fx.vndrId, fx.workQueue)
+    const other = await seedAssignment({
+      tenantUuid: fx.tenantUuid, programUuid: fx.programUuid, batchUuid: fx.batchUuid, traceId: 'trace-coll-t-2',
+    })
+
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-t',
+      vndrId: fx.vndrId,
+      workQueue: fx.workQueue,
+      rows: [
+        { deviceSerial: 'SER-COLL-T', asgnId: fx.asgnWire, awb: 'AWB-T-DEVICE' },
+        { asgnId: fx.asgnWire, awb: 'AWB-T-COLLATERAL' },
+        { asgnId: other.asgnWire, awb: 'AWB-T-DEVICE' }, // collateral riding the DEVICE parcel
+      ],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-t')
+    expect(res.rejected).toBeUndefined()
+    expect(res.collateralLinked).toBe(2)
+
+    const rows = await listDispatches(db)
+    const byAwb = new Map(rows.map((r) => [r.awb, r]))
+    expect(byAwb.get('AWB-T-DEVICE')!.hasUnits).toBe(true)
+    expect(byAwb.get('AWB-T-DEVICE')!.hasCollateral).toBe(true)
+    expect(byAwb.get('AWB-T-COLLATERAL')!.hasUnits).toBe(false)
+    expect(byAwb.get('AWB-T-COLLATERAL')!.hasCollateral).toBe(true)
+  })
+
+  it('(u) the tenant read lists a collateral shpt under its own Program and never cross-Program', async () => {
+    // VERIFY-NO-CHANGE: a collateral parcel is an ordinary shpt row, so the
+    // class-2 tenant read must see it under its Program and the RLS scope must
+    // still fail closed for anyone else. Nothing about collateral widens it.
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-coll-u'
+    const claim = classSixClaim(vndrId, workQueue)
+    const fx = await seedAssignment({ traceId: 'trace-coll-u' })
+    const foreignProgram = toUuid(newId('prog'))
+
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-coll-u',
+      vndrId,
+      workQueue,
+      rows: [{ asgnId: fx.asgnWire, awb: 'AWB-COLL-U' }],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-coll-u')
+    expect(res.shptIds).toHaveLength(1)
+
+    const mine = await readShipments(db, [fx.programUuid])
+    expect(mine.map((s) => s.awb)).toContain('AWB-COLL-U')
+
+    const theirs = await readShipments(db, [foreignProgram])
+    expect(theirs.map((s) => s.awb)).not.toContain('AWB-COLL-U')
+
+    const unscoped = await readShipments(db, [])
+    expect(unscoped).toEqual([]) // fail-closed on an empty scope, unchanged
   })
 })

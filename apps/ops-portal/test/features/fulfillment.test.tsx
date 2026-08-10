@@ -171,12 +171,72 @@ describe('BatchDetailPage', () => {
     renderBatchDetail('btch_abc')
     expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
     expect(screen.getByText('42')).toBeTruthy()
-    // The batch HAS a standee artifact, so that download is offered...
-    expect(screen.getByRole('button', { name: /Standee PDF/ })).toBeTruthy()
-    // ...and the two types it does NOT have are not offered at all.
+    // The batch HAS a standee artifact, so the COLLATERAL download is offered.
+    // The buttons are the two DELIVERY GROUPS the print vendor is handed, not
+    // the three stored artifact types: there is no per-type PDF any more.
+    expect(screen.getByRole('button', { name: /Collateral PDF/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Standee PDF/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /Sticker PDF/ })).toBeNull()
+    // and the group it has nothing for is not offered at all.
     expect(screen.queryByRole('button', { name: /Soundbox PDF/ })).toBeNull()
     expect(screen.getByRole('button', { name: /Dispatch sheet/ })).toBeTruthy()
+  })
+
+  // The two-PDF delivery grouping. A merchant wanting both a sticker and a
+  // standee is ONE page of shared artwork in ONE collateral PDF, so the screen
+  // must offer ONE button: two would imply two documents that do not exist.
+  it('renders exactly ONE Collateral button for a batch holding BOTH sticker and standee artifacts', async () => {
+    const calls = stubFetch((url) =>
+      url.includes('/collateral/')
+        ? new Response('', { status: 404 })
+        : jsonResponse({
+            batch: BATCH_ROW,
+            entries: [],
+            artifacts: [
+              { asgnId: 'asgn_1', artifactType: 'STANDEE_IMG', assetReference: 'ref-1', supersededAt: null },
+              { asgnId: 'asgn_1', artifactType: 'STICKER_IMG', assetReference: 'ref-2', supersededAt: null },
+              { asgnId: 'asgn_2', artifactType: 'STICKER_IMG', assetReference: 'ref-3', supersededAt: null },
+            ],
+          }),
+    )
+    renderBatchDetail('btch_abc')
+    const buttons = await screen.findAllByRole('button', { name: /Collateral PDF/ })
+    expect(buttons).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: /Soundbox PDF/ })).toBeNull()
+
+    // and it fetches the GROUP, not an artifact type.
+    await userEvent.click(buttons[0]!)
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/collateral/COLLATERAL'))).toBe(true)
+    })
+    expect(calls.some((c) => /\/collateral\/(STANDEE_IMG|STICKER_IMG)/.test(c.url))).toBe(false)
+  })
+
+  it('renders the Soundbox button, hitting /collateral/SOUNDBOX, for a batch with soundbox artifacts', async () => {
+    const calls = stubFetch((url) =>
+      url.includes('/collateral/')
+        ? new Response('', { status: 404 })
+        : jsonResponse({
+            batch: BATCH_ROW,
+            entries: [],
+            artifacts: [
+              { asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref-1', supersededAt: null },
+              { asgnId: 'asgn_1', artifactType: 'STANDEE_IMG', assetReference: 'ref-2', supersededAt: null },
+            ],
+          }),
+    )
+    renderBatchDetail('btch_abc')
+    // Both groups exist here, so both buttons appear: at most two, never three.
+    const soundbox = await screen.findByRole('button', { name: /Soundbox PDF/ })
+    expect(screen.getByRole('button', { name: /Collateral PDF/ })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /PDF/ })).toHaveLength(2)
+
+    await userEvent.click(soundbox)
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/collateral/SOUNDBOX'))).toBe(true)
+    })
+    // a 404 is a legitimate empty, reported as a note rather than an error.
+    expect(await screen.findByText(/No Soundbox collateral exists/)).toBeTruthy()
   })
 
   it('shows a no-such-batch empty state on a 404 rather than a generic error', async () => {

@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { PrismaClient } from '../generated/client/index.js'
-import { ingestRequestRow, type BankRequestRow } from '../src/ingest.js'
+import {
+  ingestRequestRow,
+  duplicateVpaVerdicts,
+  type BankRequestRow,
+  type DuplicateVpaOriginal,
+} from '../src/ingest.js'
 import { ROW_FACT_TYPE } from '../src/row-fact.js'
 
 const url =
@@ -138,5 +143,98 @@ describe('request-file ingest (spec 06 sections 6, 10; checks 3, 4)', () => {
     expect(ing).toHaveLength(1)
     expect(ing[0]!.row_total).toBe(1)
     expect(ing[0]!.row_rejected).toBe(1)
+  })
+})
+
+// duplicateVpaVerdicts is the one piece of the soundbox duplicate-VPA gate
+// (ruling 2026-08-10) that is PURE, and that purity is load-bearing: preview
+// and commit both call it over the same seed, which is the only reason the two
+// surfaces cannot disagree about which rows will be held. Tested here without a
+// database, because none of it needs one.
+describe('duplicateVpaVerdicts (ruling 2026-08-10): the pure file-order walk', () => {
+  const ASSIGNMENT_ORIGINAL: DuplicateVpaOriginal = {
+    kind: 'assignment',
+    reference: 'asgn_seeded',
+    merchantDisplayName: 'Acme',
+  }
+  const noSeed = new Map<string, DuplicateVpaOriginal>()
+
+  it('never flags the FIRST occurrence: it is the row that does the seeding', () => {
+    const verdicts = duplicateVpaVerdicts([validRow({ rowNo: 1, vpaValue: 'solo@gscb' })], noSeed)
+    expect(verdicts.size).toBe(0)
+  })
+
+  it('flags the second and later soundbox rows, always naming the FIRST row as the original', () => {
+    const verdicts = duplicateVpaVerdicts(
+      [
+        validRow({ rowNo: 1, vpaValue: 'again@gscb', displayName: 'Chai Point' }),
+        validRow({ rowNo: 2, vpaValue: 'again@gscb' }),
+        validRow({ rowNo: 3, vpaValue: 'again@gscb' }),
+      ],
+      noSeed,
+    )
+    expect([...verdicts.keys()]).toEqual([2, 3])
+    // Row 3 points at row 1, NOT at row 2: the original is the first sighting,
+    // and pointing at a row that was itself held would be a dead end.
+    expect(verdicts.get(3)).toEqual({ kind: 'file_row', reference: '1', merchantDisplayName: 'Chai Point' })
+  })
+
+  it('the SEED wins over the file: a row matching a prior record names that record, not a file row', () => {
+    const seed = new Map([['known@gscb', ASSIGNMENT_ORIGINAL]])
+    const verdicts = duplicateVpaVerdicts(
+      [validRow({ rowNo: 1, vpaValue: 'known@gscb' }), validRow({ rowNo: 2, vpaValue: 'known@gscb' })],
+      seed,
+    )
+    // Even the FIRST row of the file is a duplicate here: the original is
+    // already in the database.
+    expect(verdicts.get(1)).toEqual(ASSIGNMENT_ORIGINAL)
+    // And the seed is not overwritten by the file, so row 2 names it too rather
+    // than pointing at row 1.
+    expect(verdicts.get(2)).toEqual(ASSIGNMENT_ORIGINAL)
+  })
+
+  it('a soundbox=false row is never flagged, but STILL SEEDS the rows after it', () => {
+    const verdicts = duplicateVpaVerdicts(
+      [
+        validRow({ rowNo: 1, vpaValue: 'seedme@gscb', soundbox: false, displayName: 'Tea Stall' }),
+        validRow({ rowNo: 2, vpaValue: 'seedme@gscb', soundbox: false }),
+        validRow({ rowNo: 3, vpaValue: 'seedme@gscb', soundbox: true }),
+      ],
+      noSeed,
+    )
+    // Rows 1 and 2 are collateral-only: D-2's flag-never-gate reading stands.
+    expect([...verdicts.keys()]).toEqual([3])
+    expect(verdicts.get(3)).toEqual({ kind: 'file_row', reference: '1', merchantDisplayName: 'Tea Stall' })
+  })
+
+  it('skips an empty VPA entirely: it can neither collide nor seed', () => {
+    const verdicts = duplicateVpaVerdicts(
+      [
+        validRow({ rowNo: 1, vpaValue: '' }),
+        validRow({ rowNo: 2, vpaValue: '   ' }),
+        validRow({ rowNo: 3, vpaValue: '' }),
+      ],
+      noSeed,
+    )
+    // Two blank VPAs are not "the same merchant twice". Such rows are rejected
+    // by requestRowRejectReason (invalid_qr_vpa_format) long before a verdict
+    // would be consulted.
+    expect(verdicts.size).toBe(0)
+  })
+
+  it('is case-insensitive: identity is v1:vpa:<lower(vpa)>, so one capital letter is not a new merchant', () => {
+    const verdicts = duplicateVpaVerdicts(
+      [validRow({ rowNo: 1, vpaValue: 'Case@GSCB' }), validRow({ rowNo: 2, vpaValue: ' case@gscb ' })],
+      noSeed,
+    )
+    expect(verdicts.get(2)!.reference).toBe('1')
+  })
+
+  it('names no merchant when the earlier row has a blank display name, rather than showing an empty string', () => {
+    const verdicts = duplicateVpaVerdicts(
+      [validRow({ rowNo: 1, vpaValue: 'anon@gscb', displayName: '  ' }), validRow({ rowNo: 2, vpaValue: 'anon@gscb' })],
+      noSeed,
+    )
+    expect(verdicts.get(2)!.merchantDisplayName).toBeNull()
   })
 })

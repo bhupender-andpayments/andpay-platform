@@ -3,8 +3,15 @@ import QRCode from 'qrcode'
 import { PDFDocument, rgb } from 'pdf-lib'
 import { renderCollateralPdf, resolveTemplate, type CollateralInput } from '../src/collateral/renderer.js'
 
+// A FULL-LENGTH wire asgn_ id: the 5-character prefix plus the 26 Crockford
+// characters that encode 128 bits, 31 in total. Fixed rather than generated so
+// the determinism assertions below stay byte-comparable, and full-length because
+// the whole point of the fitted font size is that a real id is this long.
+const DISPATCH_ID = 'asgn_01J8ZQK9V7XW3M4N5P6R7S8T9A'
+
 const base: CollateralInput = {
   artifactType: 'STICKER_IMG',
+  dispatchId: DISPATCH_ID,
   qrValue: 'upi://pay?pa=acme@hdfcbank&pn=Acme',
   vpa: 'acme@hdfcbank',
   merchantDisplayName: 'Acme Store',
@@ -48,17 +55,75 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
     expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true)
   })
 
-  it('honors per-type default page sizes and imageTemplate size overrides', async () => {
-    const sticker = await PDFDocument.load(await renderCollateralPdf({ ...base, artifactType: 'STICKER_IMG' }))
-    const standee = await PDFDocument.load(await renderCollateralPdf({ ...base, artifactType: 'STANDEE_IMG' }))
-    expect(sticker.getPage(0).getWidth()).toBe(216)
-    expect(standee.getPage(0).getWidth()).toBe(432)
+  // The two merged delivery PDFs (soundbox, and sticker-plus-standee) must have
+  // the SAME page dimensions, and the only way to guarantee that without a
+  // reflow step at merge time is for every product type to render at one size.
+  // This replaces the old per-type size assertions (sticker 216 square, soundbox
+  // 288x432, standee 432x648), which is exactly the behaviour being retired.
+  it('renders ALL THREE artifact types at the SAME default page size, so the merged PDFs cannot differ', async () => {
+    const sizes: { w: number; h: number }[] = []
+    for (const artifactType of ['SOUNDBOX_IMG', 'STANDEE_IMG', 'STICKER_IMG'] as const) {
+      const doc = await PDFDocument.load(await renderCollateralPdf({ ...base, artifactType }))
+      sizes.push({ w: doc.getPage(0).getWidth(), h: doc.getPage(0).getHeight() })
+    }
+    // 288 x 432 (4in x 6in): the former SOUNDBOX size, already proven in
+    // production for this QR band layout, so no new number is invented.
+    for (const s of sizes) {
+      expect(s).toEqual({ w: 288, h: 432 })
+    }
+  })
 
+  it('still honors an imageTemplate size override', async () => {
     const custom = await PDFDocument.load(
       await renderCollateralPdf({ ...base, imageTemplate: { widthPt: 300, heightPt: 500 } }),
     )
     expect(custom.getPage(0).getWidth()).toBe(300)
     expect(custom.getPage(0).getHeight()).toBe(500)
+  })
+
+  // The page IS the artwork: no outer mount, no page margin around it. That is
+  // what lets package.ts merge these pages straight through with copyPages, and
+  // it is a property of the page BOX, not of the internal padding the elements
+  // are laid out inside.
+  it('the page box equals the resolved template dimensions exactly, for a default and an override', async () => {
+    for (const imageTemplate of [undefined, { widthPt: 260, heightPt: 380 }, { widthPt: 1, heightPt: 1 }]) {
+      const input: CollateralInput = { ...base, imageTemplate }
+      const tpl = resolveTemplate(input)
+      const page = (await PDFDocument.load(await renderCollateralPdf(input))).getPage(0)
+      expect(page.getWidth()).toBe(tpl.widthPt)
+      expect(page.getHeight()).toBe(tpl.heightPt)
+      // and the box starts at the origin: no offset mount around the artwork.
+      const box = page.getMediaBox()
+      expect(box.x).toBe(0)
+      expect(box.y).toBe(0)
+    }
+  })
+
+  // The dispatch id is printed on every page so the print vendor can reconcile a
+  // page out of a merged PDF and report an AWB against it. If it were dropped
+  // from the draw, these two renders would come out byte-identical.
+  it('prints the dispatch id: two renders differing ONLY in dispatchId produce different bytes', async () => {
+    const one = await renderCollateralPdf(base)
+    const two = await renderCollateralPdf({ ...base, dispatchId: 'asgn_01J8ZQK9V7XW3M4N5P6R7S8T9B' })
+    expect(Buffer.from(one).equals(Buffer.from(two))).toBe(false)
+
+    // and the id is an INPUT, never a clock or a counter: same id, same bytes.
+    const again = await renderCollateralPdf(base)
+    expect(Buffer.from(one).equals(Buffer.from(again))).toBe(true)
+  })
+
+  it('renders a full 31-character wire id at the MIN_SIDE page floor without throwing', async () => {
+    // widthPt/heightPt of 1 clamps to the 144pt (2 inch) floor, the smallest page
+    // the renderer will ever produce, where the QR side is at its shortest and
+    // the fitted font size bottoms out. A 31-character id must still land on the
+    // artwork rather than throwing or running off it.
+    expect(DISPATCH_ID).toHaveLength(31)
+    const tiny = { ...base, imageTemplate: { widthPt: 1, heightPt: 1 } }
+    const bytes = await renderCollateralPdf(tiny)
+    expect(isPdf(bytes)).toBe(true)
+    const page = (await PDFDocument.load(bytes)).getPage(0)
+    expect(page.getWidth()).toBe(144)
+    expect(page.getHeight()).toBe(144)
   })
 
   it('resolveTemplate reads lenient overrides and defaults the rest', () => {
@@ -67,7 +132,7 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
     expect(t.textColorHex).toBe('#abcdef')
     // absent -> defaults
     expect(t.accentColorHex).toBe('#1a5fb4')
-    expect(t.widthPt).toBe(216) // sticker default
+    expect(t.widthPt).toBe(288) // the ONE shared default, whatever the product type
 
     const empty = resolveTemplate({ ...base, imageTemplate: {} })
     expect(empty.headline).toBe('SCAN & PAY')

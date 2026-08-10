@@ -7,7 +7,7 @@ import {
   listBatchingConfigs,
   buildDispatchPackage,
   dispatchXlsx,
-  assembleTypePdf,
+  assembleGroupPdf,
   listBatches,
   readBatchDetail,
   listPoolEntries,
@@ -211,21 +211,25 @@ export class OpsReadController {
     res.status(200).send(xlsx)
   }
 
-  // The per-product-type merged collateral PDF (SOUNDBOX_IMG is the FR-04
-  // soundbox-only view). 404 when the batch has no artifact of that type.
-  @Get('batches/:btchId/collateral/:artifactType')
+  // The merged collateral PDF for a DELIVERY GROUP: 'SOUNDBOX' (the FR-04
+  // soundbox-only view) or 'COLLATERAL' (sticker plus standee, one page per
+  // merchant). The three legacy artifact-type values still resolve to the group
+  // carrying that product, so a URL an operator already holds keeps working.
+  // 404 when the batch has nothing in that group, and for an unknown key, which
+  // is the same null path an unknown artifact type took before.
+  @Get('batches/:btchId/collateral/:collateralKey')
   async collateral(
     @Param('btchId') btchId: string,
-    @Param('artifactType') artifactType: string,
+    @Param('collateralKey') collateralKey: string,
     @Res() res: EdgeResponse,
   ): Promise<void> {
-    const pdf = await assembleTypePdf(this.deps.fulfillmentDb, this.deps.assetStore, btchId, artifactType)
+    const pdf = await assembleGroupPdf(this.deps.fulfillmentDb, this.deps.assetStore, btchId, collateralKey)
     if (pdf === null) {
       res.status(404).send(Buffer.from(''))
       return
     }
     res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `attachment; filename="${artifactType}-${btchId}.pdf"`)
+    res.setHeader('Content-Disposition', `attachment; filename="${collateralKey}-${btchId}.pdf"`)
     res.status(200).send(Buffer.from(pdf))
   }
 }

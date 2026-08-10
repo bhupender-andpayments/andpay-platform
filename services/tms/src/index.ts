@@ -7,8 +7,14 @@ export {
   ingestRequestRow,
   ingestRequestRowWithinTx,
   requestRowRejectReason,
+  // The soundbox duplicate-VPA gate (ruling 2026-08-10). Exported because both
+  // TMS surfaces in ops.ts use them and the tests assert them directly; the
+  // ops edge only ever sees the resulting DuplicateVpaOriginal on a result.
+  seedKnownVpaOriginals,
+  duplicateVpaVerdicts,
   type BankRequestRow,
   type RequestRowRejectReason,
+  type DuplicateVpaOriginal,
 } from './ingest.js'
 export {
   parseBankRequestFile,
@@ -65,6 +71,7 @@ export {
   readDamageCases,
   listMerchants,
   type QuarantineRowView,
+  type QuarantineRowDetail,
   type DamageCaseView,
   type MerchantRow,
 } from './ops-read.js'

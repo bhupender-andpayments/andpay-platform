@@ -55,6 +55,13 @@ model DispatchRow {
   deviceIds               String[]  @map("device_ids")
   awb                     String?
   shptId                  String?   @map("shpt_id")
+  // The SECOND parcel: one dispatch id can travel under two AWBs (the soundbox
+  // kit under `awb` above, the standee under this one). Kept SEPARATE from awb
+  // / shpt_id on purpose: courier_status, delivery_date and pipeline_state all
+  // describe the DEVICE's parcel, and letting a collateral AWB overwrite them
+  // would report a merchant as delivered on the strength of their standee.
+  collateralAwb           String?   @map("collateral_awb")
+  collateralShptId        String?   @map("collateral_shpt_id")
   batchId                 String?   @map("batch_id")
   dispatchDate            DateTime? @map("dispatch_date") @db.Timestamptz(6)
   courierStatus           String?   @map("courier_status")

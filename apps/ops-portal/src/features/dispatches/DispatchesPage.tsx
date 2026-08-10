@@ -49,6 +49,17 @@ const DISPATCH_STATUSES = [
   'RETURNED',
 ] as const
 
+// Both flags false is a real and reportable state, not an error to hide: a
+// shipment whose devices have not been paired yet, or one whose collateral link
+// has not arrived. Saying so plainly beats an empty cell, which reads as a
+// rendering fault rather than as the answer.
+function describeContents(r: DispatchRow): string {
+  if (r.hasUnits && r.hasCollateral) return 'Devices + collateral'
+  if (r.hasUnits) return 'Devices'
+  if (r.hasCollateral) return 'Collateral'
+  return 'Nothing linked'
+}
+
 export function DispatchesPage() {
   const { client } = useAuth()
   const [correcting, setCorrecting] = useState<ReportRow | null>(null)
@@ -90,6 +101,13 @@ export function DispatchesPage() {
 
   const shipmentColumns: DataTableColumn<DispatchRow>[] = [
     { key: 'awb', header: 'AWB', cell: (r) => r.awb },
+    // WHAT IS IN THE PARCEL. A dispatch id can travel under two AWBs (the
+    // soundbox kit under one, the standee under another), so this table now
+    // holds rows carrying no device at all. Without this column a
+    // collateral-only shipment reads as an ordinary dispatch with nothing in
+    // it, which is indistinguishable from one whose devices went missing.
+    // "Devices" and "Collateral" are what they contain, not a state.
+    { key: 'contents', header: 'Contents', cell: (r) => describeContents(r) },
     { key: 'status', header: 'Status', cell: (r) => r.status },
     { key: 'courierPartner', header: 'Courier', cell: (r) => r.courierPartner ?? '-' },
     { key: 'dispatchDate', header: 'Dispatched', cell: (r) => fmtDateTime(r.dispatchDate) },
@@ -175,7 +193,7 @@ export function DispatchesPage() {
         />
         {shipmentsError !== null ? <ErrorNote>{shipmentsError}</ErrorNote> : null}
         {shipmentsLoading ? (
-          <SkeletonRows rows={5} cols={6} />
+          <SkeletonRows rows={5} cols={7} />
         ) : (
           <DataTable
             columns={shipmentColumns}

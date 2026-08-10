@@ -132,8 +132,8 @@ async function seedBatchedEntry(tenantUuid: string, programUuid: string, btchUui
   // has the batch row (batching.ts writes it with the fact) and a print vendor
   // long before any batch dispatches.
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
-    VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BORN', 'LOT_SIZE', 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, trigger_reason, unit_count, updated_at)
+    VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'LOT_SIZE', 1, now())
     ON CONFLICT (id) DO NOTHING
   `
   await db.$executeRawUnsafe(

@@ -175,8 +175,8 @@ describe('check 3: Fork B infra roles harness-proven cross-program (Task 5, no p
       await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
       await tx.$queryRawUnsafe(`SELECT set_config('app.program_id', '${PROG_A}', true)`)
       await tx.$executeRawUnsafe(
-        `INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
-         VALUES (gen_random_uuid(), '${TENANT_A}', '${PROG_A}', 'BORN', 'MANUAL', 0, now())`,
+        `INSERT INTO batch (id, tenant_id, program_id, trigger_reason, unit_count, updated_at)
+         VALUES (gen_random_uuid(), '${TENANT_A}', '${PROG_A}', 'MANUAL', 0, now())`,
       )
     })
 
@@ -186,8 +186,8 @@ describe('check 3: Fork B infra roles harness-proven cross-program (Task 5, no p
         await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
         await tx.$queryRawUnsafe(`SELECT set_config('app.program_id', '${PROG_A}', true)`)
         await tx.$executeRawUnsafe(
-          `INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
-           VALUES (gen_random_uuid(), '${TENANT_B}', '${PROG_B}', 'BORN', 'MANUAL', 0, now())`,
+          `INSERT INTO batch (id, tenant_id, program_id, trigger_reason, unit_count, updated_at)
+           VALUES (gen_random_uuid(), '${TENANT_B}', '${PROG_B}', 'MANUAL', 0, now())`,
         )
       }),
     ).rejects.toThrow(/row-level security|violates|policy/i)
@@ -221,8 +221,8 @@ describe('check 3: Fork B infra roles harness-proven cross-program (Task 5, no p
         // drive. This is the negative the Fork-B split exists to avoid.
         for (const d of due) {
           await tx.$executeRawUnsafe(
-            `INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
-             VALUES (gen_random_uuid(), '${d.tenant_id}', '${d.program_id}', 'BORN', 'MAX_WAIT', 0, now())`,
+            `INSERT INTO batch (id, tenant_id, program_id, trigger_reason, unit_count, updated_at)
+             VALUES (gen_random_uuid(), '${d.tenant_id}', '${d.program_id}', 'MAX_WAIT', 0, now())`,
           )
         }
       }),

@@ -52,6 +52,7 @@ import {
   type BankPreviewResult,
   type DamagePreviewResult,
   type DamageReasonRow,
+  type DuplicateVpaOriginal,
 } from '@andpay/tms-service'
 import { readDispatchActivationStatus } from '@andpay/analytics-service'
 import { createBankMaster, editBankMaster } from '@andpay/identity-service'
@@ -99,7 +100,17 @@ interface ActivateAssignmentBody {
 interface BatchTriggerBody {
   tenantWire: string
   programWire: string
+  // BRD 5.3.4 force dispatch: REQUIRED. The trigger already recorded who fired
+  // it (batch.triggered_by_actor); this is why. Free text, so it lands on the
+  // domain row (batch.trigger_note) and never on the IDs-only 6e (DD1), the
+  // same posture as OverrideBody.overrideReason above.
+  reason: string
 }
+// The cap on that reason, kept identical to the domain's own
+// MAX_TRIGGER_NOTE_LENGTH in services/fulfillment/src/ops.ts. Two checks, one
+// number: the edge check produces the operator-facing 400 message, the domain
+// check is the guarantee that holds for every caller.
+const MAX_TRIGGER_REASON_LENGTH = 500
 interface VendorCreateBody {
   type: string
   displayName: string
@@ -347,6 +358,14 @@ export class OpsController {
   // 403 rather than a durable DENY 6e (that would be an outbox write). This is
   // the same no-audit posture the class-3 read plane uses; the authorize is
   // still run because the preview response returns decoded bank PII.
+  //
+  // UNCHANGED by the 2026-08-10 soundbox duplicate-VPA ruling, which made the
+  // bank preview perform a read-only scan under tms_ops_read (the same posture
+  // previewDamage has always had). A READ IS NOT PERSISTENCE: the persist-
+  // nothing invariant this posture rests on is about WRITES (no quarantine_row,
+  // ingest_file, inbox or outbox row, and no DENY 6e), and both preview routes
+  // still write nothing at all. So no gate, no Idempotency-Key and no 6e is
+  // added here.
   private authorizePreview(req: EdgeRequest, operation: string): void {
     const decision = authorize(req.claim, operation, {}, this.deps.roleConfig)
     if (!decision.allowed) throw new ForbiddenException()
@@ -361,9 +380,14 @@ export class OpsController {
   // durable DENY 6e (a DENY 6e is itself an outbox write, which the persist-
   // nothing invariant forbids). This mirrors the read-plane posture
   // (OpsReadController emits no 6e). The RESPONSE carries decoded bank PII, so a
-  // direct D2 authorize still gates access in code (the read plane relies on DB
-  // read-roles to scope data; a preview touches no DB, so it gates here) and an
-  // unauthorized operator gets a 403.
+  // direct D2 authorize still gates access in code and an unauthorized operator
+  // gets a 403.
+  //
+  // Takes the tms db since the 2026-08-10 soundbox duplicate-VPA ruling: the
+  // preview must show the verdict the COMMIT will reach, and that verdict needs
+  // a read of what TMS already holds. previewBankFile does that read (and only
+  // that read) under the read-only tms_ops_read role, exactly like previewDamage
+  // below, so the persist-nothing posture is intact.
   @Post('uploads/bank/preview')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   @HttpCode(200)
@@ -373,7 +397,7 @@ export class OpsController {
   ): Promise<BankPreviewResult> {
     this.authorizePreview(req, 'ops:upload-bank-file')
     if (!file) throw new BadRequestException('missing file')
-    return previewBankFile(file.buffer, file.originalname)
+    return previewBankFile(this.deps.tmsDb, file.buffer, file.originalname)
   }
 
   // The bank-upload commit (D-K). Multipart raw file, re-parsed SERVER-SIDE by
@@ -388,6 +412,10 @@ export class OpsController {
   // bank-side bug, not a fix. GSCB should still be told"), surfaced at the
   // moment the file is uploaded, which is the grain and the moment that
   // conversation needs. Additive: no existing field changed.
+  // duplicateVpaHeld (ruling 2026-08-10) rides on the result the same way: the
+  // soundbox rows this file HELD for a repeat VPA, each naming the record it
+  // collides with, so the portal can list them instead of only counting them.
+  // Additive too: duplicateVpa keeps counting every repeat, held or not.
   @Post('uploads/bank/commit')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   @HttpCode(200)
@@ -395,7 +423,16 @@ export class OpsController {
     @Req() req: EdgeRequest,
     @UploadedFile() file: UploadedSheet | undefined,
     @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ accepted: number; quarantined: number; duplicate: number; qrMalformed: number; duplicateVpa: number; duplicateMobile: number; fileId: string }> {
+  ): Promise<{
+    accepted: number
+    quarantined: number
+    duplicate: number
+    qrMalformed: number
+    duplicateVpa: number
+    duplicateMobile: number
+    duplicateVpaHeld: { rowNo: number; duplicateOf: DuplicateVpaOriginal }[]
+    fileId: string
+  }> {
     const g = await this.gate(req, 'ops:upload-bank-file', idem, [])
     if (!file) throw new BadRequestException('missing file')
     return commitBankFile(this.deps.tmsDb, {
@@ -651,10 +688,30 @@ export class OpsController {
     @Body() body: BatchTriggerBody,
     @Headers('idempotency-key') idem: string | undefined,
   ): Promise<{ btchId: string } | null> {
+    // BRD 5.3.4: validated BEFORE this.gate, unlike the isKnownStatus checks on
+    // the correct/override routes, and the ordering is the point. A request with
+    // no reason is a malformed request, not a rejected authorization: running
+    // the D2 gate first would co-commit an ALLOW 6e for an attempt that then
+    // 400s and does nothing, putting a permanent authorized-action record on the
+    // hash chain for an action that never happened. Checking first means a
+    // missing reason emits no 6e at all, ALLOW or DENY.
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
+    if (reason === '') {
+      throw new BadRequestException('a reason is required to trigger a batch manually')
+    }
+    if (reason.length > MAX_TRIGGER_REASON_LENGTH) {
+      throw new BadRequestException(`the reason must be at most ${MAX_TRIGGER_REASON_LENGTH} characters`)
+    }
+
     const g = await this.gate(req, 'ops:manual-batch-trigger', idem, [body.tenantWire, body.programWire])
     const result = await manualBatch(this.deps.fulfillmentDb, {
       tenantWire: body.tenantWire,
       programWire: body.programWire,
+      // The TRIMMED value. The domain re-validates it (manualBatch throws
+      // OpsClientError on a blank or overlong reason regardless of caller); this
+      // check exists so the operator gets a clear 400 message instead of the
+      // filter's generic one.
+      reason,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

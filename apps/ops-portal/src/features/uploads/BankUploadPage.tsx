@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   MAX_UPLOAD_BYTES,
@@ -29,6 +30,7 @@ import { FileDropZone } from '../../components/FileDropZone.js'
 // after fixing the source data simply re-runs preview on the new file.
 
 export function BankUploadPage() {
+  const { client } = useAuth()
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<BankPreviewResult | null>(null)
   const [commitResult, setCommitResult] = useState<BankCommitResult | null>(null)
@@ -48,7 +50,7 @@ export function BankUploadPage() {
     }
     setPreviewing(true)
     try {
-      const result = await previewBank(picked)
+      const result = await previewBank(client, picked)
       setFile(picked)
       setPreview(result)
     } catch (err) {
@@ -63,7 +65,7 @@ export function BankUploadPage() {
     setError(null)
     setCommitting(true)
     try {
-      const result = await commitBank(file, newIdempotencyKey())
+      const result = await commitBank(client, file, newIdempotencyKey())
       setCommitResult(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to commit the bank request file.')
@@ -124,10 +126,24 @@ export function BankUploadPage() {
                         <StatusPill value={r.valid ? 'valid' : 'invalid'} />
                       </TableCell>
                       <TableCell>
-                        <div className="flex flex-wrap gap-1">
+                        <div className="flex flex-wrap items-center gap-1">
                           {r.errors.map((code) => (
                             <StatusPill key={code} value={code} />
                           ))}
+                          {/*
+                            Ruling 2026-08-10: a duplicate_vpa_soundbox verdict
+                            names the record it collides with, so the operator
+                            can judge it here rather than opening the queue to
+                            find out what "duplicate" meant. `duplicateOf` is a
+                            SIBLING of `row`, so the reflective column
+                            derivation above is untouched by it.
+                          */}
+                          {r.duplicateOf !== undefined && (
+                            <span className="text-[13px] text-muted-foreground">
+                              {`duplicate of ${r.duplicateOf.reference}`}
+                              {r.duplicateOf.merchantDisplayName !== null && ` (${r.duplicateOf.merchantDisplayName})`}
+                            </span>
+                          )}
                         </div>
                       </TableCell>
                       {columns.map((c) => (

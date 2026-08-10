@@ -2,7 +2,7 @@ import { toUuid, fromUuid } from '@andpay/ids'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { enterVendorReadScope } from './vendor-read-context.js'
-import { buildDispatchPackage, dispatchXlsx, assembleTypePdf } from './package.js'
+import { buildDispatchPackage, dispatchXlsx, assembleGroupPdf } from './package.js'
 import type { AssetStore } from './storage/asset-store.js'
 import { emitVendorAuthzAudit } from './vendor-audit.js'
 import { loadFulfillmentConfig } from './authz-config.js'
@@ -113,21 +113,27 @@ export interface PullPdfResult {
   btchId: string
 }
 
-// Phase 4 (FR-04, P4-D6): the per-product-type merged collateral PDF pull, the
-// image half of the dispatch-package disclosure surface. Same D104 authz as the
-// xlsx pull -- resolve print_vndr under the vendor-read role (RLS own-only),
-// authorize batch:pull-artifacts binding the RESOLVED print_vndr, emit the
-// ALLOW/DENY 6e durable-BEFORE returning -- then assemble the PDF under the
-// NORMAL connection (fulfillment_vendor_read has no composed_artifact grant, and
-// isolation is already guaranteed by the own-only resolve + authorize above,
-// exactly as pullDispatchPackageXlsx documents). pdf is null when the batch has
-// no artifact of that type (the caller maps it to 404).
+// Phase 4 (FR-04, P4-D6): the merged collateral PDF pull, the image half of the
+// dispatch-package disclosure surface. Same D104 authz as the xlsx pull --
+// resolve print_vndr under the vendor-read role (RLS own-only), authorize
+// batch:pull-artifacts binding the RESOLVED print_vndr, emit the ALLOW/DENY 6e
+// durable-BEFORE returning -- then assemble the PDF under the NORMAL connection
+// (fulfillment_vendor_read has no composed_artifact grant, and isolation is
+// already guaranteed by the own-only resolve + authorize above, exactly as
+// pullDispatchPackageXlsx documents).
+//
+// `collateralKey` is now a DELIVERY GROUP ('SOUNDBOX' or 'COLLATERAL'), and the
+// three legacy artifact-type strings still resolve to the group that carries
+// that product, so a URL a vendor already holds keeps working. pdf is null when
+// the batch has nothing in that group, and for an unknown key, which the caller
+// maps to the same 404 as before. The authz and audit flow above is untouched:
+// it never depended on the key.
 export async function pullTypePdf(
   db: FulfillmentDb,
   assetStore: AssetStore,
   claim: LeanClaim,
   btchIdWire: string,
-  artifactType: string,
+  collateralKey: string,
   traceId: string,
 ): Promise<PullPdfResult> {
   const btchUuid = toUuid(btchIdWire)
@@ -166,6 +172,6 @@ export async function pullTypePdf(
   })
   if (!decision.allowed) throw new PullDeniedError(decision.reason ?? 'denied')
 
-  const bytes = await assembleTypePdf(db, assetStore, btchIdWire, artifactType)
+  const bytes = await assembleGroupPdf(db, assetStore, btchIdWire, collateralKey)
   return { pdf: bytes === null ? null : Buffer.from(bytes), btchId: btchIdWire }
 }

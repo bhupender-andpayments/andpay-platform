@@ -74,8 +74,8 @@ async function seedBatchWithEntry(): Promise<{ btchWire: string; asgnWire: strin
   const asgnWire = newId('asgn')
   const asgnUuid = toUuid(asgnWire)
   await fulfillmentDb.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, unit_count, updated_at)
-    VALUES (${btchUuid}::uuid, ${TENANT}::uuid, ${PROGRAM}::uuid, NULL, 'BORN', 'LOT_SIZE', 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, unit_count, updated_at)
+    VALUES (${btchUuid}::uuid, ${TENANT}::uuid, ${PROGRAM}::uuid, NULL, 'LOT_SIZE', 1, now())
   `
   await fulfillmentDb.$executeRaw`
     INSERT INTO pending_pool_entry (

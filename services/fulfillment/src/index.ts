@@ -65,9 +65,11 @@ export {
   type AdapterFunction,
   type PackageLine,
   type ArtifactRef,
+  type CollateralGroup,
   buildDispatchPackage,
   dispatchXlsx,
-  assembleTypePdf,
+  resolveCollateralGroup,
+  assembleGroupPdf,
   AssetResolutionError,
 } from './package.js'
 export {

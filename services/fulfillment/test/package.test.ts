@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import ExcelJS from 'exceljs'
-import { buildDispatchPackage, dispatchXlsx } from '../src/package.js'
+import { PDFDocument } from 'pdf-lib'
+import { buildDispatchPackage, dispatchXlsx, assembleGroupPdf, resolveCollateralGroup } from '../src/package.js'
+import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 
 const url =
   process.env.FULFILLMENT_DATABASE_URL ??
@@ -361,5 +363,288 @@ describe('dispatchXlsx two-sheet split (D-5 / F9, measured from the real vendor 
     // 2 on Soundbox, 3 on Standy (1 standee + 1 both + 1 orphan) = 5 rows for
     // 4 lines, the extra being the deliberate both-sheets duplicate.
     expect((counts.Soundbox ?? 0) + (counts.Standy ?? 0)).toBe(lines.length + 1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// THE DELIVERY GROUPING (assembleGroupPdf). A batch goes to the print vendor as
+// TWO merged PDFs, a Soundbox one and a Collateral one combining sticker and
+// standee, rather than three per-type ones. Storage is unchanged: the three
+// composed_artifact.artifact_type values still exist, and the regrouping happens
+// only at the merge layer, so these tests seed exactly the rows production
+// writes.
+//
+// The stored fixture PDFs are given DISTINCT PAGE WIDTHS. That is how a merged
+// document's page ORDER and page IDENTITY can be asserted at all: every page in
+// a real merged PDF looks alike, so without a per-artifact marker "one page per
+// merchant, bank then branch" is only ever a page COUNT, which cannot tell a
+// wrong page from a right one.
+
+const groupStore = new InMemoryAssetStore()
+
+// A one-page PDF whose width identifies which artifact it is.
+async function putMarkedPdf(key: string, widthPt: number): Promise<string> {
+  const doc = await PDFDocument.create()
+  doc.setCreationDate(new Date(0))
+  doc.setModificationDate(new Date(0))
+  doc.addPage([widthPt, 400])
+  const put = await groupStore.put(key, await doc.save(), {
+    contentType: 'application/pdf',
+    filename: `${key}.pdf`,
+  })
+  return put.reference
+}
+
+async function mergedPageWidths(btchWire: string, key: string): Promise<number[] | null> {
+  const bytes = await assembleGroupPdf(db, groupStore, btchWire, key)
+  if (bytes === null) return null
+  const doc = await PDFDocument.load(bytes)
+  return doc.getPageIndices().map((i) => doc.getPage(i).getWidth())
+}
+
+interface GroupEntryOpts {
+  bankCode: string
+  branchCode?: string | null
+  soundbox?: boolean
+  standeeCount?: number
+  stickerCount?: number
+}
+
+// A batched pool entry with full control over bank, branch and the product
+// flags, which the shared fixture above deliberately fixes.
+async function seedGroupEntry(
+  tenantUuid: string,
+  programUuid: string,
+  btchUuid: string,
+  opts: GroupEntryOpts,
+): Promise<{ asgnWire: string; asgnUuid: string }> {
+  const asgnWire = newId('asgn')
+  const asgnUuid = toUuid(asgnWire)
+  const merchantUuid = toUuid(newId('mrch'))
+  await db.$executeRaw`
+    INSERT INTO pending_pool_entry (
+      asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
+      merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+      branch_code, ship_to_address, qr_value, vpa_value, pool_status, batch, source_event_id, trace_id, updated_at
+    ) VALUES (
+      ${asgnUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${merchantUuid}::uuid,
+      ${opts.soundbox ?? false}, ${opts.standeeCount ?? 0}, ${opts.stickerCount ?? 0}, true,
+      'Acme', 'Acme Pvt Ltd', '5814', ${opts.bankCode}, 'A Bank',
+      ${opts.branchCode ?? null}, '221B Baker Street', 'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank',
+      'BATCHED', ${btchUuid}::uuid, 'file-g|1', 'trace-group', now()
+    )
+  `
+  return { asgnWire, asgnUuid }
+}
+
+// One composed_artifact row pointing at a marked fixture PDF. Returns the row id
+// so a caller can supersede it.
+async function seedGroupArtifact(
+  tenantUuid: string,
+  programUuid: string,
+  btchUuid: string,
+  asgnUuid: string,
+  artifactType: string,
+  widthPt: number,
+): Promise<string> {
+  const reference = await putMarkedPdf(`artifact/${asgnUuid}/${artifactType}/${String(widthPt)}`, widthPt)
+  const rows = await db.$queryRaw<{ id: string }[]>`
+    INSERT INTO composed_artifact (
+      id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr
+    ) VALUES (
+      gen_random_uuid(), ${asgnUuid}::uuid, ${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid,
+      ${artifactType}, ${reference}, 'Acme', 'upi://pay?pa=acme@hdfcbank'
+    )
+    RETURNING id::text AS id
+  `
+  return rows[0]!.id
+}
+
+function ids(): { tenantUuid: string; programUuid: string; btchWire: string; btchUuid: string } {
+  const btchWire = newId('btch')
+  return {
+    tenantUuid: toUuid(newId('tnnt')),
+    programUuid: toUuid(newId('prog')),
+    btchWire,
+    btchUuid: toUuid(btchWire),
+  }
+}
+
+describe('resolveCollateralGroup (the two group keys plus the three legacy artifact types)', () => {
+  it('maps both group keys and all three legacy values, and nothing else', () => {
+    expect(resolveCollateralGroup('SOUNDBOX')).toBe('SOUNDBOX')
+    expect(resolveCollateralGroup('SOUNDBOX_IMG')).toBe('SOUNDBOX')
+    expect(resolveCollateralGroup('COLLATERAL')).toBe('COLLATERAL')
+    // A legacy URL naming either collateral product resolves to the ONE PDF that
+    // now carries that product, so a link a vendor already holds keeps working.
+    expect(resolveCollateralGroup('STANDEE_IMG')).toBe('COLLATERAL')
+    expect(resolveCollateralGroup('STICKER_IMG')).toBe('COLLATERAL')
+    // garbage keeps 404ing through the existing null path.
+    expect(resolveCollateralGroup('')).toBeNull()
+    expect(resolveCollateralGroup('soundbox')).toBeNull()
+    expect(resolveCollateralGroup('SOUNDBOX_PDF')).toBeNull()
+  })
+})
+
+describe('assembleGroupPdf (two merged PDFs per batch, not three)', () => {
+  it('SOUNDBOX gives one page per soundbox merchant, and null when the batch has none', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const a = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'ABANK', soundbox: true })
+    const b = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'BBANK', soundbox: true })
+    // a third merchant wants collateral only, so it must NOT appear here.
+    const c = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'CBANK', standeeCount: 1 })
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, a.asgnUuid, 'SOUNDBOX_IMG', 201)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, b.asgnUuid, 'SOUNDBOX_IMG', 202)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, c.asgnUuid, 'STANDEE_IMG', 203)
+
+    expect(await mergedPageWidths(btchWire, 'SOUNDBOX')).toEqual([201, 202])
+
+    // a batch with no soundbox at all is a legitimate empty, not a fault.
+    const other = ids()
+    const d = await seedGroupEntry(other.tenantUuid, other.programUuid, other.btchUuid, {
+      bankCode: 'ABANK',
+      stickerCount: 1,
+    })
+    await seedGroupArtifact(other.tenantUuid, other.programUuid, other.btchUuid, d.asgnUuid, 'STICKER_IMG', 204)
+    expect(await assembleGroupPdf(db, groupStore, other.btchWire, 'SOUNDBOX')).toBeNull()
+  })
+
+  // THE CORE ASSERTION of the whole regrouping. Sticker and standee carry the
+  // SAME branded artwork (BRD Annexure A), so a merchant wanting both must get
+  // ONE page: a second would be the same QR for the same VPA printed twice,
+  // which the ruling forbids.
+  it('COLLATERAL gives a merchant holding BOTH a sticker and a standee row exactly ONE page', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const both = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'ABANK',
+      standeeCount: 1,
+      stickerCount: 3,
+    })
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, both.asgnUuid, 'STANDEE_IMG', 301)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, both.asgnUuid, 'STICKER_IMG', 302)
+
+    // one page, and it is the STANDEE (the general collateral sheet, the same
+    // precedent dispatchXlsx follows when it parks orphan lines on `Standy`).
+    expect(await mergedPageWidths(btchWire, 'COLLATERAL')).toEqual([301])
+  })
+
+  it('counts a mixed batch correctly across both groups', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    // m1 soundbox only, m2 both collateral products, m3 sticker only, m4 soundbox
+    // plus a standee. Bank codes ascend so the expected page order is the seed
+    // order and the assertions stay about grouping, not sorting.
+    const m1 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', soundbox: true })
+    const m2 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'B2',
+      standeeCount: 1,
+      stickerCount: 1,
+    })
+    const m3 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B3', stickerCount: 2 })
+    const m4 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'B4',
+      soundbox: true,
+      standeeCount: 1,
+    })
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m1.asgnUuid, 'SOUNDBOX_IMG', 401)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m2.asgnUuid, 'STANDEE_IMG', 402)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m2.asgnUuid, 'STICKER_IMG', 403)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m3.asgnUuid, 'STICKER_IMG', 404)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m4.asgnUuid, 'SOUNDBOX_IMG', 405)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m4.asgnUuid, 'STANDEE_IMG', 406)
+
+    // Soundbox: m1 and m4. Collateral: m2 (standee, once), m3 (its sticker), m4.
+    // Five stored collateral rows across four merchants become three pages.
+    expect(await mergedPageWidths(btchWire, 'SOUNDBOX')).toEqual([401, 405])
+    expect(await mergedPageWidths(btchWire, 'COLLATERAL')).toEqual([402, 404, 406])
+  })
+
+  it('a legacy artifact-type key returns the SAME bytes as its group key', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const a = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'ABANK',
+      soundbox: true,
+      stickerCount: 1,
+    })
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, a.asgnUuid, 'SOUNDBOX_IMG', 501)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, a.asgnUuid, 'STICKER_IMG', 502)
+
+    const soundbox = await assembleGroupPdf(db, groupStore, btchWire, 'SOUNDBOX')
+    const soundboxLegacy = await assembleGroupPdf(db, groupStore, btchWire, 'SOUNDBOX_IMG')
+    expect(soundbox).not.toBeNull()
+    expect(Buffer.from(soundboxLegacy!).equals(Buffer.from(soundbox!))).toBe(true)
+
+    const collateral = await assembleGroupPdf(db, groupStore, btchWire, 'COLLATERAL')
+    expect(collateral).not.toBeNull()
+    for (const legacyKey of ['STANDEE_IMG', 'STICKER_IMG']) {
+      const bytes = await assembleGroupPdf(db, groupStore, btchWire, legacyKey)
+      expect(Buffer.from(bytes!).equals(Buffer.from(collateral!))).toBe(true)
+    }
+    // and the two groups really are different documents, so the equality above
+    // is not vacuous.
+    expect(Buffer.from(soundbox!).equals(Buffer.from(collateral!))).toBe(false)
+  })
+
+  it('excludes a SUPERSEDED sibling row, so a recomposed artifact prints once, not twice', async () => {
+    // recomposeArtifact INSERTs a replacement row and stamps superseded_by on the
+    // old one, so after one recompose an assignment has TWO rows of one type.
+    // Unfiltered, this merchant's page came out twice.
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const a = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'ABANK', soundbox: true })
+    const oldId = await seedGroupArtifact(tenantUuid, programUuid, btchUuid, a.asgnUuid, 'SOUNDBOX_IMG', 601)
+    const newId2 = await seedGroupArtifact(tenantUuid, programUuid, btchUuid, a.asgnUuid, 'SOUNDBOX_IMG', 602)
+    await db.$executeRaw`
+      UPDATE composed_artifact SET superseded_by = ${newId2}::uuid, superseded_at = now()
+      WHERE id = ${oldId}::uuid
+    `
+
+    // ONE page, and it is the CURRENT artifact, not the retired one.
+    expect(await mergedPageWidths(btchWire, 'SOUNDBOX')).toEqual([602])
+  })
+
+  it('orders BOTH the merged pages and the xlsx rows by bank, then branch, then assignment', async () => {
+    // Seeded deliberately out of order. The pages and the sheet come off ONE
+    // sorted array in buildDispatchPackage, so this pins that they cannot drift
+    // into two different orders.
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const z = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'ZBANK',
+      branchCode: '01',
+      soundbox: true,
+    })
+    const a2 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'ABANK',
+      branchCode: '02',
+      soundbox: true,
+    })
+    const a1 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'ABANK',
+      branchCode: '01',
+      soundbox: true,
+    })
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, z.asgnUuid, 'SOUNDBOX_IMG', 701)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, a2.asgnUuid, 'SOUNDBOX_IMG', 702)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, a1.asgnUuid, 'SOUNDBOX_IMG', 703)
+
+    // ABANK/01, then ABANK/02, then ZBANK/01.
+    expect(await mergedPageWidths(btchWire, 'SOUNDBOX')).toEqual([703, 702, 701])
+
+    const lines = await buildDispatchPackage(db, btchWire, 'print')
+    expect(lines.map((l) => `${l.bankReferenceCode}/${l.branchCode ?? ''}`)).toEqual([
+      'ABANK/01',
+      'ABANK/02',
+      'ZBANK/01',
+    ])
+    expect(lines.map((l) => l.asgnId)).toEqual([a1.asgnWire, a2.asgnWire, z.asgnWire])
+
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load((await dispatchXlsx(lines)) as unknown as Parameters<typeof wb.xlsx.load>[0])
+    const ws = wb.getWorksheet('Soundbox')!
+    const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
+    const col = (h: string): number => headers.indexOf(h) + 1
+    const sheetOrder: string[] = []
+    for (let r = 2; r <= ws.rowCount; r++) {
+      sheetOrder.push(`${String(ws.getRow(r).getCell(col('Bank')).value)}/${String(ws.getRow(r).getCell(col('Branch')).value)}`)
+    }
+    expect(sheetOrder).toEqual(['ABANK/01', 'ABANK/02', 'ZBANK/01'])
   })
 })

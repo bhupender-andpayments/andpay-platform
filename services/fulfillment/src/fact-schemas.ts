@@ -52,6 +52,13 @@ export const FULFILLMENT_FACT_SCHEMAS: Record<string, object> = {
       dispatchDate: { type: 'string' }, unitIds: { type: 'array', items: { type: 'string' } },
       status: { type: 'string' },
       courierTimestamp: { type: 'string' }, statusSource: { type: 'string' },
+      // The collateral consignment (a standee shipped apart from the soundbox
+      // kit under its own AWB). Additive and OPTIONAL, with `required` left
+      // exactly as it was, which is what keeps this FULL-compatible: an old
+      // consumer sees a shipment fact it already understands and ignores two
+      // fields it has never heard of.
+      collateral: { type: 'boolean' },
+      asgnIds: { type: 'array', items: { type: 'string' } },
     },
     required: ['shptId', 'awb', 'status'],
   },

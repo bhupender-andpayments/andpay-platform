@@ -6,7 +6,7 @@ import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { consumeBatchFact } from '../src/dispatch.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
-import { buildDispatchPackage, assembleTypePdf, dispatchXlsx, AssetResolutionError } from '../src/package.js'
+import { buildDispatchPackage, assembleGroupPdf, dispatchXlsx, AssetResolutionError } from '../src/package.js'
 import { PDFDocument } from 'pdf-lib'
 import QRCode from 'qrcode'
 import { CONSUMER, setProgramContext } from '../src/internal.js'
@@ -74,8 +74,8 @@ async function seedBankConfig(tenantUuid: string, bankCode: string, branchCode =
 // batch id without caring whether an earlier helper already did.
 async function seedBatchRow(tenantUuid: string, programUuid: string, btchUuid: string): Promise<void> {
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
-    VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BORN', 'LOT_SIZE', 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, trigger_reason, unit_count, updated_at)
+    VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'LOT_SIZE', 1, now())
     ON CONFLICT (id) DO NOTHING
   `
 }
@@ -504,10 +504,11 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     const res = await consumeBatchFact(db, env, assetStore)
     expect(res.composed).toBe(2) // soundbox=true + standee_count=1 -> SOUNDBOX_IMG + STANDEE_IMG
 
-    const arts = await db.$queryRaw<{ asset_reference: string }[]>`
-      SELECT asset_reference FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
+    const arts = await db.$queryRaw<{ artifact_type: string; asset_reference: string }[]>`
+      SELECT artifact_type, asset_reference FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
     `
     expect(arts).toHaveLength(2)
+    const dims = new Map<string, string>()
     for (const art of arts) {
       // the old synthetic placeholder is gone; the reference resolves to real PDF bytes
       expect(art.asset_reference.startsWith('s3://')).toBe(false)
@@ -516,7 +517,15 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       const bytes = rec!.bytes
       expect(bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d).toBe(true) // %PDF-
       expect(rec!.meta.contentType).toBe('application/pdf')
+      const page = (await PDFDocument.load(bytes)).getPage(0)
+      dims.set(art.artifact_type, `${String(page.getWidth())}x${String(page.getHeight())}`)
     }
+    // The soundbox and the standee are STORED at the same page size, which is
+    // what makes the two merged delivery PDFs equal-dimension by construction
+    // rather than by a reflow at merge time. These two types used to differ
+    // (288x432 against 432x648).
+    expect(dims.get('SOUNDBOX_IMG')).toBe(dims.get('STANDEE_IMG'))
+    expect(dims.get('SOUNDBOX_IMG')).toBe('288x432')
   })
 
   it('P4-2: a real PNG logo master is fetched and embedded, the reference chain still resolves to a valid PDF', async () => {
@@ -549,7 +558,7 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     }
   })
 
-  it('P4-3: dispatch package is bank+branch sorted; assembleTypePdf merges stored PDFs per type (soundbox-only), null when absent', async () => {
+  it('P4-3: dispatch package is bank+branch sorted; assembleGroupPdf merges stored PDFs per delivery group', async () => {
     const tenantWire = newId('tnnt')
     const programWire = newId('prog')
     const tenantUuid = toUuid(tenantWire)
@@ -573,12 +582,24 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     expect(lines.map((l) => l.bankReferenceCode)).toEqual(['ABANK', 'ZBANK'])
 
     // soundbox-only merged PDF = one page per entry (both entries have SOUNDBOX_IMG)
-    const soundboxPdf = await assembleTypePdf(db, assetStore, btchWire, 'SOUNDBOX_IMG')
+    const soundboxPdf = await assembleGroupPdf(db, assetStore, btchWire, 'SOUNDBOX')
     expect(soundboxPdf).not.toBeNull()
     expect((await PDFDocument.load(soundboxPdf!)).getPageCount()).toBe(2)
 
-    // sticker_count is 0 in the seed, so there is no STICKER_IMG artifact -> null
-    expect(await assembleTypePdf(db, assetStore, btchWire, 'STICKER_IMG')).toBeNull()
+    // The COLLATERAL group is sticker PLUS standee. sticker_count is 0 in the
+    // seed and standee_count is 1, so each entry contributes its standee page:
+    // 2 pages, NOT null. The old per-type call asked for 'STICKER_IMG' here and
+    // got null, which is precisely the behaviour the grouping replaces (the
+    // legacy key now resolves to this same COLLATERAL PDF).
+    const collateralPdf = await assembleGroupPdf(db, assetStore, btchWire, 'COLLATERAL')
+    expect(collateralPdf).not.toBeNull()
+    expect((await PDFDocument.load(collateralPdf!)).getPageCount()).toBe(2)
+    const legacy = await assembleGroupPdf(db, assetStore, btchWire, 'STICKER_IMG')
+    expect(legacy).not.toBeNull()
+    expect(Buffer.from(legacy!).equals(Buffer.from(collateralPdf!))).toBe(true)
+
+    // an unrecognized key is still the null path the caller 404s on
+    expect(await assembleGroupPdf(db, assetStore, btchWire, 'NOT_A_GROUP')).toBeNull()
 
     // the sorted dispatch Excel is a real PK zip
     const xlsx = await dispatchXlsx(lines)
@@ -598,9 +619,9 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       INSERT INTO composed_artifact (id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr, bank_config_ref)
       VALUES (gen_random_uuid(), ${a.asgnUuid}::uuid, ${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'SOUNDBOX_IMG', 'missing-ref-not-in-store', 'Acme', 'upi://x', NULL)
     `
-    await expect(assembleTypePdf(db, assetStore, btchWire, 'SOUNDBOX_IMG')).rejects.toBeInstanceOf(AssetResolutionError)
-    // a type with NO row is still a legitimate empty (null), not a fault
-    expect(await assembleTypePdf(db, assetStore, btchWire, 'STICKER_IMG')).toBeNull()
+    await expect(assembleGroupPdf(db, assetStore, btchWire, 'SOUNDBOX')).rejects.toBeInstanceOf(AssetResolutionError)
+    // a group with NO row is still a legitimate empty (null), not a fault
+    expect(await assembleGroupPdf(db, assetStore, btchWire, 'COLLATERAL')).toBeNull()
   })
 })
 

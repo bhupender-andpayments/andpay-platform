@@ -87,8 +87,8 @@ async function seed(): Promise<void> {
        VALUES ('${randomUUID()}', '${tenantId}', '${p}', true, 1, 1, true, 'Disp', 'Legal Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'addr', 'qr', 'vpa', 'POOLED', 'rls-test-${randomUUID()}', 'trace-rls', now())`,
     )
     await fulfillment.$executeRawUnsafe(
-      `INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
-       VALUES ('${randomUUID()}', '${tenantId}', '${p}', 'BORN', 'MANUAL', 1, now())`,
+      `INSERT INTO batch (id, tenant_id, program_id, trigger_reason, unit_count, updated_at)
+       VALUES ('${randomUUID()}', '${tenantId}', '${p}', 'MANUAL', 1, now())`,
     )
     await fulfillment.$executeRawUnsafe(
       `INSERT INTO composed_artifact (asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr)

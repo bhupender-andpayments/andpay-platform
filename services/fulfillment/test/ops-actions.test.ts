@@ -359,7 +359,16 @@ describe('holdRecord / releaseRecord (spec 10c Task 7)', () => {
 })
 
 describe('manualBatch (spec 10c Task 7, check 7)', () => {
-  it('a double-fired manualBatch with ONE clientKey yields exactly ONE batch', async () => {
+  // BRD 5.3.4 force dispatch: the reason is REQUIRED on every call in this
+  // block, because it is required on the function.
+  async function batchRows(tenantUuid: string, programUuid: string) {
+    return db.$queryRaw<{ id: string; trigger_reason: string; trigger_note: string | null }[]>`
+      SELECT id::text AS id, trigger_reason, trigger_note FROM batch
+      WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid
+    `
+  }
+
+  it('a double-fired manualBatch with ONE clientKey yields exactly ONE batch, carrying exactly ONE reason', async () => {
     const tenantWire = newId('tnnt')
     const programWire = newId('prog')
     const tenantUuid = toUuid(tenantWire)
@@ -370,21 +379,155 @@ describe('manualBatch (spec 10c Task 7, check 7)', () => {
 
     const clientKey = randomUUID()
     const actorId = randomUUID()
-    const args = { tenantWire, programWire, clientKey, actorId, traceId: 't11' }
+    const args = { tenantWire, programWire, reason: 'bank asked for an early run', clientKey, actorId, traceId: 't11' }
 
     const first = await manualBatch(db, args)
     expect(first).not.toBeNull()
     const btchId = first!.btchId
 
-    const second = await manualBatch(db, { ...args, actorId: randomUUID() })
+    // A replay with a DIFFERENT reason as well as a different actor: the outer
+    // onceWithin suppresses re-entry, so neither can overwrite what the first
+    // call recorded. A reason that could be edited by replaying the same key
+    // would not be an audit trail.
+    const second = await manualBatch(db, { ...args, actorId: randomUUID(), reason: 'a different story' })
     expect(second).toBeNull()
 
-    const batches = await db.$queryRaw<{ id: string; trigger_reason: string }[]>`
-      SELECT id::text AS id, trigger_reason FROM batch WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid
-    `
+    const batches = await batchRows(tenantUuid, programUuid)
     expect(batches).toHaveLength(1)
     expect(batches[0]!.trigger_reason).toBe('MANUAL')
+    expect(batches[0]!.trigger_note).toBe('bank asked for an early run')
     expect(fromUuid('btch', batches[0]!.id)).toBe(btchId)
+  })
+
+  it('persists the TRIMMED reason on batch.trigger_note (BRD 5.3.4)', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    await ensurePool(db, tenantWire, programWire)
+    await seedPooled(tenantUuid, programUuid)
+
+    const res = await manualBatch(db, {
+      tenantWire,
+      programWire,
+      reason: '   courier collection is at 4pm, cannot wait for the lot   ',
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-note',
+    })
+    expect(res).not.toBeNull()
+
+    const batches = await batchRows(tenantUuid, programUuid)
+    expect(batches).toHaveLength(1)
+    expect(batches[0]!.trigger_note).toBe('courier collection is at 4pm, cannot wait for the lot')
+  })
+
+  it('rejects an empty or whitespace-only reason, and writes nothing at all', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    await ensurePool(db, tenantWire, programWire)
+    const { asgnUuid } = await seedPooled(tenantUuid, programUuid)
+
+    for (const reason of ['', '   ']) {
+      await expect(
+        manualBatch(db, {
+          tenantWire,
+          programWire,
+          reason,
+          clientKey: randomUUID(),
+          actorId: randomUUID(),
+          traceId: 't-empty',
+        }),
+      ).rejects.toBeInstanceOf(OpsClientError)
+    }
+
+    // The throw happens before the transaction opens, so there is no batch, no
+    // claimed entry, and no co-committed 6e.
+    expect(await batchRows(tenantUuid, programUuid)).toHaveLength(0)
+    expect((await poolEntryRow(asgnUuid)).pool_status).toBe('POOLED')
+    const audit = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = 'authz.audit'
+    `
+    expect(Number(audit[0]!.n)).toBe(0)
+  })
+
+  it('accepts a reason of exactly 500 characters and rejects 501', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    await ensurePool(db, tenantWire, programWire)
+    await seedPooled(tenantUuid, programUuid)
+
+    await expect(
+      manualBatch(db, {
+        tenantWire,
+        programWire,
+        reason: 'x'.repeat(501),
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-long',
+      }),
+    ).rejects.toBeInstanceOf(OpsClientError)
+    expect(await batchRows(tenantUuid, programUuid)).toHaveLength(0)
+
+    const atTheCap = 'y'.repeat(500)
+    const res = await manualBatch(db, {
+      tenantWire,
+      programWire,
+      reason: atTheCap,
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-cap',
+    })
+    expect(res).not.toBeNull()
+    const batches = await batchRows(tenantUuid, programUuid)
+    expect(batches).toHaveLength(1)
+    expect(batches[0]!.trigger_note).toBe(atTheCap)
+  })
+
+  // DD1, the rule this whole column exists to respect: the free text lives on
+  // the domain row and NOWHERE else. Not on the co-committed ALLOW 6e (IDs and
+  // enums only, and never smuggled into resourceIds), and not on the batch fact.
+  it('keeps the reason OFF the co-committed ALLOW 6e and off the batch fact', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    await ensurePool(db, tenantWire, programWire)
+    await seedPooled(tenantUuid, programUuid)
+
+    const reason = 'regional head escalated this one by phone'
+    const actorId = randomUUID()
+    const res = await manualBatch(db, {
+      tenantWire,
+      programWire,
+      reason,
+      clientKey: randomUUID(),
+      actorId,
+      traceId: 't-6e',
+    })
+    expect(res).not.toBeNull()
+
+    const rows = await db.$queryRaw<{ event_type: string; payload: unknown }[]>`
+      SELECT event_type, payload FROM outbox ORDER BY created_at ASC
+    `
+    expect(JSON.stringify(rows)).not.toContain('escalated this one by phone')
+
+    const allow = rows.find((r) => r.event_type === 'authz.audit')
+    expect(allow).toBeDefined()
+    const payload = allow!.payload as { operation: string; decision: string; resourceIds: string[] }
+    expect(payload.operation).toBe('ops:manual-batch-trigger')
+    expect(payload.decision).toBe('ALLOW')
+    // Unchanged shape: the tenant, the program, the minted batch. No fourth
+    // element carrying prose.
+    expect(payload.resourceIds).toEqual([tenantWire, programWire, res!.btchId])
+
+    // And it is genuinely stored, so "not on the 6e" is not "not recorded".
+    const batches = await batchRows(tenantUuid, programUuid)
+    expect(batches[0]!.trigger_note).toBe(reason)
   })
 })
 

@@ -226,6 +226,19 @@ model QuarantineRow {
   // Spec 10c: additive class-3 ops resolution stamp (nullable, expand-contract).
   resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz(6)
   resolvedByActor String?   @map("resolved_by_actor") @db.Uuid
+  /// Per-reason structured evidence (2026-08-10 soundbox duplicate-VPA ruling).
+  /// Today only `duplicate_vpa_soundbox` writes it, as
+  /// {"duplicateOf":{"kind","reference","merchantDisplayName"}}, so the ops
+  /// queue can NAME the original the held row collides with rather than making
+  /// an operator go and find it. Nullable because every other reason code has
+  /// no evidence to carry, and JSONB rather than a column set because the shape
+  /// is per-reason: a later reason with different evidence needs no migration.
+  /// The two supporting functional indexes (lower(vpa_value) on pending_row and
+  /// assignment) are migration-only, exactly like damage_reason's normalized
+  /// unique index above and for the same reason: the Prisma DSL has no
+  /// functional-index syntax. See
+  /// migrations/20260810100000_tms_duplicate_vpa_quarantine.
+  detail          Json?     @db.JsonB
 
   @@unique([fileId, rowNo])
   @@map("quarantine_row")

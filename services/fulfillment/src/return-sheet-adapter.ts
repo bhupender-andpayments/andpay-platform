@@ -34,7 +34,13 @@ export interface ReturnSheetRowError {
   rowNo: number
   errors: ReturnSheetRowErrorCode[]
 }
-export type ReturnSheetRowErrorCode = 'missing_assignment' | 'missing_device_id' | 'missing_awb'
+// `missing_device_id` IS GONE, deliberately, and its absence is the feature.
+// A row with a Dispatch ID and an AWB but NO Device ID is now MEANINGFUL: it
+// reports a collateral-only consignment for that dispatch id (one dispatch id
+// can travel under two AWBs, the kit under one and the standee under another).
+// The Device ID COLUMN is still required in the header below, so the round trip
+// with the sheet we send is unchanged; only the VALUE became optional.
+export type ReturnSheetRowErrorCode = 'missing_assignment' | 'missing_awb'
 
 export interface ReturnSheetStructuralError {
   code: 'unsupported_extension' | 'unreadable_file' | 'empty_sheet' | 'missing_column'
@@ -181,6 +187,13 @@ export async function parseReturnWorkbook(
   // same policy the bank and device-inventory adapters apply. Every row would
   // fail identically, and reporting 99 identical row errors hides the one fact
   // the operator needs.
+  //
+  // `Device ID` stays in this list even though a blank VALUE is now legal. The
+  // column and the value answer different questions: the column is part of the
+  // sheet we send and getting it back tells us the vendor returned OUR workbook,
+  // while a blank cell inside it is a deliberate report of collateral. Dropping
+  // the column requirement would silently accept a sheet with no device column
+  // at all and read every row as collateral.
   const missing = (
     [
       [asgnIdx, HEADERS.asgnId],
@@ -207,17 +220,27 @@ export async function parseReturnWorkbook(
 
     const errors: ReturnSheetRowErrorCode[] = []
     if (asgnId === '') errors.push('missing_assignment')
-    if (deviceSerial === '') errors.push('missing_device_id')
     if (awb === '') errors.push('missing_awb')
     if (errors.length > 0) {
       invalidRows.push({ rowNo, errors })
       return
     }
-    // No format rule on any of these three, deliberately, and for the same
+    // No format rule on any of these values, deliberately, and for the same
     // reason A-2 is locked loose: we have not measured a real returned AWB, and
     // a rule invented for an unseen value rejects real files. Presence is the
     // bar until a real file says otherwise.
-    validRows.push(courierCode === '' ? { deviceSerial, asgnId, awb } : { deviceSerial, asgnId, awb, courierCode })
+    //
+    // A BLANK Device ID emits a row with NO deviceSerial KEY, never an empty
+    // string. The ingest treats absent as "collateral-only consignment" and
+    // present-but-empty as schema-invalid, which is the same distinction this
+    // adapter has always drawn for a blank Courier cell, and it is what keeps a
+    // future bug here from being read as a shipment nobody ordered.
+    validRows.push({
+      ...(deviceSerial === '' ? {} : { deviceSerial }),
+      asgnId,
+      awb,
+      ...(courierCode === '' ? {} : { courierCode }),
+    })
   })
 
   return { validRows, invalidRows, structuralErrors: [] }

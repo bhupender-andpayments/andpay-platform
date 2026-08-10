@@ -59,7 +59,7 @@ async function auditRows(): Promise<AuditOutboxRow[]> {
   return rows.map((r) => ({ decision: r.payload.decision, operation: r.payload.operation, reasonCode: r.payload.reasonCode }))
 }
 
-// Seeds one BORN batch owned by `vndrWire` with one still-open
+// Seeds one batch owned by `vndrWire` with one still-open
 // pending_pool_entry (dispatch_state NULL), so readVendorWorkQueue surfaces
 // exactly this batch for that vndr's own scope.
 async function seedOpenBatch(vndrWire: string): Promise<{ btchWire: string }> {
@@ -69,8 +69,8 @@ async function seedOpenBatch(vndrWire: string): Promise<{ btchWire: string }> {
   const btchUuid = toUuid(newId('btch'))
 
   await fulfillmentDb.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-    VALUES (${btchUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${vndrUuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${vndrUuid}::uuid, 'LOT_SIZE', NULL, 1, now())
   `
   await fulfillmentDb.$executeRaw`
     INSERT INTO pending_pool_entry (
@@ -179,8 +179,8 @@ describe('GET /vendor/history (class-7, batch:read)', () => {
     const shptUuid = toUuid(newId('shpt'))
 
     await fulfillmentDb.$executeRaw`
-      INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-      VALUES (${btchUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${vndrUuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+      INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+      VALUES (${btchUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${vndrUuid}::uuid, 'LOT_SIZE', NULL, 1, now())
     `
     await fulfillmentDb.$executeRaw`
       INSERT INTO shpt (id, awb, status, dispatch_date, tenant_id, program_id, updated_at)

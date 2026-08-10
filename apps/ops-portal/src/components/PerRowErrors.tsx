@@ -27,12 +27,21 @@ export interface UploadResultBreakdown {
   invalid?: number
   duplicate?: number
   qrMalformed?: number
-  // `duplicateVpa` (bank commit only, D-2) is also NOT an outcome count: those
-  // rows ingested normally. It reports how many carried a VPA already seen, in
-  // this file or an earlier upload. Deliberately a REVIEW FLAG and never a
-  // rejection, because a repeat VPA is usually an additional soundbox request
-  // for a merchant we already have, and blocking it would stall a real order.
+  // `duplicateVpa` (bank commit only, D-2) reports how many rows carried a VPA
+  // already seen, in this file or an earlier upload. Every repeat is counted,
+  // HELD OR NOT: it is evidence about what the file contained.
+  //
+  // It used to be a pure review flag ("accepted, not held"), and for a
+  // sticker/standee row it still is. Since the 2026-08-10 ruling a SOUNDBOX
+  // repeat is held instead, so this count alone can no longer be described as
+  // accepted; the notice below subtracts the held rows and speaks only for the
+  // remainder.
   duplicateVpa?: number
+  // Ruling 2026-08-10: the soundbox rows this file HELD for a repeat VPA, each
+  // naming the record it collides with. An outcome the operator has to act on,
+  // unlike the flag above, so it gets its own notice with the row numbers and
+  // the same link into the quarantine queue.
+  duplicateVpaHeld?: { rowNo: number; duplicateOf: { reference: string; merchantDisplayName: string | null } }[]
   // `duplicateMobile` is a DIFFERENT signal from duplicateVpa and gets its own
   // notice: a repeat VPA is one merchant returning, a repeat mobile on another
   // VPA is two merchants sharing a contact number. Only the second is news.
@@ -43,6 +52,13 @@ export interface UploadResultBreakdown {
 // queue (task 11's /queues route) so an operator can go straight to the rows
 // that failed.
 export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
+  const held = result.duplicateVpaHeld ?? []
+  // The flag-only REMAINDER. duplicateVpa counts every repeat in the file, held
+  // or not, so rendering it whole would tell the operator that rows we actually
+  // quarantined were "accepted, not held", which is the one thing this notice
+  // must never say. A file whose only repeats were held therefore shows the
+  // held notice and no flag notice at all.
+  const flagOnlyVpa = (result.duplicateVpa ?? 0) - held.length
   return (
     <>
       <dl className="flex flex-wrap gap-6 text-sm">
@@ -111,9 +127,33 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
           {' before anything was printed, so no action is needed here. Worth raising with the bank so their export is fixed at source.'}
         </p>
       )}
-      {result.duplicateVpa !== undefined && result.duplicateVpa > 0 && (
+      {held.length > 0 && (
+        // A div rather than a p, unlike the notices around it, because this one
+        // carries a list: a ul inside a p is invalid markup and the browser
+        // would close the paragraph early, breaking the styling.
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p>
+            <span className="font-semibold">{`${held.length} soundbox row(s)`}</span>
+            {' repeat a VPA we already serve, so they were '}
+            <span className="font-semibold">held for review</span>
+            {' rather than ingested. A second soundbox for a merchant who already has one is worth confirming before a device ships. '}
+            <Link to="/queues" className="text-sm font-medium text-primary underline hover:text-primary/80">
+              view in quarantine queue
+            </Link>
+          </p>
+          <ul className="mt-2 space-y-1">
+            {held.map((h) => (
+              <li key={h.rowNo}>
+                {`row ${h.rowNo} -> ${h.duplicateOf.reference}`}
+                {h.duplicateOf.merchantDisplayName !== null && ` (${h.duplicateOf.merchantDisplayName})`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {flagOnlyVpa > 0 && (
         <p className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
-          <span className="font-semibold">{`${result.duplicateVpa} of them`}</span>
+          <span className="font-semibold">{`${flagOnlyVpa} of them`}</span>
           {' repeat a VPA already seen, in this file or an earlier upload. They were '}
           <span className="font-semibold">accepted, not held</span>
           {': a repeat usually means an additional soundbox for a merchant we already have. Worth a look if you were not expecting one.'}

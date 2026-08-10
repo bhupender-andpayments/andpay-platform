@@ -27,6 +27,11 @@ interface ReturnResultBody {
   pairedUnitIds?: string[]
   quarantined?: number
   shptIds?: string[]
+  // How many dispatch ids gained a COLLATERAL shipment (a row returned with a
+  // blank Device ID: the second AWB, carrying the standee rather than the kit).
+  // Optional here for the same reason every other field is: an older edge
+  // returning a body without it must render, not crash.
+  collateralLinked?: number
   deduped?: boolean
 }
 
@@ -168,6 +173,14 @@ export function ReturnUploadPage() {
               <div>
                 <dt className="text-slate-500">Paired</dt>
                 <dd className="text-lg font-semibold text-slate-900">{result.pairedUnitIds?.length ?? 0}</dd>
+              </div>
+              {/* Shown always, not only when non-zero: a vendor who filled in
+                  collateral rows needs to see they registered, and a zero next
+                  to a file that contained none is the honest answer rather than
+                  a missing tile. */}
+              <div>
+                <dt className="text-slate-500">Collateral</dt>
+                <dd className="text-lg font-semibold text-slate-900">{result.collateralLinked ?? 0}</dd>
               </div>
               <div>
                 <dt className="text-slate-500">Quarantined</dt>

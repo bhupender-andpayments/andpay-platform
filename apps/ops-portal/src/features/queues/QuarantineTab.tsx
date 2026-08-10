@@ -106,6 +106,24 @@ export function QuarantineTab() {
     { key: 'fileId', header: 'File ID', cell: (r) => r.fileId },
     { key: 'rowNo', header: 'Row', cell: (r) => <span className="num">{r.rowNo}</span> },
     { key: 'reasonCode', header: 'Reason', cell: (r) => <StatusPill value={r.reasonCode} /> },
+    // Ruling 2026-08-10: a duplicate_vpa_soundbox hold NAMES the record it
+    // collides with, so the operator can judge it from the queue instead of
+    // going to look the VPA up. Every other reason carries no detail, so this
+    // column is a dash for them (the same orDash the columns beside it use).
+    {
+      key: 'duplicateOf',
+      header: 'Original',
+      cell: (r) => {
+        const original = r.detail?.duplicateOf
+        if (original === undefined) return orDash(null)
+        return (
+          <span>
+            {original.reference}
+            {original.merchantDisplayName !== null && ` (${original.merchantDisplayName})`}
+          </span>
+        )
+      },
+    },
     { key: 'createdAt', header: 'Created', cell: (r) => fmtDateTime(r.createdAt) },
     { key: 'resolvedAt', header: 'Resolved', cell: (r) => fmtDateTime(r.resolvedAt) },
     { key: 'resolvedByActor', header: 'Resolved by', cell: (r) => orDash(r.resolvedByActor) },

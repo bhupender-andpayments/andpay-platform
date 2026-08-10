@@ -110,4 +110,12 @@ export interface ShipmentFactView {
   status: string
   courierTimestamp?: string
   statusSource?: string // WEBHOOK | BATCH_FILE | OPS_MANUAL
+  // The COLLATERAL discriminator: true when this fact reports that the shpt
+  // carries the collateral (a standee shipped apart from the soundbox kit) for
+  // the assignments in asgnIds, and no device. Both OPTIONAL on the wire and
+  // absent from the registered `required` set, so an older fact that predates
+  // them still projects (D120 FULL compat). Never assume a shipment fact with
+  // no `collateral` key is a collateral fact: absent means the ordinary parcel.
+  collateral?: boolean
+  asgnIds?: string[]
 }

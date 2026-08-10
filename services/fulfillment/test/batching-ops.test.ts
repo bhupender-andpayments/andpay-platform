@@ -48,7 +48,7 @@ async function seedPooled(
 }
 
 describe('manualTrigger (class-3 MANUAL batch trigger, check 3c)', () => {
-  it('3 POOLED entries below minLotSize: creates ONE BORN/MANUAL batch, records triggered_by_actor, re-arms the max_wait timer; a re-invocation with the SAME opsToken does not create a second batch', async () => {
+  it('3 POOLED entries below minLotSize: creates ONE MANUAL batch, records triggered_by_actor, re-arms the max_wait timer; a re-invocation with the SAME opsToken does not create a second batch', async () => {
     const tenantWire = newId('tnnt')
     const programWire = newId('prog')
     const tenantUuid = toUuid(tenantWire)
@@ -71,12 +71,22 @@ describe('manualTrigger (class-3 MANUAL batch trigger, check 3c)', () => {
     const btchId = res1!.btchId
 
     const batches = await db.$queryRaw<
-      { id: string; status: string; trigger_reason: string; unit_count: number; triggered_by_actor: string }[]
-    >`SELECT id::text AS id, status, trigger_reason, unit_count, triggered_by_actor::text AS triggered_by_actor FROM batch
+      {
+        id: string
+        trigger_reason: string
+        trigger_note: string | null
+        unit_count: number
+        triggered_by_actor: string
+      }[]
+    >`SELECT id::text AS id, trigger_reason, trigger_note, unit_count, triggered_by_actor::text AS triggered_by_actor FROM batch
        WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid`
     expect(batches).toHaveLength(1)
-    expect(batches[0]!.status).toBe('BORN')
     expect(batches[0]!.trigger_reason).toBe('MANUAL')
+    // manualTrigger is the NON-ops entry point and takes no reason: the BRD
+    // 5.3.4 force-dispatch reason is required by `manualBatch` (src/ops.ts),
+    // the class-3 ops action the portal and the ops edge actually call. This
+    // path has no production caller today, so its note is null.
+    expect(batches[0]!.trigger_note).toBeNull()
     expect(batches[0]!.unit_count).toBe(3)
     expect(batches[0]!.triggered_by_actor).toBe(actor.operatorId)
     expect(fromUuid('btch', batches[0]!.id)).toBe(btchId)

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   MAX_UPLOAD_BYTES,
@@ -29,6 +30,7 @@ import { FileDropZone } from '../../components/FileDropZone.js'
 // each click) -> counts. Picking a new file re-runs preview on the new file.
 
 export function DamageUploadPage() {
+  const { client } = useAuth()
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<DamagePreviewResult | null>(null)
   const [commitResult, setCommitResult] = useState<DamageCommitResult | null>(null)
@@ -48,7 +50,7 @@ export function DamageUploadPage() {
     }
     setPreviewing(true)
     try {
-      const result = await previewDamage(picked)
+      const result = await previewDamage(client, picked)
       setFile(picked)
       setPreview(result)
     } catch (err) {
@@ -63,7 +65,7 @@ export function DamageUploadPage() {
     setError(null)
     setCommitting(true)
     try {
-      const result = await commitDamage(file, newIdempotencyKey())
+      const result = await commitDamage(client, file, newIdempotencyKey())
       setCommitResult(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to commit the damage report file.')

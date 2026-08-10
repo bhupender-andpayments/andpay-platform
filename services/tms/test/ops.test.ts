@@ -153,7 +153,7 @@ describe('tms ops preview (spec P2 Task 2): previewBankFile persists nothing and
       inbox: await count('inbox'),
     }
 
-    const res = await previewBankFile(csv, 'requests.csv')
+    const res = await previewBankFile(db, csv, 'requests.csv')
     expect(res.structuralErrors).toEqual([])
     expect(res.summary).toEqual({ total: 2, valid: 1, invalid: 1 })
     expect(res.rows[0]!.valid).toBe(true)
@@ -182,7 +182,7 @@ describe('tms ops preview (spec P2 Task 2): previewBankFile persists nothing and
     ]
     try {
       const xlsx = await toXlsx(REQUEST_HEADERS, [requestCells()])
-      const res = await previewBankFile(xlsx, 'requests.xlsx')
+      const res = await previewBankFile(db, xlsx, 'requests.xlsx')
       expect(res.summary).toEqual({ total: 1, valid: 1, invalid: 0 })
       expect(res.rows[0]!.row.contactName).toBe(PII_CONTACT)
 
@@ -205,7 +205,7 @@ describe('tms ops preview (spec P2 Task 2): previewBankFile persists nothing and
     const rowMissingMcc = requestCells().filter((_v, idx) => REQUEST_HEADERS[idx] !== 'mcc')
     const csv = toCsv(headerMissingMcc, [rowMissingMcc])
 
-    const res = await previewBankFile(csv, 'requests.csv')
+    const res = await previewBankFile(db, csv, 'requests.csv')
     expect(res.rows).toEqual([])
     expect(res.summary).toEqual({ total: 0, valid: 0, invalid: 0 })
     expect(res.structuralErrors).toHaveLength(1)
@@ -284,12 +284,21 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
   // BRD 5.1b asks for exactly this ("detect duplicates ... and flag for review")
   // and pairs it with the additional-soundbox rule in one breath, which is the
   // clue that the two cannot be separated by an automatic rule.
-  it('D-2: flags a VPA repeated INSIDE one file, without blocking either row', async () => {
+  //
+  // MIGRATED to soundbox: 'false' (ruling 2026-08-10). These three tests were
+  // written against the BASE_REQUEST fixture, whose soundbox is 'true', and they
+  // only ever asserted the counter, so they silently depended on a value they
+  // never mentioned. A soundbox repeat is now HELD, so left as they were they
+  // would have been asserting the new behaviour by accident while claiming to
+  // assert the old one. Pinned to a sticker/standee row instead, which is
+  // exactly the case the flag-never-gate reading still governs: this is now the
+  // regression net for the half of D-2 that did NOT change.
+  it('D-2: flags a VPA repeated INSIDE one file, without blocking either row (sticker/standee rows)', async () => {
     const clientKey = randomUUID()
     const csv = toCsv(REQUEST_HEADERS, [
-      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'same@gscb' }),
-      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'same@gscb' }),
-      requestCells({ bankMerchantReference: 'BM-3', vpaValue: 'other@gscb' }),
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'same@gscb', soundbox: 'false' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'same@gscb', soundbox: 'false' }),
+      requestCells({ bankMerchantReference: 'BM-3', vpaValue: 'other@gscb', soundbox: 'false' }),
     ])
     const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-dup1' })
 
@@ -299,37 +308,40 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     expect(r.quarantined).toBe(0)
     // The FIRST sighting is not a repeat; only the second is.
     expect(r.duplicateVpa).toBe(1)
+    // And nothing was held: the gate is soundbox-only.
+    expect(r.duplicateVpaHeld).toEqual([])
     expect(await count('pending_row')).toBe(3)
   })
 
   // "in same upload or RECENT UPLOADS" (BRD 5.1b). A merchant who was ordered
   // for last week and appears again today is the case that actually matters,
   // and it is invisible to a within-file check.
-  it('D-2: flags a VPA already present from an EARLIER upload', async () => {
+  it('D-2: flags a VPA already present from an EARLIER upload (sticker/standee rows)', async () => {
     const first = randomUUID()
     await commitBankFile(db, {
-      fileBytes: toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'seen@gscb' })]),
+      fileBytes: toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'seen@gscb', soundbox: 'false' })]),
       filename: 'a.csv', clientKey: first, actorId: randomUUID(), traceId: 't-dup2a',
     })
 
     const second = randomUUID()
     const r = await commitBankFile(db, {
       fileBytes: toCsv(REQUEST_HEADERS, [
-        requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'seen@gscb' }),
-        requestCells({ bankMerchantReference: 'BM-3', vpaValue: 'fresh@gscb' }),
+        requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'seen@gscb', soundbox: 'false' }),
+        requestCells({ bankMerchantReference: 'BM-3', vpaValue: 'fresh@gscb', soundbox: 'false' }),
       ]),
       filename: 'b.csv', clientKey: second, actorId: randomUUID(), traceId: 't-dup2b',
     })
 
     expect(r.accepted).toBe(2)
     expect(r.duplicateVpa).toBe(1)
+    expect(r.duplicateVpaHeld).toEqual([])
   })
 
   it('D-2: a file of distinct VPAs flags nothing, so a non-zero count means something', async () => {
     const clientKey = randomUUID()
     const csv = toCsv(REQUEST_HEADERS, [
-      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'a1@gscb' }),
-      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'a2@gscb' }),
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'a1@gscb', soundbox: 'false' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'a2@gscb', soundbox: 'false' }),
     ])
     const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-dup3' })
     expect(r.duplicateVpa).toBe(0)
@@ -475,6 +487,284 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     expect(replay.replaced).toBe(0)
     expect(replay.quarantined).toBe(0)
     expect(replay.duplicate).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The soundbox duplicate-VPA gate (ruling 2026-08-10). SUPERSEDES D-2's
+// "a flag, never a gate" reading FOR SOUNDBOX ROWS ONLY: a soundbox row whose
+// VPA we already serve is HELD (quarantined as duplicate_vpa_soundbox) and the
+// quarantine record NAMES the original. Sticker/standee rows are unaffected and
+// keep the counters, which the three migrated D-2 tests above now guard.
+// ---------------------------------------------------------------------------
+describe('soundbox duplicate-VPA hold (ruling 2026-08-10): commitBankFile', () => {
+  async function quarantineDetail(fileId: string, rowNo: number) {
+    const rows = await db.$queryRaw<{ reason_code: string; detail: { duplicateOf?: { kind: string; reference: string; merchantDisplayName: string | null } } | null }[]>`
+      SELECT reason_code, detail FROM quarantine_row WHERE file_id = ${fileId} AND row_no = ${rowNo}
+    `
+    return rows[0]
+  }
+
+  // The plain within-file case, and the one that shows the two halves of the
+  // ruling do not fight: the FIRST row still ingests (it is not a duplicate of
+  // anything), the second is held, and the D-2 counter still reports 1 repeat
+  // because the counter describes the FILE, not the outcome.
+  it('holds the SECOND soundbox row of a repeated VPA and names the earlier row of the same file', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', displayName: 'Chai Point', vpaValue: 'twice@gscb' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'twice@gscb' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-sb1' })
+
+    expect(r.accepted).toBe(1)
+    expect(r.quarantined).toBe(1)
+    // Unchanged evidence about the file: one repeat, held or not.
+    expect(r.duplicateVpa).toBe(1)
+    expect(r.duplicateVpaHeld).toEqual([
+      { rowNo: 2, duplicateOf: { kind: 'file_row', reference: '1', merchantDisplayName: 'Chai Point' } },
+    ])
+
+    const q = await quarantineDetail(clientKey, 2)
+    expect(q!.reason_code).toBe('duplicate_vpa_soundbox')
+    expect(q!.detail!.duplicateOf).toEqual({ kind: 'file_row', reference: '1', merchantDisplayName: 'Chai Point' })
+    // Exactly one row reached pending_row: the first.
+    expect(await count('pending_row')).toBe(1)
+  })
+
+  // The case the ruling actually exists for: the merchant already HAS a device.
+  // The original is an assignment, so the reference is the WIRE asgn id (D-A)
+  // and the operator gets the merchant name beside it.
+  it('holds a soundbox row against a prior ASSIGNMENT, naming its wire asgn id and merchant', async () => {
+    const asgnId = await seedOriginalAssignment('prior@gscb', '3')
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-9', vpaValue: 'prior@gscb' })])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-sb2' })
+
+    expect(r.accepted).toBe(0)
+    expect(r.quarantined).toBe(1)
+    expect(r.duplicateVpaHeld).toEqual([
+      { rowNo: 1, duplicateOf: { kind: 'assignment', reference: asgnId, merchantDisplayName: 'Acme' } },
+    ])
+    expect(asgnId.startsWith('asgn_')).toBe(true)
+
+    const q = await quarantineDetail(clientKey, 1)
+    expect(q!.reason_code).toBe('duplicate_vpa_soundbox')
+    expect(q!.detail!.duplicateOf!.kind).toBe('assignment')
+    expect(q!.detail!.duplicateOf!.reference).toBe(asgnId)
+  })
+
+  // "in same upload or recent uploads" (BRD 5.1b): the original is still
+  // awaiting identity, so it is a pending_row and the reference is its
+  // correlation_id, which names the upload AND the line inside it. pending_row
+  // has no display-name column, so the name is honestly null rather than
+  // invented.
+  it('holds a soundbox row against a prior PENDING_ROW, naming its correlation id', async () => {
+    const first = randomUUID()
+    await commitBankFile(db, {
+      fileBytes: toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'earlier@gscb' })]),
+      filename: 'a.csv', clientKey: first, actorId: randomUUID(), traceId: 't-sb3a',
+    })
+
+    const second = randomUUID()
+    const r = await commitBankFile(db, {
+      fileBytes: toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'earlier@gscb' })]),
+      filename: 'b.csv', clientKey: second, actorId: randomUUID(), traceId: 't-sb3b',
+    })
+
+    expect(r.quarantined).toBe(1)
+    expect(r.duplicateVpaHeld).toEqual([
+      { rowNo: 1, duplicateOf: { kind: 'pending_row', reference: `${first}|1`, merchantDisplayName: null } },
+    ])
+  })
+
+  // The half of D-2 that did NOT change, asserted end to end rather than only
+  // via the migrated counter tests: a collateral-only repeat still ingests.
+  it('does NOT hold a soundbox=false repeat: it is accepted and only counted', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'sticker@gscb', soundbox: 'false' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'sticker@gscb', soundbox: 'false' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-sb4' })
+
+    expect(r.accepted).toBe(2)
+    expect(r.quarantined).toBe(0)
+    expect(r.duplicateVpa).toBe(1)
+    expect(r.duplicateVpaHeld).toEqual([])
+    expect(await count('quarantine_row')).toBe(0)
+  })
+
+  // A sticker row still SEEDS, even though it can never be held itself. A gate
+  // that only remembered soundbox rows would let a soundbox row slip through
+  // behind a collateral row for the same merchant.
+  it('a soundbox=false row still seeds: a later soundbox row for the same VPA is held', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'mixed@gscb', soundbox: 'false' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'mixed@gscb', soundbox: 'true' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-sb5' })
+
+    expect(r.accepted).toBe(1)
+    expect(r.quarantined).toBe(1)
+    expect(r.duplicateVpaHeld.map((h) => h.rowNo)).toEqual([2])
+  })
+
+  // Merchant identity is `v1:vpa:<lower(vpa)>` (D1 interim), so a casing
+  // difference is the SAME merchant. A case-sensitive gate would be defeated by
+  // one capital letter in the bank's export.
+  it('matches case-insensitively: an upper-case VPA is the same merchant', async () => {
+    const asgnId = await seedOriginalAssignment('Mixed.Case@GSCB', '3')
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'mixed.case@gscb' })])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-sb6' })
+
+    expect(r.quarantined).toBe(1)
+    expect(r.duplicateVpaHeld[0]!.duplicateOf.reference).toBe(asgnId)
+  })
+
+  // FIRST-ERROR-WINS is preserved. The operator is told the thing they can
+  // actually fix; the duplicate is still there afterwards and is caught on the
+  // re-submission (see the resolveQuarantineRow test below).
+  it('reports the FORMAT reason, not the duplicate, when a held row also fails a format rule', async () => {
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'both@gscb' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'both@gscb', contactName: '' }),
+    ])
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-sb7' })
+
+    expect(r.accepted).toBe(1)
+    expect(r.quarantined).toBe(1)
+    // The counter is evidence about the file, so the repeat is still counted.
+    expect(r.duplicateVpa).toBe(1)
+    // But the row was NOT held FOR the duplicate, so it must not be listed as
+    // such: it would send the operator looking for the wrong problem.
+    expect(r.duplicateVpaHeld).toEqual([])
+
+    const q = await quarantineDetail(clientKey, 2)
+    expect(q!.reason_code).toBe('missing_contact_name')
+    expect(q!.detail).toBeNull()
+  })
+
+  it('readQuarantineQueue exposes the detail, so the ops queue can name the original', async () => {
+    const asgnId = await seedOriginalAssignment('queue@gscb', '3')
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'queue@gscb' })])
+    await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-sb8' })
+
+    const open = await readQuarantineQueue(db, { includeResolved: false })
+    const held = open.find((q) => q.reasonCode === 'duplicate_vpa_soundbox')
+    expect(held).toBeDefined()
+    expect(held!.detail!.duplicateOf).toEqual({ kind: 'assignment', reference: asgnId, merchantDisplayName: 'Acme' })
+
+    // Every other reason carries no detail at all, so a null there is normal and
+    // not a missing write.
+    await db.$executeRaw`
+      INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+      VALUES ('plain-file', 1, ${'redacted:bank_request'}, 'missing_contact_name')
+    `
+    const all = await readQuarantineQueue(db, { includeResolved: true })
+    expect(all.find((q) => q.fileId === 'plain-file')!.detail).toBeNull()
+  })
+
+  // The per-row fallback (`duplicateVpaOriginal` left undefined) earns its keep
+  // here: resolveQuarantineRow knows nothing about the gate, yet a corrected row
+  // that is STILL a duplicate re-quarantines with a named original.
+  it('resolveQuarantineRow re-quarantines a corrected row that is still a duplicate', async () => {
+    const asgnId = await seedOriginalAssignment('resolve@gscb', '3')
+    const seeded = await db.$queryRaw<{ id: string }[]>`
+      INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+      VALUES ('res-file', 1, ${'redacted:bank_request'}, 'missing_contact_name')
+      RETURNING id
+    `
+    const res = await resolveQuarantineRow(db, {
+      quarantineId: seeded[0]!.id,
+      // The contact name is fixed, but the VPA still belongs to a merchant who
+      // already has a device.
+      correctedRow: validRow({ fileId: 'res-corrected', rowNo: 1, vpaValue: 'resolve@gscb', qrValue: 'upi://pay?pa=resolve@gscb' }),
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-sb9',
+    })
+    expect(res.outcome).toBe('quarantined')
+
+    const q = await db.$queryRaw<{ reason_code: string; detail: { duplicateOf?: { reference: string } } | null }[]>`
+      SELECT reason_code, detail FROM quarantine_row WHERE file_id = 'res-corrected' AND row_no = 1
+    `
+    expect(q[0]!.reason_code).toBe('duplicate_vpa_soundbox')
+    expect(q[0]!.detail!.duplicateOf!.reference).toBe(asgnId)
+    // No pending_row was created for it: a held row does not ingest.
+    expect(await count('pending_row')).toBe(0)
+  })
+})
+
+// PREVIEW PARITY is the whole point of keeping duplicateVpaVerdicts pure: a
+// preview that showed a row as valid and then quarantined it on commit is
+// exactly the surprise a preview exists to prevent.
+describe('soundbox duplicate-VPA hold (ruling 2026-08-10): previewBankFile parity', () => {
+  it('previews a row against a seeded assignment as INVALID, naming the original', async () => {
+    const asgnId = await seedOriginalAssignment('pv1@gscb', '3')
+    const csv = toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'pv1@gscb' })])
+    const res = await previewBankFile(db, csv, 'r.csv')
+
+    expect(res.summary).toEqual({ total: 1, valid: 0, invalid: 1 })
+    expect(res.rows[0]!.errors).toEqual(['duplicate_vpa_soundbox'])
+    expect(res.rows[0]!.duplicateOf).toEqual({ kind: 'assignment', reference: asgnId, merchantDisplayName: 'Acme' })
+    // A SIBLING of `row`, never inside it: the portal derives its preview
+    // columns reflectively from Object.keys(row).
+    expect(Object.keys(res.rows[0]!.row)).not.toContain('duplicateOf')
+  })
+
+  it('previews a within-file pair as first valid, second invalid, exactly as the commit resolves it', async () => {
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'pv2@gscb' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'pv2@gscb' }),
+    ])
+    const res = await previewBankFile(db, csv, 'r.csv')
+    expect(res.rows[0]!.valid).toBe(true)
+    expect(res.rows[1]!.valid).toBe(false)
+    expect(res.rows[1]!.duplicateOf!.kind).toBe('file_row')
+    expect(res.rows[1]!.duplicateOf!.reference).toBe('1')
+
+    // And the commit reaches the SAME verdict on the same bytes.
+    const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-pv2' })
+    expect(r.accepted).toBe(1)
+    expect(r.quarantined).toBe(1)
+    expect(r.duplicateVpaHeld.map((h) => h.rowNo)).toEqual([2])
+  })
+
+  it('previews a soundbox=false repeat as VALID: the gate is soundbox-only on both surfaces', async () => {
+    const csv = toCsv(REQUEST_HEADERS, [
+      requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'pv3@gscb', soundbox: 'false' }),
+      requestCells({ bankMerchantReference: 'BM-2', vpaValue: 'pv3@gscb', soundbox: 'false' }),
+    ])
+    const res = await previewBankFile(db, csv, 'r.csv')
+    expect(res.summary).toEqual({ total: 2, valid: 2, invalid: 0 })
+    expect(res.rows.every((row) => row.duplicateOf === undefined)).toBe(true)
+  })
+
+  // The preview now READS, so persist-nothing has to be re-proven rather than
+  // assumed: a read is not persistence, and nothing about the write plane moved.
+  it('still persists NOTHING even though it now reads the seed', async () => {
+    await seedOriginalAssignment('pv4@gscb', '3')
+    const before = {
+      pending: await count('pending_row'),
+      quarantine: await count('quarantine_row'),
+      ingest: await count('ingest_file'),
+      outbox: await count('outbox'),
+      inbox: await count('inbox'),
+    }
+    const csv = toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'pv4@gscb' })])
+    const res = await previewBankFile(db, csv, 'r.csv')
+    expect(res.rows[0]!.valid).toBe(false)
+
+    expect(await count('pending_row')).toBe(before.pending)
+    expect(await count('quarantine_row')).toBe(before.quarantine)
+    expect(await count('ingest_file')).toBe(before.ingest)
+    expect(await count('outbox')).toBe(before.outbox)
+    expect(await count('inbox')).toBe(before.inbox)
   })
 })
 

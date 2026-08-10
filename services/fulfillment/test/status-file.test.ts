@@ -13,7 +13,10 @@ const TENANT = toUuid(newId('tnnt'))
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE shpt_status_event, courier_status_exception, shpt, vndr, outbox, inbox CASCADE',
+    // `unit` and `pending_pool_entry` joined the list when the collateral-only
+    // delivery test below arrived: it needs a shipment with a collateral link
+    // and provably zero units, which is only meaningful against a clean table.
+    'TRUNCATE shpt_status_event, courier_status_exception, shpt, unit, pending_pool_entry, vndr, outbox, inbox CASCADE',
   )
 })
 // Truncating ONLY in beforeEach leaves whatever the FINAL test inserted sitting
@@ -23,7 +26,10 @@ beforeEach(async () => {
 // is not demo data and must not outlive the test.
 afterAll(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE shpt_status_event, courier_status_exception, shpt, vndr, outbox, inbox CASCADE',
+    // `unit` and `pending_pool_entry` joined the list when the collateral-only
+    // delivery test below arrived: it needs a shipment with a collateral link
+    // and provably zero units, which is only meaningful against a clean table.
+    'TRUNCATE shpt_status_event, courier_status_exception, shpt, unit, pending_pool_entry, vndr, outbox, inbox CASCADE',
   )
   await db.$disconnect()
 })
@@ -160,5 +166,84 @@ describe('batch courier status-file ingest', () => {
     expect(r2.deduped).toBe(true)
     expect(await trailCount()).toBe(1)
     expect(await factCount()).toBe(1)
+  })
+
+  // VERIFY-NO-CHANGE for the collateral parcel (one dispatch id can travel
+  // under two AWBs, ruled 2026-08-10). A collateral-only shpt has ZERO units by
+  // construction, so a DELIVERED on it moves no device. That is not a gap being
+  // papered over, it is the honest consequence of not birthing a Unit for
+  // collateral: nothing exists today that this loses. What must NOT happen is a
+  // throw, a stalled shipment, or a device on some OTHER parcel being dragged
+  // along, and this pins all three.
+  //
+  // The recorded deferral: the collateral parcel's own carrier lifecycle (a
+  // real D106 quantity-line unit per product type) is a separate decision.
+  it('a courier DELIVERED on a COLLATERAL-ONLY shipment advances the shipment, moves zero units, and does not throw', async () => {
+    const { vndrWire, claim } = await seedCourier()
+    const courierUuid = toUuid(vndrWire)
+    await seedShipment('AWB-COLLATERAL', courierUuid)
+    await seedShipment('AWB-OTHER-PARCEL', courierUuid)
+
+    const collateralShptUuid = (
+      await db.$queryRaw<{ id: string }[]>`SELECT id::text AS id FROM shpt WHERE awb = 'AWB-COLLATERAL'`
+    )[0]!.id
+    const otherShptUuid = (
+      await db.$queryRaw<{ id: string }[]>`SELECT id::text AS id FROM shpt WHERE awb = 'AWB-OTHER-PARCEL'`
+    )[0]!.id
+
+    // the collateral link: an assignment whose standee travels on the
+    // collateral parcel, with NO unit pointing at it.
+    const asgnUuid = toUuid(newId('asgn'))
+    await db.$executeRaw`
+      INSERT INTO pending_pool_entry (
+        asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
+        merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+        ship_to_address, qr_value, vpa_value, pool_status, dispatch_state, collateral_shipment,
+        source_event_id, trace_id, updated_at
+      ) VALUES (
+        ${asgnUuid}::uuid, ${TENANT}::uuid, ${PROGRAM}::uuid, ${toUuid(newId('mrch'))}::uuid,
+        true, 1, 0, true, 'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
+        'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', 'SENT_TO_VENDOR',
+        ${collateralShptUuid}::uuid, 'file-coll|1', 'trace-coll-status', now()
+      )
+    `
+
+    // a CONTROL device on the OTHER parcel: it must not move.
+    const unitUuid = toUuid(newId('unit'))
+    await db.$executeRaw`
+      INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, shipment, updated_at)
+      VALUES (${unitUuid}::uuid, 'SERIALIZED', 'SOUNDBOX', ${toUuid(newId('vndr'))}::uuid, 'DISPATCHED',
+              'SER-CONTROL', '{}'::jsonb, ${otherShptUuid}::uuid, now())
+    `
+
+    const res = await ingestStatusFile(db, file(vndrWire, [
+      { awb: 'AWB-COLLATERAL', status: 'DELIVERED', courierTimestamp: '2026-08-10T12:00:00.000Z' },
+    ], 'sf-collateral'), claim, 'trace-sf-collateral')
+
+    expect(res.rejected).toBeUndefined()
+    expect(res.quarantined).toBe(0)
+    expect(res.advanced).toBe(1)
+    expect(await statusOf('AWB-COLLATERAL')).toBe('DELIVERED')
+    expect(await trailCount()).toBe(1)
+    expect(await factCount()).toBe(1)
+
+    // ZERO units on that parcel to move, and the control device on the other
+    // parcel was not touched.
+    const onCollateral = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM unit WHERE shipment = ${collateralShptUuid}::uuid
+    `
+    expect(Number(onCollateral[0]!.n)).toBe(0)
+    const control = await db.$queryRaw<{ status: string }[]>`
+      SELECT status FROM unit WHERE id = ${unitUuid}::uuid
+    `
+    expect(control[0]!.status).toBe('DISPATCHED')
+
+    // the collateral link itself is untouched by a carrier transition.
+    const entry = await db.$queryRaw<{ collateral_shipment: string | null; dispatch_state: string | null }[]>`
+      SELECT collateral_shipment::text AS collateral_shipment, dispatch_state
+      FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
+    `
+    expect(entry[0]!.collateral_shipment).toBe(collateralShptUuid)
+    expect(entry[0]!.dispatch_state).toBe('SENT_TO_VENDOR')
   })
 })

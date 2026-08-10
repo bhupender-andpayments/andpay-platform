@@ -11,8 +11,11 @@ import { enterWriteRole, enterWriteScope } from './write-context.js'
 import {
   ingestRequestRowWithinTx,
   requestRowRejectReason,
+  seedKnownVpaOriginals,
+  duplicateVpaVerdicts,
   type BankRequestRow,
   type RequestRowRejectReason,
+  type DuplicateVpaOriginal,
 } from './ingest.js'
 import { ingestDamageRowWithinTx, CASE_STATUS_VALUES, type BankDamageRow } from './damage.js'
 import {
@@ -86,6 +89,18 @@ export interface PreviewRowResult {
   valid: boolean
   errors: RequestRowRejectReason[]
   row: BankRequestRow
+  /**
+   * Present only on a `duplicate_vpa_soundbox` verdict (ruling 2026-08-10):
+   * the record this row collides with, so the preview can say "VPA -> original"
+   * instead of just "invalid".
+   *
+   * A SIBLING of `row` and never a field inside it, deliberately: the ops portal
+   * derives its preview table columns reflectively from
+   * `Object.keys(rows[0].row)` (BankUploadPage.tsx), so anything added to `row`
+   * would silently become a new column of the bank-file table, and this is not a
+   * bank-file column.
+   */
+  duplicateOf?: DuplicateVpaOriginal
 }
 
 export interface BankPreviewResult {
@@ -143,21 +158,46 @@ function opsAllow(args: {
 // Phase 2 Task 2 (D-K): the SERVER-SIDE preview of a bank request file. Parses
 // the raw file via the Task 1 adapter and runs the SAME S8 row validators the
 // commit path runs (requestRowRejectReason, the single source in ingest.ts),
-// returning a per-row valid/invalid verdict plus a summary. It is PURE and
-// read-only in the strongest sense: it opens NO transaction, touches NO DB
-// (no pending_row, quarantine_row, ingest_file, inbox, or outbox is written or
-// even read), and logs NOTHING. The parsed rows (bank PII) live only in the
-// returned object. The fileId here is a fixed non-identifying placeholder: it
-// only ever appears inside the returned rows' correlation shape and never
-// reaches a store, so no clientKey and no client-supplied value is needed.
-export async function previewBankFile(fileBytes: Uint8Array, filename: string): Promise<BankPreviewResult> {
+// returning a per-row valid/invalid verdict plus a summary. The parsed rows
+// (bank PII) live only in the returned object. The fileId here is a fixed
+// non-identifying placeholder: it only ever appears inside the returned rows'
+// correlation shape and never reaches a store, so no clientKey and no
+// client-supplied value is needed.
+//
+// PERSIST-NOTHING, BUT NO LONGER DB-FREE (ruling 2026-08-10). This used to open
+// no transaction and touch no DB at all. The soundbox duplicate-VPA gate is a
+// verdict the commit path will reach, so a preview that could not see it would
+// show a row as valid and then quarantine it on commit, which is exactly the
+// surprise a preview exists to prevent. It therefore READS (never writes) the
+// SAME seed the commit path reads, via seedKnownVpaOriginals under the
+// read-only tms_ops_read role. Nothing else changed: no pending_row,
+// quarantine_row, ingest_file, inbox or outbox row is written, no write role is
+// entered, no 6e is enqueued, and NOTHING is logged.
+//
+// This is the posture previewDamageFile below already established for the same
+// reason ("a pure preview cannot do this"), and a READ is not persistence.
+export async function previewBankFile(db: TmsDb, fileBytes: Uint8Array, filename: string): Promise<BankPreviewResult> {
   const parsed = await parseBankRequestFile(fileBytes, filename, 'preview')
   if (parsed.errors.length > 0) {
     return { rows: [], summary: { total: 0, valid: 0, invalid: 0 }, structuralErrors: parsed.errors }
   }
+  const seed = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return seedKnownVpaOriginals(tx, parsed.rows.map((r) => r.vpaValue))
+  })
+  // The SAME pure walk the commit path runs over the SAME seed, so preview and
+  // commit cannot disagree about which rows will be held.
+  const verdicts = duplicateVpaVerdicts(parsed.rows, seed)
   const rows: PreviewRowResult[] = parsed.rows.map((row) => {
+    // Format still wins first, mirroring ingestRequestRowWithinTx's own order,
+    // so the preview names the error the operator can actually fix.
     const reason = requestRowRejectReason(row)
-    return { rowNo: row.rowNo, valid: reason === null, errors: reason === null ? [] : [reason], row }
+    if (reason !== null) return { rowNo: row.rowNo, valid: false, errors: [reason], row }
+    const held = verdicts.get(row.rowNo)
+    if (held !== undefined) {
+      return { rowNo: row.rowNo, valid: false, errors: ['duplicate_vpa_soundbox'], row, duplicateOf: held }
+    }
+    return { rowNo: row.rowNo, valid: true, errors: [], row }
   })
   const valid = rows.reduce((n, r) => n + (r.valid ? 1 : 0), 0)
   return { rows, summary: { total: rows.length, valid, invalid: rows.length - valid }, structuralErrors: [] }
@@ -179,7 +219,21 @@ export async function previewBankFile(fileBytes: Uint8Array, filename: string): 
 export async function commitBankFile(
   db: TmsDb,
   args: { fileBytes: Uint8Array; filename: string; clientKey: string; actorId: string; traceId: string },
-): Promise<{ accepted: number; quarantined: number; duplicate: number; qrMalformed: number; duplicateVpa: number; duplicateMobile: number; fileId: string }> {
+): Promise<{
+  accepted: number
+  quarantined: number
+  duplicate: number
+  qrMalformed: number
+  duplicateVpa: number
+  duplicateMobile: number
+  // Ruling 2026-08-10, ADDITIVE: the soundbox rows this file HELD for a repeat
+  // VPA, each naming the record it collides with. Separate from duplicateVpa
+  // (which stays a count of every repeat, held or not) because the operator
+  // needs the row numbers to act on, and because an empty list is the honest
+  // shape for a file that repeated a VPA on sticker/standee rows only.
+  duplicateVpaHeld: { rowNo: number; duplicateOf: DuplicateVpaOriginal }[]
+  fileId: string
+}> {
   const fileId = args.clientKey
   const parsed = await parseBankRequestFile(args.fileBytes, args.filename, fileId)
   if (parsed.errors.length > 0) throw new BankFileParseError(parsed.errors)
@@ -216,6 +270,19 @@ export async function commitBankFile(
   // count is the only answer that serves both, which is why the BRD names the
   // duplicate rule and the additional-soundbox rule in a single sentence.
   //
+  // SUPERSEDED FOR SOUNDBOX ROWS (ruling 2026-08-10). The flag-never-gate
+  // reading above still stands for a STICKER/STANDEE row: those are never
+  // rejected for a repeat VPA and keep these counters exactly as they were. A
+  // SOUNDBOX row on a VPA we already serve is now HELD instead
+  // (duplicate_vpa_soundbox, see ingest.ts), because a second device shipping to
+  // a merchant who already has one is worth a human look BEFORE it ships, not
+  // after.
+  //
+  // The COUNTERS below are unchanged for both kinds, held or not, exactly like
+  // qrMalformed: they are evidence about what the FILE contained, and dropping a
+  // held row from the tally would understate the repeat rate in the bank's
+  // export. The list of held rows rides separately, on duplicateVpaHeld.
+  //
   // Counted per ROW like qrMalformed, and the FIRST sighting is not a repeat:
   // only the second and later occurrences count, so a clean file reports 0.
   let duplicateVpa = 0
@@ -235,6 +302,11 @@ export async function commitBankFile(
   // across different VPAs, while zero VPAs repeat. This is the flag that
   // actually fires on real data.
   let duplicateMobile = 0
+  // Ruling 2026-08-10: the held soundbox rows, named. Declared out here beside
+  // the counters so it survives the transaction, and left EMPTY on a client-key
+  // replay for the same reason the counters are zero then (the onceWithin body
+  // never runs).
+  const duplicateVpaHeld: { rowNo: number; duplicateOf: DuplicateVpaOriginal }[] = []
   await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
     await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:upload-bank-file'), async () => {
@@ -266,6 +338,18 @@ export async function commitBankFile(
         }
       }
 
+      // Ruling 2026-08-10, the soundbox duplicate-VPA gate. A SECOND seed read
+      // rather than a reuse of seenVpa above: that set is case-sensitive, keyed
+      // on the raw vpa_value and mixed with the mobile walk, whereas the gate
+      // keys on lower(vpa_value) and needs the ORIGINAL record (which table, its
+      // reference, the merchant name), not merely "seen". Merging them would
+      // make the counter's own semantics depend on the gate's, and the counters
+      // must stay byte-identical.
+      const vpaOriginals = await seedKnownVpaOriginals(tx, parsed.rows.map((r) => r.vpaValue))
+      // Computed for the WHOLE file up front, from the same pure walk the
+      // preview runs, so the two surfaces cannot disagree.
+      const verdicts = duplicateVpaVerdicts(parsed.rows, vpaOriginals)
+
       for (const row of parsed.rows) {
         if (hasEncodedSeparator(row.qrValue)) qrMalformed += 1
         if (row.vpaValue !== '') {
@@ -282,8 +366,24 @@ export async function commitBankFile(
           next.add(row.vpaValue)
           seenMobile.set(row.mobile, next)
         }
-        const outcome = await ingestRequestRowWithinTx(tx, row, args.traceId)
+        const verdict = verdicts.get(row.rowNo) ?? null
+        const outcome = await ingestRequestRowWithinTx(tx, row, args.traceId, verdict)
         tally[outcome] += 1
+        // Held FOR the duplicate, not merely quarantined while also being one.
+        // All three conditions are load-bearing:
+        //   - `quarantined` and not 'duplicate': a row already quarantined under
+        //     this (file_id, row_no) writes nothing the second time, so listing
+        //     it would claim a hold this call did not make.
+        //   - a verdict existed: the row is a repeat at all.
+        //   - no format reason: format wins FIRST inside
+        //     ingestRequestRowWithinTx, so a duplicate row that also fails a
+        //     format rule is quarantined under the FORMAT reason, and naming it
+        //     here would send the operator looking for the wrong problem.
+        //     requestRowRejectReason is pure, so re-asking it costs nothing and
+        //     keeps this exact rather than inferred from the outcome alone.
+        if (outcome === 'quarantined' && verdict !== null && requestRowRejectReason(row) === null) {
+          duplicateVpaHeld.push({ rowNo: row.rowNo, duplicateOf: verdict })
+        }
       }
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the ingest.
       // A bank-file upload has no single target row id (it is file-level), so
@@ -301,7 +401,7 @@ export async function commitBankFile(
       )
     })
   })
-  return { ...tally, qrMalformed, duplicateVpa, duplicateMobile, fileId }
+  return { ...tally, qrMalformed, duplicateVpa, duplicateMobile, duplicateVpaHeld, fileId }
 }
 
 // Phase 7 Task 7 (L11, FR08-3 decision item 11): the damage-file PREVIEW,

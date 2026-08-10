@@ -47,7 +47,7 @@ async function mint(claim: Record<string, unknown> = {}): Promise<string> {
     .sign(privateKey)
 }
 
-// Seeds one BORN batch owned by `vndrWire` with one pending_pool_entry
+// Seeds one batch owned by `vndrWire` with one pending_pool_entry
 // (carrying recipient PII) and one composed_artifact row, exactly the shape
 // vendor-pull.test.ts's own seed() uses.
 async function seedBatch(vndrWire: string): Promise<{ btchWire: string }> {
@@ -57,8 +57,8 @@ async function seedBatch(vndrWire: string): Promise<{ btchWire: string }> {
   const btchUuid = toUuid(newId('btch'))
 
   await fulfillmentDb.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, print_vndr, status, trigger_reason, triggered_by_actor, unit_count, updated_at)
-    VALUES (${btchUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${vndrUuid}::uuid, 'BORN', 'LOT_SIZE', NULL, 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+    VALUES (${btchUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${vndrUuid}::uuid, 'LOT_SIZE', NULL, 1, now())
   `
   const entry = toUuid(newId('asgn'))
   await fulfillmentDb.$executeRaw`
@@ -190,18 +190,35 @@ describe('GET /vendor/batch/:btchId/package (spec 14b task 7, FR-04 pull)', () =
   })
 })
 
-describe('GET /vendor/batch/:btchId/collateral/:artifactType (Phase 4 Task 4b, FR-04)', () => {
-  it('an own-vndr pull is authorized (not 403): 404 for a product type the batch has no artifact of', async () => {
+describe('GET /vendor/batch/:btchId/collateral/:collateralKey (Phase 4 Task 4b, FR-04)', () => {
+  it('an own-vndr pull is authorized (not 403): 404 for a delivery group the batch has nothing in', async () => {
     const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
     const { btchWire } = await seedBatch(vndrWire)
     const token = await mint({ scope: { vndr: vndrWire } })
 
-    // The seed carries only a SOUNDBOX_IMG artifact; STANDEE_IMG has no row, so
-    // assembleTypePdf returns null -> 404 (a legitimate empty, NOT a fault).
-    // Being 404 rather than 403 proves the own-vndr authorize allowed. Real-PDF
-    // streaming and the fault path are covered by the fulfillment unit tests.
+    // The seed carries only a SOUNDBOX_IMG artifact, so the COLLATERAL group
+    // (sticker plus standee) has nothing and assembleGroupPdf returns null ->
+    // 404 (a legitimate empty, NOT a fault). Being 404 rather than 403 proves
+    // the own-vndr authorize allowed. Real-PDF streaming and the fault path are
+    // covered by the fulfillment unit tests.
+    //
+    // The legacy artifact-type key must land on that SAME group, which is what
+    // keeps a URL a vendor already holds working.
+    for (const key of ['COLLATERAL', 'STANDEE_IMG', 'STICKER_IMG']) {
+      const res = await request(app.getHttpServer())
+        .get(`/vendor/batch/${btchWire}/collateral/${key}`)
+        .set('Authorization', `Bearer ${token}`)
+      expect(res.status).toBe(404)
+    }
+  })
+
+  it('an unknown key still 404s through the same null path, rather than erroring', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const { btchWire } = await seedBatch(vndrWire)
+    const token = await mint({ scope: { vndr: vndrWire } })
+
     const res = await request(app.getHttpServer())
-      .get(`/vendor/batch/${btchWire}/collateral/STANDEE_IMG`)
+      .get(`/vendor/batch/${btchWire}/collateral/NOT_A_GROUP`)
       .set('Authorization', `Bearer ${token}`)
 
     expect(res.status).toBe(404)
@@ -213,10 +230,13 @@ describe('GET /vendor/batch/:btchId/collateral/:artifactType (Phase 4 Task 4b, F
     const { btchWire } = await seedBatch(ownerVndrWire)
     const token = await mint({ scope: { vndr: otherVndrWire } })
 
-    const res = await request(app.getHttpServer())
-      .get(`/vendor/batch/${btchWire}/collateral/SOUNDBOX_IMG`)
-      .set('Authorization', `Bearer ${token}`)
-
-    expect(res.status).toBe(403)
+    // Widening the path parameter to a delivery group must not have loosened
+    // this: the group is resolved AFTER the authorize, never before.
+    for (const key of ['SOUNDBOX', 'COLLATERAL', 'SOUNDBOX_IMG']) {
+      const res = await request(app.getHttpServer())
+        .get(`/vendor/batch/${btchWire}/collateral/${key}`)
+        .set('Authorization', `Bearer ${token}`)
+      expect(res.status).toBe(403)
+    }
   })
 })

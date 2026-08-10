@@ -33,7 +33,7 @@ export interface EdgeDeps {
   // (buildEdgeDepsFromEnv).
   vendorPortalOrigin: string
   // Phase 4 (P4-D6): the binary-asset store used by the dispatch-package
-  // per-type PDF pull (assembleTypePdf reads the stored collateral bytes).
+  // collateral PDF pull (assembleGroupPdf reads the stored collateral bytes).
   // Core infra like fulfillmentDb; the DEV adapter (FilesystemAssetStore) is the
   // default, an S3 adapter later (same seam as ops-edge).
   assetStore: AssetStore

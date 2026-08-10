@@ -1,0 +1,33 @@
+-- The SECOND AWB a dispatch id can travel under.
+--
+-- A bank file row becomes one assignment, and that assignment can order a
+-- soundbox AND a standee. The print vendor does not always ship those together:
+-- the kit goes under one AWB, the standee under another. dispatch_row has ONE
+-- awb column and one shpt_id column, so the second consignment had nowhere to
+-- land and a report showed the merchant's standee as if it had never shipped.
+--
+-- WHY TWO NEW COLUMNS RATHER THAN REUSING awb / shpt_id. Those two describe the
+-- parcel the DEVICE travelled in, and every other column on this row is
+-- consistent with that reading: courier_status, delivery_date and the pipeline
+-- rollup all follow that same parcel. Overwriting them with a collateral AWB
+-- would make "delivered" mean the standee arrived while the soundbox is still in
+-- transit. Separate columns keep the two parcels separately answerable, which is
+-- what the operator is actually asking when they ask where the standee is.
+--
+-- Both NULLABLE and they stay nullable: most dispatches ship once, and NULL here
+-- means "no separate collateral parcel", which is a real state, not missing data.
+--
+-- TEXT, not uuid, matching awb and shpt_id on this same table: the modeled layer
+-- stores the WIRE ids exactly as the facts carry them, and never re-derives one.
+--
+-- Backfill is deliberately NOT done, for the same reason 20260808210000 gave:
+-- the modeled layer is rebuildable from the append-only raw_event log by
+-- construction (rebuildDispatchRows folds the SAME applyFact over the SAME
+-- ordered rows), so existing rows gain these values from a rebuild rather than
+-- from a hand-written UPDATE that could drift from the fold.
+--
+-- Additive only (S23): two nullable columns, no DROP, no ALTER of an existing
+-- column, no RLS or grant change (analytics_write and analytics_read already
+-- hold table-level privileges on dispatch_row).
+ALTER TABLE analytics.dispatch_row ADD COLUMN IF NOT EXISTS collateral_awb TEXT;
+ALTER TABLE analytics.dispatch_row ADD COLUMN IF NOT EXISTS collateral_shpt_id TEXT;

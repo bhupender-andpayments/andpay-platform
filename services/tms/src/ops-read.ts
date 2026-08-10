@@ -9,11 +9,31 @@ import { toDamageReasonDto, type DamageReasonDbRow, type DamageReasonRow } from 
 // program_ids GUC to bind, so this is a plain `SET LOCAL ROLE` with no
 // analog to `enterReadScope`. Reads ONLY the tms schema (C4): no other
 // context's schema, no cross-context source import, no HTTP dependency.
+/**
+ * The per-reason structured evidence on a quarantine record (ruling
+ * 2026-08-10). Optional everywhere: only `duplicate_vpa_soundbox` writes it
+ * today, and every other reason leaves `detail` null.
+ *
+ * `duplicateOf` names the record the held soundbox row collides with, so the
+ * ops queue can show "VPA -> original" rather than making an operator go and
+ * find it. `kind` is typed as a plain string union matching
+ * services/tms/src/ingest.ts DuplicateVpaOriginal; the value is written by this
+ * context and read back by it, so no cross-context contract is involved.
+ */
+export interface QuarantineRowDetail {
+  duplicateOf?: {
+    kind: 'assignment' | 'pending_row' | 'file_row'
+    reference: string
+    merchantDisplayName: string | null
+  }
+}
+
 export interface QuarantineRowView {
   id: string
   fileId: string
   rowNo: number
   reasonCode: string
+  detail: QuarantineRowDetail | null
   createdAt: Date
   resolvedAt: Date | null
   resolvedByActor: string | null
@@ -26,6 +46,9 @@ interface QuarantineRowDbRow {
   file_id: string
   row_no: number
   reason_code: string
+  // jsonb, so the driver hands back the parsed value already; null for every
+  // reason that carries no evidence, which is all of them but one today.
+  detail: QuarantineRowDetail | null
   created_at: Date
   resolved_at: Date | null
   resolved_by_actor: string | null
@@ -37,6 +60,7 @@ function toDto(r: QuarantineRowDbRow): QuarantineRowView {
     fileId: r.file_id,
     rowNo: r.row_no,
     reasonCode: r.reason_code,
+    detail: r.detail,
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
     resolvedByActor: r.resolved_by_actor,
@@ -250,12 +274,12 @@ export async function readQuarantineQueue(
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
     return args.includeResolved
       ? await tx.$queryRaw<QuarantineRowDbRow[]>`
-          SELECT id, file_id, row_no, reason_code, created_at, resolved_at, resolved_by_actor
+          SELECT id, file_id, row_no, reason_code, detail, created_at, resolved_at, resolved_by_actor
           FROM quarantine_row
           ORDER BY created_at
         `
       : await tx.$queryRaw<QuarantineRowDbRow[]>`
-          SELECT id, file_id, row_no, reason_code, created_at, resolved_at, resolved_by_actor
+          SELECT id, file_id, row_no, reason_code, detail, created_at, resolved_at, resolved_by_actor
           FROM quarantine_row
           WHERE resolved_at IS NULL
           ORDER BY created_at
