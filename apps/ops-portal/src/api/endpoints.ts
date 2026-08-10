@@ -1,9 +1,11 @@
-import type { ApiRequest } from './client.js'
-import { getAccessToken } from './tokenStore.js'
+import type { ApiRequest, ApiResult } from './client.js'
 import { ApiError } from './errors.js'
-import { opsBase } from '../lib/env.js'
 
-type Client = { request<T>(req: ApiRequest): Promise<T> }
+type Client = {
+  request<T>(req: ApiRequest): Promise<T>
+  // Exposes status and headers for the binary downloads (Content-Disposition).
+  requestResult(req: ApiRequest): Promise<ApiResult>
+}
 
 // The real /session/login contract (apps/auth-edge/src/login.controller.ts):
 // body is { handle, password, totp } and the response is ONLY { accessToken }.
@@ -72,10 +74,10 @@ export function logout(c: Client) {
 // instead of the JSON shape above. D100: the freshness watermark rides the
 // JSON body's `watermark.asOf` field on every read that returns one; the
 // plain tiles route carries no header (and never needs one, since its own
-// body already carries `watermark`). The client cannot read response headers
-// today regardless (ApiResult.headers is never surfaced past sendOnce to a
-// caller of `request`), so the body is the only place any caller can read it
-// from.
+// body already carries `watermark`). `request` surfaces only the parsed body,
+// so the body remains the only place these callers read it from. (Headers ARE
+// reachable now, via the client's `requestResult`, but only the binary
+// downloads need them; nothing here changed.)
 // -----------------------------------------------------------------------
 
 /**
@@ -848,18 +850,29 @@ export function deviceInventoryStructuralReasons(err: unknown): DeviceInventoryS
 // File.size BEFORE any network call, so an oversized file never posts.
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
-function opsBaseUrl(): string {
-  return opsBase()
-}
-
-// The shared raw multipart POST (mirrors ReturnUploadPage's fetch): a
-// FormData `file` part, an optional set of additional plain-string form
+// The shared multipart POST: a FormData `file` part, an optional set of
+// additional plain-string form
 // fields (device-inventory's `manufacturerVndrId`), a Bearer header read
 // straight off tokenStore (never the JSON client, which always sets
 // Content-Type: application/json), and an optional Idempotency-Key header
 // for the commit routes (a preview route never sends one; it is a pure
 // read).
+// ROUTED THROUGH THE CLIENT, NOT RAW fetch.
+//
+// This used to call `fetch` directly, which meant the upload routes were the
+// only calls in the portal that did NOT get client.ts's refresh-on-401-and-
+// retry. With a 600 second access token that made every upload fail about ten
+// minutes after the last refresh, with a hard 401 and no retry. It was found by
+// driving the real system: a bank file would not save, and auth.authz_audit
+// showed no ops:upload-bank-file decision at all, only `authenticate` DENYs.
+// The request never reached the authorization gate.
+//
+// Going through the client also fixes a second defect for free. The old line
+// was `Bearer ${getAccessToken()}` with no null check, and client.ts sets the
+// token to null after a failed refresh, so a later upload sent the literal
+// string "Bearer null". sendOnce omits the header entirely when no token is held.
 async function postFile<T>(
+  c: Client,
   path: string,
   file: File,
   idempotencyKey?: string,
@@ -870,38 +883,35 @@ async function postFile<T>(
   if (extraFields !== undefined) {
     for (const [key, value] of Object.entries(extraFields)) form.append(key, value)
   }
-  const headers: Record<string, string> = { Authorization: `Bearer ${getAccessToken()}` }
-  if (idempotencyKey !== undefined) headers['Idempotency-Key'] = idempotencyKey
-  const res = await fetch(`${opsBaseUrl()}${path}`, { method: 'POST', headers, body: form })
-  const text = await res.text()
-  if (!res.ok) {
-    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
-  }
-  return (text === '' ? null : JSON.parse(text)) as T
+  // The SAME FormData instance is reused if the client retries after a refresh.
+  // That is deliberate and safe: FormData holds the File by reference and is
+  // re-serialised per attempt, so the retry carries the whole payload again.
+  return c.request<T>({ method: 'POST', path, formBody: form, ...(idempotencyKey !== undefined ? { idempotencyKey } : {}) })
 }
 
-export function previewBank(file: File): Promise<BankPreviewResult> {
-  return postFile<BankPreviewResult>('/ops/uploads/bank/preview', file)
+export function previewBank(c: Client, file: File): Promise<BankPreviewResult> {
+  return postFile<BankPreviewResult>(c, '/ops/uploads/bank/preview', file)
 }
 
-export function commitBank(file: File, idempotencyKey: string): Promise<BankCommitResult> {
-  return postFile<BankCommitResult>('/ops/uploads/bank/commit', file, idempotencyKey)
+export function commitBank(c: Client, file: File, idempotencyKey: string): Promise<BankCommitResult> {
+  return postFile<BankCommitResult>(c, '/ops/uploads/bank/commit', file, idempotencyKey)
 }
 
-export function previewDamage(file: File): Promise<DamagePreviewResult> {
-  return postFile<DamagePreviewResult>('/ops/uploads/damage/preview', file)
+export function previewDamage(c: Client, file: File): Promise<DamagePreviewResult> {
+  return postFile<DamagePreviewResult>(c, '/ops/uploads/damage/preview', file)
 }
 
-export function commitDamage(file: File, idempotencyKey: string): Promise<DamageCommitResult> {
-  return postFile<DamageCommitResult>('/ops/uploads/damage/commit', file, idempotencyKey)
+export function commitDamage(c: Client, file: File, idempotencyKey: string): Promise<DamageCommitResult> {
+  return postFile<DamageCommitResult>(c, '/ops/uploads/damage/commit', file, idempotencyKey)
 }
 
 export function commitDeviceInventory(
+  c: Client,
   file: File,
   manufacturerVndrId: string,
   idempotencyKey: string,
 ): Promise<DeviceInventoryUploadResult> {
-  return postFile<DeviceInventoryUploadResult>('/ops/uploads/device-inventory', file, idempotencyKey, {
+  return postFile<DeviceInventoryUploadResult>(c, '/ops/uploads/device-inventory', file, idempotencyKey, {
     manufacturerVndrId,
   })
 }
@@ -1016,40 +1026,54 @@ export interface DownloadedFile {
   filename: string
 }
 
-function filenameFromContentDisposition(res: Response, fallback: string): string {
-  const header = res.headers.get('Content-Disposition')
+function filenameFromContentDisposition(headers: Headers, fallback: string): string {
+  const header = headers.get('Content-Disposition')
   if (header === null) return fallback
   const match = /filename="([^"]+)"/.exec(header)
   return match?.[1] ?? fallback
 }
 
-export async function downloadDispatchExcel(btchId: string): Promise<DownloadedFile> {
-  const res = await fetch(`${opsBaseUrl()}/ops/batches/${btchId}/dispatch-excel`, {
-    headers: { Authorization: `Bearer ${getAccessToken()}` },
+// ROUTED THROUGH THE CLIENT, for the same reason the uploads above are: these
+// two called `fetch` directly and so were the last calls in the portal with no
+// refresh-on-401-and-retry. With a 600 second access token that made a
+// collateral or dispatch-excel download fail about ten minutes after the last
+// refresh, at exactly the point in the walkthrough an operator wants them.
+//
+// They use requestResult rather than request because a download needs the
+// response HEADERS (Content-Disposition carries the filename), which the
+// parsed-body contract of `request` cannot carry.
+export async function downloadDispatchExcel(c: Client, btchId: string): Promise<DownloadedFile> {
+  const r = await c.requestResult({
+    method: 'GET',
+    path: `/ops/batches/${btchId}/dispatch-excel`,
+    responseType: 'blob',
   })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
-  }
-  const blob = await res.blob()
-  return { blob, filename: filenameFromContentDisposition(res, `dispatch-${btchId}.xlsx`) }
+  return { blob: r.data as Blob, filename: filenameFromContentDisposition(r.headers, `dispatch-${btchId}.xlsx`) }
 }
 
 // 404 (no artifact of that type for the batch) is a real, non-error outcome
 // - the edge itself returns 404 deliberately (ops-read.controller.ts's
 // collateral route) rather than an empty/500 - so it is surfaced as `null`,
-// not thrown.
-export async function downloadCollateral(btchId: string, artifactType: string): Promise<DownloadedFile | null> {
-  const res = await fetch(`${opsBaseUrl()}/ops/batches/${btchId}/collateral/${artifactType}`, {
-    headers: { Authorization: `Bearer ${getAccessToken()}` },
-  })
-  if (res.status === 404) return null
-  if (!res.ok) {
-    const text = await res.text()
-    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+// not thrown. Going through the client means that 404 now arrives as a thrown
+// ApiError, so it is caught and translated back HERE. Only 404 is swallowed:
+// every other status, including the 401 the client could not rescue, still
+// surfaces.
+export async function downloadCollateral(
+  c: Client,
+  btchId: string,
+  artifactType: string,
+): Promise<DownloadedFile | null> {
+  try {
+    const r = await c.requestResult({
+      method: 'GET',
+      path: `/ops/batches/${btchId}/collateral/${artifactType}`,
+      responseType: 'blob',
+    })
+    return { blob: r.data as Blob, filename: filenameFromContentDisposition(r.headers, `${artifactType}-${btchId}.pdf`) }
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
   }
-  const blob = await res.blob()
-  return { blob, filename: filenameFromContentDisposition(res, `${artifactType}-${btchId}.pdf`) }
 }
 
 // -----------------------------------------------------------------------

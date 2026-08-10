@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   MAX_UPLOAD_BYTES,
@@ -29,6 +30,7 @@ import { FileDropZone } from '../../components/FileDropZone.js'
 // after fixing the source data simply re-runs preview on the new file.
 
 export function BankUploadPage() {
+  const { client } = useAuth()
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<BankPreviewResult | null>(null)
   const [commitResult, setCommitResult] = useState<BankCommitResult | null>(null)
@@ -48,7 +50,7 @@ export function BankUploadPage() {
     }
     setPreviewing(true)
     try {
-      const result = await previewBank(picked)
+      const result = await previewBank(client, picked)
       setFile(picked)
       setPreview(result)
     } catch (err) {
@@ -63,7 +65,7 @@ export function BankUploadPage() {
     setError(null)
     setCommitting(true)
     try {
-      const result = await commitBank(file, newIdempotencyKey())
+      const result = await commitBank(client, file, newIdempotencyKey())
       setCommitResult(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to commit the bank request file.')

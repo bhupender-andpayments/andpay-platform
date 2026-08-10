@@ -21,7 +21,16 @@ export interface ApiRequest {
   // with JSON.parse exactly as before. 'text' skips JSON.parse and returns the
   // raw response text, for a text/csv body that is not valid JSON. Nothing
   // else in sendOnce, attempt, or the 401/403 interceptors branches on this.
-  responseType?: 'json' | 'text'
+  // 'blob' returns the raw body for a binary download (xlsx, pdf). Like the
+  // multipart uploads, the download routes used to call fetch directly and so
+  // never got the 401 refresh-and-retry below.
+  responseType?: 'json' | 'text' | 'blob'
+  // Multipart uploads. Kept SEPARATE from `body` for two reasons: FormData must
+  // never be JSON.stringify'd, and the Content-Type must NOT be set by hand
+  // because it carries the multipart boundary the browser generates. Upload
+  // routes used to bypass this client entirely and call fetch directly, which
+  // silently opted them out of the 401 refresh-and-retry below.
+  formBody?: FormData
 }
 
 export interface ApiResult {
@@ -49,10 +58,22 @@ export async function sendOnce(deps: ApiClientDeps, req: ApiRequest): Promise<Ap
   const init: RequestInit = {
     method: req.method,
     headers,
-    ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
+    // formBody wins and is sent AS IS, with no Content-Type of ours: see the
+    // note on ApiRequest.formBody. A request carries one or the other, never both.
+    ...(req.formBody !== undefined
+      ? { body: req.formBody }
+      : req.body !== undefined
+        ? { body: JSON.stringify(req.body) }
+        : {}),
     ...(req.withCookie ? { credentials: 'include' } : {}),
   }
   const res = await fetch(`${base}${req.path}`, init)
+  // A binary body must not be consumed as text, and only a SUCCESSFUL one is
+  // the file. On any non-ok status the body is an error envelope, so it is read
+  // exactly as before and the interceptors below see the shape they expect.
+  if (req.responseType === 'blob' && res.ok) {
+    return { status: res.status, headers: res.headers, data: await res.blob() }
+  }
   const text = await res.text()
   const data = req.responseType === 'text' ? text : text === '' ? null : JSON.parse(text)
   return { status: res.status, headers: res.headers, data }
@@ -62,16 +83,16 @@ export function createApiClient(deps: ApiClientDeps) {
   // Refresh once on a 401, step up once on a gated 403. `alreadyRefreshed` and
   // `alreadySteppedUp` each bound their own interceptor to a single attempt per
   // logical request so a persistently-failing backend cannot loop.
-  async function attempt<T>(req: ApiRequest, alreadyRefreshed: boolean, alreadySteppedUp: boolean): Promise<T> {
+  async function attempt(req: ApiRequest, alreadyRefreshed: boolean, alreadySteppedUp: boolean): Promise<ApiResult> {
     const r = await sendOnce(deps, req)
-    if (r.status >= 200 && r.status < 300) return r.data as T
+    if (r.status >= 200 && r.status < 300) return r
 
     if (r.status === 401 && req.base !== 'auth') {
       if (!alreadyRefreshed) {
         const refreshed = await sendOnce(deps, { method: 'POST', path: '/session/refresh', base: 'auth', withCookie: true })
         if (refreshed.status >= 200 && refreshed.status < 300) {
           const tok = (refreshed.data as { accessToken?: string }).accessToken
-          if (typeof tok === 'string') { setAccessToken(tok); return attempt<T>(req, true, alreadySteppedUp) }
+          if (typeof tok === 'string') { setAccessToken(tok); return attempt(req, true, alreadySteppedUp) }
         }
       }
       // Either the refresh itself failed, or this is a retry that still got a
@@ -96,12 +117,20 @@ export function createApiClient(deps: ApiClientDeps) {
       const minted = await sendOnce(deps, { method: 'POST', path: '/session/stepup', base: 'auth', withCookie: true, body: { totp } })
       if (minted.status >= 200 && minted.status < 300) {
         const tok = (minted.data as { accessToken?: string }).accessToken
-        if (typeof tok === 'string') { setAccessToken(tok); return attempt<T>(req, alreadyRefreshed, true) }
+        if (typeof tok === 'string') { setAccessToken(tok); return attempt(req, alreadyRefreshed, true) }
       }
       throw new ApiError(403, r.data) // step-up DENY, or a still-403 retry: surface, no loop
     }
 
     throw new ApiError(r.status, r.data)
   }
-  return { request: <T>(req: ApiRequest) => attempt<T>(req, false, false) }
+  // `request` keeps the parsed-body contract every existing caller uses.
+  // `requestResult` additionally exposes status and headers, which a binary
+  // download needs for the Content-Disposition filename. Both run through the
+  // SAME interceptors above, which is the entire point: the download routes
+  // used to have their own fetch and therefore their own, absent, 401 handling.
+  return {
+    request: <T>(req: ApiRequest) => attempt(req, false, false).then((r) => r.data as T),
+    requestResult: (req: ApiRequest) => attempt(req, false, false),
+  }
 }

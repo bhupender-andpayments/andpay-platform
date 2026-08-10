@@ -105,7 +105,7 @@ export function BatchDetailPage() {
     setDownloadNote(null)
     setDownloading(true)
     try {
-      const file = await downloadDispatchExcel(btchId)
+      const file = await downloadDispatchExcel(client, btchId)
       saveBlob(file.filename, file.blob)
     } catch (err) {
       setDownloadError(err instanceof Error ? err.message : 'Failed to download the dispatch sheet.')
@@ -119,7 +119,7 @@ export function BatchDetailPage() {
     setDownloadNote(null)
     setDownloading(true)
     try {
-      const file = await downloadCollateral(btchId, artifactType)
+      const file = await downloadCollateral(client, btchId, artifactType)
       if (file === null) setDownloadNote(`No ${artifactType} collateral exists for this batch.`)
       else saveBlob(file.filename, file.blob)
     } catch (err) {
