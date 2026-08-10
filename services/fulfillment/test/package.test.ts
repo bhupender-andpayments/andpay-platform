@@ -3,7 +3,8 @@ import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import ExcelJS from 'exceljs'
 import { PDFDocument } from 'pdf-lib'
-import { buildDispatchPackage, dispatchXlsx, assembleGroupPdf, resolveCollateralGroup } from '../src/package.js'
+import { buildDispatchPackage, dispatchGroupXlsx, excelLinesFor, assembleGroupPdf, resolveCollateralGroup } from '../src/package.js'
+import type { PackageLine } from '../src/package.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 
 const url =
@@ -100,46 +101,87 @@ async function seedComposedArtifact(
   `
 }
 
-describe('dispatchXlsx sheet composition (F6)', () => {
-  it('writes the print instruction columns, with Soundbox as Y/N', async () => {
-    const tenantWire = newId('tnnt')
-    const programWire = newId('prog')
-    const tenantUuid = toUuid(tenantWire)
-    const programUuid = toUuid(programWire)
-    const btchWire = newId('btch')
-    const btchUuid = toUuid(btchWire)
+// Build PackageLine[] directly for the pure membership/serialization tests,
+// so they need no database rows. Only the fields the Excel path reads.
+function line(over: Partial<PackageLine> & { asgnId: string }): PackageLine {
+  return {
+    bankReferenceCode: 'BK01',
+    branchCode: null,
+    artifacts: [],
+    labelDisplayName: 'M',
+    labelQr: 'upi://pay?pa=x@bank',
+    soundbox: false,
+    standeeCount: 0,
+    stickerCount: 0,
+    merchantLegalName: 'M Pvt Ltd',
+    ...over,
+  }
+}
 
-    const bankConfigId = await seedBankConfig(tenantUuid, 'HDFC')
-    const entry = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'HDFC')
-    await seedComposedArtifact(
-      tenantUuid, programUuid, btchUuid, entry.asgnUuid, 'SOUNDBOX_IMG', 'ref-soundbox',
-      entry.merchantDisplayName, entry.qrValue, bankConfigId,
-    )
+describe('excelLinesFor (E1 membership, spec 2.1)', () => {
+  it('SOUNDBOX takes exactly the soundbox lines', () => {
+    const lines = [line({ asgnId: 'a', soundbox: true }), line({ asgnId: 'b', stickerCount: 1 })]
+    expect(excelLinesFor(lines, 'SOUNDBOX').map((l) => l.asgnId)).toEqual(['a'])
+  })
 
-    const lines = await buildDispatchPackage(db, btchWire, 'print')
-    const buf = await dispatchXlsx(lines)
+  it('COLLATERAL takes standee OR sticker, mirroring GROUP_ARTIFACT_TYPES: the soundbox-plus-sticker-only merchant is IN', () => {
+    // THE defect this track closes: soundbox true, standee 0, sticker 1
+    // got a COLLATERAL page but no collateral Excel row.
+    const l = line({ asgnId: 'defect', soundbox: true, stickerCount: 1 })
+    expect(excelLinesFor([l], 'COLLATERAL').map((x) => x.asgnId)).toEqual(['defect'])
+  })
 
-    // Read the sheet back rather than trusting the column config: a header can
-    // be declared with a key that never matches a row property, which produces
-    // a titled but permanently EMPTY column.
+  it('an orphan line (no product at all) lands on COLLATERAL and keeps its sort position', () => {
+    const lines = [
+      line({ asgnId: 'a', bankReferenceCode: 'BK01', standeeCount: 1 }),
+      line({ asgnId: 'orphan', bankReferenceCode: 'BK02' }),
+      line({ asgnId: 'c', bankReferenceCode: 'BK03', stickerCount: 2 }),
+    ]
+    // One filter pass, NOT an append: the orphan stays between BK01 and BK03.
+    expect(excelLinesFor(lines, 'COLLATERAL').map((l) => l.asgnId)).toEqual(['a', 'orphan', 'c'])
+  })
+
+  it('no line vanishes: every line is in at least one group', () => {
+    const lines = [
+      line({ asgnId: 'sb', soundbox: true }),
+      line({ asgnId: 'st', standeeCount: 1 }),
+      line({ asgnId: 'sk', stickerCount: 1 }),
+      line({ asgnId: 'orphan' }),
+      line({ asgnId: 'both', soundbox: true, standeeCount: 1 }),
+    ]
+    const union = new Set([
+      ...excelLinesFor(lines, 'SOUNDBOX').map((l) => l.asgnId),
+      ...excelLinesFor(lines, 'COLLATERAL').map((l) => l.asgnId),
+    ])
+    expect(union.size).toBe(lines.length)
+  })
+})
+
+describe('dispatchGroupXlsx (E1: two files, one sheet each, Dispatch ID column)', () => {
+  it('produces one worksheet named for the group with the Dispatch ID header', async () => {
+    const buf = await dispatchGroupXlsx([line({ asgnId: 'asgn_x', soundbox: true })], 'SOUNDBOX')
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
-    // D-5/F9: the workbook now carries TWO sheets, Soundbox and Standy, mirroring
-    // the print vendor's own working file. This fixture is soundbox=true with a
-    // standee, so it appears on BOTH, which is the measured real behaviour (111
-    // of the partner's merchants are on both sheets).
-    expect(wb.worksheets.map((w) => w.name)).toEqual(['Soundbox', 'Standy'])
-    const ws = wb.getWorksheet('Soundbox')!
-    const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
-    for (const h of ['Legal Name', 'Soundbox', 'Standee Count', 'Sticker Count']) {
-      expect(headers).toContain(h)
-    }
-    const cell = (header: string): unknown => ws.getRow(2).getCell(headers.indexOf(header) + 1).value
-    expect(cell('Legal Name')).toBe('Acme Pvt Ltd')
-    // Y/N, not TRUE/FALSE: a human reads this off a printed picking sheet.
-    expect(cell('Soundbox')).toBe('Y')
-    expect(cell('Standee Count')).toBe(1)
-    expect(cell('Sticker Count')).toBe(0)
+    expect(wb.worksheets.map((w) => w.name)).toEqual(['Soundbox'])
+    const headers = wb.worksheets[0]!.getRow(1).values as string[]
+    expect(headers).toContain('Dispatch ID')
+    expect(headers).not.toContain('Assignment')
+  })
+
+  it('both groups carry the IDENTICAL column set, as the vendor working file does', async () => {
+    const l = line({ asgnId: 'asgn_x', soundbox: true, standeeCount: 1 })
+    const a = new ExcelJS.Workbook()
+    await a.xlsx.load((await dispatchGroupXlsx([l], 'SOUNDBOX')) as unknown as Parameters<typeof a.xlsx.load>[0])
+    const b = new ExcelJS.Workbook()
+    await b.xlsx.load((await dispatchGroupXlsx([l], 'COLLATERAL')) as unknown as Parameters<typeof b.xlsx.load>[0])
+    expect(a.worksheets[0]!.getRow(1).values).toEqual(b.worksheets[0]!.getRow(1).values)
+  })
+
+  it('a group with no member lines still yields a valid header-only workbook', async () => {
+    const buf = await dispatchGroupXlsx([line({ asgnId: 'a', soundbox: true })], 'COLLATERAL')
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
+    expect(wb.worksheets[0]!.rowCount).toBe(1)
   })
 })
 
@@ -276,93 +318,6 @@ describe('buildDispatchPackage (per-adapter dispatch package projection, D104 ch
       SELECT count(*) AS n FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
     `
     expect(Number(artifactRows[0]!.n)).toBe(1)
-  })
-})
-
-// D-5 / F9: the two-sheet split, and the fact that it OVERLAPS.
-//
-// These are unit tests over dispatchXlsx directly, because the property under
-// test is which lines land on which sheet, not how lines are read from the
-// database. The rule is measured from the print vendor's own working file
-// (`Sent to Printer15 May to 19 May.xlsx`): Standy 340 rows, Soundbox 116, and
-// 111 merchants on BOTH, i.e. exactly those needing a soundbox AND a standee.
-function line(over: Partial<Parameters<typeof dispatchXlsx>[0][number]> = {}) {
-  return {
-    asgnId: newId('asgn'),
-    bankReferenceCode: 'HDFC',
-    branchCode: null,
-    artifacts: [],
-    labelDisplayName: 'Acme',
-    labelQr: 'upi://pay?pa=acme@hdfcbank',
-    soundbox: false,
-    standeeCount: 0,
-    stickerCount: 0,
-    merchantLegalName: 'Acme Pvt Ltd',
-    ...over,
-  }
-}
-
-async function sheetRowCounts(lines: Parameters<typeof dispatchXlsx>[0]): Promise<Record<string, number>> {
-  const buf = await dispatchXlsx(lines)
-  const wb = new ExcelJS.Workbook()
-  await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
-  // rowCount includes the header row, so a sheet with only headers is 1.
-  return Object.fromEntries(wb.worksheets.map((w) => [w.name, w.rowCount - 1]))
-}
-
-describe('dispatchXlsx two-sheet split (D-5 / F9, measured from the real vendor file)', () => {
-  it('always emits both sheets, named Soundbox and Standy', async () => {
-    const counts = await sheetRowCounts([line({ soundbox: true })])
-    expect(Object.keys(counts)).toEqual(['Soundbox', 'Standy'])
-  })
-
-  it('puts a merchant needing BOTH products on BOTH sheets', async () => {
-    // The overlap is the point. 111 of the partner's merchants are on both
-    // sheets, so duplicating this line is correct and not a bug.
-    const counts = await sheetRowCounts([line({ soundbox: true, standeeCount: 1 })])
-    expect(counts).toEqual({ Soundbox: 1, Standy: 1 })
-  })
-
-  it('splits by PRODUCT, not by merchant', async () => {
-    const counts = await sheetRowCounts([
-      line({ soundbox: true, standeeCount: 1 }), // both
-      line({ soundbox: true, standeeCount: 0 }), // soundbox only
-      line({ soundbox: false, standeeCount: 1 }), // standee only
-      line({ soundbox: false, standeeCount: 2 }), // standee only
-    ])
-    expect(counts).toEqual({ Soundbox: 2, Standy: 3 })
-  })
-
-  it('NEVER drops a line that needs neither product', async () => {
-    // The severe failure this guards: a line matching neither rule would vanish
-    // from the picking sheet, and a merchant's kit would simply never be
-    // printed. A sticker-only line still has to reach the vendor.
-    const counts = await sheetRowCounts([line({ soundbox: false, standeeCount: 0, stickerCount: 5 })])
-    expect(counts.Standy ?? 0).toBe(1)
-    expect(counts.Soundbox ?? 0).toBe(0)
-  })
-
-  it('keeps IDENTICAL headers on both sheets, as the partner file does', async () => {
-    const buf = await dispatchXlsx([line({ soundbox: true, standeeCount: 1 })])
-    const wb = new ExcelJS.Workbook()
-    await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
-    const headersOf = (n: string) =>
-      (wb.getWorksheet(n)!.getRow(1).values as unknown[]).slice(1).map(String)
-    expect(headersOf('Soundbox')).toEqual(headersOf('Standy'))
-    expect(headersOf('Soundbox')).toContain('Assignment')
-  })
-
-  it('loses no line overall: every line appears at least once', async () => {
-    const lines = [
-      line({ soundbox: true, standeeCount: 1 }),
-      line({ soundbox: true }),
-      line({ standeeCount: 1 }),
-      line({ stickerCount: 1 }),
-    ]
-    const counts = await sheetRowCounts(lines)
-    // 2 on Soundbox, 3 on Standy (1 standee + 1 both + 1 orphan) = 5 rows for
-    // 4 lines, the extra being the deliberate both-sheets duplicate.
-    expect((counts.Soundbox ?? 0) + (counts.Standy ?? 0)).toBe(lines.length + 1)
   })
 })
 
@@ -524,7 +479,7 @@ describe('assembleGroupPdf (two merged PDFs per batch, not three)', () => {
     await seedGroupArtifact(tenantUuid, programUuid, btchUuid, both.asgnUuid, 'STICKER_IMG', 302)
 
     // one page, and it is the STANDEE (the general collateral sheet, the same
-    // precedent dispatchXlsx follows when it parks orphan lines on `Standy`).
+    // precedent excelLinesFor follows when it parks orphan lines on COLLATERAL).
     expect(await mergedPageWidths(btchWire, 'COLLATERAL')).toEqual([301])
   })
 
@@ -637,7 +592,7 @@ describe('assembleGroupPdf (two merged PDFs per batch, not three)', () => {
     expect(lines.map((l) => l.asgnId)).toEqual([a1.asgnWire, a2.asgnWire, z.asgnWire])
 
     const wb = new ExcelJS.Workbook()
-    await wb.xlsx.load((await dispatchXlsx(lines)) as unknown as Parameters<typeof wb.xlsx.load>[0])
+    await wb.xlsx.load((await dispatchGroupXlsx(lines, 'SOUNDBOX')) as unknown as Parameters<typeof wb.xlsx.load>[0])
     const ws = wb.getWorksheet('Soundbox')!
     const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
     const col = (h: string): number => headers.indexOf(h) + 1
@@ -646,5 +601,95 @@ describe('assembleGroupPdf (two merged PDFs per batch, not three)', () => {
       sheetOrder.push(`${String(ws.getRow(r).getCell(col('Bank')).value)}/${String(ws.getRow(r).getCell(col('Branch')).value)}`)
     }
     expect(sheetOrder).toEqual(['ABANK/01', 'ABANK/02', 'ZBANK/01'])
+  })
+})
+
+describe('Excel to PDF membership parity (spec 5.1, ONE-DIRECTIONAL by design)', () => {
+  it('every page in a group PDF has a row in that group Excel; only orphans may be rows without pages', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    // m1 soundbox only. m2 both collateral products. m3 sticker only. m4
+    // soundbox plus a standee. m5 is THE defect fixture (spec 2.1): soundbox
+    // true, standee 0, sticker 1, so it must have a COLLATERAL Excel row to
+    // match the COLLATERAL page it already gets. m6 is an orphan (no product
+    // at all): it gets a COLLATERAL Excel row (the general sheet) but no page
+    // in either PDF, because there is no composed_artifact to merge for it.
+    const m1 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', soundbox: true })
+    const m2 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'B2',
+      standeeCount: 1,
+      stickerCount: 1,
+    })
+    const m3 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B3', stickerCount: 2 })
+    const m4 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'B4',
+      soundbox: true,
+      standeeCount: 1,
+    })
+    const m5 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'B5',
+      soundbox: true,
+      stickerCount: 1,
+    })
+    // Its own asgnId is never read directly: the parity check below finds it
+    // by scanning `lines`, which is the point (an orphan's identity comes from
+    // buildDispatchPackage, not from this seeding helper's return value).
+    await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B6' })
+
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m1.asgnUuid, 'SOUNDBOX_IMG', 801)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m2.asgnUuid, 'STANDEE_IMG', 802)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m2.asgnUuid, 'STICKER_IMG', 803)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m3.asgnUuid, 'STICKER_IMG', 804)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m4.asgnUuid, 'SOUNDBOX_IMG', 805)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m4.asgnUuid, 'STANDEE_IMG', 806)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m5.asgnUuid, 'SOUNDBOX_IMG', 807)
+    await seedGroupArtifact(tenantUuid, programUuid, btchUuid, m5.asgnUuid, 'STICKER_IMG', 808)
+    // m6 gets no composed_artifact row at all: an orphan by construction.
+
+    // The width-to-assignment map recovers page IDENTITY from the marked
+    // fixture PDFs (the same technique mergedPageWidths uses), so this checks
+    // WHICH merchant a page belongs to, not merely a page count. 803 (m2's
+    // sticker) is omitted on purpose: assembleGroupPdf takes AT MOST ONE
+    // artifact per line, and m2 also has a standee, so 803 never surfaces.
+    const widthToAsgn = new Map<number, string>([
+      [801, m1.asgnWire],
+      [805, m4.asgnWire],
+      [807, m5.asgnWire],
+      [802, m2.asgnWire],
+      [804, m3.asgnWire],
+      [806, m4.asgnWire],
+      [808, m5.asgnWire],
+    ])
+    const pdfAsgnIds = async (bytes: Uint8Array | null): Promise<string[]> => {
+      if (bytes === null) return []
+      const doc = await PDFDocument.load(bytes)
+      return doc.getPageIndices().map((i) => {
+        const width = doc.getPage(i).getWidth()
+        const asgnId = widthToAsgn.get(width)
+        if (asgnId === undefined) throw new Error(`unmarked page width ${String(width)} in parity test`)
+        return asgnId
+      })
+    }
+
+    const lines = await buildDispatchPackage(db, btchWire, 'print')
+    const groupBytes: Array<['SOUNDBOX' | 'COLLATERAL', Uint8Array | null]> = [
+      ['SOUNDBOX', await assembleGroupPdf(db, groupStore, btchWire, 'SOUNDBOX')],
+      ['COLLATERAL', await assembleGroupPdf(db, groupStore, btchWire, 'COLLATERAL')],
+    ]
+    for (const [group, bytes] of groupBytes) {
+      const pdfIds = new Set(await pdfAsgnIds(bytes))
+      const excelIds = new Set(excelLinesFor(lines, group).map((l) => l.asgnId))
+      // pdfAsgnIds is a subset of excelAsgnIds for each group: no page is ever
+      // produced for a merchant this group's Excel does not also list.
+      for (const asgnId of pdfIds) expect(excelIds.has(asgnId)).toBe(true)
+      // excelAsgnIds minus pdfAsgnIds contains only orphan lines: an Excel row
+      // with no page is allowed ONLY when the line needs no product at all.
+      for (const asgnId of excelIds) {
+        if (pdfIds.has(asgnId)) continue
+        const orphanLine = lines.find((l) => l.asgnId === asgnId)!
+        expect(orphanLine.soundbox).toBe(false)
+        expect(orphanLine.standeeCount).toBe(0)
+        expect(orphanLine.stickerCount).toBe(0)
+      }
+    }
   })
 })

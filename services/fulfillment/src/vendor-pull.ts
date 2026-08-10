@@ -2,7 +2,7 @@ import { toUuid, fromUuid } from '@andpay/ids'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { enterVendorReadScope } from './vendor-read-context.js'
-import { buildDispatchPackage, dispatchXlsx, assembleGroupPdf } from './package.js'
+import { buildDispatchPackage, dispatchGroupXlsx, assembleGroupPdf } from './package.js'
 import type { AssetStore } from './storage/asset-store.js'
 import { emitVendorAuthzAudit } from './vendor-audit.js'
 import { loadFulfillmentConfig } from './authz-config.js'
@@ -104,7 +104,8 @@ export async function pullDispatchPackageXlsx(
   // Phase 4 (P4-D5): the ship view, now returned bank+branch-sorted, serialized
   // by the shared dispatchXlsx builder (same sheet the ops download produces).
   const lines = await buildDispatchPackage(db, btchIdWire, 'ship')
-  const xlsx = await dispatchXlsx(lines)
+  // Task 3 makes the group a route parameter; SOUNDBOX is a compile bridge only.
+  const xlsx = await dispatchGroupXlsx(lines, 'SOUNDBOX')
   return { xlsx, btchId: btchIdWire }
 }
 

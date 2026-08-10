@@ -158,7 +158,12 @@ export async function buildDispatchPackage(
 const DISPATCH_COLUMNS = [
   { header: 'Bank', key: 'bank' },
   { header: 'Branch', key: 'branch' },
-  { header: 'Assignment', key: 'asgnId' },
+  // Ruled 2026-08-10 (spec section 2): the column the BRD, the walkthrough,
+  // the printed artwork, and the vendor portal's return parser all call
+  // 'Dispatch ID'. The Assignment name shipped in downloaded workbooks, so
+  // return-sheet-adapter.ts keeps accepting BOTH; the synonym list there is
+  // now the compatibility path, not a papering-over.
+  { header: 'Dispatch ID', key: 'asgnId' },
   { header: 'Merchant', key: 'labelDisplayName' },
   { header: 'Legal Name', key: 'merchantLegalName' },
   { header: 'Soundbox', key: 'soundbox' },
@@ -171,48 +176,47 @@ const DISPATCH_COLUMNS = [
   { header: 'Artifact Refs', key: 'artifactRefs' },
 ]
 
-/**
- * D-5 / F9. The dispatch workbook carries TWO SHEETS, `Soundbox` and `Standy`,
- * with IDENTICAL columns. This is not a guess: it is measured from the print
- * vendor's own working file (`Sent to Printer15 May to 19 May.xlsx`), which is
- * exactly one workbook with those two sheets and one shared header row.
- *
- * F9 asked to "confirm the soundbox-only variant yields a filtered EXCEL". It
- * did not, and the framing was wrong twice over: the soundbox-only view that
- * existed was the merged PDF (the SOUNDBOX group below), the Excel was
- * never filtered at all, and the partner does not want a filtered FILE. They
- * want one file split by PRODUCT.
- *
- * THE SPLIT IS BY PRODUCT AND DELIBERATELY OVERLAPS. Measured in that same
- * file: Standy 340 rows, Soundbox 116 rows, and **111 merchants appear in
- * BOTH**, which is precisely the set needing a soundbox AND a standee. Every
- * Standy row had `Standee Count >= 1`; every Soundbox row had `Soundbox = Y`.
- * So a merchant is on a sheet because of what must be PRINTED for them, not
- * because of a partition, and duplicating those 111 is correct, not a bug.
- *
- * NO LINE MAY VANISH. A line needing neither product would match neither rule
- * and silently disappear from the picking sheet, which means a merchant's kit
- * never gets printed. Those lines go on `Standy` and are counted, never
- * dropped; see the orphan handling below.
- */
-export async function dispatchXlsx(lines: PackageLine[]): Promise<Buffer> {
-  const wb = new ExcelJS.Workbook()
-  const soundboxLines = lines.filter((l) => l.soundbox)
-  const standeeLines = lines.filter((l) => l.standeeCount >= 1)
-  // A line on NEITHER sheet would be silently lost. Keep it visible on Standy,
-  // which is the general collateral sheet, rather than letting a merchant fall
-  // out of the package entirely.
-  const orphans = lines.filter((l) => !l.soundbox && l.standeeCount < 1)
-  addSheet(wb, 'Soundbox', soundboxLines)
-  addSheet(wb, 'Standy', [...standeeLines, ...orphans])
-  const arrayBuf = await wb.xlsx.writeBuffer()
-  return Buffer.from(arrayBuf)
+// E1 membership (spec 2.1). SOUNDBOX is the soundbox flag. COLLATERAL is
+// standee OR sticker, mirroring GROUP_ARTIFACT_TYPES.COLLATERAL exactly, so
+// every page in that PDF has a quantity row in this Excel. This closes the
+// reachable defect where a soundbox-true, standee-0, sticker-1 line got a
+// COLLATERAL page but matched no collateral sheet rule.
+//
+// The orphan rule survives and must: a line needing NEITHER product lands on
+// COLLATERAL (the general collateral file) rather than vanishing, because a
+// vanished line is a merchant whose kit never gets printed. ONE filter pass,
+// not an append, so an orphan keeps its bank-sorted position (I4/E2).
+//
+// Measured against the print vendor's own working file (`Sent to Printer15
+// May to 19 May.xlsx`, the source of the D-5/F9 finding this replaces): that
+// file was one workbook with two sheets, Standy 340 rows and Soundbox 116,
+// with 111 merchants on BOTH, exactly those needing a soundbox AND a standee.
+// The split here is now two FILES rather than two sheets in one workbook, but
+// the membership arithmetic is unchanged: a merchant is on a sheet because of
+// what must be PRINTED for them, and the both-groups overlap is correct, not
+// a bug.
+export function excelLinesFor(lines: PackageLine[], group: CollateralGroup): PackageLine[] {
+  if (group === 'SOUNDBOX') return lines.filter((l) => l.soundbox)
+  return lines.filter((l) => l.standeeCount >= 1 || l.stickerCount >= 1 || !l.soundbox)
 }
 
-function addSheet(wb: ExcelJS.Workbook, name: string, lines: PackageLine[]): void {
-  const ws = wb.addWorksheet(name)
+const GROUP_SHEET_NAMES: Record<CollateralGroup, string> = {
+  SOUNDBOX: 'Soundbox',
+  COLLATERAL: 'Collateral',
+}
+
+// E1 (spec section 2): TWO Excels per batch, one per delivery group, each a
+// single sheet with the IDENTICAL column set, which is how the print vendor's
+// own working file is built. The spec describes these as soundboxXlsx and
+// collateralXlsx; it is one group-keyed builder because the HTTP routes are
+// group-keyed, and one builder cannot drift into two column sets.
+export async function dispatchGroupXlsx(lines: PackageLine[], group: CollateralGroup): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet(GROUP_SHEET_NAMES[group])
   ws.columns = DISPATCH_COLUMNS
-  writeRows(ws, lines)
+  writeRows(ws, excelLinesFor(lines, group))
+  const arrayBuf = await wb.xlsx.writeBuffer()
+  return Buffer.from(arrayBuf)
 }
 
 // Phase 4 (P4-D5): serialize the (already bank+branch-sorted) package lines.
@@ -267,8 +271,8 @@ export class AssetResolutionError extends Error {
  * ruling forbids. Hence AT MOST ONE artifact per line per group, taken in the
  * ORDER below.
  *
- * STANDEE_IMG comes before STICKER_IMG for the same reason dispatchXlsx puts
- * orphan lines on `Standy`: the standee is the general collateral sheet.
+ * STANDEE_IMG comes before STICKER_IMG for the same reason excelLinesFor puts
+ * orphan lines on COLLATERAL: the standee is the general collateral sheet.
  *
  * STORAGE IS UNCHANGED, DELIBERATELY. composed_artifact.artifact_type keeps its
  * three values. Regrouping at the merge layer instead of at rest means no data
