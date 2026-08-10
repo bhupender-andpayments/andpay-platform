@@ -13,6 +13,7 @@ import { DEFAULT_POOL_CFG } from './config/pool-config.js'
 import { ingestIntakeSheetWithinTx, isSheetStructurallyValid, type IntakeSheet, type IntakeResult } from './intake.js'
 import { createVendorWithinTx, updateVendorWithinTx } from './vendor.js'
 import type { AssetStore } from './storage/asset-store.js'
+import { PDFDocument } from 'pdf-lib'
 
 // spec 10c ops writes on shpt_ (Task 6). Both handlers are class-3 human ops
 // actions (D-3); the ops HTTP edge (T9) calls these in-process and enforces
@@ -1162,6 +1163,178 @@ export async function setBankLogo(
             operation: 'ops:bank-logo-set',
             principalId: args.actorId,
             resourceIds: [id, `logo-version:${put.version}`],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return {
+    deduped: !ran,
+    id: ran ? id : null,
+    reference: ran ? reference : null,
+    version: ran ? version : null,
+  }
+}
+
+export interface SetBankTemplateMasterInput {
+  tenantWire: string
+  bankCode: string
+  branchCode?: string
+  // The M2 ruling (2026-08-10 meeting): one row carries TWO masters, one per
+  // dispatch package half, never a third. A closed union, not a free string,
+  // so an unknown group can never reach the column-selection branch below.
+  group: 'SOUNDBOX' | 'COLLATERAL'
+  bytes: Uint8Array
+  contentType: string
+  filename: string
+  clientKey: string
+  actorId: string
+  traceId: string
+}
+
+/**
+ * Store a new bank/branch dispatch-artwork master (the vendor-artwork PDF a
+ * bank supplies once per group) and persist the returned reference into
+ * soundboxTemplateRef or collateralTemplateRef, whichever `args.group`
+ * selects, exactly mirroring setBankLogo's own create-or-update-in-place
+ * shape (same composite key, same AssetStore port, same co-committed 6e).
+ * Unlike setBankLogo, there is no paired NULL-out of a sibling column: the
+ * OTHER group's ref is a live, independently-uploaded master and must be left
+ * exactly as it is on every write here (see the two explicit $queryRaw
+ * variants below).
+ *
+ * TWO checks run BEFORE any transaction opens, so a reject never consumes the
+ * client key (rule 1, 06.A: a clientKey belongs to the attempt that actually
+ * ran, not to one that was refused at the door):
+ *
+ * 1. `template_not_pdf`: the candidate bytes must parse as a PDF with at
+ *    least one page. pdf-lib is already the renderer's dependency
+ *    (package.ts), so parsing here invents no new capability.
+ * 2. `template_trim_mismatch`: M2's one-shared-trim guarantee. The two
+ *    masters of one (tenant, bank, branch) row must share one page box, or
+ *    the vendor gets two files of unequal trim in the same dispatch package.
+ *    This reads the OTHER group's ref off the EXACT row (tenant_id, bank_code,
+ *    branch_code), never a fallback chain (a branch row with no master of its
+ *    own is not compared against the bank-level default), loads it via
+ *    assetStore.getByReference, and compares page boxes to within 0.01 pt.
+ *    Composition (dispatch.ts) checks again at compose time; this check
+ *    exists so the operator hears about a mismatch at upload, not at compose.
+ *
+ * The AssetStore `key` is `template/<group>/<bankCode-or-bankCode/branchCode>`
+ * -- codes only, never the tenantId, actorId, or any PII (S4), same
+ * bankCode-or-bankCode/branch expression setBankLogo builds, namespaced under
+ * the group so a bank's soundbox and collateral masters never collide on one
+ * key. `assetStore.put()` runs INSIDE the onceWithin effect, after the
+ * client-key dedup check and after both preflight checks have already passed,
+ * for the same reason setBankLogo's put() does: a replay of the same
+ * clientKey must never mint a second asset version.
+ *
+ * The 6e carries the row id, the new version, and the group (S7/S10.5
+ * IDs-and-enums only): `[id, 'template-version:' + put.version, args.group]`.
+ */
+export async function setBankTemplateMaster(
+  db: FulfillmentDb,
+  assetStore: AssetStore,
+  args: SetBankTemplateMasterInput,
+): Promise<{ deduped: boolean; id: string | null; reference: string | null; version: string | null }> {
+  const tenantUuid = toUuid(args.tenantWire)
+  const branchCode = args.branchCode ?? ''
+
+  // Check 1 (template_not_pdf): the candidate must parse as a PDF with a
+  // readable first page. A caught load failure or a zero-page document are
+  // both treated as "not a PDF" -- neither has a page box to compare or ship.
+  const candidate = await PDFDocument.load(args.bytes).catch(() => null)
+  if (candidate === null || candidate.getPageCount() === 0) {
+    throw new OpsClientError('invalid', 'template_not_pdf')
+  }
+  const candidateBox = { w: candidate.getPage(0)!.getWidth(), h: candidate.getPage(0)!.getHeight() }
+
+  // Check 2 (template_trim_mismatch): read ONLY the other group's ref off this
+  // EXACT row (fulfillment_ops_read, bare -- bank_composition_config is
+  // unscoped platform reference data, same posture as listVendors above), no
+  // program to set. A row that does not exist yet, or exists with the other
+  // column still NULL, has nothing to compare against and is accepted.
+  const otherRows =
+    args.group === 'SOUNDBOX'
+      ? await db.$transaction(async (tx: Tx) => {
+          await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+          return tx.$queryRaw<{ ref: string | null }[]>`
+            SELECT collateral_template_ref AS ref FROM bank_composition_config
+            WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${args.bankCode} AND branch_code = ${branchCode}
+          `
+        })
+      : await db.$transaction(async (tx: Tx) => {
+          await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+          return tx.$queryRaw<{ ref: string | null }[]>`
+            SELECT soundbox_template_ref AS ref FROM bank_composition_config
+            WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${args.bankCode} AND branch_code = ${branchCode}
+          `
+        })
+  const otherRef = otherRows[0]?.ref ?? null
+  if (otherRef !== null) {
+    const otherAsset = await assetStore.getByReference(otherRef)
+    // A stored ref that no longer resolves cannot be compared; that is a
+    // separate integrity concern from this upload path, not this check's job.
+    if (otherAsset !== null) {
+      const otherDoc = await PDFDocument.load(otherAsset.bytes).catch(() => null)
+      if (otherDoc !== null && otherDoc.getPageCount() > 0) {
+        const otherBox = { w: otherDoc.getPage(0)!.getWidth(), h: otherDoc.getPage(0)!.getHeight() }
+        const widthOff = Math.abs(otherBox.w - candidateBox.w) > 0.01
+        const heightOff = Math.abs(otherBox.h - candidateBox.h) > 0.01
+        if (widthOff || heightOff) throw new OpsClientError('invalid', 'template_trim_mismatch')
+      }
+    }
+  }
+
+  const codeKey = branchCode === '' ? args.bankCode : `${args.bankCode}/${branchCode}`
+  const assetKey = `template/${args.group}/${codeKey}`
+
+  let id: string | null = null
+  let reference: string | null = null
+  let version: string | null = null
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:bank-template-master-set'), async () => {
+      const put = await assetStore.put(assetKey, args.bytes, {
+        contentType: args.contentType,
+        filename: args.filename,
+      })
+      reference = put.reference
+      version = put.version
+
+      // Column names are never interpolated into SQL (S23): two explicit
+      // statements, chosen by the group, each setting only ITS OWN column on
+      // conflict. The sibling column is left untouched on both the fresh
+      // INSERT (its VALUES slot is NULL, discarded by Postgres on conflict
+      // anyway) and the DO UPDATE (simply absent from the SET list).
+      const rows =
+        args.group === 'SOUNDBOX'
+          ? await tx.$queryRaw<{ id: string }[]>`
+              INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, soundbox_template_ref, collateral_template_ref, branding_params, image_templates, updated_at)
+              VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${args.bankCode}, ${branchCode}, ${put.reference}, NULL, '{}'::jsonb, '{}'::jsonb, now())
+              ON CONFLICT (tenant_id, bank_code, branch_code)
+              DO UPDATE SET soundbox_template_ref = EXCLUDED.soundbox_template_ref, updated_at = now()
+              RETURNING id::text AS id
+            `
+          : await tx.$queryRaw<{ id: string }[]>`
+              INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, soundbox_template_ref, collateral_template_ref, branding_params, image_templates, updated_at)
+              VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${args.bankCode}, ${branchCode}, NULL, ${put.reference}, '{}'::jsonb, '{}'::jsonb, now())
+              ON CONFLICT (tenant_id, bank_code, branch_code)
+              DO UPDATE SET collateral_template_ref = EXCLUDED.collateral_template_ref, updated_at = now()
+              RETURNING id::text AS id
+            `
+      id = rows[0]!.id
+
+      // Co-commit the ALLOW 6e (S15/T2 ruling) in the SAME tx as the write.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:bank-template-master-set',
+            principalId: args.actorId,
+            resourceIds: [id, `template-version:${put.version}`, args.group],
             traceId: args.traceId,
           }),
         ),

@@ -53,6 +53,11 @@ const OPS_PERMISSIONS = [
   // 6e), so a read-side permission string here would be dead.
   'ops:template-config-set',
   'ops:bank-logo-set',
+  // Task 6 (M2 dispatch trim ruling): the audited dispatch-artwork master
+  // upload (soundbox_template_ref / collateral_template_ref). Distinct from
+  // 'ops:template-config-set' above, which upserts the JSONB branding/
+  // image-template columns, not an asset.
+  'ops:bank-template-master-set',
   // Phase 3 Task 7 (BRD Annexure D): the Bank Master (identity.tenant)
   // admin create/edit pair, mirroring the vendor-create/vendor-edit and
   // damage-reason master CRUD exactly (shared bundle, NOT admin-tier: batching

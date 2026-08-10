@@ -132,6 +132,8 @@ export {
   type UpsertBankCompositionConfigInput,
   setBankLogo,
   type SetBankLogoInput,
+  setBankTemplateMaster,
+  type SetBankTemplateMasterInput,
   upsertBatchingConfig,
   type UpsertBatchingConfigInput,
 } from './ops.js'

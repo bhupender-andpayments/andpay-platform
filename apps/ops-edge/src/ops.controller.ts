@@ -31,6 +31,7 @@ import {
   isKnownStatus,
   upsertBankCompositionConfig,
   setBankLogo,
+  setBankTemplateMaster,
   upsertBatchingConfig,
   ingestOpsDeviceInventory,
   type IntakeSheet,
@@ -205,6 +206,18 @@ interface UploadedLogoFile {
   buffer: Buffer
   originalname: string
   mimetype: string
+}
+// Task 6 (M2 dispatch trim ruling): the dispatch-artwork master upload body.
+// Same tenantWire/bankCode/branchCode posture as BankConfigUpsertBody above
+// (legitimate request inputs, platform master data). `group` selects which
+// column the master lands on and is validated to the two literals below
+// BEFORE the domain call (a 400, not a 500, on anything else); the file's
+// PDF-ness and page-box trim match are the domain's own job (OpsClientError).
+interface BankTemplateMasterUploadBody {
+  tenantWire: string
+  bankCode: string
+  branchCode?: string
+  group: string
 }
 // Phase 5 Task 1 (D-G, FR-01a): the device-inventory upload's non-file field.
 // manufacturerVndrId is a RATIFIED VALIDATED BODY REFERENCE (a vndr_ wire id),
@@ -947,6 +960,40 @@ export class OpsController {
       tenantWire: body.tenantWire,
       bankCode: body.bankCode,
       ...(body.branchCode !== undefined ? { branchCode: body.branchCode } : {}),
+      bytes: file.buffer,
+      contentType: file.mimetype,
+      filename: file.originalname,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // Task 6 (M2 dispatch trim ruling): the dispatch-artwork master upload.
+  // Same FileInterceptor/gate idiom as setBankLogoRoute above, gated on the
+  // distinct 'ops:bank-template-master-set' operation. `group` rides as an
+  // ordinary multipart form field (multer populates req.body with it exactly
+  // like tenantWire/bankCode above) and is validated to the two literals here
+  // at the edge, a 400 on anything else, BEFORE the domain call ever sees it.
+  @Post('bank-config/template')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async setBankTemplateMasterRoute(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedLogoFile | undefined,
+    @Body() body: BankTemplateMasterUploadBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; id: string | null; reference: string | null; version: string | null }> {
+    const g = await this.gate(req, 'ops:bank-template-master-set', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+    if (body.group !== 'SOUNDBOX' && body.group !== 'COLLATERAL') {
+      throw new BadRequestException('group must be SOUNDBOX or COLLATERAL')
+    }
+    return setBankTemplateMaster(this.deps.fulfillmentDb, this.deps.assetStore, {
+      tenantWire: body.tenantWire,
+      bankCode: body.bankCode,
+      ...(body.branchCode !== undefined ? { branchCode: body.branchCode } : {}),
+      group: body.group,
       bytes: file.buffer,
       contentType: file.mimetype,
       filename: file.originalname,
