@@ -166,10 +166,10 @@ describe('parseReturnWorkbook (D-4 / F8)', () => {
   })
 
   it('accepts the column name WE SEND ("Assignment") and the one the portal expects ("Dispatch ID")', async () => {
-    // A REAL ROUND-TRIP DEFECT this fixes. dispatchXlsx sends the column as
-    // "Assignment"; the vendor portal's client-side return parser requires
-    // "Dispatch ID" (the BRD's own term). A vendor returning our sheet exactly
-    // as instructed would have been rejected for a missing column.
+    // A REAL ROUND-TRIP DEFECT this fixes. dispatchGroupXlsx sends the column
+    // as "Dispatch ID" (the BRD's own term); "Assignment" survives as the
+    // compatibility synonym. A vendor returning our sheet exactly as
+    // instructed would have been rejected for a missing column.
     const ours = await parseReturnWorkbook(await xlsx([ROW]), 'r.xlsx')
     expect(ours.validRows[0]!.asgnId).toBe('asgn_1')
 

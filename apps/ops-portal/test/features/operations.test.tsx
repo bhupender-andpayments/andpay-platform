@@ -15,7 +15,7 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 //   POST /ops/shipments/:id/correct                     { status, courierTimestamp } -> { deduped, outcome }
 //   POST /ops/artifacts/recompose                       { asgnId, artifactType, requestedShipTo? } -> { deduped, artifactId }
 //   POST /ops/records/:asgnId/hold                      (no body) -> { deduped }
-//   GET  /ops/batches/:btchId/dispatch-excel             -> binary xlsx
+//   GET  /ops/batches/:btchId/excel/:group               -> binary xlsx
 //   GET  /ops/batches/:btchId/collateral/:artifactType   -> binary pdf | 404
 // None of the four writes are step-up-gated. Dispatch history reuses
 // getReport('soundbox-delivery', filters); the G-SHPT backend slice (commit

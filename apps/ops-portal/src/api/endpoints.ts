@@ -419,7 +419,7 @@ export function getVendors(c: Client) {
 // These projections are deliberately PII-FREE on the server (D104
 // default-exclude): no ship-to address, contact name, mobile, or raw qr/vpa
 // value is returned, so none of it can be rendered here. The ship-view lives
-// in the dispatch-excel download, which is the surface that documents that
+// in the excel/:group download, which is the surface that documents that
 // entitlement. Do NOT "enrich" these rows client-side from another endpoint.
 // -----------------------------------------------------------------------
 

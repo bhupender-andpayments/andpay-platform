@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
+import { PDFDocument } from 'pdf-lib'
 import type { INestApplication } from '@nestjs/common'
 import { newId } from '@andpay/ids'
 import {
@@ -92,6 +93,17 @@ async function auditRowsFor(operation: string): Promise<AuditRow[]> {
       resourceIds: r.payload.resourceIds,
       principalId: r.payload.principalId,
     }))
+}
+
+// A minimal single-page vector PDF at an exact box, standing in for the
+// per-bank dispatch-artwork master the template route accepts. Mirrors
+// services/fulfillment/test/bank-template.test.ts's own masterPdf() fixture:
+// setBankTemplateMaster only needs a parseable PDF with a readable page 0, no
+// content stream required for the door check itself.
+async function templatePdf(w: number, h: number): Promise<Buffer> {
+  const doc = await PDFDocument.create()
+  doc.addPage([w, h])
+  return Buffer.from(await doc.save())
 }
 
 beforeAll(async () => {
@@ -284,5 +296,104 @@ describe('POST /ops/bank-config/logo (multipart, Phase 3 Task 5b)', () => {
 
     const n = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM bank_composition_config`
     expect(Number(n[0]!.n)).toBe(0)
+  })
+})
+
+// Fix wave 2, Finding 6 (paired with Finding 2): HTTP-level coverage for the
+// dispatch-artwork master upload, mirroring the sibling logo route's own
+// coverage immediately above (happy path with a 6e assertion, missing-file
+// 400, an edge-level 400, and a domain-thrown 400) plus the machine-readable
+// `reasons` field Finding 2 put on the wire for the two upload-door rejects.
+describe('POST /ops/bank-config/template (multipart, Task 6 / Finding 6)', () => {
+  it('a valid template upload -> 200, the group ref persisted, one ALLOW 6e carrying the version and group', async () => {
+    const tenantWire = newId('tnnt')
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .post('/ops/bank-config/template')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .field('tenantWire', tenantWire)
+      .field('bankCode', 'HDFC')
+      .field('branchCode', 'BR-400')
+      .field('group', 'SOUNDBOX')
+      .attach('file', await templatePdf(283.44, 510.24), 'master.pdf')
+    expect(res.status).toBe(200)
+    expect(res.body.deduped).toBe(false)
+    expect(typeof res.body.id).toBe('string')
+    expect(typeof res.body.reference).toBe('string')
+    expect(typeof res.body.version).toBe('string')
+
+    const row = await fulfillmentDb.$queryRaw<{ soundbox_template_ref: string | null }[]>`
+      SELECT soundbox_template_ref FROM bank_composition_config WHERE id = ${res.body.id}::uuid
+    `
+    expect(row[0]!.soundbox_template_ref).toBe(res.body.reference)
+
+    const rows = await auditRowsFor('ops:bank-template-master-set')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('ALLOW')
+    expect(rows[0]!.resourceIds).toEqual([res.body.id, `template-version:${res.body.version}`, 'SOUNDBOX'])
+  })
+
+  it('missing file -> 400', async () => {
+    const tenantWire = newId('tnnt')
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .post('/ops/bank-config/template')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .field('tenantWire', tenantWire)
+      .field('bankCode', 'HDFC')
+      .field('group', 'SOUNDBOX')
+    expect(res.status).toBe(400)
+  })
+
+  it('an invalid group -> 400 at the edge, before the domain call and before any 6e', async () => {
+    const tenantWire = newId('tnnt')
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .post('/ops/bank-config/template')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .field('tenantWire', tenantWire)
+      .field('bankCode', 'HDFC')
+      .field('group', 'STICKER')
+      .attach('file', await templatePdf(283.44, 510.24), 'master.pdf')
+    expect(res.status).toBe(400)
+    expect(await auditRowsFor('ops:bank-template-master-set')).toHaveLength(0)
+  })
+
+  // Finding 2: the domain-thrown template_trim_mismatch now rides the same
+  // `reasons` channel the OpsErrorFilter already carries for other client
+  // errors, so the 400 is machine-readable rather than an indistinguishable
+  // "invalid request" the portal could not tell apart from template_not_pdf.
+  it('a trim mismatch against the other already-stored group master -> 400 carrying reasons: [{ code: "template_trim_mismatch" }]', async () => {
+    const tenantWire = newId('tnnt')
+    const token = await mint()
+    await request(app.getHttpServer())
+      .post('/ops/bank-config/template')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .field('tenantWire', tenantWire)
+      .field('bankCode', 'HDFC')
+      .field('group', 'SOUNDBOX')
+      .attach('file', await templatePdf(283.44, 510.24), 'master.pdf')
+
+    const res = await request(app.getHttpServer())
+      .post('/ops/bank-config/template')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .field('tenantWire', tenantWire)
+      .field('bankCode', 'HDFC')
+      .field('group', 'COLLATERAL')
+      .attach('file', await templatePdf(288, 432), 'master.pdf')
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('invalid')
+    expect(res.body.reasons).toEqual([{ code: 'template_trim_mismatch' }])
+
+    // The mismatched attempt never wrote collateral_template_ref.
+    const rows = await fulfillmentDb.$queryRaw<{ c: string | null }[]>`
+      SELECT collateral_template_ref AS c FROM bank_composition_config WHERE bank_code = 'HDFC'
+    `
+    expect(rows[0]!.c).toBeNull()
   })
 })

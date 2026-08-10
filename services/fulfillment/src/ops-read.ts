@@ -357,7 +357,7 @@ export async function listBatchingConfigs(db: FulfillmentDb): Promise<BatchingCo
 // recipient PII (ship_to_address, ship_to_contact_name, ship_to_mobile) and the
 // raw qr/vpa values. The LIST projections below deliberately omit all of it: a
 // worklist needs to identify a record, not to address a parcel. The ship-view
-// remains available through the existing dispatch-excel download, which is the
+// remains available through the existing excel/:group download, which is the
 // surface that documents that entitlement. shpt is PII-free by construction
 // (AWB and carrier status only, see read.ts).
 

@@ -771,8 +771,9 @@ describe('POST /vendor/return with a WORKBOOK (D-4, same route, chosen by extens
   })
 
   it('accepts the portal/BRD column spelling too, closing the round-trip mismatch', async () => {
-    // dispatchXlsx sends "Assignment"; the portal parser wants "Dispatch ID".
-    // Both must work or a vendor returning our own sheet gets rejected.
+    // dispatchGroupXlsx sends "Dispatch ID"; "Assignment" survives as the
+    // compatibility synonym. Both must work or a vendor returning our own
+    // sheet gets rejected.
     const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
     await seedPrintCredential(vndrWire)
     const deviceSerial = 'SER-EDGE-WB-2'
