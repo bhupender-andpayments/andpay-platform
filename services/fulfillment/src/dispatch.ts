@@ -1,3 +1,4 @@
+import { PDFDocument } from 'pdf-lib'
 import { toUuid, fromUuid } from '@andpay/ids'
 import { onceWithin, enqueue } from '@andpay/outbox'
 import { stepKey } from '@andpay/keys'
@@ -9,6 +10,20 @@ import { DISPATCH_TOPIC, dispatchFactEnvelope, type BatchFactPayload } from './e
 import { renderCollateralPdf, type ArtifactType } from './collateral/renderer.js'
 import type { AssetStore } from './storage/asset-store.js'
 import { bankConfigCandidateKeys, selectBankConfig } from './config/bank-config-fallback.js'
+
+// Task 9 (spec section 4.2): thrown when ONE bank_composition_config row
+// carries BOTH group masters (soundbox and collateral) and their page boxes
+// disagree. setBankTemplateMaster (Task 6) already refuses this at the upload
+// door, but a row can predate that gate or be written by hand, so composition
+// checks again here, BEFORE any render, as the door check's backstop. The
+// message carries only the bank code and branch code (ids and codes, never a
+// merchant name, address, or any other PII, S4/S23).
+export class TemplateTrimMismatchError extends Error {
+  constructor(bankCode: string, branchCode: string | null) {
+    super(`template masters disagree on page box for bank ${bankCode} branch ${branchCode ?? ''}`)
+    this.name = 'TemplateTrimMismatchError'
+  }
+}
 
 // which artifacts a snapshot entry gets (from the snapshot alone, C4-safe)
 function artifactTypesFor(e: { soundbox: boolean; standee_count: number; sticker_count: number }): ArtifactType[] {
@@ -81,6 +96,15 @@ interface BankConfigRow {
   branding_params: unknown
   image_templates: unknown
   logo_master_ref: string | null
+  soundbox_template_ref: string | null
+  collateral_template_ref: string | null
+}
+
+// Track B: the DELIVERY GROUP's master for an artifact type. Sticker and
+// standee share the collateral master because they share one artwork.
+function templateRefFor(cfg: BankConfigRow | null, artifactType: ArtifactType): string | null {
+  if (cfg === null) return null
+  return artifactType === 'SOUNDBOX_IMG' ? cfg.soundbox_template_ref : cfg.collateral_template_ref
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +152,8 @@ async function preRenderArtifacts(
       FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
     `
     const cfgs = await tx.$queryRaw<BankConfigRow[]>`
-      SELECT id::text AS id, bank_code, branch_code, branding_params, image_templates, logo_master_ref
+      SELECT id::text AS id, bank_code, branch_code, branding_params, image_templates, logo_master_ref,
+             soundbox_template_ref, collateral_template_ref
       FROM bank_composition_config
     `
     return { entries: rows, configs: cfgs }
@@ -144,20 +169,72 @@ async function preRenderArtifacts(
   const cfgFor = (bankCode: string, branchCode: string | null): BankConfigRow | null =>
     selectBankConfig(byKey, bankCode, branchCode)
 
-  const logoCache = new Map<string, { bytes: Uint8Array; contentType: string } | null>()
-  async function logoFor(ref: string | null): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  // ONE shared by-reference cache for every binary asset this phase reads --
+  // the bank logo AND, as of Task 9, each group's template master. Both are
+  // AssetStore reads keyed on an opaque reference and neither is mutated once
+  // stored, so one Map-by-reference cache serves both without drifting into
+  // two hand-maintained copies of the same shape.
+  const assetCache = new Map<string, { bytes: Uint8Array; contentType: string } | null>()
+  async function assetFor(ref: string | null): Promise<{ bytes: Uint8Array; contentType: string } | null> {
     if (ref === null) return null
-    if (logoCache.has(ref)) return logoCache.get(ref) ?? null
+    if (assetCache.has(ref)) return assetCache.get(ref) ?? null
     const rec = await assetStore.getByReference(ref)
     const val = rec === null ? null : { bytes: rec.bytes, contentType: rec.meta.contentType }
-    logoCache.set(ref, val)
+    assetCache.set(ref, val)
     return val
+  }
+
+  // Task 9 preflight (spec 4.2, backstops the Task 6 door check for rows
+  // written before that gate existed, or by hand): the parsed page-0 box per
+  // reference, cached ALONGSIDE assetFor's byte cache off the SAME map key, so
+  // a 300-entry batch still parses each distinct master exactly once no
+  // matter how many entries share its config. undefined means "could not be
+  // read as a one-page-or-more PDF" and is SKIPPED by the preflight -- an
+  // unparseable master is not this check's problem, it degrades to the drawn
+  // layout at render time (Task 8's own fallback).
+  const boxCache = new Map<string, { w: number; h: number } | undefined>()
+  async function boxFor(ref: string): Promise<{ w: number; h: number } | undefined> {
+    if (boxCache.has(ref)) return boxCache.get(ref)
+    const asset = await assetFor(ref)
+    if (asset === null) {
+      boxCache.set(ref, undefined)
+      return undefined
+    }
+    const parsed = await PDFDocument.load(asset.bytes).catch(() => null)
+    if (parsed === null || parsed.getPageCount() === 0) {
+      boxCache.set(ref, undefined)
+      return undefined
+    }
+    const box = { w: parsed.getPage(0).getWidth(), h: parsed.getPage(0).getHeight() }
+    boxCache.set(ref, box)
+    return box
+  }
+
+  // Run once per DISTINCT cfg, before rendering ANY of its entries: a cfg with
+  // both group masters set must agree on trim, or the vendor would receive two
+  // merged delivery PDFs of unequal size (M2's one-shared-trim guarantee).
+  // This whole pass runs BEFORE the render loop below, so a mismatch throws
+  // before a single PDF of this batch is rendered or stored, not partway
+  // through.
+  const seenCfgIds = new Set<string>()
+  for (const e of entries) {
+    const cfg = cfgFor(e.bank_reference_code, e.branch_code)
+    if (cfg === null || seenCfgIds.has(cfg.id)) continue
+    seenCfgIds.add(cfg.id)
+    if (cfg.soundbox_template_ref === null || cfg.collateral_template_ref === null) continue
+    const soundboxBox = await boxFor(cfg.soundbox_template_ref)
+    const collateralBox = await boxFor(cfg.collateral_template_ref)
+    if (soundboxBox === undefined || collateralBox === undefined) continue
+    const widthOff = Math.abs(soundboxBox.w - collateralBox.w) > 0.01
+    const heightOff = Math.abs(soundboxBox.h - collateralBox.h) > 0.01
+    if (widthOff || heightOff) throw new TemplateTrimMismatchError(cfg.bank_code, cfg.branch_code)
   }
 
   for (const e of entries) {
     const cfg = cfgFor(e.bank_reference_code, e.branch_code)
-    const logo = await logoFor(cfg?.logo_master_ref ?? null)
+    const logo = await assetFor(cfg?.logo_master_ref ?? null)
     for (const artifactType of artifactTypesFor(e)) {
+      const master = await assetFor(templateRefFor(cfg, artifactType))
       const pdfBytes = await renderCollateralPdf({
         artifactType,
         // The WIRE asgn_ id, printed on the page so the print vendor can
@@ -177,6 +254,12 @@ async function preRenderArtifacts(
         imageTemplate: templateFor(cfg?.image_templates, artifactType),
         brandingParams: cfg?.branding_params,
         logo,
+        // Task 9: only the bytes cross into the renderer (CollateralInput
+        // deliberately carries no reference, no key, nothing storage-shaped).
+        // A master that failed to resolve (never set, or a stale ref) is
+        // null, which is the exact input the drawn layout already treats as
+        // "no master" (Task 8).
+        templateMaster: master === null ? null : { bytes: master.bytes },
       })
       const assetKey = `artifact/${p.btchId}/${e.asgn_id}/${artifactType}`
       const put = await assetStore.put(assetKey, pdfBytes, {
@@ -265,6 +348,14 @@ export async function consumeBatchFact(
           branding_params: unknown
           image_templates: unknown
           logo_master_ref: string | null
+          // Task 9: carried here for parity with the pre-render's own
+          // BankConfigRow (both declaration sites, one shape), even though
+          // this in-transaction lookup only ever needs `id` for
+          // bank_config_ref -- the actual masters were already resolved and
+          // passed into the renderer by preRenderArtifacts, above, outside
+          // this transaction.
+          soundbox_template_ref: string | null
+          collateral_template_ref: string | null
         }
         const bankConfigCache = new Map<string, BankConfigRow | null>()
         async function bankConfigFor(bankCode: string, branchCode: string | null): Promise<BankConfigRow | null> {
@@ -277,7 +368,9 @@ export async function consumeBatchFact(
           // branch-less entry does not probe branch_code = '' twice).
           for (const key of bankConfigCandidateKeys(bankCode, branchCode)) {
             const hit = await tx.$queryRaw<BankConfigRow[]>`
-              SELECT id::text AS id, branding_params, image_templates, logo_master_ref FROM bank_composition_config
+              SELECT id::text AS id, branding_params, image_templates, logo_master_ref,
+                     soundbox_template_ref, collateral_template_ref
+              FROM bank_composition_config
               WHERE tenant_id = ${tenantUuid}::uuid AND bank_code = ${key.bankCode} AND branch_code = ${key.branchCode}
             `
             row = hit[0] ?? null

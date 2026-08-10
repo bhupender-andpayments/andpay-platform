@@ -4,10 +4,10 @@ import { onceWithin, enqueue } from '@andpay/outbox'
 import { stepKey } from '@andpay/keys'
 import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
-import { consumeBatchFact } from '../src/dispatch.js'
+import { consumeBatchFact, TemplateTrimMismatchError } from '../src/dispatch.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 import { buildDispatchPackage, assembleGroupPdf, dispatchGroupXlsx, AssetResolutionError } from '../src/package.js'
-import { PDFDocument } from 'pdf-lib'
+import { PDFDocument, rgb } from 'pdf-lib'
 import QRCode from 'qrcode'
 import { CONSUMER, setProgramContext } from '../src/internal.js'
 import {
@@ -53,17 +53,47 @@ afterAll(async () => {
 // '' bank-level-default sentinel (never null, closing the NULL-distinct
 // unique-index gotcha); pass an explicit branch code to seed a branch-specific
 // row.
-async function seedBankConfig(tenantUuid: string, bankCode: string, branchCode = ''): Promise<string> {
+// Task 9: two optional template refs, one per dispatch-package group (M2's
+// one-row-carries-two-masters shape). Both default to null so every EXISTING
+// caller keeps seeding a config with no master at all, which is the fallback
+// path Task 8's renderer already covers byte-for-byte.
+async function seedBankConfig(
+  tenantUuid: string,
+  bankCode: string,
+  branchCode = '',
+  templateRefs?: { soundboxTemplateRef?: string | null; collateralTemplateRef?: string | null },
+): Promise<string> {
   const rows = await db.$queryRaw<{ id: string }[]>`
     INSERT INTO bank_composition_config (
-      id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at
+      id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates,
+      soundbox_template_ref, collateral_template_ref, updated_at
     ) VALUES (
       gen_random_uuid(), ${tenantUuid}::uuid, ${bankCode}, ${branchCode}, 'ref-logo-master', 'ref-logo-derivative',
-      '{}'::jsonb, '{"SOUNDBOX":{},"STANDEE":{}}'::jsonb, now()
+      '{}'::jsonb, '{"SOUNDBOX":{},"STANDEE":{}}'::jsonb,
+      ${templateRefs?.soundboxTemplateRef ?? null}, ${templateRefs?.collateralTemplateRef ?? null}, now()
     )
     RETURNING id::text AS id
   `
   return rows[0]!.id
+}
+
+// A minimal one-page PDF at an exact box, stored under `key` through the SAME
+// InMemoryAssetStore instance the consumer reads from, returning the opaque
+// reference to seed onto a bank_composition_config template column. Mirrors
+// how setBankTemplateMaster actually stores a master (a real PDF, not a
+// placeholder), so the preflight and the renderer see the same shape of bytes
+// a real upload would produce.
+async function seedMasterAsset(key: string, widthPt: number, heightPt: number): Promise<string> {
+  const doc = await PDFDocument.create()
+  const page = doc.addPage([widthPt, heightPt])
+  // A page with NO content stream fails to embed ("missing Contents") the
+  // moment the renderer's tryEmbedMaster calls doc.embedPdf on it, so a
+  // single filled rectangle stands in for real vendor artwork here, exactly
+  // as collateral-renderer.test.ts's own testMaster() fixture does.
+  page.drawRectangle({ x: 0, y: 0, width: widthPt, height: heightPt, color: rgb(0.9, 0.9, 0.9) })
+  const bytes = await doc.save()
+  const put = await assetStore.put(key, bytes, { contentType: 'application/pdf', filename: `${key}.pdf` })
+  return put.reference
 }
 
 // The `batch` ROW itself. Production always has one before the batch fact is
@@ -558,6 +588,122 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
       const rec = await assetStore.getByReference(art.asset_reference)
       expect(rec).not.toBeNull()
       expect(rec!.bytes[0]).toBe(0x25) // %  -> valid PDF even with the logo embedded
+    }
+  })
+
+  // Task 9: composition now resolves the DELIVERY GROUP's master (Task 5/6
+  // columns) and passes it into the renderer (Task 8), which trims the page
+  // to the master's own box when the master embeds. 200 x 350 is deliberately
+  // NOT the 283.44 x 510.24 shared default (Task 7): a page-box match here can
+  // only be explained by the master having been wired through, never by the
+  // pre-existing fallback.
+  it('a master-backed compose renders at the master page box, not the default', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+
+    const collateralRef = await seedMasterAsset('template/COLLATERAL/HDFC', 200, 350)
+    await seedBankConfig(tenantUuid, 'HDFC', '', { collateralTemplateRef: collateralRef })
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-master', 'HDFC')
+    const env = batchFactEnvelope({
+      payload: { btchId: btchWire, tenantId: tenantWire, programId: programWire, triggerReason: 'LOT_SIZE', unitCount: 1, asgnIds: [a.asgnWire] },
+      dedupKey: btchWire,
+      traceId: 'trace-master',
+    })
+
+    const res = await consumeBatchFact(db, env, assetStore)
+    expect(res.composed).toBe(2) // soundbox + standee
+
+    const arts = await db.$queryRaw<{ artifact_type: string; asset_reference: string }[]>`
+      SELECT artifact_type, asset_reference FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
+    `
+    const byType = new Map(arts.map((r) => [r.artifact_type, r.asset_reference]))
+
+    // STANDEE_IMG reads collateral_template_ref, which IS set: trimmed to the
+    // master's own 200 x 350 box, not the 283.44 x 510.24 default.
+    const standeeRec = await assetStore.getByReference(byType.get('STANDEE_IMG')!)
+    const standeePage = (await PDFDocument.load(standeeRec!.bytes)).getPage(0)
+    expect(standeePage.getWidth()).toBeCloseTo(200, 2)
+    expect(standeePage.getHeight()).toBeCloseTo(350, 2)
+
+    // SOUNDBOX_IMG reads soundbox_template_ref, which this config never set:
+    // the drawn layout still runs at the DEFAULT page size, exactly as before
+    // this task (the master is a strict addition, per type).
+    const soundboxRec = await assetStore.getByReference(byType.get('SOUNDBOX_IMG')!)
+    const soundboxPage = (await PDFDocument.load(soundboxRec!.bytes)).getPage(0)
+    expect(soundboxPage.getWidth()).toBeCloseTo(283.44, 2)
+    expect(soundboxPage.getHeight()).toBeCloseTo(510.24, 2)
+  })
+
+  // Task 9's compose-side backstop (spec 4.2: checked at BOTH the upload door,
+  // Task 6's setBankTemplateMaster, and again here at compose time), because
+  // rows written before that door existed, or written by hand, are not
+  // covered by a door check that only runs on a NEW upload.
+  it('mismatched group masters fail the compose loudly, naming the config key', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+
+    const soundboxRef = await seedMasterAsset('template/SOUNDBOX/HDFC', 283.44, 510.24)
+    const collateralRef = await seedMasterAsset('template/COLLATERAL/HDFC', 288, 432)
+    await seedBankConfig(tenantUuid, 'HDFC', '', {
+      soundboxTemplateRef: soundboxRef,
+      collateralTemplateRef: collateralRef,
+    })
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-mismatch', 'HDFC')
+    const env = batchFactEnvelope({
+      payload: { btchId: btchWire, tenantId: tenantWire, programId: programWire, triggerReason: 'LOT_SIZE', unitCount: 1, asgnIds: [a.asgnWire] },
+      dedupKey: btchWire,
+      traceId: 'trace-mismatch',
+    })
+
+    const err = await consumeBatchFact(db, env, assetStore).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(TemplateTrimMismatchError)
+    expect((err as Error).message).toContain('HDFC')
+
+    // The preflight runs BEFORE any render, so nothing was composed and no
+    // dispatch fact was ever enqueued for this batch.
+    const artifacts = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
+    `
+    expect(Number(artifacts[0]!.n)).toBe(0)
+  })
+
+  // The pre-existing no-master shape, unchanged. seedBankConfig's optional
+  // 4th argument is omitted, so both template columns are NULL, exactly the
+  // shape every config seeded before this task had.
+  it('a config with no masters composes exactly as before (fallback intact)', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+    await seedBankConfig(tenantUuid, 'HDFC')
+    const a = await seedBatchedEntry(tenantUuid, programUuid, btchUuid, 'trace-no-master', 'HDFC')
+    const env = batchFactEnvelope({
+      payload: { btchId: btchWire, tenantId: tenantWire, programId: programWire, triggerReason: 'LOT_SIZE', unitCount: 1, asgnIds: [a.asgnWire] },
+      dedupKey: btchWire,
+      traceId: 'trace-no-master',
+    })
+
+    const res = await consumeBatchFact(db, env, assetStore)
+    expect(res.composed).toBe(2)
+
+    const arts = await db.$queryRaw<{ asset_reference: string }[]>`
+      SELECT asset_reference FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
+    `
+    for (const art of arts) {
+      const rec = await assetStore.getByReference(art.asset_reference)
+      const page = (await PDFDocument.load(rec!.bytes)).getPage(0)
+      expect(page.getWidth()).toBeCloseTo(283.44, 2)
+      expect(page.getHeight()).toBeCloseTo(510.24, 2)
     }
   })
 

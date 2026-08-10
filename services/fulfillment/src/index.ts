@@ -60,7 +60,7 @@ export {
   ingestIntakeSheetWithinTx,
   isSheetStructurallyValid,
 } from './intake.js'
-export { consumeBatchFact } from './dispatch.js'
+export { consumeBatchFact, TemplateTrimMismatchError } from './dispatch.js'
 export {
   type AdapterFunction,
   type PackageLine,
