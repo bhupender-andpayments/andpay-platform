@@ -3,6 +3,22 @@ import QRCode from 'qrcode'
 import { PDFDocument, rgb } from 'pdf-lib'
 import { renderCollateralPdf, resolveTemplate, type CollateralInput } from '../src/collateral/renderer.js'
 
+// Adapts the brief's minimalInput(artifactType) fixture helper to this file's
+// own `base` fixture, defined below.
+function minimalInput(artifactType: CollateralInput['artifactType']): CollateralInput {
+  return { ...base, artifactType }
+}
+
+// A minimal single-page vector PDF standing in for a per-bank artwork master:
+// a filled rectangle so a master-backed render is trivially distinguishable
+// from the drawn (white background) fallback.
+async function testMaster(w = 283.44, h = 510.24): Promise<Uint8Array> {
+  const doc = await PDFDocument.create()
+  const page = doc.addPage([w, h])
+  page.drawRectangle({ x: 0, y: 0, width: w, height: h / 8, color: rgb(0, 0.2, 0.5) })
+  return await doc.save()
+}
+
 // A FULL-LENGTH wire asgn_ id: the 5-character prefix plus the 26 Crockford
 // characters that encode 128 bits, 31 in total. Fixed rather than generated so
 // the determinism assertions below stay byte-comparable, and full-length because
@@ -237,5 +253,63 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
     expect(Buffer.from(noLogo).equals(Buffer.from(withLogo))).toBe(false)
     // embedding an image adds an XObject, so the logo variant is larger
     expect(withLogo.length).toBeGreaterThan(noLogo.length)
+  })
+})
+
+describe('template master background (track B)', () => {
+  it('the page box equals the MASTER page box, ignoring the config size keys (spec 4 precedence)', async () => {
+    const bytes = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      imageTemplate: { widthPt: 999, heightPt: 999 },
+      templateMaster: { bytes: await testMaster(283.44, 510.24) },
+    })
+    const page = (await PDFDocument.load(bytes)).getPage(0)
+    expect(page.getWidth()).toBeCloseTo(283.44, 2)
+    expect(page.getHeight()).toBeCloseTo(510.24, 2)
+  })
+
+  it('a master render differs from the drawn fallback, and still varies by dispatchId and QR', async () => {
+    const master = { bytes: await testMaster() }
+    const a = await renderCollateralPdf({ ...minimalInput('STANDEE_IMG'), templateMaster: master })
+    const b = await renderCollateralPdf(minimalInput('STANDEE_IMG'))
+    expect(Buffer.compare(Buffer.from(a), Buffer.from(b))).not.toBe(0)
+    const c = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      dispatchId: 'asgn_DIFFERENT0000000000000000',
+    })
+    expect(Buffer.compare(Buffer.from(a), Buffer.from(c))).not.toBe(0)
+  })
+
+  it('is deterministic with a master: identical input, byte-identical output', async () => {
+    const master = { bytes: await testMaster() }
+    const a = await renderCollateralPdf({ ...minimalInput('SOUNDBOX_IMG'), templateMaster: master })
+    const b = await renderCollateralPdf({ ...minimalInput('SOUNDBOX_IMG'), templateMaster: master })
+    expect(Buffer.compare(Buffer.from(a), Buffer.from(b))).toBe(0)
+  })
+
+  it('corrupt master bytes degrade to the drawn layout without throwing', async () => {
+    const bytes = await renderCollateralPdf({
+      ...minimalInput('STICKER_IMG'),
+      templateMaster: { bytes: new Uint8Array([9, 9, 9]) },
+    })
+    const page = (await PDFDocument.load(bytes)).getPage(0)
+    expect(page.getWidth()).toBeCloseTo(283.44, 2) // the DEFAULT, i.e. the fallback ran
+  })
+
+  it('overlay fractions are honored from the imageTemplate overlay key', async () => {
+    // Two renders differing ONLY in overlay.qr.yFrac produce different bytes.
+    const master = { bytes: await testMaster() }
+    const a = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      imageTemplate: { overlay: { qr: { yFrac: 0.3 } } },
+    })
+    const b = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      imageTemplate: { overlay: { qr: { yFrac: 0.4 } } },
+    })
+    expect(Buffer.compare(Buffer.from(a), Buffer.from(b))).not.toBe(0)
   })
 })
