@@ -523,9 +523,12 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     // The soundbox and the standee are STORED at the same page size, which is
     // what makes the two merged delivery PDFs equal-dimension by construction
     // rather than by a reflow at merge time. These two types used to differ
-    // (288x432 against 432x648).
+    // (288x432 against 432x648). The new default is 283.44 x 510.24 pt, the
+    // measured production trim.
     expect(dims.get('SOUNDBOX_IMG')).toBe(dims.get('STANDEE_IMG'))
-    expect(dims.get('SOUNDBOX_IMG')).toBe('288x432')
+    const soundboxDims = dims.get('SOUNDBOX_IMG')
+    expect(soundboxDims).toMatch(/^283\.44x510\.24$/)
+
   })
 
   it('P4-2: a real PNG logo master is fetched and embedded, the reference chain still resolves to a valid PDF', async () => {

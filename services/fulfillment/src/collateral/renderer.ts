@@ -35,12 +35,16 @@ export interface ImageTemplate {
 
 // ONE shared default page size for every product type, so the two merged
 // delivery PDFs are equal-dimension by construction rather than by convention.
-// 288 x 432 (4in x 6in) is the SOUNDBOX size that was already in production: the
-// middle of the three former sizes, already proven for this QR band layout, so
-// nothing new is invented here and no artwork is being scaled into an untested
-// box. Sticker (216 sq) and standee (432 x 648) are retired as page sizes; the
-// product distinction lives in the delivery grouping, not in the trim.
-const DEFAULT_SIZE = { widthPt: 288, heightPt: 432 }
+// 283.44 x 510.24 pt is EXACTLY 100 x 180 mm: the trim measured off the print
+// vendor's own production file (27 - 29 July Standee 1.pdf places its artwork
+// at 2834.4 x 5102.4 under an 0.1 scale, a 600 dpi bake over 100 x 180 mm).
+// This supersedes the earlier 288 x 432 (M2 decision 2), which was inherited
+// from the in-production soundbox size, not measured against the vendor's
+// tooling; the reversal is recorded in the 2026-08-10 dispatch-package spec
+// and is owed to the architecture corpus. The GUARANTEE is unchanged: one
+// size, both PDFs. When a template master is present its page box overrides
+// this entirely (resolveTemplate).
+const DEFAULT_SIZE = { widthPt: 283.44, heightPt: 510.24 }
 
 const DEFAULTS = {
   headline: 'SCAN & PAY',

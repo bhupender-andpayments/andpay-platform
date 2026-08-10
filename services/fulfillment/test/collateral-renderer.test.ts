@@ -55,6 +55,14 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
     expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true)
   })
 
+  it('the default page is the measured production trim: 283.44 x 510.24 pt, exactly 100 x 180 mm', async () => {
+    const bytes = await renderCollateralPdf({ ...base, artifactType: 'SOUNDBOX_IMG' })
+    const doc = await PDFDocument.load(bytes)
+    const page = doc.getPage(0)
+    expect(page.getWidth()).toBeCloseTo(283.44, 2)
+    expect(page.getHeight()).toBeCloseTo(510.24, 2)
+  })
+
   // The two merged delivery PDFs (soundbox, and sticker-plus-standee) must have
   // the SAME page dimensions, and the only way to guarantee that without a
   // reflow step at merge time is for every product type to render at one size.
@@ -66,10 +74,11 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
       const doc = await PDFDocument.load(await renderCollateralPdf({ ...base, artifactType }))
       sizes.push({ w: doc.getPage(0).getWidth(), h: doc.getPage(0).getHeight() })
     }
-    // 288 x 432 (4in x 6in): the former SOUNDBOX size, already proven in
-    // production for this QR band layout, so no new number is invented.
+    // 283.44 x 510.24 pt (100 x 180 mm): the measured production trim from the
+    // print vendor's own file, superseding the earlier 288 x 432 soundbox size.
     for (const s of sizes) {
-      expect(s).toEqual({ w: 288, h: 432 })
+      expect(s.w).toBeCloseTo(283.44, 2)
+      expect(s.h).toBeCloseTo(510.24, 2)
     }
   })
 
@@ -132,7 +141,7 @@ describe('collateral renderer (Phase 4 Task P4-1, BRD 5.3 FR-03)', () => {
     expect(t.textColorHex).toBe('#abcdef')
     // absent -> defaults
     expect(t.accentColorHex).toBe('#1a5fb4')
-    expect(t.widthPt).toBe(288) // the ONE shared default, whatever the product type
+    expect(t.widthPt).toBeCloseTo(283.44, 2) // the ONE shared default, whatever the product type
 
     const empty = resolveTemplate({ ...base, imageTemplate: {} })
     expect(empty.headline).toBe('SCAN & PAY')
