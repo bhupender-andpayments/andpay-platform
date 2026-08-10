@@ -16,7 +16,7 @@ import { buildOpsEdgeApp, type OpsEdgeDeps } from '../src/index.js'
 // authenticated class-3 operator gets 200 with NO 6e audit emitted at all
 // (reads are not mutations, check 3). Also pins the route shapes, because
 // `/ops/batches/:btchId` sits next to the pre-existing
-// `/ops/batches/:btchId/dispatch-excel` and a careless param route would
+// `/ops/batches/:btchId/excel/:group` and a careless param route would
 // swallow it.
 const EXPECTED_ISS = 'https://auth.andpay.test/ops'
 const KID = 'ops-edge-object-spine-test-key-1'
@@ -290,12 +290,12 @@ describe('P2-1 object-spine routes: posture', () => {
     expect(await auditCount()).toBe(0)
   })
 
-  it('the detail route does not swallow the pre-existing dispatch-excel download', async () => {
-    // `/ops/batches/:btchId` and `/ops/batches/:btchId/dispatch-excel` are
+  it('the detail route does not swallow the pre-existing excel/:group download', async () => {
+    // `/ops/batches/:btchId` and `/ops/batches/:btchId/excel/:group` are
     // distinct routes; a regression that collapsed them would return JSON here.
     const { btchWire } = await seedBatchWithEntry()
     const res = await request(app.getHttpServer())
-      .get(`/ops/batches/${btchWire}/dispatch-excel`)
+      .get(`/ops/batches/${btchWire}/excel/SOUNDBOX`)
       .set('Authorization', `Bearer ${await mint()}`)
     expect(res.status).toBe(200)
     expect(res.headers['content-type']).toContain('spreadsheetml')

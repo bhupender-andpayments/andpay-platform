@@ -291,15 +291,35 @@ describe('ops reports edge: GET /ops/reports/activation carries Device ID(s) (Ta
 })
 
 describe('ops-edge FR-03/FR-04 dispatch-package download (Phase 4 Task 4a, P4-D6)', () => {
-  it('GET dispatch-excel for a batch returns a sorted .xlsx (PK zip)', async () => {
+  it('GET excel/:group for a batch returns a sorted .xlsx (PK zip), per group', async () => {
     const token = await mint()
-    const res = await request(app.getHttpServer())
-      .get(`/ops/batches/${newId('btch')}/dispatch-excel`)
+    for (const group of ['SOUNDBOX', 'COLLATERAL']) {
+      const res = await request(app.getHttpServer())
+        .get(`/ops/batches/${newId('btch')}/excel/${group}`)
+        .set('Authorization', `Bearer ${token}`)
+        .buffer(true)
+        .parse((response, callback) => {
+          const chunks: Buffer[] = []
+          response.on('data', (chunk: Buffer) => chunks.push(chunk))
+          response.on('end', () => callback(null, Buffer.concat(chunks)))
+        })
+      expect(res.status).toBe(200)
+      // xlsx is a PK zip container.
+      const body = res.body as Buffer
+      expect(body.subarray(0, 2).toString('latin1')).toBe('PK')
+    }
+  })
+
+  it('GET excel/:group accepts the legacy artifact-type keys and 404s an unknown one', async () => {
+    const token = await mint()
+    const legacy = await request(app.getHttpServer())
+      .get(`/ops/batches/${newId('btch')}/excel/STICKER_IMG`)
       .set('Authorization', `Bearer ${token}`)
-      .buffer(true)
-    expect(res.status).toBe(200)
-    expect(res.headers['content-type']).toContain('spreadsheetml')
-    expect(res.headers['content-disposition']).toContain('.xlsx')
+    expect(legacy.status).toBe(200)
+    const unknown = await request(app.getHttpServer())
+      .get(`/ops/batches/${newId('btch')}/excel/NOT_A_GROUP`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(unknown.status).toBe(404)
   })
 
   it('GET collateral/:type for a batch with no such artifact -> 404', async () => {

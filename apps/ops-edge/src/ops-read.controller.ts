@@ -6,7 +6,8 @@ import {
   listBankCompositionConfigs,
   listBatchingConfigs,
   buildDispatchPackage,
-  dispatchXlsx,
+  dispatchGroupXlsx,
+  resolveCollateralGroup,
   assembleGroupPdf,
   listBatches,
   readBatchDetail,
@@ -197,17 +198,28 @@ export class OpsReadController {
     return detail
   }
 
-  // Phase 4 (BRD 5.3 FR-03 / FR-04, P4-D6): the Phase-1 dispatch-package hand-off
-  // surface -- the AndPayments ops team downloads the package to send to the
-  // print vendor. Guard-only like every read here (no D2 authorize, no 6e); the
-  // ship-view PII an entitled operator sees mirrors the accepted internal-read
-  // posture (A.2). The Excel is the bank+branch-sorted dispatch sheet.
-  @Get('batches/:btchId/dispatch-excel')
-  async dispatchExcel(@Param('btchId') btchId: string, @Res() res: EdgeResponse): Promise<void> {
+  // Phase 1 dispatch-package hand-off, per the 2026-08-10 E1 ruling: TWO Excels
+  // per batch, one per delivery group, on the same group vocabulary (and legacy
+  // artifact-type key mapping) the collateral PDF route below already uses. One
+  // resolver, two media types. Guard-only like every read here (no D2 authorize,
+  // no 6e); the ship-view PII an entitled operator sees mirrors the accepted
+  // internal-read posture (A.2). 404 on an unknown group key, the same null
+  // path the PDF route takes.
+  @Get('batches/:btchId/excel/:groupKey')
+  async dispatchExcel(
+    @Param('btchId') btchId: string,
+    @Param('groupKey') groupKey: string,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
+    const group = resolveCollateralGroup(groupKey)
+    if (group === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
     const lines = await buildDispatchPackage(this.deps.fulfillmentDb, btchId, 'ship')
-    const xlsx = await dispatchXlsx(lines)
+    const xlsx = await dispatchGroupXlsx(lines, group)
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition', `attachment; filename="dispatch-${btchId}.xlsx"`)
+    res.setHeader('Content-Disposition', `attachment; filename="dispatch-${group}-${btchId}.xlsx"`)
     res.status(200).send(xlsx)
   }
 
