@@ -36,6 +36,16 @@ export function CourierMasterPage() {
     getVendors(client)
       .then((res) => {
         if (cancelled) return
+        // Checked BEFORE the filter. `res` is typed VendorRow[] but the value
+        // is a fetch body, so a failed read reaches `.filter` and throws
+        // "res.filter is not a function" straight into the catch below, which
+        // shows that sentence to an operator. Surviving is not the same as
+        // being intelligible.
+        if (!Array.isArray(res)) {
+          setError('Unexpected response shape.')
+          setRows(res)
+          return
+        }
         setRows(res.filter((r) => r.type === 'COURIER'))
       })
       .catch((err: unknown) => {
@@ -51,7 +61,7 @@ export function CourierMasterPage() {
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader title="Courier master" subtitle={rows !== null ? `${rows.length} couriers` : undefined} />
+        <CardHeader title="Courier master" subtitle={Array.isArray(rows) ? `${rows.length} couriers` : undefined} />
         {rows === null ? (
           <SkeletonRows rows={4} cols={5} />
         ) : (

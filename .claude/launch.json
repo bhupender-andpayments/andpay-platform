@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ops-portal",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@andpay/ops-portal", "dev"],
+      "port": 5173
+    }
+  ]
+}

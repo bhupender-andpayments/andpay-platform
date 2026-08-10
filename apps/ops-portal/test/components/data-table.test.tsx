@@ -56,4 +56,33 @@ describe('DataTable', () => {
     const cell = screen.getByText('No status exceptions.')
     expect(cell.getAttribute('colspan')).toBe(String(columns.length))
   })
+
+  // A non-array body has now taken a whole page down three times in two days
+  // (VendorSuspendButton, the shipments region on Dispatches, Inventory). The
+  // shape is always the same: a read returns an error object instead of a list,
+  // the caller assigns it straight into state, and `rows.map` throws during
+  // render. React unmounts the tree, so the operator loses the entire screen
+  // rather than one table. Guarding at each call site has not held, because the
+  // guard has to be remembered every time; the primitive is the one place that
+  // covers every existing caller and every future one.
+  //
+  // `rows` is typed `readonly T[]`, so this cannot happen according to the
+  // types. It happened anyway, three times, which is the point: the value comes
+  // from a fetch and the type is an assertion about it, not a check of it.
+  it('survives a response body that is not an array, instead of taking the page down', () => {
+    // Exactly the shape that caused it: an error envelope where a list was
+    // expected. `as never` because only a runtime value can be this wrong.
+    const body = { statusCode: 500, message: 'Internal Server Error' } as never
+    expect(() => render(<DataTable columns={columns} rows={body} />)).not.toThrow()
+  })
+
+  it('says the rows could not be displayed, and does NOT claim the list is empty', () => {
+    // The important half. Coercing silently to [] would render the caller's
+    // emptyMessage, so a failed read would be indistinguishable from a genuinely
+    // empty one and the screen would state something false. DataTable cannot
+    // know WHY the body is not a list, but it can refuse to say "none".
+    render(<DataTable columns={columns} rows={undefined as never} emptyMessage="No vendors." />)
+    expect(screen.queryByText('No vendors.')).toBeNull()
+    expect(screen.getByText('Could not display these rows.')).toBeTruthy()
+  })
 })

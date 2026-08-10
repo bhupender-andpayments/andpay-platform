@@ -229,6 +229,69 @@ describe('master data views', () => {
     expect(calls.some((c) => c.url.includes('/ops/batching-config'))).toBe(true)
   })
 
+  // A FAILED READ MUST NOT BE REPORTED AS A COUNT, OR AS A RAW TypeError.
+  //
+  // Every view here holds `rows` as `T[] | null`, where null means "still
+  // loading", and prints `${rows.length} <noun>` once it is not null. None of
+  // them checked that the body was a list, because the type says it is. When a
+  // read fails with a 200-shaped error envelope the count renders as the string
+  // "undefined", so the card states something false.
+  //
+  // DataTable now refuses to render a non-array as an empty list, so the table
+  // itself is honest, and the page no longer dies. These pin the other half:
+  // the card must not report a count it does not have, and the operator must be
+  // told the read failed.
+  //
+  // Found in a real browser, not here: with the table fixed the page rendered,
+  // and the header read "undefined vendors".
+
+  function stubBadBodyFor(fragment: string) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes(fragment)) return jsonResponse({ statusCode: 500, message: 'Internal Server Error' })
+        return jsonResponse([])
+      }),
+    )
+  }
+
+  it('VendorRegistryPage states the read failed instead of printing "undefined vendors"', async () => {
+    stubBadBodyFor('/ops/vendors')
+
+    renderPage(<VendorRegistryPage />)
+
+    expect(await screen.findByText('Unexpected response shape.')).toBeTruthy()
+    // The count is the falsehood being guarded. Nothing on the card may say it.
+    expect(screen.queryByText(/undefined/i)).toBeNull()
+    // And the table says it could not show the rows, never "No vendors."
+    expect(screen.getByText('Could not display these rows.')).toBeTruthy()
+    expect(screen.queryByText('No vendors.')).toBeNull()
+  })
+
+  it('CourierMasterPage reports a failed read in operator language, not a raw TypeError', async () => {
+    // This page filters the body before storing it, so a non-array throws
+    // `res.filter is not a function` into the catch and shows THAT to an
+    // operator. Surviving is not the same as being intelligible.
+    stubBadBodyFor('/ops/vendors')
+
+    renderPage(<CourierMasterPage />)
+
+    expect(await screen.findByText('Unexpected response shape.')).toBeTruthy()
+    expect(screen.queryByText(/is not a function/i)).toBeNull()
+    expect(screen.queryByText(/undefined/i)).toBeNull()
+  })
+
+  it('Bank Masters tab states the read failed instead of printing "undefined banks"', async () => {
+    stubBadBodyFor('/ops/bank-masters')
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+
+    expect(await screen.findByText('Unexpected response shape.')).toBeTruthy()
+    expect(screen.queryByText(/undefined/i)).toBeNull()
+    expect(screen.getByText('Could not display these rows.')).toBeTruthy()
+  })
+
   it('has NO write controls anywhere and issues only GET reads across every tab', async () => {
     const calls: Call[] = []
     stubAllReads(calls)

@@ -37,6 +37,12 @@ export function VendorRegistryPage() {
     getVendors(client)
       .then((res) => {
         if (cancelled) return
+        // `res` is TYPED VendorRow[], but the type is an assertion about a
+        // fetch body and not a check of it. A failed read arrives here as an
+        // error envelope, and the subtitle below then prints "undefined
+        // vendors". Say what happened; the value still goes into state so
+        // DataTable can refuse to render it as an empty list.
+        if (!Array.isArray(res)) setError('Unexpected response shape.')
         setRows(res)
       })
       .catch((err: unknown) => {
@@ -52,7 +58,7 @@ export function VendorRegistryPage() {
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader title="Vendor registry" subtitle={rows !== null ? `${rows.length} vendors` : undefined} />
+        <CardHeader title="Vendor registry" subtitle={Array.isArray(rows) ? `${rows.length} vendors` : undefined} />
         {rows === null ? (
           <SkeletonRows rows={5} cols={6} />
         ) : (

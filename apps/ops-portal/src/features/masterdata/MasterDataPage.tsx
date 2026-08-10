@@ -80,6 +80,10 @@ function BankMastersView() {
     getBankMasters(client)
       .then((res) => {
         if (cancelled) return
+        // A failed read arrives as an error envelope, not a list, and the
+        // subtitle below would then print a count of "undefined". Say what
+        // happened instead; see VendorRegistryPage for the full reasoning.
+        if (!Array.isArray(res)) setError('Unexpected response shape.')
         setRows(res)
       })
       .catch((err: unknown) => {
@@ -95,7 +99,7 @@ function BankMastersView() {
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader title="Bank masters" subtitle={rows !== null ? `${rows.length} banks` : undefined} />
+        <CardHeader title="Bank masters" subtitle={Array.isArray(rows) ? `${rows.length} banks` : undefined} />
         {rows === null ? (
           <SkeletonRows rows={5} cols={8} />
         ) : (
@@ -131,6 +135,10 @@ function DamageReasonsView() {
     getDamageReasons(client)
       .then((res) => {
         if (cancelled) return
+        // A failed read arrives as an error envelope, not a list, and the
+        // subtitle below would then print a count of "undefined". Say what
+        // happened instead; see VendorRegistryPage for the full reasoning.
+        if (!Array.isArray(res)) setError('Unexpected response shape.')
         setRows(res)
       })
       .catch((err: unknown) => {
@@ -146,7 +154,7 @@ function DamageReasonsView() {
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader title="Damage-reason master" subtitle={rows !== null ? `${rows.length} reasons` : undefined} />
+        <CardHeader title="Damage-reason master" subtitle={Array.isArray(rows) ? `${rows.length} reasons` : undefined} />
         {rows === null ? (
           <SkeletonRows rows={5} cols={5} />
         ) : (
@@ -198,6 +206,10 @@ function BatchingConfigView() {
     getBatchingConfig(client)
       .then((res) => {
         if (cancelled) return
+        // A failed read arrives as an error envelope, not a list, and the
+        // subtitle below would then print a count of "undefined". Say what
+        // happened instead; see VendorRegistryPage for the full reasoning.
+        if (!Array.isArray(res)) setError('Unexpected response shape.')
         setRows(res)
       })
       .catch((err: unknown) => {
@@ -213,7 +225,7 @@ function BatchingConfigView() {
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader title="Batching config" subtitle={rows !== null ? `${rows.length} scopes` : undefined} />
+        <CardHeader title="Batching config" subtitle={Array.isArray(rows) ? `${rows.length} scopes` : undefined} />
         {rows === null ? (
           <SkeletonRows rows={4} cols={7} />
         ) : (
