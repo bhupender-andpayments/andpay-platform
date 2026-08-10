@@ -13,6 +13,7 @@ import {
   requestRowRejectReason,
   seedKnownVpaOriginals,
   duplicateVpaVerdicts,
+  vpaKey,
   type BankRequestRow,
   type RequestRowRejectReason,
   type DuplicateVpaOriginal,
@@ -329,22 +330,22 @@ export async function commitBankFile(
             WHERE vpa_value = ANY(${fileVpas}::text[]) OR mobile = ANY(${fileMobiles}::text[])
         `
         for (const k of known) {
-          seenVpa.add(k.vpa_value)
+          const key = vpaKey(k.vpa_value)
+          seenVpa.add(key)
           if (k.mobile !== null && k.mobile !== '') {
             const vpas = seenMobile.get(k.mobile) ?? new Set<string>()
-            vpas.add(k.vpa_value)
+            vpas.add(key)
             seenMobile.set(k.mobile, vpas)
           }
         }
       }
 
       // Ruling 2026-08-10, the soundbox duplicate-VPA gate. A SECOND seed read
-      // rather than a reuse of seenVpa above: that set is case-sensitive, keyed
-      // on the raw vpa_value and mixed with the mobile walk, whereas the gate
-      // keys on lower(vpa_value) and needs the ORIGINAL record (which table, its
-      // reference, the merchant name), not merely "seen". Merging them would
-      // make the counter's own semantics depend on the gate's, and the counters
-      // must stay byte-identical.
+      // rather than a reuse of seenVpa above: both now key on vpaKey, but that
+      // set answers only "seen before" and is mixed with the mobile walk,
+      // whereas the gate needs the ORIGINAL record (which table, its reference,
+      // the merchant name). Merging them would make the counter's semantics
+      // depend on the gate's.
       const vpaOriginals = await seedKnownVpaOriginals(tx, parsed.rows.map((r) => r.vpaValue))
       // Computed for the WHOLE file up front, from the same pure walk the
       // preview runs, so the two surfaces cannot disagree.
@@ -352,18 +353,25 @@ export async function commitBankFile(
 
       for (const row of parsed.rows) {
         if (hasEncodedSeparator(row.qrValue)) qrMalformed += 1
-        if (row.vpaValue !== '') {
-          if (seenVpa.has(row.vpaValue)) duplicateVpa += 1
-          seenVpa.add(row.vpaValue)
+        // Both counters compare merchants by vpaKey, the same lowercased key
+        // D1 mints merchant identity from (`v1:vpa:<lower(vpa)>`) and the same
+        // key the gate below uses. Comparing the raw strings, as this did until
+        // 2026-08-10, treated `ACME@psp` and `acme@psp` as two merchants: it
+        // undercounted the repeat, and worse, told the shared-mobile check that
+        // one merchant's own number now belonged to a second merchant.
+        const rowVpaKey = vpaKey(row.vpaValue)
+        if (rowVpaKey !== '') {
+          if (seenVpa.has(rowVpaKey)) duplicateVpa += 1
+          seenVpa.add(rowVpaKey)
         }
         if (typeof row.mobile === 'string' && row.mobile !== '') {
           const vpas = seenMobile.get(row.mobile)
           // Seen before, AND with some OTHER merchant: that is the shared-number
           // case. Seen before with only THIS vpa is the same merchant returning,
           // already reported as duplicateVpa.
-          if (vpas !== undefined && [...vpas].some((v) => v !== row.vpaValue)) duplicateMobile += 1
+          if (vpas !== undefined && [...vpas].some((v) => v !== rowVpaKey)) duplicateMobile += 1
           const next = vpas ?? new Set<string>()
-          next.add(row.vpaValue)
+          next.add(rowVpaKey)
           seenMobile.set(row.mobile, next)
         }
         const verdict = verdicts.get(row.rowNo) ?? null

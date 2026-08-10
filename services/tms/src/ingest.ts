@@ -194,7 +194,7 @@ export interface DuplicateVpaOriginal {
 // `v1:vpa:<lower(vpa)>` (D1 interim), so two casings of one VPA are ONE
 // merchant, and a gate that missed that would be trivially defeated by an
 // upper-case letter in the bank's export.
-function vpaKey(vpaValue: string): string {
+export function vpaKey(vpaValue: string): string {
   return vpaValue.trim().toLowerCase()
 }
 
