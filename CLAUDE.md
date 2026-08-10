@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # AndPayments Platform
 
 A microservices payments platform. Its architecture is governed by an external
@@ -23,67 +27,164 @@ something a spec does not grant, STOP and escalate to the architecture chat.
 - When a requirement seems to need something this spec does not grant, STOP and
   escalate to the architecture chat; do not improvise.
 
-## Stack defaults (spec-level, swappable per service later)
+## Stack
 
-- Node 22, TypeScript strict, pnpm workspaces.
-- Services will be NestJS; portals React plus Vite; per-context Postgres via
-  Prisma with the outbox written in the same transaction. These arrive in later
-  specs; nothing service-shaped exists yet.
+- Node 22, TypeScript strict, pnpm 10 workspaces (`packages/*`, `services/*`,
+  `apps/*`), ESM throughout.
+- Services and edges are NestJS; portals are React plus Vite; per-context
+  Postgres via Prisma with the outbox written in the same transaction.
 - Tests: vitest.
 - None of the above is an architectural invariant. The invariants live in the
   corpus (docs/architecture_rules.md).
 
 ## How work arrives
 
-- Each service and app directory will carry its own handoff spec as `SPEC.md`.
-- Claude Code implements specs only. It does not design architecture here.
-- The first spec (platform bootstrap) is `docs/handoff_spec_01_platform_bootstrap.md`.
+- Work arrives as numbered handoff specs. Claude Code implements specs only; it
+  does not design architecture here.
+- `docs/handoff_spec_01_platform_bootstrap.md` is the spec this repository was
+  bootstrapped from. Later specs (02 through 14b) are recorded by their
+  verification files under `evidence/spec_*_evidence.md`, which is the fastest
+  way to find out what a spec required and how it was proven.
+- `docs/plan/` carries the working ledger: PHASE*_DECISIONS.md, OPEN_ITEMS.md,
+  GO_LIVE_BLOCKERS.md, OUTSTANDING*.md and dated RESUME_PROMPT files. Read the
+  latest RESUME_PROMPT before picking up in-flight work.
 
 ## Corpus pointers (team copies)
 
 - `docs/architecture_rules.md` is the enforcement layer: invariants, guardrails,
   the risk register, and the new-component gate. Read it before any design review.
-- `docs/handoff_spec_01_platform_bootstrap.md` is the spec this repository was
-  bootstrapped from.
 - `docs/platform_build_state.md` is the repo side build ledger: what has landed
   here and its verification. The authoritative build state lives in the corpus.
-- The remaining corpus files (architure_context.md, chapters 04 to 07,
-  00_intake_and_build_protocol.md, platform_build_state.md) live in the
-  architecture chat and should be copied into `docs/` as the team needs them.
+- `docs/architure_context.md` (spelling is as-is) records what was decided and
+  why, with history.
+- `docs/design/ANDPAYMENTS-DESIGN-SYSTEM.md` governs portal UI.
 
-## Repository shape
+## Architecture
 
-- `packages/` shared libraries: `@andpay/ids` (typed public IDs), `@andpay/keys`
-  (the 06.A idempotency key grammar), `@andpay/outbox` (transactional outbox and
-  consumer inbox), `@andpay/envelope` (the E4 codec), `@andpay/bus` (the Kafka
-  publisher and schema-registry ports), `@andpay/engine` (the D77 saga engine),
-  `@andpay/authz` (the secret-free D3 verify, api_/apsk_ resolve, and D2
-  two-gate evaluator every context imports), and `@andpay/bank-qr` (the one
-  known bank UPI-QR export defect: TMS DETECTS it to report per-file evidence,
-  fulfillment CORRECTS it at the artifact boundaries, one rule so the two
-  cannot drift).
-- `services/` per-context services (identity, tms, fulfillment, orchestrator,
-  auth). Each carries a `prisma/` project pinned to its own schema;
-  `services/auth` also holds the D121 stores and all D3 token and class-6
-  credential issuance and lifecycle (the sole secret-holder, spec 04). Domain
-  tables arrive with each service spec.
-- `apps/` portals (ops-portal, vendor-portal), empty until their specs arrive.
-- `infra/` local dev infrastructure: `docker-compose.dev.yml` (one postgres:16)
-  and `db.sh` (migrate plus generate).
-- `docs/` corpus copies for the team.
+Five bounded contexts, each with its own Postgres schema, its own Prisma client,
+and no path to another context's data except facts on the bus.
 
-## Local development
+**`services/` are libraries, not processes.** Each exports domain logic plus its
+own generated Prisma client (`@andpay/tms-service` and so on) and owns a
+`prisma/` project pinned to its schema. Nothing in `services/` listens on a
+port.
 
-- Database: `pnpm db:up` starts one postgres:16 with a schema per context. Then
-  `bash ./infra/db.sh` applies migrations and generates the per-context Prisma
-  clients, and `pnpm --filter @andpay/outbox db:push:test` sets up the outbox
-  library's own test schema.
-- Schema-per-context is a build-time choice; the physical split to an
-  instance-per-context later is a connection-string change only. Never write a
-  cross-schema query, join, or FK (C4, T1, T7).
-- Tests: `pnpm test` runs everything. The `@andpay/outbox` tests are integration
-  tests and need the database up first (`pnpm db:up`). `pnpm lint` and
-  `pnpm typecheck` do not need the database.
-- Generated Prisma clients live under `services/*/generated` and
-  `packages/*/generated` and are gitignored; regenerate them with the commands
-  above.
+- `identity`, `tms`, `fulfillment`, `analytics` are the four domain (fact)
+  contexts. `orchestrator` holds saga state only (schema, no `src/`).
+- `auth` is the sole secret-holder (spec 04): D121 stores, all D3 token and
+  class-6 credential issuance and lifecycle, the hash-chained `authz_audit`
+  ledger.
+
+**`apps/` are the processes.** Edges are the only HTTP surface:
+
+- `auth-edge` (internal login, MFA, step-up, session), `vendor-auth-edge`
+  (vendor operator login and provisioning), `ops-edge` (operator reads, writes,
+  reports), `tenant-edge` (tenant reads and reports), `vendor-edge` (vendor
+  intake, pull, return, courier status).
+- `relay` drains each context's outbox and publishes to Kafka, and does nothing
+  else. `consumer` is one image run once per context via `CONSUMER_CONTEXT`, so
+  a slow consumer can never run inside the relay's claim transaction.
+  `scheduler` fires due `max_wait` batching timers on a poll loop.
+- `ops-portal` and `vendor-portal` are the Vite SPAs.
+
+**`packages/` are the shared rails:** `@andpay/ids` (typed public IDs),
+`@andpay/keys` (06.A idempotency key grammar), `@andpay/outbox` (transactional
+outbox and consumer inbox), `@andpay/envelope` (E4 codec), `@andpay/bus` (Kafka
+publisher, schema-registry port, retry ladder, topic provisioning),
+`@andpay/engine` (D77 saga engine), `@andpay/authz` (secret-free D3 verify,
+`api_`/`apsk_` resolve, D2 two-gate evaluator), `@andpay/edge` (error filters,
+CORS, security headers, principal resolve, authorize-audit), `@andpay/audit`
+(hash-chain construction), `@andpay/bank-qr` (the one known bank UPI-QR export
+defect: TMS DETECTS it to report per-file evidence, fulfillment CORRECTS it at
+the artifact boundaries, one rule so the two cannot drift).
+
+### The database scope contract (D-3, specs 10b/10c/10d)
+
+Every context read or write goes through its own `read-context.ts` /
+`write-context.ts` before any SQL, inside the same transaction:
+
+- `enterReadScope(tx, role, programIds)` sets `SET LOCAL ROLE <ctx>_read` and
+  binds `app.program_ids`; RESTRICTIVE RLS then gates every SELECT, fail-closed
+  on an unset or empty value.
+- `enterWriteScope(tx, role, programId)` sets `<ctx>_write` and binds
+  `app.program_id`; `*_scoped WITH CHECK` gates each write.
+- The role name is always a compile-time constant, safe to inline. The program
+  scope is always resolved server-side from the target aggregate or from
+  verified claims, never from a request body (M7, S16, D99), and always bound as
+  a parameter, never concatenated.
+
+### Infrastructure
+
+`infra/docker-compose.dev.yml` runs one postgres:16 (schema per context) and one
+Redpanda (Kafka API plus a Confluent-compatible schema registry) as the local
+stand-in for AWS MSK plus Glue. `infra/aws` is CDK config-as-code applied out of
+band; topics are provisioned there, never created at runtime (S23).
+
+Schema-per-context is a build-time choice; the physical split to an
+instance-per-context later is a connection-string change only. Never write a
+cross-schema query, join, or FK (C4, T1, T7).
+
+## Commands
+
+```bash
+pnpm db:up                                  # postgres + redpanda, waits healthy
+bash ./infra/db.sh                          # migrate deploy + generate, all six contexts
+bash ./infra/db.sh dev <name>               # author a new migration instead
+pnpm --filter @andpay/outbox db:push:test   # outbox library's own test schema
+pnpm -r build                               # REQUIRED before tests: @andpay/* resolve via dist
+pnpm lint && pnpm typecheck                 # no database needed
+pnpm test                                   # vitest run --typecheck, everything
+```
+
+CI runs exactly that sequence (`.github/workflows/ci.yml`); reproduce a CI
+failure by running it in the same order.
+
+Single test file or single test:
+
+```bash
+pnpm vitest run test/architecture.test.ts
+pnpm vitest run --project node services/tms/test/foo.test.ts
+pnpm vitest run --project ops-portal -t "renders the upload page"
+```
+
+Generated Prisma clients live under `services/*/generated` and
+`packages/*/generated` and are gitignored. If a suite fails on a missing
+`generated/client`, run `bash ./infra/db.sh`.
+
+## Testing contract
+
+- Most suites are integration tests against the real local Postgres, so
+  `fileParallelism` is false and every file runs serially. `pnpm db:up` first.
+- Three vitest projects: `node` (packages/services/apps plus root `test/`, node
+  env, with a `*.test-d.ts` typecheck pass), `ops-portal` and `vendor-portal`
+  (jsdom plus the react transform, isolated so jsdom never leaks into the node
+  suites).
+- `vitest.global-teardown.ts` runs ONCE after the whole gate and truncates the
+  four domain schemas. Read its header before touching it: `auth` is never
+  truncated (scoped DELETE preserving the `ops.admin` demo login), the
+  hash-chained `authz_audit` and the auth `outbox` are never trimmed,
+  `tms.damage_reason` and `fulfillment.bank_composition_config` are preserved
+  master data, and `orchestrator` is untouched. Set
+  `ANDPAY_SKIP_TEST_TEARDOWN=1` to inspect what a failing test left behind.
+- Per-suite `beforeEach` truncation is still required; the global teardown
+  guarantees a clean database AFTER the run, not isolation during it.
+- Root `test/` holds the cross-cutting guards. `architecture.test.ts` is a
+  static net that fails the build on a cross-schema name, a mutated
+  `search_path`, a foreign context's URL, or an import of another context's
+  client. Others cover write-plane C4, tenant RLS fail-closed, audience
+  isolation across edges, audit-chain end to end, and residency. Treat a failure
+  there as an invariant breach, not a flaky test.
+- A run of `pnpm test` truncates the shared dev database, so demo state must be
+  reseeded afterwards.
+
+## Local demo harness
+
+`docs/plan/phase7_demo/harness/` (gitignored, never moved under
+`apps/ops-portal/`, where a no-demo-bridge guard scans). `serve.mjs` co-boots
+auth-edge on :3000 and ops-edge on :3001 in one process with one shared
+ephemeral ES256 signer, because auth-edge exposes no JWKS endpoint and mints a
+fresh key each boot, so the two cannot interoperate as separate processes.
+`seed-data.mjs` is idempotent, `totp.mjs` prints the current code. Run details
+and the demo credentials are in `docs/plan/phase7_demo/HARNESS_RUN.md`. Harness
+conveniences (in-process MFA vault, no throttle, widened TOTP window) are never
+production code.
