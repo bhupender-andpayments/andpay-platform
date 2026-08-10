@@ -389,6 +389,12 @@ model BankCompositionConfig {
   // left pointing at the superseded master).
   logoMasterRef     String?  @map("logo_master_ref")
   logoDerivativeRef String?  @map("logo_derivative_ref")
+  // Track B (2026-08-10 spec): the vector background masters, keyed by
+  // DELIVERY GROUP (soundbox / collateral) because sticker and standee share
+  // one artwork. Set only by setBankTemplateMaster, which enforces that the
+  // two masters of one row share one page box (the M2 equal-trim guarantee).
+  soundboxTemplateRef   String? @map("soundbox_template_ref")
+  collateralTemplateRef String? @map("collateral_template_ref")
   brandingParams    Json     @map("branding_params") @db.JsonB
   imageTemplates    Json     @map("image_templates") @db.JsonB // per product_type {SOUNDBOX,STANDEE,STICKER}
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
