@@ -1084,16 +1084,20 @@ function filenameFromContentDisposition(res: Response, fallback: string): string
   return match?.[1] ?? fallback
 }
 
-export async function downloadDispatchExcel(btchId: string): Promise<DownloadedFile> {
-  const res = await fetch(`${opsBaseUrl()}/ops/batches/${btchId}/dispatch-excel`, {
+// E1 (2026-08-10): one Excel per delivery group, same group grammar as the
+// collateral PDF download below. 404 (no such group) surfaces as null, not
+// thrown, exactly as downloadCollateral documents.
+export async function downloadDispatchExcel(btchId: string, group: string): Promise<DownloadedFile | null> {
+  const res = await fetch(`${opsBaseUrl()}/ops/batches/${btchId}/excel/${group}`, {
     headers: { Authorization: `Bearer ${getAccessToken()}` },
   })
+  if (res.status === 404) return null
   if (!res.ok) {
     const text = await res.text()
     throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
   }
   const blob = await res.blob()
-  return { blob, filename: filenameFromContentDisposition(res, `dispatch-${btchId}.xlsx`) }
+  return { blob, filename: filenameFromContentDisposition(res, `dispatch-${group}-${btchId}.xlsx`) }
 }
 
 // 404 (no artifact of that type for the batch) is a real, non-error outcome

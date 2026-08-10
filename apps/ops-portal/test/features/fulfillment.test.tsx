@@ -179,7 +179,45 @@ describe('BatchDetailPage', () => {
     expect(screen.queryByRole('button', { name: /Sticker PDF/ })).toBeNull()
     // and the group it has nothing for is not offered at all.
     expect(screen.queryByRole('button', { name: /Soundbox PDF/ })).toBeNull()
-    expect(screen.getByRole('button', { name: /Dispatch sheet/ })).toBeTruthy()
+    // The single dispatch-sheet button is gone: this entry has soundbox true
+    // AND standeeCount 1, so it belongs to BOTH excel groups, and both Excel
+    // buttons render.
+    expect(screen.getByRole('button', { name: /Soundbox Excel/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collateral Excel/ })).toBeTruthy()
+  })
+
+  // Excel gating is LINE membership off detail.entries, never artifact
+  // presence: an orphan line (no soundbox, no standee, no sticker) still gets
+  // a row on the Collateral sheet, spec 2.2, even though nothing was ever
+  // composed for it and detail.artifacts is empty.
+  it('offers a Collateral Excel for an orphan-only batch even with zero artifacts', async () => {
+    stubFetch(() =>
+      jsonResponse({
+        batch: BATCH_ROW,
+        entries: [
+          {
+            asgnId: 'asgn_1',
+            merchantDisplayName: 'BRILLIANT PERFUME',
+            merchantLegalName: 'BRILLIANT PERFUME PVT LTD',
+            bankReferenceCode: '1568',
+            bankDisplayName: 'GSC BANK',
+            branchCode: '30',
+            soundbox: false,
+            standeeCount: 0,
+            stickerCount: 0,
+            poolStatus: 'BATCHED',
+            dispatchState: null,
+            shipToSuperseded: false,
+          },
+        ],
+        artifacts: [],
+      }),
+    )
+    renderBatchDetail('btch_abc')
+    expect(await screen.findByRole('button', { name: /Collateral Excel/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Soundbox Excel/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Soundbox PDF/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Collateral PDF/ })).toBeNull()
   })
 
   // The two-PDF delivery grouping. A merchant wanting both a sticker and a

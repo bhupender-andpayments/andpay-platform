@@ -110,13 +110,17 @@ export function BatchDetailPage() {
     }
   }, [client])
 
-  async function handleDispatchExcel(): Promise<void> {
+  async function handleDispatchExcel(groupKey: string): Promise<void> {
     setDownloadError(null)
     setDownloadNote(null)
     setDownloading(true)
     try {
-      const file = await downloadDispatchExcel(btchId)
-      saveBlob(file.filename, file.blob)
+      const file = await downloadDispatchExcel(btchId, groupKey)
+      if (file === null) {
+        setDownloadNote(`No ${COLLATERAL_GROUP_LABELS[groupKey] ?? groupKey} Excel exists for this batch.`)
+      } else {
+        saveBlob(file.filename, file.blob)
+      }
     } catch (err) {
       setDownloadError(err instanceof Error ? err.message : 'Failed to download the dispatch sheet.')
     } finally {
@@ -143,7 +147,7 @@ export function BatchDetailPage() {
   }
 
   const columns: DataTableColumn<BatchEntryRow>[] = [
-    { key: 'asgnId', header: 'Assignment', cell: (r) => <CodeChip>{r.asgnId}</CodeChip> },
+    { key: 'asgnId', header: 'Dispatch ID', cell: (r) => <CodeChip>{r.asgnId}</CodeChip> },
     { key: 'merchant', header: 'Merchant', cell: (r) => r.merchantDisplayName },
     { key: 'legal', header: 'Legal Name', cell: (r) => r.merchantLegalName },
     { key: 'bank', header: 'Bank', cell: (r) => `${r.bankDisplayName} (${r.bankReferenceCode})` },
@@ -190,6 +194,15 @@ export function BatchDetailPage() {
   const availableGroups = [
     ...(artifactTypes.has('SOUNDBOX_IMG') ? ['SOUNDBOX'] : []),
     ...(artifactTypes.has('STANDEE_IMG') || artifactTypes.has('STICKER_IMG') ? ['COLLATERAL'] : []),
+  ]
+
+  // Excel buttons gate on LINE membership, not artifact presence: an orphan
+  // line (no product at all) has an Excel row but no artifact, and its sheet
+  // must still be downloadable (spec 2.2). Mirrors excelLinesFor exactly.
+  const entries = detail?.entries ?? []
+  const excelGroups = [
+    ...(entries.some((e) => e.soundbox) ? ['SOUNDBOX'] : []),
+    ...(entries.some((e) => e.standeeCount >= 1 || e.stickerCount >= 1 || !e.soundbox) ? ['COLLATERAL'] : []),
   ]
 
   return (
@@ -284,9 +297,11 @@ export function BatchDetailPage() {
               subtitle="The dispatch sheet carries the ship-to view; the list below deliberately does not."
             />
             <div className="flex flex-wrap gap-3 p-4">
-              <Button onClick={() => void handleDispatchExcel()} disabled={downloading}>
-                Dispatch sheet (.xlsx)
-              </Button>
+              {excelGroups.map((g) => (
+                <Button key={`${g}-excel`} onClick={() => void handleDispatchExcel(g)} disabled={downloading}>
+                  {COLLATERAL_GROUP_LABELS[g] ?? g} Excel
+                </Button>
+              ))}
               {availableGroups.map((g) => (
                 <Button key={g} variant="secondary" onClick={() => void handleCollateral(g)} disabled={downloading}>
                   {COLLATERAL_GROUP_LABELS[g] ?? g} PDF
