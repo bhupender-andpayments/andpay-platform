@@ -19,6 +19,8 @@ export function history(c: Client) {
   return c.request<HistoryRow[]>({ method: 'GET', path: '/vendor/history', base: 'vendor' })
 }
 
-export function packageDownloadPath(btchId: string): string {
-  return `/vendor/batch/${encodeURIComponent(btchId)}/package`
+// The package pull is per DELIVERY GROUP (2026-08-10 ruling), the same
+// grouping the dispatch Excel builder and the ops download already speak.
+export function packageDownloadPath(btchId: string, group: 'SOUNDBOX' | 'COLLATERAL'): string {
+  return `/vendor/batch/${encodeURIComponent(btchId)}/package/${group}`
 }

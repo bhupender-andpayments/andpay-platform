@@ -58,14 +58,15 @@ export interface ReturnSheetParseResult {
 // `Courier` is optional and resolves to a vndr_ COURIER via vndr.courier_code.
 /**
  * Each field accepts SYNONYMS, and that is a fix rather than leniency for its
- * own sake. The two ends of this round trip disagreed on a column name:
- * `dispatchXlsx` sends the column as **`Assignment`**, while the vendor
- * portal's client-side return parser requires **`Dispatch ID`** (which is the
- * BRD's own term, used in its report definitions). So a vendor who returned our
- * sheet with Device ID and AWB filled in, exactly as instructed, would have been
- * REJECTED for a missing column. Accepting both names fixes the round trip
- * without renaming a column that has already shipped in downloaded workbooks.
- * Same for `Courier` versus the portal's `Courier Partner`.
+ * own sake. The two ends of this round trip once disagreed on a column name:
+ * the builder sent the column as **`Assignment`**, while the vendor portal's
+ * client-side return parser requires **`Dispatch ID`** (which is the BRD's own
+ * term, used in its report definitions). `dispatchGroupXlsx` now sends
+ * `Dispatch ID` directly, so the two ends agree; `Assignment` remains here as a
+ * synonym only for workbooks a vendor downloaded before the rename, so those
+ * URLs and files a vendor already holds keep round-tripping without renaming a
+ * column that has already shipped. Same for `Courier` versus the portal's
+ * `Courier Partner`.
  */
 const HEADERS = {
   asgnId: ['Assignment', 'Dispatch ID'],

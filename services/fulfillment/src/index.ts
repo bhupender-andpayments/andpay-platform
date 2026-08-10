@@ -114,7 +114,7 @@ export { enterReadScope } from './read-context.js'
 export { enterWriteScope, enterWriteRole } from './write-context.js'
 export { enterVendorReadScope } from './vendor-read-context.js'
 export { type WorkQueueRow, readVendorWorkQueue, type HistoryRow, readVendorHistory } from './vendor-reads.js'
-export { type PullResult, type PullPdfResult, pullDispatchPackageXlsx, pullTypePdf, PullDeniedError } from './vendor-pull.js'
+export { type PullXlsxResult, type PullPdfResult, pullDispatchPackageXlsx, pullTypePdf, PullDeniedError } from './vendor-pull.js'
 export {
   correctStatus,
   overrideTerminal,

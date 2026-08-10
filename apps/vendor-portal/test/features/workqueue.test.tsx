@@ -74,8 +74,11 @@ describe('WorkQueuePage', () => {
     expect(call!.init.body === undefined || !JSON.stringify(call!.init.body).includes('vndr')).toBe(true)
 
     // Task 15: a DownloadPackageButton (task 13) renders per row, one per
-    // batch, taking only btchId (no PII column added).
-    expect(screen.getAllByRole('button', { name: /download dispatch package/i })).toHaveLength(2)
+    // batch, taking only btchId (no PII column added). 2026-08-10 ruling: the
+    // pull is per delivery group, so each row now carries TWO buttons, one for
+    // Soundbox and one for Collateral.
+    expect(screen.getAllByRole('button', { name: /download soundbox excel/i })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: /download collateral excel/i })).toHaveLength(2)
   })
 
   it('shows an error message when the request fails', async () => {

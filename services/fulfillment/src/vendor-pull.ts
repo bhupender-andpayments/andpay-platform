@@ -2,7 +2,7 @@ import { toUuid, fromUuid } from '@andpay/ids'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { enterVendorReadScope } from './vendor-read-context.js'
-import { buildDispatchPackage, dispatchGroupXlsx, assembleGroupPdf } from './package.js'
+import { buildDispatchPackage, dispatchGroupXlsx, assembleGroupPdf, resolveCollateralGroup } from './package.js'
 import type { AssetStore } from './storage/asset-store.js'
 import { emitVendorAuthzAudit } from './vendor-audit.js'
 import { loadFulfillmentConfig } from './authz-config.js'
@@ -16,8 +16,8 @@ export class PullDeniedError extends Error {
   }
 }
 
-export interface PullResult {
-  xlsx: Buffer
+export interface PullXlsxResult {
+  xlsx: Buffer | null
   btchId: string
 }
 
@@ -28,15 +28,17 @@ export interface PullResult {
 // 2) authorize batch:pull-artifacts binding resource.vndrId to the RESOLVED
 //    print_vndr (wire form); emit the ALLOW/DENY 6e durable-BEFORE the return
 //    (synchronous-standalone, IDs+enums only).
-// 3) build the ship-view package and serialize to a single .xlsx (one row per
-//    line; artifactRefs joined into one column; image BYTES parked). The
-//    payload is NEVER persisted and NEVER logged (S7/D104).
+// 3) resolve the DELIVERY GROUP and build the ship-view package, serialized to
+//    a single .xlsx (one row per line; artifactRefs joined into one column;
+//    image BYTES parked). The payload is NEVER persisted and NEVER logged
+//    (S7/D104).
 export async function pullDispatchPackageXlsx(
   db: FulfillmentDb,
   claim: LeanClaim,
   btchIdWire: string,
+  groupKey: string,
   traceId: string,
-): Promise<PullResult> {
+): Promise<PullXlsxResult> {
   const btchUuid = toUuid(btchIdWire)
   const vndrUuid = toUuid(claim.scope.vndr!)
 
@@ -101,11 +103,16 @@ export async function pullDispatchPackageXlsx(
   // null and we denied above), and the authorize confirmed batch.print_vndr ==
   // scope.vndr. buildDispatchPackage is btchId-scoped, so building it under the
   // normal connection leaks nothing.
+  // E1 (2026-08-10): the pull is per DELIVERY GROUP, same key grammar as the
+  // PDF pull below, resolved AFTER the authorize so an unknown key still
+  // leaves the 6e trail. null maps to the caller's 404, as the PDF's does.
+  const group = resolveCollateralGroup(groupKey)
+  if (group === null) return { xlsx: null, btchId: btchIdWire }
   // Phase 4 (P4-D5): the ship view, now returned bank+branch-sorted, serialized
-  // by the shared dispatchXlsx builder (same sheet the ops download produces).
+  // by the shared dispatchGroupXlsx builder (same sheet the ops download
+  // produces, for the SAME delivery group).
   const lines = await buildDispatchPackage(db, btchIdWire, 'ship')
-  // Task 3 makes the group a route parameter; SOUNDBOX is a compile bridge only.
-  const xlsx = await dispatchGroupXlsx(lines, 'SOUNDBOX')
+  const xlsx = await dispatchGroupXlsx(lines, group)
   return { xlsx, btchId: btchIdWire }
 }
 

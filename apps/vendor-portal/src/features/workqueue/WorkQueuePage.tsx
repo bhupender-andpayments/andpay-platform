@@ -13,12 +13,25 @@ import { DownloadPackageButton } from '../pull/DownloadPackageButton.js'
 // column (task 15) wires in the standalone DownloadPackageButton (task 13)
 // per row, passing only row.btchId: the button stays PII-free too, and the
 // FR-04 pull's own vndr/authorization check happens solely at the edge.
+//
+// 2026-08-10 ruling: the pull is per DELIVERY GROUP, same as the dispatch
+// Excel builder and the ops download, so the Package column now renders TWO
+// buttons per row rather than one, each carrying its own group and label.
 const COLUMNS: ReadonlyArray<DataTableColumn<WorkQueueRow>> = [
   { key: 'btchId', header: 'Batch', cell: (row) => row.btchId },
   { key: 'unitCount', header: 'Units', cell: (row) => row.unitCount },
   { key: 'openEntries', header: 'Open entries', cell: (row) => row.openEntries },
   { key: 'createdAt', header: 'Created', cell: (row) => row.createdAt },
-  { key: 'package', header: 'Package', cell: (row) => <DownloadPackageButton btchId={row.btchId} /> },
+  {
+    key: 'package',
+    header: 'Package',
+    cell: (row) => (
+      <div className="space-y-2">
+        <DownloadPackageButton btchId={row.btchId} group="SOUNDBOX" label="Soundbox Excel" />
+        <DownloadPackageButton btchId={row.btchId} group="COLLATERAL" label="Collateral Excel" />
+      </div>
+    ),
+  },
 ]
 
 export function WorkQueuePage() {

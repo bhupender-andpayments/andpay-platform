@@ -4,11 +4,13 @@ import userEvent from '@testing-library/user-event'
 import { DownloadPackageButton } from '../../src/features/pull/DownloadPackageButton.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
-// The confirmed FR-04 pull contract (task 10, packageDownloadPath):
-//   GET /vendor/batch/:btchId/package -> .xlsx binary (recipient PII inside).
-// Per D104/S7 the SPA must NEVER parse/read that payload; it only triggers a
-// browser download. This is a raw fetch (not the JSON api client), so it does
-// NOT go through the 401-refresh interceptor by design.
+// The confirmed FR-04 pull contract (task 10, packageDownloadPath), now
+// PER DELIVERY GROUP (2026-08-10 ruling: the vendor pull and the vendor portal
+// split the same way as the dispatch Excel builder):
+//   GET /vendor/batch/:btchId/package/:group -> .xlsx binary (recipient PII
+//   inside). Per D104/S7 the SPA must NEVER parse/read that payload; it only
+// triggers a browser download. This is a raw fetch (not the JSON api client),
+// so it does NOT go through the 401-refresh interceptor by design.
 
 interface Call {
   url: string
@@ -55,7 +57,7 @@ describe('DownloadPackageButton', () => {
 
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
 
-    render(<DownloadPackageButton btchId="btch_1" />)
+    render(<DownloadPackageButton btchId="btch_1" group="SOUNDBOX" label="Soundbox Excel" />)
 
     await userEvent.click(screen.getByRole('button', { name: /download/i }))
 
@@ -63,7 +65,7 @@ describe('DownloadPackageButton', () => {
       expect(createObjectURL).toHaveBeenCalledTimes(1)
     })
 
-    const call = calls.find((c) => c.url.includes('/vendor/batch/btch_1/package'))
+    const call = calls.find((c) => c.url.includes('/vendor/batch/btch_1/package/SOUNDBOX'))
     expect(call).toBeTruthy()
     expect(headerValue(call!, 'Authorization')).toBe('Bearer tok-1')
 
@@ -88,7 +90,7 @@ describe('DownloadPackageButton', () => {
     const createObjectURL = vi.fn(() => 'blob:mock-url')
     vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL: vi.fn() })
 
-    render(<DownloadPackageButton btchId="btch_2" />)
+    render(<DownloadPackageButton btchId="btch_2" group="COLLATERAL" label="Collateral Excel" />)
 
     await userEvent.click(screen.getByRole('button', { name: /download/i }))
 
@@ -103,11 +105,49 @@ describe('DownloadPackageButton', () => {
       vi.fn(async () => ({ status: 401, ok: false, blob: async () => ({ text: vi.fn(), arrayBuffer: vi.fn() }) })),
     )
 
-    render(<DownloadPackageButton btchId="btch_3" />)
+    render(<DownloadPackageButton btchId="btch_3" group="SOUNDBOX" label="Soundbox Excel" />)
 
     await userEvent.click(screen.getByRole('button', { name: /download/i }))
 
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toMatch(/sign in|session|log in/i)
+  })
+
+  // The two-button reality (task 3): the component itself carries no knowledge
+  // of its sibling, so proving the split works means rendering both at once,
+  // exactly as WorkQueuePage now does, and checking each fetches its OWN
+  // group-scoped path under its OWN label.
+  it('renders as two independent buttons, one per delivery group, each hitting its own group-scoped path', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init })
+        return { status: 200, ok: true, blob: async () => ({ text: vi.fn(), arrayBuffer: vi.fn() }) }
+      }),
+    )
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:mock-url'), revokeObjectURL: vi.fn() })
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    render(
+      <>
+        <DownloadPackageButton btchId="btch_4" group="SOUNDBOX" label="Soundbox Excel" />
+        <DownloadPackageButton btchId="btch_4" group="COLLATERAL" label="Collateral Excel" />
+      </>,
+    )
+
+    expect(screen.getByRole('button', { name: /download soundbox excel/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /download collateral excel/i })).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: /download soundbox excel/i }))
+    await userEvent.click(screen.getByRole('button', { name: /download collateral excel/i }))
+
+    await vi.waitFor(() => {
+      expect(calls).toHaveLength(2)
+    })
+    expect(calls.some((c) => c.url.includes('/vendor/batch/btch_4/package/SOUNDBOX'))).toBe(true)
+    expect(calls.some((c) => c.url.includes('/vendor/batch/btch_4/package/COLLATERAL'))).toBe(true)
+
+    clickSpy.mockRestore()
   })
 })

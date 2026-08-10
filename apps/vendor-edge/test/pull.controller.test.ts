@@ -126,7 +126,7 @@ describe('GET /vendor/batch/:btchId/package (spec 14b task 7, FR-04 pull)', () =
     const token = await mint({ scope: { vndr: vndrWire } })
 
     const res = await request(app.getHttpServer())
-      .get(`/vendor/batch/${btchWire}/package`)
+      .get(`/vendor/batch/${btchWire}/package/SOUNDBOX`)
       .set('Authorization', `Bearer ${token}`)
       .buffer(true)
       .parse((response, callback) => {
@@ -137,7 +137,7 @@ describe('GET /vendor/batch/:btchId/package (spec 14b task 7, FR-04 pull)', () =
 
     expect(res.status).toBe(200)
     expect(res.headers['content-type']).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    expect(res.headers['content-disposition']).toBe(`attachment; filename="dispatch-${btchWire}.xlsx"`)
+    expect(res.headers['content-disposition']).toBe(`attachment; filename="dispatch-SOUNDBOX-${btchWire}.xlsx"`)
     const body = res.body as Buffer
     expect(Buffer.isBuffer(body)).toBe(true)
     expect(body.length).toBeGreaterThan(0)
@@ -152,7 +152,7 @@ describe('GET /vendor/batch/:btchId/package (spec 14b task 7, FR-04 pull)', () =
     const token = await mint({ scope: { vndr: otherVndrWire } })
 
     const res = await request(app.getHttpServer())
-      .get(`/vendor/batch/${btchWire}/package`)
+      .get(`/vendor/batch/${btchWire}/package/SOUNDBOX`)
       .set('Authorization', `Bearer ${token}`)
 
     expect(res.status).toBe(403)
@@ -169,7 +169,7 @@ describe('GET /vendor/batch/:btchId/package (spec 14b task 7, FR-04 pull)', () =
 
     try {
       await request(app.getHttpServer())
-        .get(`/vendor/batch/${btchWire}/package`)
+        .get(`/vendor/batch/${btchWire}/package/SOUNDBOX`)
         .set('Authorization', `Bearer ${token}`)
         .buffer(true)
         .parse((response, callback) => {
@@ -187,6 +187,28 @@ describe('GET /vendor/batch/:btchId/package (spec 14b task 7, FR-04 pull)', () =
       warnSpy.mockRestore()
       expect(allCalls).not.toMatch(/Sherlock|Baker Street|9999999999/)
     }
+  })
+
+  it('the OLD bare /package path is gone: 404', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const { btchWire } = await seedBatch(vndrWire)
+    const token = await mint({ scope: { vndr: vndrWire } })
+
+    const res = await request(app.getHttpServer())
+      .get(`/vendor/batch/${btchWire}/package`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(404)
+  })
+
+  it('an unknown group key on the package pull is a 404', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const { btchWire } = await seedBatch(vndrWire)
+    const token = await mint({ scope: { vndr: vndrWire } })
+
+    const res = await request(app.getHttpServer())
+      .get(`/vendor/batch/${btchWire}/package/NOT_A_GROUP`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(404)
   })
 })
 

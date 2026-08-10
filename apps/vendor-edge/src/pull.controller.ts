@@ -17,21 +17,32 @@ interface EdgeResponse {
   send(body: Buffer): void
 }
 
-// GET vendor/batch/:btchId/package: the FR-04 dispatch-package pull. The
-// btchId is a path param (never a vndr); scope.vndr is the authenticated
-// claim's (D99). The .xlsx is streamed and NEVER persisted or logged (D104/S7).
+// GET vendor/batch/:btchId/package/:groupKey: the FR-04 dispatch-package pull,
+// now PER DELIVERY GROUP, same key grammar as the collateral route below
+// ('SOUNDBOX' or 'COLLATERAL'). The btchId is a path param (never a vndr);
+// scope.vndr is the authenticated claim's (D99). An unrecognized groupKey is a
+// 404, mirroring the collateral route directly below; the bare `/package`
+// path this route used to answer is now gone, no different from any other
+// unmatched route. The .xlsx is streamed and NEVER persisted or logged
+// (D104/S7).
 @Controller('vendor')
 export class PullController {
   constructor(@Inject(EDGE_DEPS) private readonly deps: EdgeDeps) {}
 
-  @Get('batch/:btchId/package')
+  @Get('batch/:btchId/package/:groupKey')
   @UseGuards(EdgeCredentialGuard)
-  async pull(@Param('btchId') btchId: string, @Req() req: EdgeRequest, @Res() res: EdgeResponse): Promise<void> {
+  async pull(
+    @Param('btchId') btchId: string,
+    @Param('groupKey') groupKey: string,
+    @Req() req: EdgeRequest,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
     const traceId = randomUUID()
     try {
-      const { xlsx } = await pullDispatchPackageXlsx(this.deps.fulfillmentDb, req.claim, btchId, traceId)
+      const { xlsx } = await pullDispatchPackageXlsx(this.deps.fulfillmentDb, req.claim, btchId, groupKey, traceId)
+      if (xlsx === null) throw new NotFoundException()
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-      res.setHeader('Content-Disposition', `attachment; filename="dispatch-${btchId}.xlsx"`)
+      res.setHeader('Content-Disposition', `attachment; filename="dispatch-${groupKey}-${btchId}.xlsx"`)
       res.status(200).send(xlsx)
     } catch (err) {
       if (err instanceof PullDeniedError) throw new ForbiddenException()

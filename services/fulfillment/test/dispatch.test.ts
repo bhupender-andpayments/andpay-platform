@@ -6,7 +6,7 @@ import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { consumeBatchFact } from '../src/dispatch.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
-import { buildDispatchPackage, assembleGroupPdf, dispatchXlsx, AssetResolutionError } from '../src/package.js'
+import { buildDispatchPackage, assembleGroupPdf, dispatchGroupXlsx, AssetResolutionError } from '../src/package.js'
 import { PDFDocument } from 'pdf-lib'
 import QRCode from 'qrcode'
 import { CONSUMER, setProgramContext } from '../src/internal.js'
@@ -602,7 +602,7 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     expect(await assembleGroupPdf(db, assetStore, btchWire, 'NOT_A_GROUP')).toBeNull()
 
     // the sorted dispatch Excel is a real PK zip
-    const xlsx = await dispatchXlsx(lines)
+    const xlsx = await dispatchGroupXlsx(lines, 'SOUNDBOX')
     expect(xlsx.subarray(0, 2).toString('latin1')).toBe('PK')
   })
 

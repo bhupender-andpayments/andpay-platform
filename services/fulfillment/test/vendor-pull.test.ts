@@ -4,6 +4,7 @@ import type { LeanClaim } from '@andpay/authz'
 import type { AuthzAuditRecord } from '@andpay/audit'
 import { PrismaClient } from '../generated/client/index.js'
 import { PDFDocument } from 'pdf-lib'
+import ExcelJS from 'exceljs'
 import { pullDispatchPackageXlsx, pullTypePdf, PullDeniedError } from '../src/vendor-pull.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 
@@ -111,12 +112,12 @@ describe('pullDispatchPackageXlsx (spec 14b task 5, FR-04 D104 disclosure surfac
     const { btchV1Wire, v1Wire } = await seed()
     const claim = mkClaim7(v1Wire)
 
-    const res = await pullDispatchPackageXlsx(db, claim, btchV1Wire, 'trace-1')
+    const res = await pullDispatchPackageXlsx(db, claim, btchV1Wire, 'SOUNDBOX', 'trace-1')
 
     expect(res.xlsx).toBeInstanceOf(Buffer)
-    expect(res.xlsx.length).toBeGreaterThan(0)
+    expect(res.xlsx!.length).toBeGreaterThan(0)
     // a real xlsx is a PK zip; the first two bytes prove it, not a stub buffer.
-    expect(res.xlsx.subarray(0, 2).toString('latin1')).toBe('PK')
+    expect(res.xlsx!.subarray(0, 2).toString('latin1')).toBe('PK')
     expect(res.btchId).toBe(btchV1Wire)
 
     const audits = await readOutboxAuthzAudits()
@@ -135,7 +136,7 @@ describe('pullDispatchPackageXlsx (spec 14b task 5, FR-04 D104 disclosure surfac
     const { btchV1Wire, v2Wire } = await seed()
     const claim = mkClaim7(v2Wire) // V2 pulling B1 (V1's batch)
 
-    await expect(pullDispatchPackageXlsx(db, claim, btchV1Wire, 'trace-2')).rejects.toThrow(PullDeniedError)
+    await expect(pullDispatchPackageXlsx(db, claim, btchV1Wire, 'SOUNDBOX', 'trace-2')).rejects.toThrow(PullDeniedError)
 
     const audits = await readOutboxAuthzAudits()
     const deny = audits.find((a) => a.operation === 'batch:pull-artifacts' && a.decision === 'DENY')
@@ -155,7 +156,7 @@ describe('pullDispatchPackageXlsx (spec 14b task 5, FR-04 D104 disclosure surfac
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     try {
-      await pullDispatchPackageXlsx(db, claim, btchV1Wire, 'trace-3')
+      await pullDispatchPackageXlsx(db, claim, btchV1Wire, 'SOUNDBOX', 'trace-3')
     } finally {
       const allCalls = [...logSpy.mock.calls, ...errSpy.mock.calls, ...warnSpy.mock.calls]
         .flat()
@@ -166,6 +167,73 @@ describe('pullDispatchPackageXlsx (spec 14b task 5, FR-04 D104 disclosure surfac
       warnSpy.mockRestore()
       expect(allCalls).not.toMatch(/Sherlock|Baker Street|9999999999/)
     }
+  })
+
+  // E1 (2026-08-10): the group resolves AFTER the authorize (vendor-pull.ts's
+  // own comment says the flow never depended on the key), so an unrecognized
+  // key must still leave a durable ALLOW 6e even though it yields no bytes.
+  it('an unknown group key returns a null xlsx AFTER the authorize, and still emits the 6e', async () => {
+    // Same seeded claim/batch as the happy path above.
+    const { btchV1Wire, v1Wire } = await seed()
+    const claim = mkClaim7(v1Wire)
+
+    const out = await pullDispatchPackageXlsx(db, claim, btchV1Wire, 'NOT_A_GROUP', 'trace-unknown-group')
+    expect(out.xlsx).toBeNull()
+    expect(out.btchId).toBe(btchV1Wire)
+
+    // The authz/audit flow never depended on the key: assert one more
+    // authz_audit outbox row exists, exactly as the happy-path test asserts it.
+    const audits = await readOutboxAuthzAudits()
+    const allow = audits.find((a) => a.operation === 'batch:pull-artifacts' && a.decision === 'ALLOW')
+    expect(allow).toBeTruthy()
+    expect(allow!.traceId).toBe('trace-unknown-group')
+  })
+
+  // The Task 1 defect case (soundbox true, standee 0, sticker 1): before the
+  // membership fix this line matched neither group's filter and vanished from
+  // both sheets. Proves the pull surface carries that fix through, not just
+  // the unit-tested builder.
+  it('the pulled COLLATERAL Excel contains the soundbox-plus-sticker-only merchant', async () => {
+    const v1Wire = newId('vndr')
+    const v1Uuid = toUuid(v1Wire)
+    const tnnt = toUuid(newId('tnnt'))
+    const prog = toUuid(newId('prog'))
+    const btchWire = newId('btch')
+    const btchUuid = toUuid(btchWire)
+
+    await db.$executeRaw`
+      INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, triggered_by_actor, unit_count, updated_at)
+      VALUES (${btchUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, ${v1Uuid}::uuid, 'LOT_SIZE', NULL, 1, now())
+    `
+    const asgnWire = newId('asgn')
+    const asgnUuid = toUuid(asgnWire)
+    await db.$executeRaw`
+      INSERT INTO pending_pool_entry (
+        asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable,
+        merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+        ship_to_address, ship_to_contact_name, ship_to_mobile, qr_value, vpa_value, pool_status, batch, dispatch_state,
+        source_event_id, trace_id, updated_at
+      ) VALUES (
+        ${asgnUuid}::uuid, ${tnnt}::uuid, ${prog}::uuid, true, 0, 1, true,
+        'Acme Store', 'Acme Pvt Ltd', '5814', 'HDFC-001', 'HDFC Bank',
+        ${SHIP_TO_ADDRESS}, 'Sherlock Holmes', '9999999999', 'acme@hdfcbank', 'acme@hdfcbank', 'BATCHED',
+        ${btchUuid}::uuid, 'SENT_TO_VENDOR', 'evt-sticker-only-1', 'trace-sticker-only-1', now()
+      )
+    `
+
+    const res = await pullDispatchPackageXlsx(db, mkClaim7(v1Wire), btchWire, 'COLLATERAL', 'trace-collateral-1')
+    expect(res.xlsx).toBeInstanceOf(Buffer)
+
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(res.xlsx! as unknown as Parameters<typeof wb.xlsx.load>[0])
+    const ws = wb.worksheets[0]!
+    const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
+    const dispatchIdCol = headers.indexOf('Dispatch ID') + 1
+    const dispatchIds: string[] = []
+    for (let r = 2; r <= ws.rowCount; r++) {
+      dispatchIds.push(String(ws.getRow(r).getCell(dispatchIdCol).value))
+    }
+    expect(dispatchIds).toContain(asgnWire)
   })
 })
 
@@ -204,9 +272,9 @@ describe('D-9b: the class-6 pull works, and stays vendor-isolated', () => {
     const { btchV1Wire, v1Wire } = await seed()
     const claim = mkClaim6(v1Wire, 'wq-print')
 
-    const res = await pullDispatchPackageXlsx(db, claim, btchV1Wire, 'trace-c6')
+    const res = await pullDispatchPackageXlsx(db, claim, btchV1Wire, 'SOUNDBOX', 'trace-c6')
 
-    expect(res.xlsx.subarray(0, 2).toString('latin1')).toBe('PK')
+    expect(res.xlsx!.subarray(0, 2).toString('latin1')).toBe('PK')
     const allow = (await readOutboxAuthzAudits()).find(
       (a) => a.operation === 'batch:pull-artifacts' && a.decision === 'ALLOW',
     )
@@ -220,8 +288,8 @@ describe('D-9b: the class-6 pull works, and stays vendor-isolated', () => {
     // does not have.
     const { btchV1Wire, v1Wire } = await seed()
     for (const wq of ['wq-print', 'wq-anything-else', 'wq-map-a']) {
-      const res = await pullDispatchPackageXlsx(db, mkClaim6(v1Wire, wq), btchV1Wire, `trace-${wq}`)
-      expect(res.xlsx.subarray(0, 2).toString('latin1')).toBe('PK')
+      const res = await pullDispatchPackageXlsx(db, mkClaim6(v1Wire, wq), btchV1Wire, 'SOUNDBOX', `trace-${wq}`)
+      expect(res.xlsx!.subarray(0, 2).toString('latin1')).toBe('PK')
     }
   })
 
@@ -231,7 +299,7 @@ describe('D-9b: the class-6 pull works, and stays vendor-isolated', () => {
     const { btchV1Wire, v2Wire } = await seed()
     const claim = mkClaim6(v2Wire, 'wq-print')
 
-    await expect(pullDispatchPackageXlsx(db, claim, btchV1Wire, 'trace-c6-cross')).rejects.toThrow(PullDeniedError)
+    await expect(pullDispatchPackageXlsx(db, claim, btchV1Wire, 'SOUNDBOX', 'trace-c6-cross')).rejects.toThrow(PullDeniedError)
 
     const deny = (await readOutboxAuthzAudits()).find(
       (a) => a.operation === 'batch:pull-artifacts' && a.decision === 'DENY',
@@ -257,7 +325,7 @@ describe('D-9b: the class-6 pull works, and stays vendor-isolated', () => {
     const { btchV1Wire, v1Wire } = await seed()
     const courier = { ...mkClaim6(v1Wire, 'wq-print'), psr: 'vendor_courier' } as LeanClaim
 
-    await expect(pullDispatchPackageXlsx(db, courier, btchV1Wire, 'trace-c6-courier')).rejects.toThrow(PullDeniedError)
+    await expect(pullDispatchPackageXlsx(db, courier, btchV1Wire, 'SOUNDBOX', 'trace-c6-courier')).rejects.toThrow(PullDeniedError)
     const deny = (await readOutboxAuthzAudits()).find((a) => a.decision === 'DENY')
     expect(deny!.reasonCode).toBe('permission-denied')
   })
