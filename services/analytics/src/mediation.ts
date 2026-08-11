@@ -813,10 +813,16 @@ export async function readBatchJourney(
     exception: rows.filter((r) => r.courier_status === 'RTO' || r.courier_status === 'FAILED').length,
   }
 
-  // Delivered on the DEVICE's parcel and not yet activated. delivery_date is the
-  // same gate the activate route enforces server-side, so this list can never
-  // offer a record the write would reject.
-  const awaiting = rows.filter((r) => r.delivery_date !== null && !atLeast(r.pipeline_state, 'ACTIVATED'))
+  // The activate route enforces TWO gates (ops.controller.ts): delivery_date
+  // not null, AND dispatch_group is not COLLATERAL (W-5, "paper does not
+  // activate"). Both are mirrored here via isSoundboxOrLegacy, the same
+  // predicate the deliveredNotActivated/activatedSuccessfully tiles already
+  // use, so a delivered COLLATERAL row (physical paper that ships and
+  // delivers but never activates) never reaches this worklist. Offering a
+  // record the write would 409 is worse than omitting it.
+  const awaiting = rows.filter(
+    (r) => isSoundboxOrLegacy(r) && r.delivery_date !== null && !atLeast(r.pipeline_state, 'ACTIVATED'),
+  )
 
   const activation = {
     awaiting: awaiting.length,

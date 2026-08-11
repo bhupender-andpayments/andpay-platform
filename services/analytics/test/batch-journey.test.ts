@@ -24,16 +24,17 @@ async function insertRow(args: {
   deliveryDate?: Date | null
   activationStatus?: string | null
   awb?: string | null
+  dispatchGroup?: string | null
 }): Promise<void> {
   await db.$executeRaw`
     INSERT INTO dispatch_row
       (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
        batch_id, pipeline_state, courier_status, delivery_date, activation_status,
-       awb, billable_flag, received_at, updated_at)
+       awb, dispatch_group, billable_flag, received_at, updated_at)
     VALUES (${args.dispatchId}, ${args.programId}::uuid, 'HDFC', 'HDFC Bank', 'Acme', ARRAY['DEV1']::text[],
             ${args.batchId}, ${args.pipelineState}, ${args.courierStatus ?? null},
             ${args.deliveryDate ?? null}, ${args.activationStatus ?? null},
-            ${args.awb ?? null}, true, now(), now())`
+            ${args.awb ?? null}, ${args.dispatchGroup ?? null}, true, now(), now())`
 }
 
 describe('readBatchJourney', () => {
@@ -109,6 +110,26 @@ describe('readBatchJourney', () => {
     expect(view.awaitingActivation[0]!.dispatchId).toBe(waiting)
     expect(view.awaitingActivation[0]!.awb).toBe('AWB9')
     expect(view.awaitingActivation[0]!.merchantDisplay).toBe('Acme')
+  })
+
+  // The activate route 409s a COLLATERAL group ("paper does not activate"), so a
+  // delivered standee must never reach the worklist. Offering a record the write
+  // would reject is worse than omitting it: it renders a button that cannot work.
+  it('excludes a delivered COLLATERAL row from the activation worklist', async () => {
+    await insertRow({
+      dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DELIVERED',
+      courierStatus: 'DELIVERED', deliveryDate: new Date('2026-08-10T10:00:00.000Z'),
+      dispatchGroup: 'COLLATERAL',
+    })
+    await insertRow({
+      dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DELIVERED',
+      courierStatus: 'DELIVERED', deliveryDate: new Date('2026-08-10T10:00:00.000Z'),
+      dispatchGroup: 'SOUNDBOX',
+    })
+
+    const view = (await readBatchJourney(db, { kind: 'crossTenant' }, BATCH))!
+    expect(view.activation.awaiting).toBe(1)
+    expect(view.awaitingActivation).toHaveLength(1)
   })
 
   it('reports simActivated as null, never 0, because no write path exists for it', async () => {
