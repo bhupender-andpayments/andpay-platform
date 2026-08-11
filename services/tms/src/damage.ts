@@ -134,6 +134,8 @@ export async function ingestDamageRowWithinTx(
   const initialCaseStatus = seedCaseStatus(row.deliveryStatus)
 
   const replUuid = toUuid(newId('asgn'))
+  // interim until Task 2/4 splits minting per dispatch group
+  const dispatchGroup = replSoundbox ? 'SOUNDBOX' : 'COLLATERAL'
   // updated_at is @updatedAt in the Prisma schema, which is client-API
   // middleware only (it does not run for $queryRaw/$executeRaw) and the
   // column has no DB-level DEFAULT, so it must be set explicitly here, same
@@ -145,16 +147,16 @@ export async function ingestDamageRowWithinTx(
       bank_reference_code, bank_display_name, ship_to_address,
       qr_value, vpa_value, soundbox, standee_count, sticker_count,
       billable, replacement_of, damage_reason, bank_remarks, case_status,
-      demand_state, source_event_id, contact_name, mobile, branch_code, updated_at
+      demand_state, source_event_id, contact_name, mobile, branch_code, dispatch_group, updated_at
     ) VALUES (
       ${replUuid}::uuid, ${o.merchant_id}::uuid, ${o.program_id}::uuid, ${o.tenant_id}::uuid,
       ${o.merchant_display_name}, ${o.merchant_legal_name}, ${o.merchant_mcc},
       ${o.bank_reference_code}, ${o.bank_display_name}, ${row.shipToAddress},
       ${o.qr_value}, ${o.vpa_value}, ${replSoundbox}, ${replStandee}, ${replSticker},
       ${false}, ${o.id}::uuid, ${row.damageReason}, ${row.bankRemarks}, ${initialCaseStatus},
-      ${'received'}, ${correlationId}, ${o.contact_name}, ${o.mobile}, ${o.branch_code}, now()
+      ${'received'}, ${correlationId}, ${o.contact_name}, ${o.mobile}, ${o.branch_code}, ${dispatchGroup}, now()
     )
-    ON CONFLICT (source_event_id) DO NOTHING
+    ON CONFLICT (source_event_id, dispatch_group) DO NOTHING
     RETURNING id
   `
   if (won.length === 0) {

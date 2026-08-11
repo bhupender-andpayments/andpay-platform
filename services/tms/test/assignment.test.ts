@@ -241,13 +241,13 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
             merchant_display_name, merchant_legal_name, merchant_mcc,
             bank_reference_code, bank_display_name, ship_to_address,
             qr_value, vpa_value, soundbox, standee_count, sticker_count,
-            billable, demand_state, source_event_id, updated_at
+            billable, demand_state, source_event_id, dispatch_group, updated_at
           ) VALUES (
             ${asgnUuid}::uuid, ${toUuid(ids.mrchId)}::uuid, ${toUuid(ids.progId)}::uuid, ${toUuid(ids.tnntId)}::uuid,
             'Acme', 'Acme Pvt Ltd', '5814',
             'HDFC', 'HDFC Bank', '221B Baker Street',
             'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', true, 1, 2,
-            true, 'received', 'file-3|1', now()
+            true, 'received', 'file-3|1', 'SOUNDBOX', now()
           )
         `
         await emitDemandFact(tx, asgnUuid, 'env-rollback', 'trace-rollback')

@@ -32,11 +32,11 @@ async function seedAssignment(): Promise<string> {
   await db.$executeRaw`INSERT INTO assignment (
     id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
     bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count,
-    billable, demand_state, source_event_id, updated_at
+    billable, demand_state, source_event_id, dispatch_group, updated_at
   ) VALUES (
     ${asgnUuid}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
     'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'Addr', 'upi://x', 'x@hdfcbank', true, 0, 0,
-    true, 'pooled-for-fulfillment', 'file-1|1', now()
+    true, 'pooled-for-fulfillment', 'file-1|1', 'SOUNDBOX', now()
   )`
   return fromUuid('asgn', asgnUuid)
 }

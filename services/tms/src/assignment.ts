@@ -201,21 +201,23 @@ export async function createAssignmentFromEnrollment(
       // While the tenant was keyed on the row's bank code these two values were
       // identical, so this is a NO-OP for existing data and only diverges once
       // a file declares a tenant of its own.
+      // interim until Task 2/4 splits minting per dispatch group
+      const dispatchGroup = pr.soundbox ? 'SOUNDBOX' : 'COLLATERAL'
       const won = await tx.$queryRaw<{ id: string }[]>`
         INSERT INTO assignment (
           id, merchant_id, program_id, tenant_id,
           merchant_display_name, merchant_legal_name, merchant_mcc,
           bank_reference_code, bank_display_name, ship_to_address,
           qr_value, vpa_value, soundbox, standee_count, sticker_count,
-          billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, updated_at
+          billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, dispatch_group, updated_at
         ) VALUES (
           ${asgnUuid}::uuid, ${mrchUuid}::uuid, ${progUuid}::uuid, ${tnntUuid}::uuid,
           ${m.display_name}, ${m.legal_name}, ${m.mcc},
           ${pr.tenant_reference}, ${t.display_name}, ${pr.ship_to_address},
           ${pr.qr_value}, ${pr.vpa_value}, ${pr.soundbox}, ${pr.standee_count}, ${pr.sticker_count},
-          ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, ${pr.branch_code}, now()
+          ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, ${pr.branch_code}, ${dispatchGroup}, now()
         )
-        ON CONFLICT (source_event_id) DO NOTHING
+        ON CONFLICT (source_event_id, dispatch_group) DO NOTHING
         RETURNING id
       `
       if (won.length === 0) return // already created (idempotent, check 3)

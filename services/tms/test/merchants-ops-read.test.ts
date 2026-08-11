@@ -61,13 +61,13 @@ async function seedAssignment(merchantUuid: string, vpa: string): Promise<string
       merchant_display_name, merchant_legal_name, merchant_mcc,
       bank_reference_code, bank_display_name, ship_to_address,
       qr_value, vpa_value, soundbox, standee_count, sticker_count,
-      billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, updated_at
+      billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, dispatch_group, updated_at
     ) VALUES (
       ${asgnUuid}::uuid, ${merchantUuid}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
       'Probe', 'Probe Pvt Ltd', '5411',
       '3', 'GSCB', 'Addr',
       ${'upi://pay?pa=' + vpa}, ${vpa}, ${true}, 1, 1,
-      ${true}, 'received', 'bank_file', ${'probe|' + vpa}, 'Contact', '9000000000', '30', now()
+      ${true}, 'received', 'bank_file', ${'probe|' + vpa}, 'Contact', '9000000000', '30', 'SOUNDBOX', now()
     )
   `
   return asgnUuid

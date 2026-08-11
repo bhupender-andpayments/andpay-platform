@@ -57,7 +57,8 @@ model Inbox {
 /// Dispatch ID. References mrch_/prog_/tnnt_ (I5, T3); carries event-carried
 /// snapshots and the bank-supplied QR/VPA value (D116, D117). NO Fulfillment
 /// status column (T2, T12). source_event_id is the {file_id}|{row_no} that
-/// created it (06.A), UNIQUE for one-assignment-per-row idempotency.
+/// created it (06.A); W-5 widens idempotency from UNIQUE(source_event_id) to
+/// UNIQUE(source_event_id, dispatch_group), one assignment per dispatch group.
 model Assignment {
   id                  String    @id @db.Uuid
   merchantId          String    @map("merchant_id") @db.Uuid
@@ -106,10 +107,15 @@ model Assignment {
   // both land INITIAL; acceptable for v1 (informational provenance, not an
   // authoritative ordering guarantee), no locking added for it.
   origin              String    @default("INITIAL") @map("origin") // INITIAL | ADDITIONAL
-  sourceEventId       String    @unique @map("source_event_id")
+  sourceEventId       String    @map("source_event_id")
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// W-5: which physical consignment this assignment IS. SOUNDBOX dispatch groups zero
+  /// their counts; COLLATERAL dispatch groups carry the row's counts with soundbox=false.
+  /// Pre-split rows were backfilled with their dominant dispatch group.
+  dispatchGroup       String    @map("dispatch_group")
 
+  @@unique([sourceEventId, dispatchGroup])
   @@map("assignment")
 }
 
