@@ -474,9 +474,17 @@ describe('WorkflowPage: batch mode', () => {
     renderAt('/workflow/btch_aaa')
     // BatchStage infers pool mode from batchDetail === null, its only signal, so
     // the page must render nothing rather than hand it a null it would misread.
-    expect(screen.queryByText(/ready to batch/i)).toBeNull()
+    //
+    // QUERIES THE POOL BODY'S OWN COPY, not "ready to batch". This test used to
+    // look for the latter, and when the trigger control moved onto the landing
+    // pool card, nothing on a batch-mode page could render that string any more,
+    // so both assertions became unfailable and the test silently stopped
+    // protecting detailSettled. "Waiting on the pool" is BatchStage's pool-mode
+    // title (stages/BatchStage.tsx), which is exactly the thing that must not
+    // appear before the batch read lands.
+    expect(screen.queryByText(/waiting on the pool/i)).toBeNull()
     await screen.findByRole('navigation', { name: /workflow stages/i })
-    expect(screen.queryByText(/ready to batch/i)).toBeNull()
+    expect(screen.queryByText(/waiting on the pool/i)).toBeNull()
   })
 })
 
@@ -790,5 +798,25 @@ describe('WorkflowPage: the adaptive poll', () => {
     await act(async () => { await new Promise((r) => { setTimeout(r, 120) }) })
     // Nothing is left to watch, so there is nothing to poll for.
     expect(journeyCalls(calls)).toBe(settled)
+  })
+
+  it('does not claim EVERY record is activated when only the activatable ones can be', async () => {
+    // A mixed batch completes with its COLLATERAL rows unactivated, because paper
+    // does not activate (W-5). Observed on the running system: 10 rows, 5
+    // activated, batch correctly reported done. The completion sentence used to
+    // read "every record in this batch is activated", which was true while
+    // completion was measured against counts.total and overclaimed the moment
+    // stages 7 and 8 got their own denominator. 5 of 10 is done; all 10 is not.
+    stub({
+      artifacts: [ARTIFACT],
+      journeyBody: journey({
+        counts: { total: 10, deliverableAndActivatable: 5, sentToVendor: 10, dispatched: 10, delivered: 5, activated: 5 },
+        courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 5, exception: 0 },
+        activation: { awaiting: 0, activated: 5, failed: 0, simActivated: null },
+      }),
+    })
+    renderAt('/workflow/btch_aaa', { fast: 10, slow: 10 })
+    expect(await screen.findByText(/every record that can be activated is activated/i)).toBeTruthy()
+    expect(screen.queryByText(/every record in this batch is activated/i)).toBeNull()
   })
 })

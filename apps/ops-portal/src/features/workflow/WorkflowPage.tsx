@@ -514,8 +514,15 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
   const help = STAGE_HELP[shown]
   const total = WORKFLOW_STAGES.length
   const position = `Step ${String(stageIndex(shown) + 1)} of ${String(total)}`
+  // "EVERY RECORD THAT CAN BE", not "every record". Completion is measured against
+  // the deliverable and activatable subset, so a mixed batch finishes with its
+  // COLLATERAL rows deliberately unactivated: paper does not activate (W-5). The
+  // old wording was accurate while the denominator was counts.total and started
+  // overclaiming the moment stages 7 and 8 got their own. Observed on the running
+  // system: a batch reported done with 5 of its 10 rows activated, which is
+  // correct, and the sentence said all 10 were.
   const guidance = derived.isComplete
-    ? 'All eight stages are done: every record in this batch is activated.'
+    ? 'All eight stages are done: every record that can be activated is activated.'
     : mode === 'batch'
       ? `${position}: the earliest stage still holding a record, so later stages may already hold some of them.`
       : `${position}: the first three stages are live work, and a batch then forms on its own.`
