@@ -152,4 +152,31 @@ describe('per-dispatch-group minting (W-5)', () => {
     const ob = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = ${TMS_ASSIGNMENT_TOPIC}`
     expect(Number(ob[0]!.n)).toBe(2) // one per dispatch group, unchanged by the redelivery
   })
+
+  // Final review minor 3 (2026-08-11): a re-emitted enrollment fact carries a
+  // FRESH envelope id and dedupKey, so it passes the inbox gate (unlike the
+  // redelivery test above, which reuses the same dedupKey and dies there).
+  // Without the pending_row.status guard, the mint loop would find the
+  // legacy row's single occupied (source_event_id, dispatch_group) slot
+  // ON CONFLICT away, but mint a brand-new sibling group next to it. The
+  // consumed pending_row must stop the second pass before it mints anything.
+  it('a re-emitted enrollment fact with a different dedupKey and env id mints nothing once the row is consumed', async () => {
+    const ids = await seed('grp-6|1', { soundbox: true, standeeCount: 2, stickerCount: 3 })
+    const first = await createAssignmentFromEnrollment(db, enrollmentEnv(ids, 'grp-6|1'))
+    expect(first.created).toBe(true)
+    expect(first.asgnIds).toHaveLength(2)
+
+    const second = await createAssignmentFromEnrollment(
+      db,
+      enrollmentEnv(ids, 'grp-6|1', 'evt-e-2|identity.enrollment'),
+    )
+    expect(second.created).toBe(false)
+    expect(second.asgnIds).toHaveLength(0)
+
+    const rows = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE source_event_id = 'grp-6|1'`
+    expect(Number(rows[0]!.n)).toBe(2)
+
+    const ob = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = ${TMS_ASSIGNMENT_TOPIC}`
+    expect(Number(ob[0]!.n)).toBe(2) // no new fact from the second, differently-dedup-keyed pass
+  })
 })

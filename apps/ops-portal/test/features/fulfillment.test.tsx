@@ -140,6 +140,27 @@ describe('FulfillmentPage', () => {
     expect(screen.queryByText(/PLOT 42 SECRET LANE/)).toBeNull()
     expect(screen.queryByText(/9537908017/)).toBeNull()
   })
+
+  // Final review minor 2 (2026-08-11): spec 1.9 wants a dispatch group badge
+  // in the pool view too, not only batch detail. The pool table had no
+  // Dispatch ID cell at all before this fix; this test pins both the new
+  // chip and the badge rule (SB for a SOUNDBOX row, nothing for a legacy row).
+  it('shows the Dispatch ID chip with an SB badge on a SOUNDBOX row, and no badge on a legacy row', async () => {
+    stubFetch(() =>
+      jsonResponse([
+        { ...POOL_ROW, asgnId: 'asgn_sb', merchantDisplayName: 'ALPHA TRADERS', dispatchGroup: 'SOUNDBOX' },
+        { ...POOL_ROW, asgnId: 'asgn_legacy', merchantDisplayName: 'GAMMA TRADERS', dispatchGroup: null },
+      ]),
+    )
+    renderFulfillment()
+    await screen.findByText('ALPHA TRADERS')
+    expect(await screen.findByText('asgn_sb')).toBeTruthy()
+    expect(await screen.findByText('asgn_legacy')).toBeTruthy()
+    expect(screen.getByText('SB')).toBeTruthy()
+    expect(screen.getByLabelText('Soundbox dispatch')).toBeTruthy()
+    // Only ONE badge span exists for two rows: the legacy row gets nothing.
+    expect(screen.queryAllByText(/^(SB|COLL)$/)).toHaveLength(1)
+  })
 })
 
 describe('BatchDetailPage', () => {

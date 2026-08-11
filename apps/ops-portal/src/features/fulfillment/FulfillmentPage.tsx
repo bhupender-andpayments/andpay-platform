@@ -4,8 +4,9 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { BatchablePools } from './BatchablePools.js'
 import { PoolEntryActions } from './PoolEntryActions.js'
+import { DispatchGroupBadge } from './BatchDetailPage.js'
 import { getBatches, getPoolEntries, type BatchRow, type PoolEntryRow } from '../../api/endpoints.js'
-import { PageHeader, Card, CardHeader, Select, Field, Button, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
+import { PageHeader, Card, CardHeader, Select, Field, Button, ErrorNote, SkeletonRows, CodeChip } from '../../ui/primitives.js'
 import { fmtDateTime } from '../../ui/format.js'
 
 // P2-2 / P2-3 / P2-4: the fulfillment object spine, over the four P2-1 reads.
@@ -67,6 +68,21 @@ export function FulfillmentPage() {
   }, [load])
 
   const poolColumns: DataTableColumn<PoolEntryRow>[] = [
+    // Final review minor 2 (2026-08-11): the pool view had no Dispatch ID
+    // cell at all (asgnId was only the row key, never rendered), so spec 1.9's
+    // "pool view shows a dispatch group badge" had nowhere to attach. Added
+    // exactly as BatchDetailPage's own Dispatch ID column: chip then badge,
+    // in a flex span with a gap.
+    {
+      key: 'asgnId',
+      header: 'Dispatch ID',
+      cell: (r) => (
+        <span className="flex items-center gap-2">
+          <CodeChip>{r.asgnId}</CodeChip>
+          <DispatchGroupBadge group={r.dispatchGroup} />
+        </span>
+      ),
+    },
     { key: 'merchant', header: 'Merchant', cell: (r) => r.merchantDisplayName },
     { key: 'bank', header: 'Bank', cell: (r) => `${r.bankDisplayName} (${r.bankReferenceCode})` },
     { key: 'branch', header: 'Branch', cell: (r) => r.branchCode ?? '-' },

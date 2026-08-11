@@ -74,6 +74,25 @@ describe('AWS residency guard (S6, India-only; deploy-deferred)', () => {
     }
   })
 
+  // Final review minor 1 (2026-08-11): this is the exact drift class that
+  // already bit once, branchCode landing in fact-schemas.ts but missing from
+  // this mirror for weeks. The test above only checks the fact NAME appears
+  // somewhere in the file; it says nothing about which fields the mirrored
+  // schema carries. Scoped to the fct.tms.assignment.v1 entry only (bounded
+  // by the next FACT_SCHEMAS entry, fct.tms.bank_file_row.v1), so this bites
+  // if either field is ever dropped from the deploy-side mirror again.
+  it('the fct.tms.assignment.v1 mirror carries both branchCode and dispatchGroup (drift repair pin)', () => {
+    const topics = src('lib/topics.ts')
+    const entryStart = topics.indexOf("name: 'fct.tms.assignment.v1'")
+    expect(entryStart, 'fct.tms.assignment.v1 entry not found in lib/topics.ts').toBeGreaterThan(-1)
+    const entryEnd = topics.indexOf("name: 'fct.tms.bank_file_row.v1'", entryStart)
+    expect(entryEnd, 'fct.tms.bank_file_row.v1 entry not found after fct.tms.assignment.v1').toBeGreaterThan(entryStart)
+    const entry = topics.slice(entryStart, entryEnd)
+
+    expect(entry.includes('branchCode'), 'fct.tms.assignment.v1 mirror missing branchCode').toBe(true)
+    expect(entry.includes('dispatchGroup'), 'fct.tms.assignment.v1 mirror missing dispatchGroup').toBe(true)
+  })
+
   // The two fulfillment facts (spec 07) are registered for Glue on the
   // India-pinned event-backbone stack, so their schemas are residency-bound too
   // (check 8, deploy-deferred live proof).

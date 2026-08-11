@@ -56,7 +56,10 @@ const COLLATERAL_GROUP_LABELS: Record<string, string> = {
 // all rather than a third, misleading label: a legacy row genuinely does not
 // know which one group it belongs to, and inventing one would claim a fact
 // the row does not carry.
-function DispatchGroupBadge({ group }: { group: string | null }) {
+// Final review minor 2 (2026-08-11): exported so the pool view (FulfillmentPage)
+// can render the same badge beside its own Dispatch ID chip, per spec 1.9
+// ("batch detail and the pool view show a dispatch group badge").
+export function DispatchGroupBadge({ group }: { group: string | null }) {
   if (group !== 'SOUNDBOX' && group !== 'COLLATERAL') return null
   const text = group === 'SOUNDBOX' ? 'SB' : 'COLL'
   const label = group === 'SOUNDBOX' ? 'Soundbox dispatch' : 'Collateral dispatch'

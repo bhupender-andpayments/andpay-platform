@@ -42,6 +42,9 @@ interface PendingRowRow {
   // bank_reference_code note on the INSERT below for why the assignment now
   // takes it from here rather than from the tenant projection.
   tenant_reference: string
+  // Final review minor 3 (2026-08-11): read so the mint loop can recognize a
+  // row this correlation id has already fully consumed.
+  status: string
 }
 interface MerchantProjRow { display_name: string; legal_name: string; mcc: string }
 interface TenantProjRow { display_name: string; bank_reference_code: string }
@@ -176,10 +179,19 @@ export async function createAssignmentFromEnrollment(
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       const pend = await tx.$queryRaw<PendingRowRow[]>`
         SELECT soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code,
-               tenant_reference
+               tenant_reference, status
         FROM pending_row WHERE correlation_id = ${p.sourceEventId}
       `
       if (pend.length === 0) throw new Error(`pending row not found for ${p.sourceEventId}`)
+      // Final review minor 3 (2026-08-11): a re-emitted enrollment fact under a
+      // fresh dedupKey must not mint sibling groups against a pre-split
+      // combined assignment. The consumed flag is the durable witness that
+      // this correlation id already produced its assignments, so a second
+      // pass stops here rather than reaching the mint loop below (which would
+      // otherwise mint only the sibling group the legacy row's single slot
+      // does not already occupy, since ON CONFLICT only catches the group
+      // that already exists).
+      if (pend[0]!.status === 'consumed') return
 
       const mrchUuid = toUuid(p.mrchId)
       const merch = await tx.$queryRaw<MerchantProjRow[]>`
