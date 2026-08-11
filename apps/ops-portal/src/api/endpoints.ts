@@ -1170,3 +1170,80 @@ export function suspendVendor(c: Client, id: string, idempotencyKey: string) {
     stepUpKey: 'vendor-suspend',
   })
 }
+
+// -----------------------------------------------------------------------
+// The batch-journey rollup (workflow workspace, 2026-08-11 ruling). The
+// confirmed ops-edge contract: GET /ops/reports/batch-journey/:btchId on
+// ReportsController, grounded against services/analytics/src/mediation.ts's
+// readBatchJourney / BatchJourneyView.
+//
+// It lives under /ops/reports and NOT under /ops/batches deliberately. It is an
+// analytics-mediated CROSS-TENANT read, so guardrail G3 binds it to emit both
+// the per-read analytics 6e and the D99 cross-tenant-access entry, which is
+// ReportsController's documented posture. OpsReadController is pinned by its own
+// test to emit NO audit at all ("reads are NOT mutations", check 3), so putting
+// it there would have broken that posture to buy a prettier URL.
+//
+// Scope is re-derived from the verified claim at the edge (D99); nothing here
+// sends a program, tenant or batch scope. Carries the D100 freshness watermark
+// on the body, like every other mediated read.
+//
+// PII-free by construction: the projection holds no ship-to, contact name,
+// mobile or raw qr/vpa, so none can be rendered. `merchantDisplay` is the same
+// field the soundbox-delivery report already exposes, so it adds no entitlement.
+// -----------------------------------------------------------------------
+
+/** services/analytics/src/mediation.ts BatchJourneyView. */
+export interface BatchJourneyView {
+  batchId: string
+  /**
+   * CUMULATIVE stage counts: a DELIVERED record has also been sent to vendor and
+   * dispatched, so it is counted in all three. This is what lets the rail mark a
+   * stage complete only when nobody is still behind it.
+   */
+  counts: {
+    total: number
+    sentToVendor: number
+    dispatched: number
+    delivered: number
+    activated: number
+  }
+  /** The courier fan-out. `exception` is terminal-but-not-delivered (RTO, FAILED). */
+  courier: {
+    pickedUp: number
+    inTransit: number
+    outForDelivery: number
+    delivered: number
+    exception: number
+  }
+  /**
+   * `simActivated` is ALWAYS null, never 0: sim_activation_status has no write
+   * path anywhere, so a number would be invented. The workspace renders this as
+   * "Not available yet", the same treatment TilesPage gives its two
+   * activation-empty tiles.
+   */
+  activation: {
+    awaiting: number
+    activated: number
+    failed: number
+    simActivated: null
+  }
+  /** The stage-8 worklist: delivered, not yet activated. */
+  awaitingActivation: {
+    dispatchId: string
+    merchantDisplay: string
+    awb: string | null
+    deliveryDate: string | null
+  }[]
+  watermark: Watermark
+}
+
+// 404 when the batch has no rows in the analytics projection, mirroring
+// getBatchDetail: the caller can tell "no such batch" from "a batch at stage
+// zero" rather than reading an empty-but-valid-looking body.
+export function getBatchJourney(c: Client, btchId: string) {
+  return c.request<BatchJourneyView>({
+    method: 'GET',
+    path: `/ops/reports/batch-journey/${encodeURIComponent(btchId)}`,
+  })
+}
