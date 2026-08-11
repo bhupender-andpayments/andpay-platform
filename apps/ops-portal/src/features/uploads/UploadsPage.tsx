@@ -1,5 +1,4 @@
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
-import { BankUploadPage } from './BankUploadPage.js'
 import { DamageUploadPage } from './DamageUploadPage.js'
 import { DeviceInventoryUploadPage } from './DeviceInventoryUploadPage.js'
 import { UPLOAD_KINDS, INDEX_STEPS } from './uploadKinds.js'
@@ -8,11 +7,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 // Redesign step 4 made this three equal CARDS after the tabs-era page
 // preselected "Bank Requests" and shared one url; see the git history of this
-// comment for that story. The 2026-08-11 ruling keeps both fixes and removes
-// the remaining drill-in-and-back: uploads is now ONE continuous flow with a
-// numbered step rail. This file is only the router plus step 1 (the choice);
-// each upload page renders its own rail and step bodies, because the three
-// are different workflows sharing a step shape, not one workflow with a type
+// comment for that story. The 2026-08-11 ruling keeps both fixes, removes the
+// remaining drill-in-and-back (uploads is now ONE continuous flow with a
+// numbered step rail per kind), AND moves the bank upload out entirely: it is
+// now stages 1 and 2 of the workflow workspace, so there are only two cards
+// left here. This file is only the router plus step 1 (the choice); each
+// upload page renders its own rail and step bodies, because the two are
+// different workflows sharing a step shape, not one workflow with a type
 // switch.
 //
 // Still binding, from the tabs-era defects: NOTHING is preselected here, and
@@ -74,7 +75,12 @@ export function UploadsPage() {
   return (
     <Routes>
       <Route index element={<UploadsIndex />} />
-      <Route path="bank" element={<BankUploadPage />} />
+      {/* The bank flow moved into the workflow workspace (2026-08-11 ruling): it
+          is stages 1 and 2 of one continuous lifecycle, not a standalone upload.
+          Declared HERE rather than in routes.tsx because this file's own
+          path="*" catch-all below already matches /uploads/bank, and a redirect
+          in the parent <Routes> tree does not reliably win against it. */}
+      <Route path="bank" element={<Navigate to="/workflow" replace />} />
       <Route path="damage" element={<DamageUploadPage />} />
       <Route path="device-inventory" element={<DeviceInventoryUploadPage />} />
       {/* An unknown upload slug lands on the choices rather than a dead end. */}

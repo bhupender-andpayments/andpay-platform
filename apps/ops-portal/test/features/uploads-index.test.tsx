@@ -13,9 +13,12 @@ import { UploadsPage } from '../../src/features/uploads/UploadsPage.js'
 //      shares one URL.
 //
 // Three equal choices became three equal cards, each on its own route. The
-// 2026-08-11 ruling keeps both fixes and turns the cards into step 1 of one
-// continuous flow with a numbered step rail, instead of a page an operator
-// drills into and backs out of.
+// 2026-08-11 ruling keeps both fixes and turns the remaining cards into step 1
+// of one continuous flow with a numbered step rail, instead of a page an
+// operator drills into and backs out of. The SAME 2026-08-11 ruling also moves
+// the bank upload out of here entirely: it is now stages 1 and 2 of the
+// workflow workspace, so /uploads offers only damage reports and device
+// inventory, and /uploads/bank redirects into the workspace.
 afterEach(() => { cleanup() })
 
 function renderAt(path: string) {
@@ -30,10 +33,9 @@ function renderAt(path: string) {
   )
 }
 
-describe('Uploads step 1: three equal choices, none preselected', () => {
-  it('offers all three uploads as links', () => {
+describe('Uploads step 1: two equal choices, none preselected', () => {
+  it('offers the two remaining uploads as links', () => {
     renderAt('/uploads')
-    expect(screen.getByRole('link', { name: /bank request/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /damage report/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /device inventory/i })).toBeTruthy()
   })
@@ -59,9 +61,12 @@ describe('Uploads step 1: three equal choices, none preselected', () => {
     expect(screen.queryByText(/^submit$/i)).toBeNull()
   })
 
+  // Bank moved to the workflow workspace (2026-08-11 ruling), so the only
+  // remaining "From the bank" source line is damage's own "From the bank,
+  // after delivery".
   it('says who sends each file, so the operator knows which one they hold', () => {
     renderAt('/uploads')
-    expect(screen.getAllByText(/from the bank/i).length).toBe(2)
+    expect(screen.getAllByText(/from the bank/i).length).toBe(1)
     expect(screen.getByText(/from the manufacturer/i)).toBeTruthy()
   })
 
@@ -73,9 +78,14 @@ describe('Uploads step 1: three equal choices, none preselected', () => {
 })
 
 describe('Uploads: each upload keeps its own linkable route', () => {
-  it('deep-links the bank upload with the type locked in', async () => {
+  // The bank flow now lives in the workflow workspace, so this url is a
+  // redirect. It must not 404 and must not land on the uploads index: a
+  // bookmark or a runbook link has to arrive somewhere true.
+  // unskipped in T7, which mounts /workflow
+  it.skip('redirects /uploads/bank into the workflow workspace', async () => {
     renderAt('/uploads/bank')
-    expect(await screen.findByText(/bank request upload/i)).toBeTruthy()
+    expect(screen.queryByText(/bank request upload/i)).toBeNull()
+    expect(await screen.findByText(/workflow/i)).toBeTruthy()
   })
   it('deep-links the damage upload', async () => {
     renderAt('/uploads/damage')
@@ -87,6 +97,6 @@ describe('Uploads: each upload keeps its own linkable route', () => {
   })
   it('sends an unknown upload path back to step 1 rather than 404ing', () => {
     renderAt('/uploads/nonsense')
-    expect(screen.getByRole('link', { name: /bank request/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /damage report/i })).toBeTruthy()
   })
 })

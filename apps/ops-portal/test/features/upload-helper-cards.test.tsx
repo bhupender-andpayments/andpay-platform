@@ -5,7 +5,6 @@ import { kindBySlug } from '../../src/features/uploads/uploadKinds.js'
 
 afterEach(() => { cleanup() })
 
-const BANK = kindBySlug('bank')!
 const DAMAGE = kindBySlug('damage')!
 const DEVICE_INVENTORY = kindBySlug('device-inventory')!
 
@@ -15,11 +14,11 @@ const DEVICE_INVENTORY = kindBySlug('device-inventory')!
 // and renders straight off uploadKinds.ts data.
 describe('UploadHelperCards: the copy changes with the step', () => {
   it('the What happens next copy DIFFERS between two steps of the same kind', () => {
-    const { unmount } = render(<UploadHelperCards kind={BANK} step="upload" />)
+    const { unmount } = render(<UploadHelperCards kind={DAMAGE} step="upload" />)
     const uploadText = screen.getByText(/what happens next/i).closest('div')!.textContent
     unmount()
 
-    render(<UploadHelperCards kind={BANK} step="review" />)
+    render(<UploadHelperCards kind={DAMAGE} step="review" />)
     const reviewText = screen.getByText(/what happens next/i).closest('div')!.textContent
 
     // This is the whole reason the card re-renders per step: a regression
@@ -30,17 +29,12 @@ describe('UploadHelperCards: the copy changes with the step', () => {
 
   it('a step with no nextByStep entry renders only the Good to know card', () => {
     // 'choose' has no nextByStep entry for any kind.
-    render(<UploadHelperCards kind={BANK} step="choose" />)
+    render(<UploadHelperCards kind={DAMAGE} step="choose" />)
     expect(screen.queryByText(/what happens next/i)).toBeNull()
     expect(screen.getByText(/good to know/i)).toBeTruthy()
   })
 
-  it('the Good to know copy for bank and damage contains NO column list, while device inventory\'s does', () => {
-    const { unmount: unmountBank } = render(<UploadHelperCards kind={BANK} step="upload" />)
-    const bankGoodToKnow = screen.getByText(/good to know/i).closest('div')!.textContent!
-    expect(bankGoodToKnow).not.toMatch(/required columns/i)
-    unmountBank()
-
+  it('the Good to know copy for damage contains NO column list, while device inventory\'s does', () => {
     const { unmount: unmountDamage } = render(<UploadHelperCards kind={DAMAGE} step="upload" />)
     const damageGoodToKnow = screen.getByText(/good to know/i).closest('div')!.textContent!
     expect(damageGoodToKnow).not.toMatch(/required columns/i)

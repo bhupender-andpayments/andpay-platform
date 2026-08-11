@@ -4,7 +4,6 @@ import { render, screen, cleanup, waitFor, within, fireEvent } from '@testing-li
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
-import { BankUploadPage } from '../../src/features/uploads/BankUploadPage.js'
 import { DamageUploadPage } from '../../src/features/uploads/DamageUploadPage.js'
 import { DeviceInventoryUploadPage } from '../../src/features/uploads/DeviceInventoryUploadPage.js'
 import { UploadsPage } from '../../src/features/uploads/UploadsPage.js'
@@ -60,54 +59,9 @@ function readFormFileText(form: FormData): Promise<string> {
   })
 }
 
-const BANK_ROW_1 = {
-  fileId: 'file-1',
-  rowNo: 1,
-  bankMerchantReference: 'BMR-1',
-  displayName: 'Acme Store',
-  legalName: 'Acme Pvt Ltd',
-  mcc: '5411',
-  registeredAddress: '1 Market St',
-  bankReferenceCode: 'BRC-1',
-  productType: 'soundbox',
-  vpaValue: 'acme@bank',
-  qrValue: 'qr-data-1',
-  soundbox: true,
-  standeeCount: 1,
-  stickerCount: 2,
-  shipToAddress: '2 Ship Ln',
-  contactName: 'Jane Doe',
-  mobile: '9999999999',
-}
-
-const BANK_ROW_2 = {
-  fileId: 'file-1',
-  rowNo: 2,
-  bankMerchantReference: 'BMR-2',
-  displayName: 'Beta Store',
-  legalName: 'Beta Pvt Ltd',
-  mcc: '5412',
-  registeredAddress: '2 Market St',
-  bankReferenceCode: 'BRC-2',
-  productType: 'soundbox',
-  vpaValue: 'beta@bank',
-  qrValue: 'qr-data-2',
-  soundbox: false,
-  standeeCount: 0,
-  stickerCount: 1,
-  shipToAddress: '3 Ship Ln',
-  contactName: 'John Roe',
-  mobile: '8888888888',
-}
-
-const BANK_PREVIEW_RESULT = {
-  rows: [
-    { rowNo: 1, valid: true, errors: [], row: BANK_ROW_1 },
-    { rowNo: 2, valid: false, errors: ['missing_contact_name'], row: BANK_ROW_2 },
-  ],
-  summary: { total: 2, valid: 1, invalid: 1 },
-  structuralErrors: [],
-}
+// The bank fixtures that used to live here (BANK_ROW_1/2, BANK_PREVIEW_RESULT)
+// moved to test/features/workflow-upload.test.tsx along with the bank flow
+// itself (2026-08-11 ruling).
 
 const DAMAGE_ROW_1 = {
   fileId: 'file-2',
@@ -188,8 +142,8 @@ function renderWithProviders(ui: ReactElement) {
 }
 
 // The rail's "Choose file" pill navigates away from the page under test, so it
-// needs the real router (UploadsPage's Routes), not a bare BankUploadPage
-// mounted in isolation. Mirrors uploads-index.test.tsx's renderAt.
+// needs the real router (UploadsPage's Routes), not a bare upload page mounted
+// in isolation. Mirrors uploads-index.test.tsx's renderAt.
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -214,250 +168,13 @@ describe('uploads', () => {
 
   // The three-TAB layout, and its default-to-bank behaviour, were removed in
   // redesign step 4: they are the thing that step deletes. Uploads is now an
-  // index of three equal cards, each on its own route, covered by
+  // index of two equal cards (bank moved out to the workflow workspace on
+  // 2026-08-11), each on its own route, covered by
   // test/features/uploads-index.test.tsx. The per-upload behaviour (preview,
-  // commit, per-row errors) is unchanged and still covered below.
-
-  it('bank upload: picking a file POSTs it multipart to preview with a Bearer header, renders the per-row results in a table, then Commit POSTs the same file multipart with a fresh Idempotency-Key and shows the counts', async () => {
-    const calls: Call[] = []
-    let commitCallCount = 0
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.includes('/ops/uploads/bank/preview')) return jsonResponse(BANK_PREVIEW_RESULT)
-        if (url.includes('/ops/uploads/bank/commit')) {
-          commitCallCount += 1
-          return jsonResponse({ accepted: 1, quarantined: 1, duplicate: 0, fileId: 'file-1' })
-        }
-        return jsonResponse({})
-      }),
-    )
-
-    renderWithProviders(<BankUploadPage />)
-
-    const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
-    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'bank.csv'))
-
-    // The preview per-row results render in a table before any commit. Real
-    // per-row data (BMR-1/BMR-2), not decorative rows.
-    expect(await screen.findByText('BMR-1')).toBeTruthy()
-    expect(screen.getByText('BMR-2')).toBeTruthy()
-    expect(screen.getByText('Missing Contact Name')).toBeTruthy()
-    expect(screen.getByText(/2 row\(s\) previewed/i)).toBeTruthy()
-
-    const previewCall = calls.find((c) => c.url.includes('/ops/uploads/bank/preview'))
-    expect(previewCall).toBeTruthy()
-    expect(headerValue(previewCall!, 'Authorization')).toBe('Bearer tok-1')
-    expect(headerValue(previewCall!, 'Idempotency-Key')).toBeNull() // preview writes nothing, no key
-    expect(previewCall!.init.body).toBeInstanceOf(FormData)
-    const previewText = await readFormFileText(previewCall!.init.body as FormData)
-    expect(previewText).toBe('irrelevant, the server parses this')
-
-    // Commit is now its own step (ruling 2026-08-11): Review must be left
-    // deliberately before the commit button exists at all.
-    await userEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
-
-    // Commit: a fresh Idempotency-Key, the SAME file, and the counts render.
-    await userEvent.click(screen.getByRole('button', { name: /commit bank request file/i }))
-    const acceptedDd = (await screen.findByText('Accepted')).nextElementSibling as HTMLElement
-    expect(acceptedDd.textContent).toBe('1')
-
-    await waitFor(() => {
-      expect(calls.some((c) => c.url.includes('/ops/uploads/bank/commit'))).toBe(true)
-    })
-    expect(commitCallCount).toBe(1)
-    const commitCall = calls.find((c) => c.url.includes('/ops/uploads/bank/commit'))!
-    expect(headerValue(commitCall, 'Authorization')).toBe('Bearer tok-1')
-    const idemKey = headerValue(commitCall, 'Idempotency-Key')
-    expect(idemKey).toBeTruthy()
-    expect(commitCall.init.body).toBeInstanceOf(FormData)
-    const commitText = await readFormFileText(commitCall.init.body as FormData)
-    expect(commitText).toBe('irrelevant, the server parses this')
-  })
-
-  it('bank upload: a file over 5 MiB is rejected client-side and never posted', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse(BANK_PREVIEW_RESULT))
-    vi.stubGlobal('fetch', fetchMock)
-
-    renderWithProviders(<BankUploadPage />)
-
-    const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
-    await userEvent.upload(input, makeOversizedFile())
-
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/5 MiB/i)
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it('bank upload: a structural parse failure surfaces the whole-file errors and renders no table', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (url.includes('/ops/uploads/bank/preview')) {
-          return jsonResponse({
-            rows: [],
-            summary: { total: 0, valid: 0, invalid: 0 },
-            structuralErrors: [{ code: 'missing_required_column', message: 'missing required column: mobile' }],
-          })
-        }
-        return jsonResponse({})
-      }),
-    )
-
-    renderWithProviders(<BankUploadPage />)
-
-    const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
-    await userEvent.upload(input, makeFile('bad file', 'bank.csv'))
-
-    expect(await screen.findByText(/missing required column: mobile/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /commit bank request file/i })).toBeNull()
-  })
-
-  // Ruling 2026-08-11: Commit moved off the Review card onto its own rail
-  // step, so a preview no longer hands the operator a commit button in the
-  // same breath as the table.
-  it('bank: preview lands on Review, and Commit is its own step', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (url.includes('/ops/uploads/bank/preview')) return jsonResponse(BANK_PREVIEW_RESULT)
-        if (url.includes('/ops/uploads/bank/commit')) return jsonResponse({ accepted: 1, quarantined: 1, duplicate: 0, fileId: 'file-1' })
-        return jsonResponse({})
-      }),
-    )
-
-    renderWithProviders(<BankUploadPage />)
-
-    const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
-    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'bank.csv'))
-
-    // After preview resolves: the summary and per-row table render, and the
-    // commit button does NOT exist yet.
-    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /commit bank request file/i })).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
-
-    // The commit step states what is about to be written, then offers the button.
-    expect(screen.getByText(/will be committed/i)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /commit bank request file/i })).toBeTruthy()
-  })
-
-  it('bank: the rail step 1 goes back to the choice of uploads', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})))
-
-    renderAt('/uploads/bank')
-
-    expect(await screen.findByText(/bank request upload/i)).toBeTruthy()
-    // The rail's own "Choose file" pill, not the drop zone's identically-named
-    // button. Two <ol>s exist (the rail, and the helper card's numbered "what
-    // happens next" list), so the rail is the one whose list items are
-    // buttons at all.
-    const lists = screen.getAllByRole('list')
-    const rail = lists.find((l) => within(l).queryByRole('button', { name: /choose file/i }) !== null)!
-    fireEvent.click(within(rail).getByRole('button', { name: /choose file/i }))
-
-    // Back at step 1: the three index cards render again.
-    expect(await screen.findByRole('link', { name: /bank request/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /damage report/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /device inventory/i })).toBeTruthy()
-  })
-
-  it('bank: a completed Upload step is clickable from Review; Commit is not clickable before a preview exists', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (url.includes('/ops/uploads/bank/preview')) return jsonResponse(BANK_PREVIEW_RESULT)
-        return jsonResponse({})
-      }),
-    )
-
-    renderWithProviders(<BankUploadPage />)
-
-    // Before preview: Review and Commit are not yet real steps to jump to. A
-    // rail pill's accessible name is its leading step number plus its label
-    // (e.g. "3 Review"), so the match is anchored to that whole shape rather
-    // than a bare substring, which would also catch the "Continue to commit"
-    // and "Commit bank request file" action buttons.
-    const railPill = (label: string) => new RegExp(`^\\d\\s*${label}$`, 'i')
-    expect(screen.queryByRole('button', { name: railPill('review') })).toBeNull()
-    expect(screen.queryByRole('button', { name: railPill('commit') })).toBeNull()
-
-    const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
-    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'bank.csv'))
-    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
-
-    // After preview: Upload is a completed, clickable step from Review.
-    fireEvent.click(screen.getByRole('button', { name: railPill('upload') }))
-
-    // Back on Upload: the picked file is still shown, and the table is gone.
-    expect(await screen.findByText('bank.csv')).toBeTruthy()
-    expect(screen.queryByText('BMR-1')).toBeNull()
-  })
-
-  // Finding 3: at Review, bank used to render the Commit pill inert even
-  // though "Continue to commit" is right there, because `unlocked` gated
-  // commit on `previewOk && (confirming || commitResult !== null)`, both of
-  // which already force step === 'commit', so the gate could never be
-  // satisfied from Review. Device inventory's Submit pill is a live forward
-  // jump once canContinue holds; bank/damage now match that shape.
-  it('bank: from Review, the Commit rail pill is a live forward jump (a clickable button, not inert)', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (url.includes('/ops/uploads/bank/preview')) return jsonResponse(BANK_PREVIEW_RESULT)
-        return jsonResponse({})
-      }),
-    )
-
-    renderWithProviders(<BankUploadPage />)
-
-    const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
-    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'bank.csv'))
-    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
-
-    const railPill = (label: string) => new RegExp(`^\\d\\s*${label}$`, 'i')
-    fireEvent.click(screen.getByRole('button', { name: railPill('commit') }))
-
-    // Clicking the Commit pill from Review advances the flow: the commit
-    // step's own copy and button render, exactly as "Continue to commit" does.
-    expect(screen.getByText(/will be committed/i)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /commit bank request file/i })).toBeTruthy()
-  })
-
-  // Review fix, round 1: a committed file's preview is stale, so Review must
-  // LOCK rather than stay clickable with the click going nowhere. Upload
-  // stays a real, clickable way to start over.
-  it('bank: once committed, the Review rail pill locks (renders inert, not a button); Upload stays clickable', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (url.includes('/ops/uploads/bank/preview')) return jsonResponse(BANK_PREVIEW_RESULT)
-        if (url.includes('/ops/uploads/bank/commit')) return jsonResponse({ accepted: 1, quarantined: 1, duplicate: 0, fileId: 'file-1' })
-        return jsonResponse({})
-      }),
-    )
-
-    renderWithProviders(<BankUploadPage />)
-
-    const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
-    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'bank.csv'))
-    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
-    await userEvent.click(screen.getByRole('button', { name: /commit bank request file/i }))
-    expect(await screen.findByText('Accepted')).toBeTruthy()
-
-    const railPill = (label: string) => new RegExp(`^\\d\\s*${label}$`, 'i')
-    // Locked: Review's own label text still renders in the rail, but it is
-    // no longer a button (UploadStepper renders a locked step as an inert
-    // span).
-    expect(screen.getByText(/^review$/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: railPill('review') })).toBeNull()
-    // Still a real move: Upload remains clickable so a new file can be picked.
-    expect(screen.getByRole('button', { name: railPill('upload') })).toBeTruthy()
-  })
+  // commit, per-row errors) is unchanged and still covered below. The bank
+  // coverage that used to live here now lives in
+  // test/features/workflow-upload.test.tsx against UploadStage/ValidateStage
+  // directly.
 
   it('damage upload: picking a file POSTs it multipart to preview (no Idempotency-Key, writes nothing) and renders the real per-row projected outcome, then Commit POSTs with a fresh Idempotency-Key and shows the counts', async () => {
     const calls: Call[] = []

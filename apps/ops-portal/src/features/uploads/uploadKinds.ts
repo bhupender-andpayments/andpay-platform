@@ -2,8 +2,12 @@
 // rail labels, and the helper-card copy. The rail, the cards, and the helpers
 // reading one source is what stops them disagreeing about what a step is
 // called. Steps are keyed by NAME, never by number: Submit is step 3 for
-// device inventory while Commit is step 4 for bank and damage, so a numeric
-// key would mean two different things on two rails.
+// device inventory while Commit is step 4 for damage, so a numeric key would
+// mean two different things on two rails.
+//
+// Bank moved out entirely on 2026-08-11: it is now stages 1 and 2 of the
+// workflow workspace (features/workflow/), not a kind listed here. This
+// module now only carries damage reports and device inventory.
 export type StepKey = 'choose' | 'upload' | 'review' | 'commit' | 'submit'
 
 export interface UploadStep {
@@ -63,27 +67,11 @@ const SHARED_GOOD_TO_KNOW = [
 // of that edge removes the cycle instead of relying on import order.
 export const DEVICE_INVENTORY_COLUMNS = ['Device ID', 'Sim No', 'Device QR'] as const
 
+// The bank descriptor that used to open this list moved into the workflow
+// workspace (2026-08-11 ruling): it is now stages 1 and 2 of one continuous
+// lifecycle (features/workflow/workflowKinds.ts's STAGE_HELP), not a
+// standalone upload with its own choice card here.
 export const UPLOAD_KINDS: readonly UploadKind[] = [
-  {
-    slug: 'bank',
-    title: 'Bank requests',
-    source: 'From the bank',
-    description: 'New soundbox requests. Preview the per-row outcome, then commit.',
-    steps: [CHOOSE, UPLOAD, REVIEW, COMMIT],
-    nextByStep: {
-      upload: ['Drop the file to see a per-row verdict. Nothing is written yet.', 'Review, then commit once the outcomes look right.'],
-      review: ['Check each row. A held soundbox row names the record it duplicates.', 'Continue to Commit when the outcomes look right.'],
-      commit: ['Committing writes the accepted rows and quarantines the held ones.', 'Quarantined rows land in Queues for review.'],
-    },
-    goodToKnow: [
-      ...SHARED_GOOD_TO_KNOW,
-      'Preview writes nothing; only Commit does.',
-      'A soundbox row whose VPA already exists is HELD and names the original.',
-    ],
-    guidanceByStep: {
-      upload: 'Review and Commit unlock once the file previews cleanly.',
-    },
-  },
   {
     slug: 'damage',
     title: 'Damage reports',
