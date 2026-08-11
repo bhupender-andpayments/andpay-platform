@@ -73,14 +73,14 @@ async function seed(): Promise<Seeded> {
       bank_reference_code, bank_display_name, ship_to_address,
       contact_name, mobile, qr_value, vpa_value,
       soundbox, standee_count, sticker_count, billable,
-      demand_state, source_event_id, updated_at
+      demand_state, source_event_id, dispatch_group, updated_at
     ) VALUES (
       ${asgnA}::uuid, ${mrchA}::uuid, ${progA}::uuid, ${tnntA}::uuid,
       'Acme A', 'Acme A Pvt Ltd', '5814',
       'HDFC', 'HDFC Bank', ${PII_A.shipToAddress},
       ${PII_A.contactName}, ${PII_A.mobile}, 'upi://pay?pa=acmea@hdfcbank', 'acmea@hdfcbank',
       true, 1, 2, true,
-      'pooled-for-fulfillment', 'file-A|1', now()
+      'pooled-for-fulfillment', 'file-A|1', 'SOUNDBOX', now()
     )
   `
   return { progA, tnntA }

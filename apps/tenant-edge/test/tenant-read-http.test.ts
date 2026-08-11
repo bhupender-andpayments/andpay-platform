@@ -140,14 +140,14 @@ async function seed(): Promise<Seeded> {
       bank_reference_code, bank_display_name, ship_to_address,
       contact_name, mobile, qr_value, vpa_value,
       soundbox, standee_count, sticker_count, billable,
-      demand_state, source_event_id, updated_at
+      demand_state, source_event_id, dispatch_group, updated_at
     ) VALUES (
       ${asgnA}::uuid, ${mrchA}::uuid, ${progA}::uuid, ${tnntA}::uuid,
       'Acme A', 'Acme A Pvt Ltd', '5814',
       'HDFC', 'HDFC Bank', ${PII_A.shipToAddress},
       ${PII_A.contactName}, ${PII_A.mobile}, 'upi://pay?pa=acmea@hdfcbank', 'acmea@hdfcbank',
       true, 1, 2, true,
-      'pooled-for-fulfillment', 'file-A|1', now()
+      'pooled-for-fulfillment', 'file-A|1', 'SOUNDBOX', now()
     )
   `
   await tmsDb.$executeRaw`
@@ -157,14 +157,14 @@ async function seed(): Promise<Seeded> {
       bank_reference_code, bank_display_name, ship_to_address,
       contact_name, mobile, qr_value, vpa_value,
       soundbox, standee_count, sticker_count, billable,
-      demand_state, source_event_id, updated_at
+      demand_state, source_event_id, dispatch_group, updated_at
     ) VALUES (
       ${asgnB}::uuid, ${mrchB}::uuid, ${progB}::uuid, ${tnntB}::uuid,
       'Acme B', 'Acme B Pvt Ltd', '5815',
       'ICICI', 'ICICI Bank', ${PII_B.shipToAddress},
       ${PII_B.contactName}, ${PII_B.mobile}, 'upi://pay?pa=acmeb@icicibank', 'acmeb@icicibank',
       false, 0, 1, true,
-      'received', 'file-B|1', now()
+      'received', 'file-B|1', 'COLLATERAL', now()
     )
   `
 

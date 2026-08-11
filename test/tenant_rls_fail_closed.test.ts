@@ -79,8 +79,8 @@ async function seed(): Promise<void> {
   for (const p of PROGRAMS) {
     const tenantId = randomUUID()
     await tms.$executeRawUnsafe(
-      `INSERT INTO assignment (id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count, billable, demand_state, source_event_id, updated_at)
-       VALUES ('${randomUUID()}', '${randomUUID()}', '${p}', '${tenantId}', 'Disp', 'Legal Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'addr', 'qr', 'vpa', true, 1, 1, true, 'received', 'rls-test-${randomUUID()}', now())`,
+      `INSERT INTO assignment (id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count, billable, demand_state, source_event_id, dispatch_group, updated_at)
+       VALUES ('${randomUUID()}', '${randomUUID()}', '${p}', '${tenantId}', 'Disp', 'Legal Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'addr', 'qr', 'vpa', true, 1, 1, true, 'received', 'rls-test-${randomUUID()}', 'SOUNDBOX', now())`,
     )
     await fulfillment.$executeRawUnsafe(
       `INSERT INTO pending_pool_entry (asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable, merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, pool_status, source_event_id, trace_id, updated_at)
