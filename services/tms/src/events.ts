@@ -42,6 +42,11 @@ export interface AssignmentFactPayload {
   // D120 FULL compat (a pre-extension fact validates); populated for every new
   // assignment (ingest-mandatory). Feeds analytics DispatchRow.branch.
   branchCode?: string
+  // W-5: which physical consignment this assignment is. OPTIONAL on the wire
+  // (D120 FULL compat, no v2); populated for every new assignment. A fact
+  // without it is a pre-split combined row and every consumer treats it as
+  // legacy (old membership and pairing semantics).
+  dispatchGroup?: 'SOUNDBOX' | 'COLLATERAL'
 }
 
 export interface ShipToAmendedFactPayload {

@@ -68,6 +68,7 @@ interface AssignmentSnapshotRow {
   contact_name: string | null
   mobile: string | null
   branch_code: string | null
+  dispatch_group: string
 }
 
 // Emit the demand fact for an already-inserted assignment (row present) and move
@@ -78,7 +79,7 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
     SELECT a.merchant_id, a.program_id, a.tenant_id, a.merchant_display_name AS display_name,
            a.merchant_legal_name AS legal_name, a.merchant_mcc AS mcc, a.bank_reference_code, a.bank_display_name,
            a.ship_to_address, a.qr_value, a.vpa_value, a.soundbox, a.standee_count, a.sticker_count,
-           a.billable, a.source_event_id, a.contact_name, a.mobile, a.branch_code
+           a.billable, a.source_event_id, a.contact_name, a.mobile, a.branch_code, a.dispatch_group
     FROM assignment a WHERE a.id = ${asgnUuid}::uuid
   `
   if (rows.length === 0) throw new Error(`emitDemandFact: assignment ${asgnUuid} not found`)
@@ -117,6 +118,9 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
         // (FULL compat, no v2); populated for every new assignment (ingest-mandatory).
         // Null (a pre-Task-4 row) becomes an absent optional field, same as above.
         branchCode: a.branch_code ?? undefined,
+        // W-5: dispatch group marker. NOT NULL in tms (Task 1), so every row here
+        // has one; no ?? undefined dance needed.
+        dispatchGroup: a.dispatch_group as 'SOUNDBOX' | 'COLLATERAL',
       },
       dedupKey: eventKey(envId, 'tms.assignment'),
       traceId,

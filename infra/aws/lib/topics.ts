@@ -106,6 +106,11 @@ export const FACT_SCHEMAS: FactSchema[] = [
         sourceEventId: { type: 'string' },
         contactName: { type: 'string' },
         mobile: { type: 'string' },
+        // Phase 3 Task 4 drift repair: branchCode landed in fact-schemas.ts but
+        // never made it into this mirror. Optional, FULL compat.
+        branchCode: { type: 'string' },
+        // W-5: dispatch group marker, OPTIONAL (FULL compat, no v2).
+        dispatchGroup: { type: 'string', enum: ['SOUNDBOX', 'COLLATERAL'] },
       },
       required: ['asgnId', 'demandState'],
     },

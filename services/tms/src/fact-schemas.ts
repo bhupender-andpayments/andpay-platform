@@ -51,6 +51,8 @@ export const TMS_FACT_SCHEMAS: Record<string, object> = {
       mobile: { type: 'string' },
       // Phase 3 Task 4: Branch Code snapshot, OPTIONAL (FULL compat, no v2).
       branchCode: { type: 'string' },
+      // W-5: dispatch group marker, OPTIONAL (FULL compat, no v2).
+      dispatchGroup: { type: 'string', enum: ['SOUNDBOX', 'COLLATERAL'] },
     },
     required: ['asgnId', 'demandState'],
   },
