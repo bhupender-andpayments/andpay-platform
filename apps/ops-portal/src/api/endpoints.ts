@@ -482,6 +482,9 @@ export interface BatchDetailView {
   batch: BatchRow
   entries: BatchEntryRow[]
   artifacts: BatchArtifactRow[]
+  // W-6 (Task 14): the BOUND print vendor's press layout, ONE_PER_PAGE or
+  // GRID_3X2, defaulting to ONE_PER_PAGE when the batch has no bound vendor.
+  printLayout: string
 }
 
 /** services/fulfillment/src/ops-read.ts DispatchRow (PII-free by construction). */

@@ -168,6 +168,7 @@ describe('BatchDetailPage', () => {
           },
         ],
         artifacts: [{ asgnId: 'asgn_1', artifactType: 'STANDEE_IMG', assetReference: 'ref-1', supersededAt: null }],
+        printLayout: 'ONE_PER_PAGE',
       }),
     )
     renderBatchDetail('btch_abc')
@@ -186,6 +187,26 @@ describe('BatchDetailPage', () => {
     // buttons render.
     expect(screen.getByRole('button', { name: /Soundbox Excel/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Collateral Excel/ })).toBeTruthy()
+    // Task 14 (W-6): the bound print vendor's layout, named near the
+    // downloads so an operator knows what shape a PDF will actually be.
+    expect(screen.getByText('Layout: one per page')).toBeTruthy()
+  })
+
+  // Task 14 (W-6): the same line, naming the OTHER layout. Read straight off
+  // detail.printLayout, never inferred from the vendor id, so this stays
+  // correct even if the operator has never opened the vendor admin screen.
+  it('names the layout as "3x2 grid" when the bound vendor is set to GRID_3X2', async () => {
+    stubFetch(() =>
+      jsonResponse({
+        batch: BATCH_ROW,
+        entries: [],
+        artifacts: [],
+        printLayout: 'GRID_3X2',
+      }),
+    )
+    renderBatchDetail('btch_abc')
+    expect(await screen.findByText('Layout: 3x2 grid')).toBeTruthy()
+    expect(screen.queryByText('Layout: one per page')).toBeNull()
   })
 
   // Excel gating is LINE membership off detail.entries, never artifact

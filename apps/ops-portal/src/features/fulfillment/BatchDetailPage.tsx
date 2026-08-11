@@ -341,6 +341,15 @@ export function BatchDetailPage() {
               title="Downloads"
               subtitle="The dispatch sheet carries the ship-to view; the list below deliberately does not."
             />
+            {/* W-6 (Task 14): the BOUND print vendor's press layout, named so
+                an operator can tell what shape a PDF download will actually be
+                without knowing the vendor's own setting. Read at ASSEMBLY
+                time by assembleGroupPdf (package.ts), never at composition
+                time, so this line is accurate up to the moment of download,
+                including a layout change made after this page loaded. */}
+            <div className="px-4 pt-3 text-xs text-muted-foreground">
+              Layout: {detail.printLayout === 'GRID_3X2' ? '3x2 grid' : 'one per page'}
+            </div>
             <div className="flex flex-wrap gap-3 p-4">
               {excelGroups.map((g) => (
                 <Button key={`${g}-excel`} onClick={() => void handleDispatchExcel(g)} disabled={downloading}>

@@ -1,0 +1,374 @@
+import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { newId, toUuid } from '@andpay/ids'
+import { PrismaClient } from '../generated/client/index.js'
+import { PDFDocument, PDFDict, PDFName } from 'pdf-lib'
+import { assembleGroupPdf, buildDispatchPackage, AssetResolutionError } from '../src/package.js'
+import { SHEET } from '../src/impose.js'
+import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
+import type { AssetStore, AssetMeta, AssetRecord, PutResult, StoredAsset } from '../src/storage/asset-store.js'
+
+// Task 14 (W-6, 2026-08-11 dispatch-group split): assembleGroupPdf branches on
+// the BOUND print vendor's press layout at ASSEMBLY time (never at
+// composition time). These tests prove:
+//   1) ONE_PER_PAGE (the default, and every batch with no bound vendor) keeps
+//      producing exactly the bytes the pre-Task-14 merge loop produced, for
+//      the identical inputs -- a regression pin, not a re-test of merge logic
+//      already covered by package.test.ts and dispatch.test.ts.
+//   2) GRID_3X2 imposes the SAME stored 1-up bytes onto Task 13's 3x2 sheet,
+//      with the material-run rules Task 14's brief specifies.
+//   3) The AssetResolutionError contract is unchanged in EITHER layout.
+
+const url =
+  process.env.FULFILLMENT_DATABASE_URL ??
+  'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
+const db = new PrismaClient({ datasourceUrl: url })
+
+beforeEach(async () => {
+  await db.$executeRawUnsafe(
+    'TRUNCATE pending_pool_entry, composed_artifact, batch, vndr, outbox, inbox CASCADE',
+  )
+})
+afterAll(async () => {
+  await db.$disconnect()
+})
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+function ids(): { tenantUuid: string; programUuid: string; btchWire: string; btchUuid: string } {
+  const btchWire = newId('btch')
+  return {
+    tenantUuid: toUuid(newId('tnnt')),
+    programUuid: toUuid(newId('prog')),
+    btchWire,
+    btchUuid: toUuid(btchWire),
+  }
+}
+
+async function seedVendor(printLayout: string): Promise<string> {
+  const vndrUuid = toUuid(newId('vndr'))
+  await db.$executeRaw`
+    INSERT INTO vndr (id, type, display_name, status, print_layout, updated_at)
+    VALUES (${vndrUuid}::uuid, 'PRINT', 'Layout Test Press', 'ACTIVE', ${printLayout}, now())
+  `
+  return vndrUuid
+}
+
+// print_vndr NULL when omitted, matching production's pre-dispatch-binding
+// shape and package.test.ts's own no-batch-row fixtures for "no bound vendor".
+async function seedBatchRow(
+  tenantUuid: string,
+  programUuid: string,
+  btchUuid: string,
+  printVndrUuid: string | null,
+): Promise<void> {
+  await db.$executeRaw`
+    INSERT INTO batch (id, tenant_id, program_id, print_vndr, trigger_reason, unit_count, updated_at)
+    VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${printVndrUuid}::uuid, 'LOT_SIZE', 1, now())
+  `
+}
+
+interface GroupEntryOpts {
+  bankCode: string
+  soundbox?: boolean
+  standeeCount?: number
+  stickerCount?: number
+}
+
+async function seedGroupEntry(
+  tenantUuid: string,
+  programUuid: string,
+  btchUuid: string,
+  opts: GroupEntryOpts,
+): Promise<{ asgnWire: string; asgnUuid: string }> {
+  const asgnWire = newId('asgn')
+  const asgnUuid = toUuid(asgnWire)
+  const merchantUuid = toUuid(newId('mrch'))
+  await db.$executeRaw`
+    INSERT INTO pending_pool_entry (
+      asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
+      merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+      ship_to_address, qr_value, vpa_value, pool_status, batch, source_event_id, trace_id, updated_at
+    ) VALUES (
+      ${asgnUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${merchantUuid}::uuid,
+      ${opts.soundbox ?? false}, ${opts.standeeCount ?? 0}, ${opts.stickerCount ?? 0}, true,
+      'Acme', 'Acme Pvt Ltd', '5814', ${opts.bankCode}, 'A Bank',
+      '221B Baker Street', 'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank',
+      'BATCHED', ${btchUuid}::uuid, 'file-layout|1', 'trace-layout', now()
+    )
+  `
+  return { asgnWire, asgnUuid }
+}
+
+async function seedArtifact(
+  tenantUuid: string,
+  programUuid: string,
+  btchUuid: string,
+  asgnUuid: string,
+  artifactType: string,
+  assetReference: string,
+): Promise<void> {
+  await db.$executeRaw`
+    INSERT INTO composed_artifact (
+      id, asgn_id, btch_id, tenant_id, program_id, artifact_type, asset_reference, label_display_name, label_qr
+    ) VALUES (
+      gen_random_uuid(), ${asgnUuid}::uuid, ${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid,
+      ${artifactType}, ${assetReference}, 'Acme', 'upi://pay?pa=acme@hdfcbank'
+    )
+  `
+}
+
+// A tiny one-page PDF standing in for an already-rendered 1-up artifact. A
+// drawn glyph, not a blank page: an EMPTY page has no /Contents stream at
+// all, and pdf-lib's embedPdf (imposeGridRun's own mechanism) refuses to
+// embed a page with none ("Can't embed page with missing Contents").
+async function putPdf(store: InMemoryAssetStore, key: string): Promise<string> {
+  const doc = await PDFDocument.create()
+  const page = doc.addPage([100, 100])
+  page.drawText('X', { x: 1, y: 1, size: 8 })
+  const put = await store.put(key, await doc.save(), { contentType: 'application/pdf', filename: `${key}.pdf` })
+  return put.reference
+}
+
+// Counts the XObject resource entries pdf-lib registered on one page: one
+// fresh resource name per drawPage call, so this is exactly the number of
+// cells imposed on that page. Mirrors impose.test.ts's own helper.
+function xObjectCount(doc: PDFDocument, pageIndex: number): number {
+  const page = doc.getPage(pageIndex)
+  const resources = page.node.Resources()
+  if (resources === undefined) return 0
+  const xobjects = resources.lookupMaybe(PDFName.of('XObject'), PDFDict)
+  return xobjects === undefined ? 0 : xobjects.keys().length
+}
+
+// A spy over InMemoryAssetStore recording the ORDER getByReference is called
+// in, without changing behavior. Used to prove the standee run resolves its
+// bytes strictly before the sticker run resolves its own (Test 3): each
+// buildGridCards call fully awaits its own loop before the next one starts,
+// so the call order is a direct, deterministic trace of run order.
+class SpyAssetStore implements AssetStore {
+  readonly calls: string[] = []
+  constructor(private readonly inner: InMemoryAssetStore) {}
+  put(key: string, bytes: Uint8Array, meta: AssetMeta): Promise<PutResult> {
+    return this.inner.put(key, bytes, meta)
+  }
+  getCurrent(key: string): Promise<AssetRecord | null> {
+    return this.inner.getCurrent(key)
+  }
+  async getByReference(reference: string): Promise<AssetRecord | null> {
+    this.calls.push(reference)
+    return this.inner.getByReference(reference)
+  }
+  listVersions(key: string): Promise<StoredAsset[]> {
+    return this.inner.listVersions(key)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The pre-Task-14 merge loop, copied VERBATIM (package.ts lines as they stood
+// before this task, minus the layout branch) so a byte-for-byte comparison
+// means something: without an independent second implementation of "today's
+// merge", a passing assertion could just mean the one implementation agrees
+// with itself. GROUP_ARTIFACT_TYPES is private to package.ts, so its order is
+// mirrored here literally (STANDEE_IMG before STICKER_IMG); resolveCollateralGroup
+// is exercised indirectly through assembleGroupPdf itself, not needed here.
+// ---------------------------------------------------------------------------
+
+const LEGACY_ORDER: Record<'SOUNDBOX' | 'COLLATERAL', readonly string[]> = {
+  SOUNDBOX: ['SOUNDBOX_IMG'],
+  COLLATERAL: ['STANDEE_IMG', 'STICKER_IMG'],
+}
+
+async function legacyMergeGroupPdf(
+  assetStore: AssetStore,
+  btchId: string,
+  group: 'SOUNDBOX' | 'COLLATERAL',
+): Promise<Uint8Array | null> {
+  const order = LEGACY_ORDER[group]
+  const lines = await buildDispatchPackage(db, btchId, 'print')
+  const merged = await PDFDocument.create()
+  merged.setCreationDate(new Date(0))
+  merged.setModificationDate(new Date(0))
+  merged.setProducer('andpay-collateral')
+  merged.setCreator('andpay-collateral')
+
+  let matched = 0
+  for (const line of lines) {
+    const art = order
+      .map((t) => line.artifacts.find((a) => a.artifactType === t))
+      .find((a) => a !== undefined)
+    if (art === undefined) continue
+    matched++
+    const rec = await assetStore.getByReference(art.assetReference)
+    if (rec === null) {
+      throw new AssetResolutionError(`stored collateral not found for a ${art.artifactType} artifact in batch ${btchId}`)
+    }
+    const src = await PDFDocument.load(rec.bytes)
+    const pages = await merged.copyPages(src, src.getPageIndices())
+    for (const pg of pages) merged.addPage(pg)
+  }
+  if (matched === 0) return null
+  return await merged.save()
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: ONE_PER_PAGE must stay byte-identical to today's merge.
+// ---------------------------------------------------------------------------
+
+describe('assembleGroupPdf: ONE_PER_PAGE stays byte-identical (regression pin)', () => {
+  it('no bound print vendor (the default): identical bytes to the pre-branch merge, both groups', async () => {
+    const store = new InMemoryAssetStore()
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    // NOTE: no batch row at all, matching package.test.ts's own convention for
+    // "this batch has no bound print vendor".
+    const soundboxOnly = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', soundbox: true })
+    const both = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'B2',
+      standeeCount: 1,
+      stickerCount: 2,
+    })
+    await seedArtifact(tenantUuid, programUuid, btchUuid, soundboxOnly.asgnUuid, 'SOUNDBOX_IMG', await putPdf(store, 'sb'))
+    await seedArtifact(tenantUuid, programUuid, btchUuid, both.asgnUuid, 'STANDEE_IMG', await putPdf(store, 'st'))
+    await seedArtifact(tenantUuid, programUuid, btchUuid, both.asgnUuid, 'STICKER_IMG', await putPdf(store, 'sk'))
+
+    const actualSoundbox = await assembleGroupPdf(db, store, btchWire, 'SOUNDBOX')
+    const expectedSoundbox = await legacyMergeGroupPdf(store, btchWire, 'SOUNDBOX')
+    expect(actualSoundbox).not.toBeNull()
+    expect(Buffer.from(actualSoundbox!).equals(Buffer.from(expectedSoundbox!))).toBe(true)
+
+    const actualCollateral = await assembleGroupPdf(db, store, btchWire, 'COLLATERAL')
+    const expectedCollateral = await legacyMergeGroupPdf(store, btchWire, 'COLLATERAL')
+    expect(actualCollateral).not.toBeNull()
+    expect(Buffer.from(actualCollateral!).equals(Buffer.from(expectedCollateral!))).toBe(true)
+  })
+
+  it('a print vendor explicitly bound and set to ONE_PER_PAGE: identical bytes to the pre-branch merge', async () => {
+    const store = new InMemoryAssetStore()
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('ONE_PER_PAGE')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+    const a = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', soundbox: true })
+    await seedArtifact(tenantUuid, programUuid, btchUuid, a.asgnUuid, 'SOUNDBOX_IMG', await putPdf(store, 'sb2'))
+
+    const actual = await assembleGroupPdf(db, store, btchWire, 'SOUNDBOX')
+    const expected = await legacyMergeGroupPdf(store, btchWire, 'SOUNDBOX')
+    expect(actual).not.toBeNull()
+    expect(Buffer.from(actual!).equals(Buffer.from(expected!))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test 2: GRID_3X2, SOUNDBOX group, 7 lines -> 2 sheets (6+1 cells).
+// ---------------------------------------------------------------------------
+
+describe('assembleGroupPdf: GRID_3X2 imposition', () => {
+  it('SOUNDBOX group, 7 soundbox lines, overflows onto a second sheet (6+1 cells)', async () => {
+    const store = new InMemoryAssetStore()
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('GRID_3X2')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+
+    for (let i = 0; i < 7; i++) {
+      const e = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: `B${String(i)}`, soundbox: true })
+      await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'SOUNDBOX_IMG', await putPdf(store, `sb-${String(i)}`))
+    }
+
+    const bytes = await assembleGroupPdf(db, store, btchWire, 'SOUNDBOX')
+    expect(bytes).not.toBeNull()
+    const doc = await PDFDocument.load(bytes!)
+    expect(doc.getPageCount()).toBe(2)
+    expect(doc.getPage(0).getSize()).toEqual({ width: SHEET.widthPt, height: SHEET.heightPt })
+    expect(doc.getPage(1).getSize()).toEqual({ width: SHEET.widthPt, height: SHEET.heightPt })
+    expect(xObjectCount(doc, 0)).toBe(6)
+    expect(xObjectCount(doc, 1)).toBe(1)
+  })
+
+  // THE CORE material-run assertion: standee and sticker are two DIFFERENT
+  // physical print runs, so a merchant wanting both gets copies on TWO
+  // separate sheets, not deduped onto one page the way ONE_PER_PAGE collapses
+  // them. The sticker run starts its OWN fresh sheet even though the standee
+  // run left 4 cells free on sheet 1 (imposeGridRun always starts fresh).
+  it('COLLATERAL group: standee run first, then sticker run on a fresh sheet', async () => {
+    const inner = new InMemoryAssetStore()
+    const store = new SpyAssetStore(inner)
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('GRID_3X2')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+
+    // line1: standee 2, sticker 1. line2: standee 0, sticker 3.
+    const line1 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'B1',
+      standeeCount: 2,
+      stickerCount: 1,
+    })
+    const line2 = await seedGroupEntry(tenantUuid, programUuid, btchUuid, {
+      bankCode: 'B2',
+      standeeCount: 0,
+      stickerCount: 3,
+    })
+    const standeeRef1 = await putPdf(inner, 'standee-line1')
+    const stickerRef1 = await putPdf(inner, 'sticker-line1')
+    const stickerRef2 = await putPdf(inner, 'sticker-line2')
+    await seedArtifact(tenantUuid, programUuid, btchUuid, line1.asgnUuid, 'STANDEE_IMG', standeeRef1)
+    await seedArtifact(tenantUuid, programUuid, btchUuid, line1.asgnUuid, 'STICKER_IMG', stickerRef1)
+    await seedArtifact(tenantUuid, programUuid, btchUuid, line2.asgnUuid, 'STICKER_IMG', stickerRef2)
+
+    const bytes = await assembleGroupPdf(db, store, btchWire, 'COLLATERAL')
+    expect(bytes).not.toBeNull()
+    const doc = await PDFDocument.load(bytes!)
+
+    // 2 sheets total: standee run (2 cells) then sticker run (1+3=4 cells).
+    expect(doc.getPageCount()).toBe(2)
+    expect(doc.getPage(0).getSize()).toEqual({ width: SHEET.widthPt, height: SHEET.heightPt })
+    expect(doc.getPage(1).getSize()).toEqual({ width: SHEET.widthPt, height: SHEET.heightPt })
+    expect(xObjectCount(doc, 0)).toBe(2)
+    expect(xObjectCount(doc, 1)).toBe(4)
+
+    // The standee run's bytes are resolved (both its cells) strictly BEFORE
+    // the sticker run's bytes: cells on sheet 1 are STANDEE_IMG, cells on
+    // sheet 2 are STICKER_IMG, never interleaved.
+    expect(store.calls).toEqual([standeeRef1, stickerRef1, stickerRef2])
+  })
+
+  it('placed === 0 (no artifact of the requested group anywhere) returns null, mirroring matched === 0', async () => {
+    const store = new InMemoryAssetStore()
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('GRID_3X2')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+    // A COLLATERAL-only line, no SOUNDBOX_IMG anywhere in the batch.
+    const e = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', standeeCount: 1 })
+    await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'STANDEE_IMG', await putPdf(store, 'orphan'))
+
+    expect(await assembleGroupPdf(db, store, btchWire, 'SOUNDBOX')).toBeNull()
+  })
+
+  it('an unresolvable asset reference throws AssetResolutionError, same contract as ONE_PER_PAGE', async () => {
+    const store = new InMemoryAssetStore()
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('GRID_3X2')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+    const e = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', soundbox: true })
+    // No put() call for this reference: it resolves to nothing, a genuine
+    // storage FAULT, and must throw rather than silently skip the line.
+    await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'SOUNDBOX_IMG', 'dev-asset:never-put:v1')
+
+    await expect(assembleGroupPdf(db, store, btchWire, 'SOUNDBOX')).rejects.toBeInstanceOf(AssetResolutionError)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: the AssetResolutionError contract in ONE_PER_PAGE too (both layouts
+// covered, per the brief).
+// ---------------------------------------------------------------------------
+
+describe('assembleGroupPdf: AssetResolutionError, ONE_PER_PAGE', () => {
+  it('an unresolvable asset reference throws, no bound vendor (ONE_PER_PAGE default)', async () => {
+    const store = new InMemoryAssetStore()
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const e = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', soundbox: true })
+    await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'SOUNDBOX_IMG', 'dev-asset:never-put:v1')
+
+    await expect(assembleGroupPdf(db, store, btchWire, 'SOUNDBOX')).rejects.toBeInstanceOf(AssetResolutionError)
+  })
+})

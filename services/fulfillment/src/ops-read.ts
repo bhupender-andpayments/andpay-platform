@@ -492,6 +492,14 @@ export interface BatchDetailView {
   batch: BatchRow
   entries: BatchEntryRow[]
   artifacts: BatchArtifactRow[]
+  // W-6 (Task 14, 2026-08-11 dispatch-group split): the BOUND print vendor's
+  // press layout, ONE_PER_PAGE or GRID_3X2, resolved the same way
+  // assembleGroupPdf resolves it at download time (package.ts): a LEFT JOIN
+  // from batch to vndr on print_vndr, defaulting to ONE_PER_PAGE when the
+  // batch has no bound vendor. Named here so the portal can tell an operator
+  // which shape a download will actually be, without guessing from the
+  // vendor id alone.
+  printLayout: string
 }
 
 // The batch detail hub. Returns null for an unknown batch so the edge can 404
@@ -503,10 +511,16 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
   const btchUuid = toUuid(btchId)
   return db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
-    const header = await tx.$queryRaw<BatchDbRow[]>`
-      SELECT id::text AS id, trigger_reason, unit_count, print_vndr::text AS print_vndr,
-             triggered_by_actor::text AS triggered_by_actor, trigger_note, created_at, updated_at
-      FROM batch WHERE id = ${btchUuid}::uuid
+    // LEFT JOIN, not INNER: a batch with no bound print vendor (print_vndr
+    // NULL) must still return its header, with the ONE_PER_PAGE default the
+    // COALESCE below supplies, exactly as assembleGroupPdf's own fallback does.
+    const header = await tx.$queryRaw<(BatchDbRow & { print_layout: string })[]>`
+      SELECT b.id::text AS id, b.trigger_reason, b.unit_count, b.print_vndr::text AS print_vndr,
+             b.triggered_by_actor::text AS triggered_by_actor, b.trigger_note, b.created_at, b.updated_at,
+             COALESCE(v.print_layout, 'ONE_PER_PAGE') AS print_layout
+      FROM batch b
+      LEFT JOIN vndr v ON v.id = b.print_vndr
+      WHERE b.id = ${btchUuid}::uuid
     `
     if (header.length === 0) return null
     const entries = await tx.$queryRaw<BatchEntryDbRow[]>`
@@ -560,6 +574,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
         assetReference: a.asset_reference,
         supersededAt: a.superseded_at,
       })),
+      printLayout: header[0]!.print_layout,
     }
   })
 }

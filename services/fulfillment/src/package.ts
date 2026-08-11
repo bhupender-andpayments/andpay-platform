@@ -4,6 +4,7 @@ import { toUuid, fromUuid } from '@andpay/ids'
 import type { FulfillmentDb } from './db.js'
 import type { AssetStore } from './storage/asset-store.js'
 import { decodeBankQrPayload } from '@andpay/bank-qr'
+import { imposeGridRun, type GridCard } from './impose.js'
 
 // Which adapter function the package projection is being built for. The
 // entitlement below is scoped to THIS parameter, never a global field: a
@@ -357,6 +358,15 @@ export function resolveCollateralGroup(key: string): CollateralGroup | null {
 // AssetResolutionError -- it must NEVER be collapsed into an empty/404, or a
 // merchant's label would silently vanish from the dispatch package (Task-3/4
 // review, Important). Reads no PII ('print' view).
+//
+// W-6 (Task 14, 2026-08-11 dispatch-group split): assembly branches on the
+// BOUND print vendor's press layout, read HERE, at assembly time, never at
+// composition time. composed_artifact stays exactly the 1-up PDFs Task 2
+// always rendered; flipping a vendor's layout setting (ops.ts
+// setVendorPrintLayout) changes the very next download with no re-render and
+// no backfill. ONE_PER_PAGE (the default, and every batch with no bound
+// vendor) keeps the merge loop below byte-for-byte as it always was.
+// GRID_3X2 imposes the SAME stored bytes onto Task 13's 3x2 sheet instead.
 export async function assembleGroupPdf(
   db: FulfillmentDb,
   assetStore: AssetStore,
@@ -374,6 +384,21 @@ export async function assembleGroupPdf(
   merged.setModificationDate(new Date(0))
   merged.setProducer('andpay-collateral')
   merged.setCreator('andpay-collateral')
+
+  // W-6: the layout is the BOUND print vendor's press capability, read at
+  // assembly time. Stored artifacts are 1-up and never re-rendered for a
+  // layout change: flipping the vendor's setting changes the next download.
+  // No bound vendor (print_vndr NULL, or a batch row this test database never
+  // seeds at all) falls back to ONE_PER_PAGE, today's only behavior.
+  const layoutRows = await db.$queryRaw<{ print_layout: string }[]>`
+    SELECT v.print_layout FROM batch b JOIN vndr v ON v.id = b.print_vndr
+    WHERE b.id = ${toUuid(btchId)}::uuid
+  `
+  const layout = layoutRows[0]?.print_layout ?? 'ONE_PER_PAGE'
+
+  if (layout === 'GRID_3X2') {
+    return await assembleGridGroupPdf(merged, assetStore, btchId, group, lines)
+  }
 
   let matched = 0
   for (const line of lines) {
@@ -401,4 +426,65 @@ export async function assembleGroupPdf(
   }
   if (matched === 0) return null
   return await merged.save()
+}
+
+// GRID_3X2 material runs (W-6): a sheet never mixes standee board with
+// sticker adhesive, so each material is its own imposeGridRun call, which
+// always starts a fresh sheet. SOUNDBOX is a single run, copies 1 for every
+// line holding a SOUNDBOX_IMG artifact (a soundbox has no quantity of its
+// own; the artifact's presence IS the demand). COLLATERAL is TWO runs,
+// standee first then sticker, mirroring STANDEE_IMG before STICKER_IMG in
+// GROUP_ARTIFACT_TYPES above, copies taken from the line's OWN
+// standeeCount/stickerCount. A line lacking that run's artifact, or holding
+// it with count 0, contributes nothing to that run; a legacy (pre-split)
+// line carrying both artifacts contributes to BOTH runs, because in grid mode
+// there is no ONE-artifact-per-line de-dup: standee and sticker are two
+// distinct physical print runs, and its two counts are both real demand.
+async function assembleGridGroupPdf(
+  merged: PDFDocument,
+  assetStore: AssetStore,
+  btchId: string,
+  group: CollateralGroup,
+  lines: PackageLine[],
+): Promise<Uint8Array | null> {
+  let placed = 0
+  if (group === 'SOUNDBOX') {
+    const cards = await buildGridCards(assetStore, btchId, lines, 'SOUNDBOX_IMG', () => 1)
+    placed = await imposeGridRun(merged, cards)
+  } else {
+    const standeeCards = await buildGridCards(assetStore, btchId, lines, 'STANDEE_IMG', (l) => l.standeeCount)
+    const stickerCards = await buildGridCards(assetStore, btchId, lines, 'STICKER_IMG', (l) => l.stickerCount)
+    placed = await imposeGridRun(merged, standeeCards)
+    placed += await imposeGridRun(merged, stickerCards)
+  }
+  if (placed === 0) return null
+  return await merged.save()
+}
+
+// Resolves ONE material run's cards by walking `lines` in the package's own
+// sorted (bank, branch, dispatch id) order, taking the artifact of exactly
+// `artifactType` off each line whose copiesFor() is positive. Same
+// asset-resolution contract as the ONE_PER_PAGE loop above: an unresolvable
+// reference is a storage FAULT and throws AssetResolutionError, never a skip,
+// because a merchant's label must never silently vanish from the print run.
+async function buildGridCards(
+  assetStore: AssetStore,
+  btchId: string,
+  lines: PackageLine[],
+  artifactType: string,
+  copiesFor: (line: PackageLine) => number,
+): Promise<GridCard[]> {
+  const cards: GridCard[] = []
+  for (const line of lines) {
+    const copies = copiesFor(line)
+    if (copies <= 0) continue
+    const art = line.artifacts.find((a) => a.artifactType === artifactType)
+    if (art === undefined) continue
+    const rec = await assetStore.getByReference(art.assetReference)
+    if (rec === null) {
+      throw new AssetResolutionError(`stored collateral not found for a ${artifactType} artifact in batch ${btchId}`)
+    }
+    cards.push({ bytes: rec.bytes, copies })
+  }
+  return cards
 }
