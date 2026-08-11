@@ -1,60 +1,24 @@
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
 import { BankUploadPage } from './BankUploadPage.js'
 import { DamageUploadPage } from './DamageUploadPage.js'
-import { DeviceInventoryUploadPage, DEVICE_INVENTORY_COLUMNS } from './DeviceInventoryUploadPage.js'
+import { DeviceInventoryUploadPage } from './DeviceInventoryUploadPage.js'
+import { UPLOAD_KINDS, INDEX_STEPS } from './uploadKinds.js'
+import { UploadStepper } from './UploadStepper.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
-// Redesign step 4. This was three TABS with "Bank Requests" selected by default.
+// Redesign step 4 made this three equal CARDS after the tabs-era page
+// preselected "Bank Requests" and shared one url; see the git history of this
+// comment for that story. The 2026-08-11 ruling keeps both fixes and removes
+// the remaining drill-in-and-back: uploads is now ONE continuous flow with a
+// numbered step rail. This file is only the router plus step 1 (the choice);
+// each upload page renders its own rail and step bodies, because the three
+// are different workflows sharing a step shape, not one workflow with a type
+// switch.
 //
-// Two problems, and the default is the worse one. An operator arriving to upload
-// a device inventory file landed on a bank request form, with nothing saying the
-// other two existed until they noticed the tab strip. And every upload shared
-// one URL, so there was no way to send someone to "the damage upload".
-//
-// Three equal choices are now three equal cards, each on its own route. Nothing
-// is preselected and each upload is linkable.
-//
-// The three upload components themselves are UNCHANGED. This is routing and
-// presentation: the parsing, the preview/commit flow and the per-row error
-// tables are all untouched.
-
-interface UploadKind {
-  slug: string
-  title: string
-  /** Who hands us this file. The operator knows the source, not our jargon. */
-  source: string
-  description: string
-  /**
-   * Stated ONLY where the portal has a verified list. Device inventory shares a
-   * real constant with its parser. The bank and damage layouts are resolved by
-   * source profile at ingest (D8), and the real GSCB file's headers differ from
-   * the canonical names, so listing columns for those here would be inventing a
-   * contract the portal cannot check.
-   */
-  columns?: readonly string[]
-}
-
-const UPLOAD_KINDS: readonly UploadKind[] = [
-  {
-    slug: 'bank',
-    title: 'Bank requests',
-    source: 'From the bank',
-    description: 'New soundbox requests. Preview the per-row outcome, then commit.',
-  },
-  {
-    slug: 'damage',
-    title: 'Damage reports',
-    source: 'From the bank, after delivery',
-    description: 'Damaged devices to be replaced. Every row is matched to an existing dispatch.',
-  },
-  {
-    slug: 'device-inventory',
-    title: 'Device inventory',
-    source: 'From the manufacturer',
-    description: 'Devices received into stock, before anything can be printed or shipped.',
-    columns: DEVICE_INVENTORY_COLUMNS,
-  },
-]
+// Still binding, from the tabs-era defects: NOTHING is preselected here, and
+// each upload keeps its own url so "the damage upload" stays a sendable link.
+// Choosing navigates with REPLACE: moving between steps of one flow should
+// not stack history entries.
 
 function UploadsIndex() {
   return (
@@ -67,11 +31,20 @@ function UploadsIndex() {
         </p>
       </div>
 
+      <UploadStepper
+        steps={INDEX_STEPS}
+        current="choose"
+        unlocked={['choose']}
+        onStepClick={() => {}}
+        guidance="Pick the file you have. The remaining steps appear once you choose."
+      />
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {UPLOAD_KINDS.map((kind) => (
           <Link
             key={kind.slug}
             to={kind.slug}
+            replace
             className="rounded-4xl transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:-translate-y-0.5"
           >
             <Card className="h-full">
@@ -97,24 +70,13 @@ function UploadsIndex() {
   )
 }
 
-function UploadFrame({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-4">
-      <Link to="/uploads" className="w-fit text-sm text-muted-foreground hover:text-foreground">
-        Back to all uploads
-      </Link>
-      {children}
-    </div>
-  )
-}
-
 export function UploadsPage() {
   return (
     <Routes>
       <Route index element={<UploadsIndex />} />
-      <Route path="bank" element={<UploadFrame><BankUploadPage /></UploadFrame>} />
-      <Route path="damage" element={<UploadFrame><DamageUploadPage /></UploadFrame>} />
-      <Route path="device-inventory" element={<UploadFrame><DeviceInventoryUploadPage /></UploadFrame>} />
+      <Route path="bank" element={<BankUploadPage />} />
+      <Route path="damage" element={<DamageUploadPage />} />
+      <Route path="device-inventory" element={<DeviceInventoryUploadPage />} />
       {/* An unknown upload slug lands on the choices rather than a dead end. */}
       <Route path="*" element={<Navigate to="/uploads" replace />} />
     </Routes>

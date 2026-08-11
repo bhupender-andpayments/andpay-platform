@@ -12,8 +12,10 @@ import { UploadsPage } from '../../src/features/uploads/UploadsPage.js'
 //   2. There is no way to link someone to "the damage upload". Every upload
 //      shares one URL.
 //
-// Three equal choices are now three equal cards, each on its own route. No
-// preselection, and each upload is linkable.
+// Three equal choices became three equal cards, each on its own route. The
+// 2026-08-11 ruling keeps both fixes and turns the cards into step 1 of one
+// continuous flow with a numbered step rail, instead of a page an operator
+// drills into and backs out of.
 afterEach(() => { cleanup() })
 
 function renderAt(path: string) {
@@ -28,7 +30,7 @@ function renderAt(path: string) {
   )
 }
 
-describe('Uploads index: three equal choices, none preselected', () => {
+describe('Uploads step 1: three equal choices, none preselected', () => {
   it('offers all three uploads as links', () => {
     renderAt('/uploads')
     expect(screen.getByRole('link', { name: /bank request/i })).toBeTruthy()
@@ -36,59 +38,54 @@ describe('Uploads index: three equal choices, none preselected', () => {
     expect(screen.getByRole('link', { name: /device inventory/i })).toBeTruthy()
   })
 
-  // The load-bearing assertion of this step. The old page rendered the bank
-  // form on arrival, which is a choice made FOR the operator by tab ordering.
+  // THE load-bearing assertion, carried over from the tabs-era fix: arriving
+  // at /uploads renders NO upload form. A rail that preselected a type would
+  // remake the documented defect where an operator with an inventory file
+  // landed on a bank form.
   it('renders NO upload form until one is chosen', () => {
     renderAt('/uploads')
-    // Asserts on the form's own HEADING, not on a Preview button: those only
-    // render once a file is staged, so a button assertion passed even against
-    // the old tabbed page and proved nothing.
     expect(screen.queryByText(/bank request upload/i)).toBeNull()
     expect(screen.queryByText(/damage report upload/i)).toBeNull()
     expect(screen.queryByText(/device inventory upload/i)).toBeNull()
   })
 
+  it('shows the rail at step 1, and does NOT assert Review or Commit before a type exists', () => {
+    renderAt('/uploads')
+    expect(screen.getByText(/choose file/i)).toBeTruthy()
+    // The index rail is Choose file plus Upload only: whether Review and
+    // Commit or Submit exist depends on the file, which is not chosen yet.
+    expect(screen.queryByText(/^review$/i)).toBeNull()
+    expect(screen.queryByText(/^commit$/i)).toBeNull()
+    expect(screen.queryByText(/^submit$/i)).toBeNull()
+  })
+
   it('says who sends each file, so the operator knows which one they hold', () => {
     renderAt('/uploads')
-    // getAllBy for the bank: two of the three files come FROM the bank, which
-    // is itself the point of showing the source.
     expect(screen.getAllByText(/from the bank/i).length).toBe(2)
     expect(screen.getByText(/from the manufacturer/i)).toBeTruthy()
   })
 
-  // Only the device inventory columns are stated. That list is a real constant
-  // shared with the parser; the bank and damage layouts are selected by source
-  // profile at ingest and the portal has no verified column list for them, so
-  // it describes those files instead of inventing headers.
-  it('states the device inventory columns up front', () => {
+  it('states the device inventory columns up front, and no other columns', () => {
     renderAt('/uploads')
-    expect(screen.getByText(/Device ID/)).toBeTruthy()
-    expect(screen.getByText(/Sim No/)).toBeTruthy()
+    expect(screen.getByText(/device id, sim no, device qr/i)).toBeTruthy()
+    expect(screen.getAllByText(/required columns/i).length).toBe(1)
   })
 })
 
-describe('Uploads: each upload is its own linkable route', () => {
-  it('opens the bank upload directly', async () => {
+describe('Uploads: each upload keeps its own linkable route', () => {
+  it('deep-links the bank upload with the type locked in', async () => {
     renderAt('/uploads/bank')
     expect(await screen.findByText(/bank request upload/i)).toBeTruthy()
   })
-
-  it('opens the damage upload directly', async () => {
+  it('deep-links the damage upload', async () => {
     renderAt('/uploads/damage')
     expect(await screen.findByText(/damage report upload/i)).toBeTruthy()
   })
-
-  it('opens the device inventory upload directly', async () => {
+  it('deep-links the device inventory upload', async () => {
     renderAt('/uploads/device-inventory')
     expect(await screen.findByText(/device inventory upload/i)).toBeTruthy()
   })
-
-  it('offers a way back to the other uploads', async () => {
-    renderAt('/uploads/bank')
-    expect(await screen.findByRole('link', { name: /all uploads/i })).toBeTruthy()
-  })
-
-  it('sends an unknown upload path back to the index rather than 404ing', () => {
+  it('sends an unknown upload path back to step 1 rather than 404ing', () => {
     renderAt('/uploads/nonsense')
     expect(screen.getByRole('link', { name: /bank request/i })).toBeTruthy()
   })
