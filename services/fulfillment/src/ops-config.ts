@@ -93,7 +93,15 @@ const OPS_PERMISSIONS = [
 // same reasoning as the absent `ops:vendor-list` / `ops:bank-config-list`. No
 // step-up is added (step-up for batching config is TBD per the ratification;
 // this deliberately introduces no OPS_STEP_UP_CATALOG / S15 entry).
-const ADMIN_TIER_PERMISSIONS = ['ops:batching-config-set']
+// Task 12 (W-6): the PRINT vendor print_layout admin write joins the SAME
+// admin-tier bundle as batching-config-set (not the shared OPS_PERMISSIONS
+// bundle), per the ratification: a baseline `ops` / `ops_portal` operator
+// does not get it either. No `ops:vendor-print-layout-list` entry, same
+// reasoning as every other absent -list permission above (there is no new
+// list route here; a vendor's print_layout rides the existing vendor read).
+// Not step-up-gated (not in OPS_STEP_UP_CATALOG), matching batching-config's
+// own no-step-up posture.
+const ADMIN_TIER_PERMISSIONS = ['ops:batching-config-set', 'ops:vendor-print-layout-set']
 
 export const OPS_ROLES: RoleConfig['roles'] = {
   // Retained legacy alias (Task 2, D-B): no real login mints role:ops_portal

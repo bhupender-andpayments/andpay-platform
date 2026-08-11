@@ -136,6 +136,8 @@ export {
   type SetBankTemplateMasterInput,
   upsertBatchingConfig,
   type UpsertBatchingConfigInput,
+  setVendorPrintLayout,
+  type SetVendorPrintLayoutInput,
 } from './ops.js'
 export { OPS_ROLES, loadOpsConfig } from './ops-config.js'
 export {

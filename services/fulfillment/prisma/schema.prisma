@@ -63,6 +63,13 @@ model Vendor {
   // leaves this null); no credential of any kind lives here (S4, class-6 is
   // Auth-owned, see CredentialProjection below).
   integrationMode String? @map("integration_mode")
+  // W-6 (Task 12): the PRINT vendor's press-layout capability, ONE_PER_PAGE or
+  // GRID_3X2 (a later task reads this at PDF assembly time). NOT NULL with a
+  // DB DEFAULT so every pre-existing row (including MANUFACTURER/COURIER,
+  // where the value is simply unused) lands on today's contract without a
+  // backfill. Admin-writable only through setVendorPrintLayout (ops.ts),
+  // which restricts the write to PRINT vendors.
+  printLayout String @default("ONE_PER_PAGE") @map("print_layout")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 

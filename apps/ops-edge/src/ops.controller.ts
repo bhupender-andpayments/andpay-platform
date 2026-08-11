@@ -33,6 +33,7 @@ import {
   setBankLogo,
   setBankTemplateMaster,
   upsertBatchingConfig,
+  setVendorPrintLayout,
   ingestOpsDeviceInventory,
   type IntakeSheet,
   type OpsDeviceInventoryResult,
@@ -153,6 +154,13 @@ interface BatchingConfigSetBody {
   programWire?: string
   minLotSize: number
   maxWaitSeconds: number
+}
+// Task 12 (W-6): the PRINT vendor print_layout admin write body. The target
+// vndr is the route param, never here; layout is the only field and is
+// validated against the closed enum in the domain function (OpsClientError
+// on anything else).
+interface VendorPrintLayoutSetBody {
+  layout: string
 }
 // Phase 3 Task 7 (BRD Annexure D): the Bank Master create body. bankReferenceCode
 // (the immutable ingest resolver key) is set ONCE here at create time and is a
@@ -1024,6 +1032,33 @@ export class OpsController {
       ...(body.programWire !== undefined ? { programWire: body.programWire } : {}),
       minLotSize: body.minLotSize,
       maxWaitSeconds: body.maxWaitSeconds,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // Task 12 (W-6): the PRINT vendor print_layout admin write. Same
+  // gate/idempotency/co-committed-6e posture as batching-config above; NOT
+  // step-up-gated (not in OPS_STEP_UP_CATALOG). 'ops:vendor-print-layout-set'
+  // is granted ONLY to the admin / super_admin roles (ops-config.ts's
+  // ADMIN_TIER_PERMISSIONS), so a baseline `ops` operator is DENIED here by
+  // the D2 authorize in the gate, same differentiation as batching-config.
+  // The target vndr is the route PATH param (never the body, M7/S16); a
+  // missing vendor or a non-PRINT target throws OpsClientError('invalid'),
+  // which the app-wide OpsErrorFilter maps to a 400.
+  @Post('vendors/:vndrId/print-layout')
+  @HttpCode(200)
+  async setVendorPrintLayoutRoute(
+    @Req() req: EdgeRequest,
+    @Param('vndrId') vndrId: string,
+    @Body() body: VendorPrintLayoutSetBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean }> {
+    const g = await this.gate(req, 'ops:vendor-print-layout-set', idem, [vndrId])
+    return setVendorPrintLayout(this.deps.fulfillmentDb, {
+      vndrId,
+      layout: body.layout,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

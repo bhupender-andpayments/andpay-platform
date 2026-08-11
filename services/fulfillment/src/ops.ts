@@ -1502,3 +1502,82 @@ export async function upsertBatchingConfig(
 
   return { deduped: !ran, id: ran ? id : null }
 }
+
+// Task 12 (W-6): the PRINT vendor's print_layout admin write, mirroring
+// upsertBatchingConfig above line by line. print_layout is PLATFORM-ONLY
+// state on vndr (no program scope), so this enters the write role BARE
+// (enterWriteRole), exactly like the batching-config write and every other
+// vndr ops mutation in this file.
+export interface SetVendorPrintLayoutInput {
+  vndrId: string
+  layout: string
+  clientKey: string
+  actorId: string
+  traceId: string
+}
+
+/**
+ * Sets the press layout a PRINT vendor's artifacts assemble under
+ * (ONE_PER_PAGE or GRID_3X2, a later task reads this column at PDF assembly
+ * time). Addressed by the WIRE vndrId, decoded to its uuid form here (same
+ * idiom as suspendVendor / editVendorOps).
+ *
+ * VALIDATION: layout must be one of the two closed enum values, checked
+ * BEFORE any transaction opens, so an invalid request never burns a
+ * clientKey (same posture as upsertBatchingConfig's min/max checks). The
+ * target vendor is then resolved INSIDE the onceWithin effect; a missing
+ * vendor or a non-PRINT vendor throws OpsClientError('invalid', ...) there,
+ * which rolls back the whole transaction (including the E6 inbox insert), so
+ * a rejected attempt never burns the clientKey either.
+ *
+ * AUDIT: the co-committed ALLOW 6e carries the vndr wire id and the OLD and
+ * NEW layout as one enum-token string (S7/S10.5 IDs-and-enums only, the same
+ * technique upsertBatchingConfig uses for its old/new tokens). No PII, no
+ * free text.
+ */
+export async function setVendorPrintLayout(
+  db: FulfillmentDb,
+  args: SetVendorPrintLayoutInput,
+): Promise<{ deduped: boolean }> {
+  if (args.layout !== 'ONE_PER_PAGE' && args.layout !== 'GRID_3X2') {
+    throw new OpsClientError('invalid', 'layout must be ONE_PER_PAGE or GRID_3X2')
+  }
+
+  const vndrUuid = toUuid(args.vndrId)
+
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:vendor-print-layout-set'), async () => {
+      // Resolve the target vendor and reject a missing or non-PRINT row
+      // (BOTH map to OpsClientError('invalid'), not 'not-found': layout is
+      // meaningful for PRINT vendors only, so a non-PRINT target is as much a
+      // caller-input error as a bad layout string).
+      const found = await tx.$queryRaw<{ type: string; print_layout: string }[]>`
+        SELECT type, print_layout FROM vndr WHERE id = ${vndrUuid}::uuid
+      `
+      if (found.length === 0 || found[0]!.type !== 'PRINT') {
+        throw new OpsClientError('invalid', 'target vendor must be an existing PRINT vendor')
+      }
+      const priorLayout = found[0]!.print_layout
+
+      await tx.$executeRaw`
+        UPDATE vndr SET print_layout = ${args.layout}, updated_at = now() WHERE id = ${vndrUuid}::uuid
+      `
+
+      // Co-commit the ALLOW 6e (S15/T2 ruling) in the SAME tx as the write.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:vendor-print-layout-set',
+            principalId: args.actorId,
+            resourceIds: [args.vndrId, `print-layout:old=${priorLayout}:new=${args.layout}`],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return { deduped: !ran }
+}
