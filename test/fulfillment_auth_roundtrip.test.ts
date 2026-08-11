@@ -684,8 +684,13 @@ describe('check 5: single-handle structural guarantee (projectDemandFact/trigger
 
 describe('check 8: E4 trace propagates end to end from the demand fact to the batch fact', () => {
   function demandPayload(tenantWire: string, programWire: string): AssignmentFactView {
+    // Task 9 (W-5): lot size counts DISTINCT source_event_id, so each
+    // simulated demand fact must be its own merchant request. A shared
+    // literal here collapsed every seeded row into ONE request and the
+    // LOT_SIZE trigger never fired.
+    const asgnId = fromUuid('asgn', toUuid(newId('asgn')))
     return {
-      asgnId: fromUuid('asgn', toUuid(newId('asgn'))),
+      asgnId,
       mrchId: fromUuid('mrch', toUuid(newId('mrch'))),
       progId: programWire,
       tnntId: tenantWire,
@@ -702,7 +707,7 @@ describe('check 8: E4 trace propagates end to end from the demand fact to the ba
       stickerCount: 2,
       billable: true,
       demandState: 'pooled-for-fulfillment',
-      sourceEventId: 'file-e2e|1',
+      sourceEventId: `file-e2e|${asgnId}`,
     }
   }
   function demandEnv(payload: AssignmentFactView, dedupKey: string, traceId: string): Envelope<AssignmentFactView> {
