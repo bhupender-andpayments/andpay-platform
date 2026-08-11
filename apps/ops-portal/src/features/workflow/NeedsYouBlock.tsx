@@ -5,6 +5,20 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { getIntakeExceptions, getQuarantine, getStatusExceptions } from '../../api/endpoints.js'
 import { fmtNumber } from '../../ui/format.js'
 
+interface NeedsYouCounts {
+  quarantine: number
+  intake: number
+  status: number
+}
+
+// A body that is not a list counts as nothing rather than throwing on `.length` and
+// taking the region down with it. The typed edge and the `.catch()` below already
+// make this close to unreachable; it is two words of insurance on a read whose
+// failure must not cost the operator the stage they were looking at.
+function countOf(rows: unknown): number {
+  return Array.isArray(rows) ? rows.length : 0
+}
+
 // What needs a human, sitting beside the workspace rail.
 //
 // LABELLED PORTAL-WIDE, NEVER AS ONE BATCH'S ERRORS, and that is the only honest
@@ -24,18 +38,6 @@ import { fmtNumber } from '../../ui/format.js'
 // well would put a broken-looking screen in front of an operator whose actual work
 // is fine. The queues page is where these rows are worked, and it reports its own
 // failures.
-interface NeedsYouCounts {
-  quarantine: number
-  intake: number
-  status: number
-}
-
-// A read that fails or answers with something that is not a list contributes no
-// count, rather than a zero that would claim the queue is empty.
-function countOf(rows: unknown): number {
-  return Array.isArray(rows) ? rows.length : 0
-}
-
 export function NeedsYouBlock() {
   const { client } = useAuth()
   const [counts, setCounts] = useState<NeedsYouCounts | null>(null)

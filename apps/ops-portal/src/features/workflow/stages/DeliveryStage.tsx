@@ -47,19 +47,15 @@ function Tile({ label, value, border }: { label: ReactNode; value: number; borde
 
 export function DeliveryStage({
   derived,
-  batchDetail,
-  btchId,
-  onChanged,
+  batchDetail: _batchDetail,
+  btchId: _btchId,
+  onChanged: _onChanged,
 }: {
   derived: DerivedWorkflow
   batchDetail: BatchDetailView | null
   btchId: string
   onChanged: () => void
 }) {
-  void batchDetail
-  void btchId
-  void onChanged
-
   const courier = derived.facts.courier
 
   return (

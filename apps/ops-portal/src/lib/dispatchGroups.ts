@@ -23,6 +23,27 @@ export const COLLATERAL_GROUP_LABELS: Record<string, string> = {
 }
 
 /**
+ * The BOUND print vendor's press layout, named so an operator can tell what shape a
+ * PDF download will be without knowing the vendor's own setting. Read at ASSEMBLY
+ * time by assembleGroupPdf (package.ts), never at composition time, so the line is
+ * accurate up to the moment of download, including a layout change made after the
+ * page loaded.
+ *
+ * Shared for the same reason as the labels above: the batch detail page's Downloads
+ * card and the workflow Print stage both name it, and two copies of one ternary is
+ * one copy too many.
+ */
+export function printLayoutLabel(printLayout: string | null | undefined): string {
+  return printLayout === 'GRID_3X2' ? '3x2 grid' : 'one per page'
+}
+
+/**
+ * What both surfaces say when a batch has no composed collateral. One string, so the
+ * two cannot drift into saying it two different ways.
+ */
+export const NO_COLLATERAL_COMPOSED = 'No collateral has been composed for this batch yet.'
+
+/**
  * Which delivery groups have a composed collateral PDF. Gates on ARTIFACT
  * presence, because the PDF is assembled from the artifacts and a group with no
  * artifact has no PDF to hand over.

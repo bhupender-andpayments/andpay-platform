@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, act, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -12,6 +12,7 @@ import { DeliveryStage } from '../../src/features/workflow/stages/DeliveryStage.
 import { ActivationStage } from '../../src/features/workflow/stages/ActivationStage.js'
 import { NeedsYouBlock } from '../../src/features/workflow/NeedsYouBlock.js'
 import { deriveWorkflow, type WorkflowSnapshot } from '../../src/features/workflow/workflowStage.js'
+import { fmtDateTime } from '../../src/ui/format.js'
 
 // The stage bodies. What these pin hardest is the three claims the original
 // mockup made that the system cannot back: a mark-as-sent button (dispatch_state
@@ -76,6 +77,26 @@ describe('BatchStage', () => {
     expect(await screen.findByText(/ready to batch/i)).toBeTruthy()
     expect(screen.getByText(/forms on its own/i)).toBeTruthy()
   })
+
+  it('summarises a formed batch, and omits the reason line when no human fired it', () => {
+    wrap(
+      <BatchStage
+        derived={deriveWorkflow(snapshot())}
+        batchDetail={BATCH_DETAIL}
+        btchId="btch_1"
+        onChanged={() => {}}
+      />,
+    )
+    expect(screen.getByText('btch_1')).toBeTruthy()
+    // The records tile is labelled records, never units or devices: no device is
+    // attached to a batch until the print vendor's return sheet binds one.
+    expect(screen.getByText(/records/i)).toBeTruthy()
+    expect(screen.getByText('Lot Size')).toBeTruthy()
+    // triggerNote is null for LOT_SIZE and MAX_WAIT, because nothing human fired
+    // them. A "Reason: none" line on every automatic batch would be noise
+    // pretending to be a record.
+    expect(screen.queryByText(/reason given/i)).toBeNull()
+  })
 })
 
 describe('GenerateStage', () => {
@@ -83,11 +104,15 @@ describe('GenerateStage', () => {
   afterEach(() => { cleanup() })
 
   it('shows an indeterminate wait with an elapsed count and NO percentage', () => {
-    wrap(<GenerateStage derived={deriveWorkflow(snapshot({ elapsedMsInStage: 6000 }))} batchDetail={BATCH_DETAIL} btchId="btch_1" onChanged={() => {}} />)
+    const { container } = wrap(<GenerateStage derived={deriveWorkflow(snapshot({ elapsedMsInStage: 6000 }))} batchDetail={BATCH_DETAIL} btchId="btch_1" onChanged={() => {}} />)
     expect(screen.getByText(/you do not need to do anything/i)).toBeTruthy()
     expect(screen.getByText(/6s/)).toBeTruthy()
     // Composition is atomic. A percentage would be a number the system does not have.
     expect(screen.queryByText(/%/)).toBeNull()
+    // AND NO FRACTION EITHER. Compose and dispatch run in one db.$transaction, so
+    // either every artifact exists or none does. An N of M is exactly as false as a
+    // percentage, and only banning the percent sign would let one in.
+    expect(container.textContent).not.toMatch(/\d+\s*(of|\/)\s*\d+/)
   })
 
   it('flips to the REAL artifact counts once they land, grouped by type', () => {
@@ -119,14 +144,42 @@ describe('PrintStage', () => {
   ] }
 
   // The three claims the original mockup made that the system cannot back.
-  it('offers NO mark-as-sent button, because SENT_TO_VENDOR is set automatically', () => {
+  //
+  // Pinned as a SET rather than as phrase greps. `/mark as sent/i` would happily
+  // pass a future button labelled "Send to vendor", and the absence of that button
+  // is the whole point of the stage: dispatch_state advances to SENT_TO_VENDOR at
+  // the end of the composition transaction, and no handoff write exists anywhere to
+  // back a control. Asserting the complete control set fails on ANY button added for
+  // ANY reason, which is what durable means here.
+  it('renders EXACTLY the two download buttons and no other control', () => {
     wrap(<PrintStage derived={deriveWorkflow(snapshot({ batchDetail: detail }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
-    expect(screen.queryByRole('button', { name: /mark as sent/i })).toBeNull()
+    expect(screen.getAllByRole('button').map((b) => b.textContent?.trim())).toEqual([
+      'Soundbox Excel',
+      'Soundbox PDF',
+    ])
   })
 
   it('never claims the vendor downloaded anything, because nothing records that', () => {
-    wrap(<PrintStage derived={deriveWorkflow(snapshot({ batchDetail: detail }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
+    const { container } = wrap(<PrintStage derived={deriveWorkflow(snapshot({ batchDetail: detail }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
     expect(screen.queryByText(/package downloaded/i)).toBeNull()
+    // The vendor pulls under their own credential through a stateless route, and the
+    // only trace is a 6e record in the auth context that ops-edge may not read. So no
+    // wording anywhere may put the vendor in the past tense.
+    expect(container.textContent).not.toMatch(/pulled|downloaded|collected|picked up by/i)
+  })
+
+  // The ruling with the most reasoning behind it, and it had no test.
+  // dispatch_row.sent_to_vendor_at exists but BatchJourneyView does not select it, so
+  // this stage has no honest instant to show. batch.createdAt is when the batch FORMED,
+  // earlier and different; batch.updatedAt moves for unrelated reasons. Substituting
+  // either would put a plausible wrong time on screen.
+  it('shows NO availability timestamp, because no read here carries one', () => {
+    const { container } = wrap(<PrintStage derived={deriveWorkflow(snapshot({ batchDetail: detail }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
+    // Nothing date-shaped at all, in any format fmtDateTime or fmtDate can produce.
+    expect(container.textContent).not.toMatch(/\d{1,2} [A-Z][a-z]{2}/)
+    // And specifically not the batch's own createdAt, so a future substitution of it
+    // fails loudly here rather than shipping as a plausible wrong time.
+    expect(container.textContent).not.toContain(fmtDateTime(BATCH_DETAIL.batch.createdAt))
   })
 
   it('says the vendor can pull it now, and that the downloads are for checking', () => {
@@ -225,9 +278,18 @@ describe('ActivationStage', () => {
     await vi.waitFor(() => { expect(calls.some((u) => u.includes('/ops/assignments/activate'))).toBe(true) })
   })
 
+  // A set assertion for the same reason as PrintStage's: `/mark all/i` alone would
+  // pass a future button labelled "Activate batch" or "Mark remaining". The rule is
+  // that the ONLY controls here are one per row, because markActivated marks exactly
+  // one dispatch and a client-side loop failing halfway leaves an ambiguous half-done
+  // state nobody can read back.
   it('offers NO bulk mark-all, because no bulk write exists', () => {
     wrap(<ActivationStage derived={deriveWorkflow(snapshot({ batchDetail: detail, journey }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
     expect(screen.queryByRole('button', { name: /mark all/i })).toBeNull()
+    expect(screen.getAllByRole('button').map((b) => b.textContent?.trim())).toEqual([
+      'Mark activated',
+      'Mark activated',
+    ])
   })
 
   it('renders SIM activation as not available yet, and never as zero', () => {
@@ -248,9 +310,32 @@ describe('NeedsYouBlock', () => {
     expect(await screen.findByText(/across the portal/i)).toBeTruthy()
   })
 
+  // ASSERT ON THE SETTLED RENDER, NOT ON THE FIRST TICK. This is the only guard on the
+  // no-permanent-zero-card rule, and it took two goes to make it able to fail.
+  //
+  // Draft 1 wrapped the assertion in vi.waitFor, which resolved on attempt one:
+  // `counts === null` renders null before any response is applied, so "no Needs you
+  // text" was already true. Draft 2 waited for three fetch calls first, which was
+  // still not enough: the call count hits three inside the promise chain, one await
+  // BEFORE React has re-rendered with the resolved state, so an implementation that
+  // rendered "Needs you / 0 / 0 / 0" still passed. Confirmed by mutation: deleting the
+  // `total === 0` guard from the component left both drafts green.
+  //
+  // So: testing-library's waitFor (which flushes React work through act, unlike
+  // vi.waitFor) for the fetch count, then an explicit act flush for the state update
+  // those fetches queue. The mutation fails after this, which is the only evidence
+  // worth having.
   it('renders nothing at all when there is nothing to act on', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([])))
+    const fetchMock = vi.fn(async () => jsonResponse([]))
+    vi.stubGlobal('fetch', fetchMock)
     const { container } = wrap(<NeedsYouBlock />)
-    await vi.waitFor(() => { expect(container.textContent).not.toMatch(/needs you/i) })
+    await waitFor(() => { expect(fetchMock).toHaveBeenCalledTimes(3) })
+    await act(async () => { await Promise.resolve() })
+    expect(container.textContent).not.toMatch(/needs you/i)
+    // And no bare zero smuggled in under some other heading.
+    expect(container.textContent).not.toMatch(/\b0\b/)
+    // The card genuinely renders when there IS something, which the sibling test
+    // proves, so this is an empty-state assertion and not a never-renders one.
+    expect(container.textContent).toBe('')
   })
 })

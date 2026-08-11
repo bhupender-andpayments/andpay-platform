@@ -30,8 +30,8 @@ type AwaitingRow = BatchJourneyView['awaitingActivation'][number]
 
 export function ActivationStage({
   derived,
-  batchDetail,
-  btchId,
+  batchDetail: _batchDetail,
+  btchId: _btchId,
   onChanged,
 }: {
   derived: DerivedWorkflow
@@ -39,9 +39,6 @@ export function ActivationStage({
   btchId: string
   onChanged: () => void
 }) {
-  void batchDetail
-  void btchId
-
   const { client } = useAuth()
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)

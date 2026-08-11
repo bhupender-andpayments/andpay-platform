@@ -19,6 +19,7 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   DELIVERED: { variant: 'positive', label: 'Delivered' },
   ACTIVATED: { variant: 'positive', label: 'Activated' },
   // courier
+  PICKED_UP: { variant: 'info', label: 'Picked up' },
   IN_TRANSIT: { variant: 'info', label: 'In transit' },
   OUT_FOR_DELIVERY: { variant: 'info', label: 'Out for delivery' },
   RTO: { variant: 'negative', label: 'RTO' },

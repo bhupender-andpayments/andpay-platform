@@ -25,9 +25,9 @@ import type { BatchDetailView } from '../../../api/endpoints.js'
 // The workspace passes null there in pool mode, and a non-null detail is the only
 // thing that can make this stage's batch summary true.
 export function BatchStage({
-  derived,
+  derived: _derived,
   batchDetail,
-  btchId,
+  btchId: _btchId,
   onChanged,
 }: {
   derived: DerivedWorkflow
@@ -35,9 +35,6 @@ export function BatchStage({
   btchId: string
   onChanged: () => void
 }) {
-  void derived
-  void btchId
-
   if (batchDetail === null) {
     return (
       <div className="space-y-4">

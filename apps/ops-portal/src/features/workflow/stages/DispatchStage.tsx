@@ -18,19 +18,15 @@ import type { BatchDetailView } from '../../../api/endpoints.js'
 // nothing has been asked.
 export function DispatchStage({
   derived,
-  batchDetail,
-  btchId,
-  onChanged,
+  batchDetail: _batchDetail,
+  btchId: _btchId,
+  onChanged: _onChanged,
 }: {
   derived: DerivedWorkflow
   batchDetail: BatchDetailView | null
   btchId: string
   onChanged: () => void
 }) {
-  void batchDetail
-  void btchId
-  void onChanged
-
   const counts = derived.facts.counts
 
   return (

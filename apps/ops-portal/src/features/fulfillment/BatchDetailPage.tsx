@@ -11,7 +11,13 @@ import {
   type BatchEntryRow,
 } from '../../api/endpoints.js'
 import { saveBlob } from '../../lib/saveBlob.js'
-import { COLLATERAL_GROUP_LABELS, collateralGroupsFor, excelGroupsFor } from '../../lib/dispatchGroups.js'
+import {
+  COLLATERAL_GROUP_LABELS,
+  NO_COLLATERAL_COMPOSED,
+  collateralGroupsFor,
+  excelGroupsFor,
+  printLayoutLabel,
+} from '../../lib/dispatchGroups.js'
 import { RecomposeForm } from '../operations/RecomposeForm.js'
 import {
   PageHeader,
@@ -314,14 +320,12 @@ export function BatchDetailPage() {
               title="Downloads"
               subtitle="The dispatch sheet carries the ship-to view; the list below deliberately does not."
             />
-            {/* W-6 (Task 14): the BOUND print vendor's press layout, named so
-                an operator can tell what shape a PDF download will actually be
-                without knowing the vendor's own setting. Read at ASSEMBLY
-                time by assembleGroupPdf (package.ts), never at composition
-                time, so this line is accurate up to the moment of download,
-                including a layout change made after this page loaded. */}
+            {/* W-6 (Task 14): the BOUND print vendor's press layout. The label and
+                the reason it is accurate up to the moment of download both live in
+                lib/dispatchGroups.ts printLayoutLabel, which the workflow Print
+                stage names too. */}
             <div className="px-4 pt-3 text-xs text-muted-foreground">
-              Layout: {detail.printLayout === 'GRID_3X2' ? '3x2 grid' : 'one per page'}
+              Layout: {printLayoutLabel(detail.printLayout)}
             </div>
             <div className="flex flex-wrap gap-3 p-4">
               {excelGroups.map((g) => (
@@ -335,7 +339,7 @@ export function BatchDetailPage() {
                 </Button>
               ))}
               {availableGroups.length === 0 ? (
-                <InfoNote>No collateral has been composed for this batch yet.</InfoNote>
+                <InfoNote>{NO_COLLATERAL_COMPOSED}</InfoNote>
               ) : null}
             </div>
             {downloadError !== null ? <ErrorNote>{downloadError}</ErrorNote> : null}

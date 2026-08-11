@@ -3,8 +3,14 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { downloadCollateral, downloadDispatchExcel, type BatchDetailView } from '../../../api/endpoints.js'
 import { saveBlob } from '../../../lib/saveBlob.js'
-import { COLLATERAL_GROUP_LABELS, collateralGroupsFor, excelGroupsFor } from '../../../lib/dispatchGroups.js'
-import { ErrorNote, InfoNote, StatusPill } from '../../../ui/primitives.js'
+import {
+  COLLATERAL_GROUP_LABELS,
+  NO_COLLATERAL_COMPOSED,
+  collateralGroupsFor,
+  excelGroupsFor,
+  printLayoutLabel,
+} from '../../../lib/dispatchGroups.js'
+import { ErrorNote, InfoNote } from '../../../ui/primitives.js'
 import { fmtNumber } from '../../../ui/format.js'
 import type { DerivedWorkflow } from '../workflowStage.js'
 
@@ -37,15 +43,13 @@ export function PrintStage({
   derived,
   batchDetail,
   btchId,
-  onChanged,
+  onChanged: _onChanged,
 }: {
   derived: DerivedWorkflow
   batchDetail: BatchDetailView | null
   btchId: string
   onChanged: () => void
 }) {
-  void onChanged
-
   const [downloading, setDownloading] = useState(false)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [downloadNote, setDownloadNote] = useState<string | null>(null)
@@ -93,10 +97,16 @@ export function PrintStage({
   const entries = batchDetail?.entries ?? []
   const excelGroups = excelGroupsFor(entries)
   const collateralGroups = collateralGroupsFor(batchDetail?.artifacts ?? [])
-  const layout = batchDetail?.printLayout === 'GRID_3X2' ? '3x2 grid' : 'one per page'
-  // What the batch read itself says about the handoff: the records composition has
-  // already moved to SENT_TO_VENDOR. A count of rows, not a claim about the vendor.
+  // What the batch read itself says about the handoff: how many rows composition has
+  // already moved to SENT_TO_VENDOR. A COUNT OF ROWS, read from the entries, never a
+  // state asserted about the batch. An earlier draft rendered a
+  // `<StatusPill value="SENT_TO_VENDOR" />` with the value written as a literal,
+  // which would have read "Sent to vendor" beside rows still sitting at
+  // QR_GENERATED: a status the screen claimed rather than one it had read, which is
+  // the exact defect class this workspace exists to remove. The words are folded
+  // into the sentence instead, where the count next to them is what makes them true.
   const sentToVendor = entries.filter((e) => e.dispatchState === 'SENT_TO_VENDOR').length
+  const recordWord = entries.length === 1 ? 'record' : 'records'
   const returned = derived.facts.counts?.dispatched ?? null
 
   return (
@@ -122,13 +132,10 @@ export function PrintStage({
             The print vendor can pull it now, under their own credential. Nothing records when they do, so this stage
             cannot tell you whether they have.
           </p>
-          <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-            <StatusPill value="SENT_TO_VENDOR" />
-            <span>
-              {fmtNumber(sentToVendor)} of {fmtNumber(entries.length)} records in the package
-            </span>
-          </div>
-          <p className="text-xs text-muted-foreground">Layout: {layout}</p>
+          <p className="text-sm text-muted-foreground">
+            {`Marked sent to vendor: ${fmtNumber(sentToVendor)} of ${fmtNumber(entries.length)} ${recordWord} in the package.`}
+          </p>
+          <p className="text-xs text-muted-foreground">Layout: {printLayoutLabel(batchDetail?.printLayout)}</p>
         </CardContent>
       </Card>
 
@@ -153,9 +160,7 @@ export function PrintStage({
               </Button>
             ))}
           </div>
-          {collateralGroups.length === 0 ? (
-            <InfoNote>No collateral has been composed for this batch yet.</InfoNote>
-          ) : null}
+          {collateralGroups.length === 0 ? <InfoNote>{NO_COLLATERAL_COMPOSED}</InfoNote> : null}
           {downloadError !== null ? <ErrorNote>{downloadError}</ErrorNote> : null}
           {downloadNote !== null ? <InfoNote>{downloadNote}</InfoNote> : null}
         </CardContent>

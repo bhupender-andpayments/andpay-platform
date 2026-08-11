@@ -52,21 +52,22 @@ function countByType(artifacts: BatchDetailView['artifacts']): { type: string; l
 export function GenerateStage({
   derived,
   batchDetail,
-  btchId,
-  onChanged,
+  btchId: _btchId,
+  onChanged: _onChanged,
 }: {
   derived: DerivedWorkflow
   batchDetail: BatchDetailView | null
   btchId: string
   onChanged: () => void
 }) {
-  void btchId
-  void onChanged
-
-  const { artifactCount, generateStalled, elapsedMsInStage } = derived.facts
+  const { generateStalled, elapsedMsInStage } = derived.facts
   // Seconds, rounded, and formatted through the same helper every other count on
   // the portal uses. Assembled into ONE string so it renders as one text node.
   const elapsedLabel = `${fmtNumber(Math.round(elapsedMsInStage / 1000))}s`
+  // Branch on the SAME value the grid renders from, not on derived.facts.artifactCount.
+  // The two are the same number in practice, both being batchDetail.artifacts, but
+  // branching on one and rendering from the other means a mismatched pair would show
+  // an empty grid where the waiting state belonged.
   const groups = countByType(batchDetail?.artifacts ?? [])
 
   return (
@@ -79,7 +80,7 @@ export function GenerateStage({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {artifactCount === 0 ? (
+        {groups.length === 0 ? (
           <>
             {/* An INDETERMINATE track: it pulses, it has no width, and there is
                 no percentage anywhere near it. See the header. */}
