@@ -45,6 +45,13 @@ export const IconOperations = (p: P) => (
 export const IconFulfillment = (p: P) => (
   <svg {...base(p)}><path d="M21 8.5 12 13 3 8.5 12 4l9 4.5Z" /><path d="M3 8.5v7L12 20l9-4.5v-7" /><path d="M12 13v7" /></svg>
 )
+// The 2026-08-11 workspace. Two nodes and the elbow between them: the lifecycle
+// rail is a thing that HANDS OFF, and a hand-off is what an operator recognises.
+// Same visual language as the rest: 1.6 stroke, round caps, currentColor, drawn
+// inside the shared 24 viewBox.
+export const IconWorkflow = (p: P) => (
+  <svg {...base(p)}><rect x="3" y="4" width="8" height="5" rx="1.5" /><rect x="13" y="15" width="8" height="5" rx="1.5" /><path d="M7 9v5.5a3 3 0 0 0 3 3h3" /></svg>
+)
 export const IconChevron = (p: P) => (
   <svg {...base(p)}><path d="m9 6 6 6-6 6" /></svg>
 )

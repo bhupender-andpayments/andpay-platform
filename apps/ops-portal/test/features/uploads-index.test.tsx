@@ -81,11 +81,25 @@ describe('Uploads: each upload keeps its own linkable route', () => {
   // The bank flow now lives in the workflow workspace, so this url is a
   // redirect. It must not 404 and must not land on the uploads index: a
   // bookmark or a runbook link has to arrive somewhere true.
-  // unskipped in T7, which mounts /workflow
-  it.skip('redirects /uploads/bank into the workflow workspace', async () => {
-    renderAt('/uploads/bank')
+  //
+  // The workspace route is a SENTINEL here, not the real WorkflowPage. What is
+  // under test is the redirect TARGET, and mounting the real page would drag its
+  // four mount-time reads into a suite that stubs no network at all, so a
+  // failure would stop being about upload routing. The real page rendering at
+  // /workflow is pinned in routes.test.tsx and portal-smoke.test.tsx.
+  it('redirects /uploads/bank into the workflow workspace', async () => {
+    render(
+      <MemoryRouter initialEntries={['/uploads/bank']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/uploads/*" element={<UploadsPage />} />
+            <Route path="/workflow" element={<div>workflow workspace</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    )
     expect(screen.queryByText(/bank request upload/i)).toBeNull()
-    expect(await screen.findByText(/workflow/i)).toBeTruthy()
+    expect(await screen.findByText(/workflow workspace/i)).toBeTruthy()
   })
   it('deep-links the damage upload', async () => {
     renderAt('/uploads/damage')

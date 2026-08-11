@@ -8,6 +8,7 @@ import { ReportPage } from './features/dashboards/ReportPage.js'
 import { QueuesPage } from './features/queues/QueuesPage.js'
 import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
 import { UploadsPage } from './features/uploads/UploadsPage.js'
+import { WorkflowPage } from './features/workflow/WorkflowPage.js'
 import { DispatchesPage } from './features/dispatches/DispatchesPage.js'
 import { InventoryPage } from './features/inventory/InventoryPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
@@ -24,7 +25,12 @@ import { BatchDetailPage } from './features/fulfillment/BatchDetailPage.js'
 // decision: both only steer navigation over a display-only principal.
 function LoginRoute() {
   const { principal } = useAuth()
-  if (principal !== null) return <Navigate to="/command-center" replace />
+  // The post-login destination, and ONE OF THREE definitions of where an operator
+  // lands. The other two are the `/` redirect and the `*` catch-all at the bottom
+  // of this file. None of the three was tested, so they were free to be changed
+  // one at a time and disagree in silence; all three now name the workspace and
+  // all three are pinned in test/routes.test.tsx.
+  if (principal !== null) return <Navigate to="/workflow" replace />
   return <LoginPage />
 }
 
@@ -53,13 +59,21 @@ export function AppRoutes() {
               its own list rather than an unrelated sibling. That is what fixed
               the breadcrumb reading "Ops Console" on a batch detail page. */}
           <Route path="/command-center" element={<TilesPage />} />
+          {/* The 2026-08-11 workspace, and the portal's front door. Registered as
+              a splat because the feature owns its own two-mode router: /workflow
+              is the pool (live work) and /workflow/:btchId follows one batch.
+              Placed here so route order mirrors sidebar order. */}
+          <Route path="/workflow/*" element={<WorkflowPage />} />
           <Route path="/batches" element={<FulfillmentPage />} />
           <Route path="/batches/:btchId" element={<BatchDetailPage />} />
           <Route path="/activation" element={<ActivationPage />} />
           {/* Redesign step 7: the entity the object-first nav was missing. */}
           <Route path="/merchants" element={<MerchantsPage />} />
-          {/* Step 4: uploads are three linkable routes behind an index of
-              cards, so `/uploads/*` is delegated to the feature. */}
+          {/* Step 4: uploads are linkable routes behind an index of cards, so
+              `/uploads/*` is delegated to the feature. TWO of them now, not
+              three: the 2026-08-11 ruling moved the bank upload into the
+              workspace as its first two stages, and /uploads/bank redirects
+              there. */}
           <Route path="/uploads/*" element={<UploadsPage />} />
           {/* Section 4: Operations dissolved. Its two remaining verbs, status
               correction and terminal override, are now actions on the dispatch
@@ -80,8 +94,13 @@ export function AppRoutes() {
           <Route path="/fulfillment" element={<Navigate to="/batches" replace />} />
           <Route path="/operations" element={<Navigate to="/dispatches" replace />} />
 
-          <Route path="/" element={<Navigate to="/command-center" replace />} />
-          <Route path="*" element={<Navigate to="/command-center" replace />} />
+          {/* WHERE AN OPERATOR LANDS, two of the three definitions of it (the
+              third is LoginRoute above). The workspace, not Command Center: the
+              tiles say how much is happening, and the workspace is the work.
+              /dashboards above still redirects to /command-center, whose tiles
+              stay exactly where they are (FR-09 keeps them). */}
+          <Route path="/" element={<Navigate to="/workflow" replace />} />
+          <Route path="*" element={<Navigate to="/workflow" replace />} />
         </Route>
       </Route>
     </Routes>

@@ -35,7 +35,7 @@ describe('design-system foundation (Task 1)', () => {
       </MemoryRouter>,
     )
     const nav = screen.getByRole('navigation', { name: /main/i })
-    for (const label of ['Command Center', 'Reports', 'Queues', 'Master Data', 'Uploads', 'Batches']) {
+    for (const label of ['Workflow', 'Command Center', 'Reports', 'Queues', 'Master Data', 'Uploads', 'Batches']) {
       expect(within(nav).getByText(label)).toBeTruthy()
     }
     expect(screen.getByText('page content')).toBeTruthy()

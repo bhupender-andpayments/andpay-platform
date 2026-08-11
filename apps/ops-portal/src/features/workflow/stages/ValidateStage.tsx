@@ -22,25 +22,17 @@ export function ValidateStage({ preview, committing, commitResult, error, onComm
   const rows = preview.rows
   const columns = rows.length > 0 ? Object.keys(rows[0]!.row) : []
 
-  // A structural (whole-file) rejection ingests nothing: no summary line, no
-  // table, no commit button, just the reasons. Mirrors BankUploadPage's old
-  // step === 'upload' structural-error branch, which never coexisted with the
-  // review table for the same reason.
-  if (preview.structuralErrors.length > 0) {
-    return (
-      <div className="space-y-4">
-        {error !== null && <ErrorNote>{error}</ErrorNote>}
-        <ErrorNote>
-          <ul className="space-y-1">
-            {preview.structuralErrors.map((se) => (
-              <li key={se.code}>{se.message}</li>
-            ))}
-          </ul>
-        </ErrorNote>
-      </div>
-    )
-  }
-
+  // NO STRUCTURAL-ERROR BRANCH HERE, and its absence is deliberate. A whole-file
+  // rejection never reaches this stage: WorkflowPage's `hasPreview` carries
+  // previewOk semantics (a preview with no structural errors), so the derivation
+  // keeps a structurally rejected file on Upload, where the reasons render beside
+  // the drop zone and a different file can be picked without navigating. That is
+  // the only arrangement where the operator can act on them, because a structural
+  // rejection ingests nothing and the answer is always to fix the file.
+  //
+  // A branch here would have been unreachable code carrying an unreachable
+  // promise, so it was deleted along with the test that asserted it rather than
+  // left behind to look like a second, contradictory answer.
   return (
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}

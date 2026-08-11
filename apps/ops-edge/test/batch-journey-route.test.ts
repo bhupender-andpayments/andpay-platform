@@ -19,7 +19,10 @@ const fulfillmentDb = new FulfillmentClient()
 const identityDb = new IdentityClient()
 
 let app: INestApplication
-let privateKey: CryptoKey
+// Inferred from generateKeyPair, the way all six sibling ops-edge http suites
+// declare it. A bare `CryptoKey` is a DOM global that the root tsconfig's lib
+// does not carry, so it failed `pnpm typecheck` (and therefore CI) outright.
+let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
 const BATCH = `btch_${randomUUID().replace(/-/g, '')}`
 
 async function mint(overrides: Record<string, unknown> = {}): Promise<string> {

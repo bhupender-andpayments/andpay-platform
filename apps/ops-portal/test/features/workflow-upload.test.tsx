@@ -95,14 +95,13 @@ describe('workflow stage 2: Validate', () => {
     expect(screen.getByText(/accepted/i)).toBeTruthy()
   })
 
-  it('renders whole-file structural errors and no table at all', () => {
-    wrap(
-      <ValidateStage
-        preview={{ rows: [], summary: { total: 0, valid: 0, invalid: 0 }, structuralErrors: [{ code: 'missing_required_column', message: 'Missing column: Mobile' }] }}
-        committing={false} commitResult={null} error={null} onCommit={() => {}}
-      />,
-    )
-    expect(screen.getByRole('alert').textContent).toMatch(/missing column/i)
-    expect(screen.queryByRole('table')).toBeNull()
-  })
+  // The whole-file structural branch that used to be asserted here is GONE, and
+  // so is the branch it asserted. WorkflowPage sets `hasPreview` from previewOk
+  // semantics (a preview with no structural errors), so a structurally rejected
+  // file never advances to Validate at all: it stays on Upload with the reasons
+  // rendered beside the picker, which is the only arrangement where the operator
+  // can act on them. That means ValidateStage could never receive a preview
+  // carrying structural errors, and a test over a branch that cannot execute
+  // proves nothing. The behaviour is pinned where it now lives, in
+  // workflow-page.test.tsx ("keeps a structurally rejected file on Upload").
 })

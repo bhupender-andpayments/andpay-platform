@@ -127,7 +127,7 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 10 real sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 11 real sections, no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
@@ -141,8 +141,11 @@ describe('ops-portal app shell + navigation', () => {
     // (ruling 1b) is that read. Compared as a SET, because the sidebar groups
     // these links under headings, so document order is a presentation choice
     // while "which sections exist" is the invariant worth guarding.
+    //
+    // The 2026-08-11 ruling ADDS Workflow, the lifecycle workspace, which leads
+    // the Pipeline group in the sidebar and sorts last here.
     expect([...names].sort()).toEqual(
-      ['Activation', 'Batches', 'Command Center', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
+      ['Activation', 'Batches', 'Command Center', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads', 'Workflow'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })
@@ -224,6 +227,7 @@ describe('ops-portal app shell + navigation', () => {
   // names the section's ACTUAL group.
   it.each([
     ['/command-center', 'Overview'],
+    ['/workflow', 'Pipeline'],
     ['/batches', 'Pipeline'],
     ['/reports', 'Insights'],
     ['/masterdata', 'Setup'],
@@ -245,7 +249,10 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
 
     const nav = screen.getByRole('navigation', { name: /main/i })
-    await userEvent.click(within(nav).getByRole('link', { name: /uploads/i }))
+    // ANCHORED. An unanchored /uploads/i was unambiguous only by luck: any later
+    // section whose label contains "uploads" would make this throw on ambiguity
+    // rather than fail on the routing it is actually testing.
+    await userEvent.click(within(nav).getByRole('link', { name: /^uploads$/i }))
 
     expect(await screen.findByRole('heading', { name: /^uploads$/i })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: /^queues$/i })).toBeNull()

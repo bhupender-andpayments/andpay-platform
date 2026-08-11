@@ -13,6 +13,7 @@ import {
   IconCheck,
   IconLogout,
   IconMerchants,
+  IconWorkflow,
 } from './icons.js'
 import { shortId } from './format.js'
 
@@ -61,7 +62,13 @@ interface Section {
 // merchant list endpoint. There is one now (`GET /ops/merchants`, ruling 1b), so
 // the condition that kept it out is gone. It leads the Pipeline group because
 // the merchant is the entity the rest of the pipeline acts ON.
+//
+// THE 2026-08-11 RULING ADDS `Workflow` AND PUTS IT FIRST. It is the operator's
+// own job (a bank request from the file that carries it to the activated
+// soundbox) rather than one of the objects that job passes through, so it leads
+// the Pipeline group and is the portal's landing route.
 const SECTIONS: readonly Section[] = [
+  { to: '/workflow', label: 'Workflow', icon: IconWorkflow },
   { to: '/command-center', label: 'Command Center', icon: IconDashboard },
   { to: '/merchants', label: 'Merchants', icon: IconMerchants },
   { to: '/inventory', label: 'Inventory', icon: IconMasterData },
@@ -84,7 +91,9 @@ const SECTIONS: readonly Section[] = [
 // rather than silently vanishing from the sidebar.
 const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = [
   { title: 'Overview', routes: ['/command-center'] },
-  { title: 'Pipeline', routes: ['/merchants', '/inventory', '/batches', '/dispatches', '/activation'] },
+  // `/workflow` FIRST: line 95 maps `g.routes` in order, so array position here
+  // is render order in the sidebar.
+  { title: 'Pipeline', routes: ['/workflow', '/merchants', '/inventory', '/batches', '/dispatches', '/activation'] },
   { title: 'Operations', routes: ['/uploads', '/queues'] },
   { title: 'Insights', routes: ['/reports'] },
   { title: 'Setup', routes: ['/masterdata'] },
