@@ -181,6 +181,14 @@ const DISPATCH_COLUMNS = [
   { header: 'Contact', key: 'contactName' },
   { header: 'Mobile', key: 'mobile' },
   { header: 'Artifact Refs', key: 'artifactRefs' },
+  // W-5 round trip: the sheet we send IS the return template. The vendor
+  // fills these three; the headers are exactly the return parser's own
+  // (return-sheet-adapter.ts HEADERS), so the file we send is the file that
+  // comes back. On the Collateral sheet Device ID stays blank by contract:
+  // the sheet's shape teaches the serial-less rule.
+  { header: 'Device ID', key: 'fillDeviceId' },
+  { header: 'AWB', key: 'fillAwb' },
+  { header: 'Courier', key: 'fillCourier' },
 ]
 
 // E1 membership (spec 2.1). SOUNDBOX is the soundbox flag. COLLATERAL is
@@ -261,6 +269,12 @@ function writeRows(ws: ExcelJS.Worksheet, lines: PackageLine[]): void {
       contactName: l.contactName ?? '',
       mobile: l.mobile ?? '',
       artifactRefs: l.artifacts.map((a) => a.assetReference).join(' '),
+      // The three template cells: always blank going out, on both sheets. The
+      // vendor fills them in and returns the SAME file, and parseReturnWorkbook
+      // reads these exact headers back (W-5 round trip).
+      fillDeviceId: '',
+      fillAwb: '',
+      fillCourier: '',
     })
   }
 }

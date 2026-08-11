@@ -51,6 +51,12 @@ export interface ReturnSheetParseResult {
   validRows: ReturnRow[]
   invalidRows: ReturnSheetRowError[]
   structuralErrors: ReturnSheetStructuralError[]
+  // Task 7 (2026-08-11): a row that came back with Dispatch ID present but
+  // BOTH fill cells blank. That is not an error, it is the vendor returning
+  // our whole sheet with a row that simply was not theirs to fill; counted
+  // here, never in invalidRows, never in validRows. Zero on a structural
+  // failure, same as the two arrays.
+  untouchedRows: number
 }
 
 // The columns we require the vendor to return. `Assignment` and the merchant
@@ -71,7 +77,11 @@ export interface ReturnSheetParseResult {
 const HEADERS = {
   asgnId: ['Assignment', 'Dispatch ID'],
   deviceSerial: ['Device ID'],
-  awb: ['AWB'],
+  // 'Shipment Number' is the print vendor's own word for this column in the
+  // walkthrough (BRD 5.5 separately calls it Courier AWB Number, but that
+  // spelling has not been seen on a real returned file, so it is not added
+  // here on top of the two that have).
+  awb: ['AWB', 'Shipment Number'],
   courierCode: ['Courier', 'Courier Partner'],
 } as const
 
@@ -140,6 +150,7 @@ export async function parseReturnWorkbook(
     validRows: [],
     invalidRows: [],
     structuralErrors: [e],
+    untouchedRows: 0,
   })
 
   const format = detectFormat(filename)
@@ -212,12 +223,22 @@ export async function parseReturnWorkbook(
 
   const validRows: ReturnRow[] = []
   const invalidRows: ReturnSheetRowError[] = []
+  let untouchedRows = 0
   grid.slice(1).forEach((cells, idx) => {
     const rowNo = idx + 1
     const asgnId = (cells[asgnIdx] ?? '').trim()
     const deviceSerial = (cells[deviceIdx] ?? '').trim()
     const awb = (cells[awbIdx] ?? '').trim()
     const courierCode = courierIdx >= 0 ? (cells[courierIdx] ?? '').trim() : ''
+
+    // Untouched template row: the vendor returned our whole sheet and this
+    // row simply was not theirs to fill. Both fill-cells empty is a skip,
+    // never an error; a device WITHOUT an awb below stays missing_awb,
+    // because that is a half-filled claim.
+    if (deviceSerial === '' && awb === '' && asgnId !== '') {
+      untouchedRows++
+      return
+    }
 
     const errors: ReturnSheetRowErrorCode[] = []
     if (asgnId === '') errors.push('missing_assignment')
@@ -244,5 +265,5 @@ export async function parseReturnWorkbook(
     })
   })
 
-  return { validRows, invalidRows, structuralErrors: [] }
+  return { validRows, invalidRows, structuralErrors: [], untouchedRows }
 }

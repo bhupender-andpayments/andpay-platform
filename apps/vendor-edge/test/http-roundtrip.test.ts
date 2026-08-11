@@ -836,6 +836,41 @@ describe('POST /vendor/return with a WORKBOOK (D-4, same route, chosen by extens
     expect(res.body.invalidRows).toEqual([{ rowNo: 2, errors: ['missing_assignment', 'missing_awb'] }])
   })
 
+  it('reports untouched template rows on the response, never as an error (Task 7)', async () => {
+    // A row with a Dispatch ID but BOTH fill cells left blank is the vendor
+    // returning our whole sheet with a row that was never theirs to fill:
+    // skipped by the adapter, and its count threaded onto the response the
+    // edge returns, alongside the ingest counts.
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    await seedPrintCredential(vndrWire)
+    const deviceSerial = 'SER-EDGE-WB-5'
+    await seedUnit(deviceSerial)
+    const asgnWire = newId('asgn')
+    await seedPendingEntry(asgnWire)
+    const untouchedAsgn = newId('asgn')
+    await seedPendingEntry(untouchedAsgn)
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(SECRET))
+      .attach(
+        'file',
+        csvOf(
+          [
+            [asgnWire, deviceSerial, 'AWB-WB-5'],
+            [untouchedAsgn, '', ''],
+          ],
+          ['Assignment', 'Device ID', 'AWB'],
+        ),
+        'return.csv',
+      )
+
+    expect(res.status).toBe(200)
+    expect(res.body.pairedUnitIds).toHaveLength(1)
+    expect(res.body.invalidRows).toBeUndefined()
+    expect(res.body.untouched).toBe(1)
+  })
+
   it('400s a workbook missing the AWB column, with a schema_invalid DENY', async () => {
     const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
     await seedPrintCredential(vndrWire)

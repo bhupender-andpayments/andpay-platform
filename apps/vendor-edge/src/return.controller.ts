@@ -78,6 +78,10 @@ export class ReturnController {
     // posts `<fileId>.json`, and that keeps working byte for byte.
     let sheet: ReturnSheet
     let invalidRows: ReturnSheetRowError[] = []
+    // Set only on the workbook path (Task 7): the JSON path never parses a
+    // sheet, so there is no untouched count to report, exactly like
+    // invalidRows above.
+    let untouched: number | undefined
     try {
       if (isWorkbook(file)) {
         const parsed = await parseReturnWorkbook(new Uint8Array(file!.buffer), file!.originalname ?? '')
@@ -85,6 +89,7 @@ export class ReturnController {
           throw new EdgeParseError(parsed.structuralErrors.map((e) => e.message).join(' '))
         }
         invalidRows = parsed.invalidRows
+        untouched = parsed.untouchedRows
         sheet = {
           // vndrId and workQueue are SERVER-DERIVED from the authenticated
           // claim, never read off the upload (D99, M7, S16). A workbook has
@@ -125,8 +130,14 @@ export class ReturnController {
     // Rows the WORKBOOK parser quarantined are reported alongside the ingest
     // result, so a partial file tells the operator which rows to resend rather
     // than looking like a clean success. Absent on the JSON path, which rejects
-    // a bad row at parse time.
-    return invalidRows.length > 0 ? { ...result, invalidRows } : result
+    // a bad row at parse time. `untouched` is threaded the same way: how many
+    // template rows the vendor left blank, so a partial return still counts up
+    // to the whole sheet the vendor received (Task 7).
+    return {
+      ...result,
+      ...(invalidRows.length > 0 ? { invalidRows } : {}),
+      ...(untouched !== undefined ? { untouched } : {}),
+    }
   }
 
   // D5.2: a schema-invalid body is HTTP 400 PLUS an audited DENY
