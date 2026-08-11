@@ -99,10 +99,16 @@ export function LiveWorkView({
 
       {/* Stacked rather than side by side: a pool row carries a reason field and
           a button, and half the page's width is not enough for one. */}
+      {/* `emptyHint` restores the one sentence an operator with an empty pool
+          actually needs, which this view carried before the trigger control moved
+          into BatchablePools. It is passed from here rather than fixed inside that
+          component because it points at the upload form BELOW, which exists on
+          this page and not on /batches. */}
       <BatchablePools
         onTriggered={onChanged}
         reloadKey={poolReloadKey}
         lotSizeFor={(tenantId, programId) => lotSizeFor(configs, tenantId, programId)}
+        emptyHint="Committing a bank request file below is what puts records in a pool."
       />
 
       <Card>

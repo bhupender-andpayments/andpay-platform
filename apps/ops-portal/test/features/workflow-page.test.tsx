@@ -294,19 +294,27 @@ function stub(opts: StubOptions = {}): Call[] {
   return calls
 }
 
-function renderAt(path: string, pollIntervals?: { fast: number; slow: number }) {
+function renderAt(path: string, pollIntervals?: { fast: number; slow: number }, commitPoolWaitMs?: number) {
+  // Both knobs are injected rather than reached with fake timers, for the reason
+  // the page's own header gives: this component's cadence is driven by real
+  // intervals and jsdom plus fake timers turns that into a different program.
+  const props = {
+    ...(pollIntervals === undefined ? {} : { pollIntervals }),
+    ...(commitPoolWaitMs === undefined ? {} : { commitPoolWaitMs }),
+  }
   return render(
     <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
         <Routes>
-          <Route
-            path="/workflow/*"
-            element={pollIntervals === undefined ? <WorkflowPage /> : <WorkflowPage pollIntervals={pollIntervals} />}
-          />
+          <Route path="/workflow/*" element={<WorkflowPage {...props} />} />
         </Routes>
       </AuthProvider>
     </MemoryRouter>,
   )
+}
+
+function poolCalls(calls: Call[]): number {
+  return calls.filter((c) => c.url.includes('/ops/pool')).length
 }
 
 function journeyCalls(calls: Call[]): number {
@@ -340,6 +348,30 @@ describe('WorkflowPage: the landing view', () => {
     // batching config sets the lot size to 6.
     expect(await screen.findByText(/2 of 6 ready/i)).toBeTruthy()
     expect(screen.getByText(/oldest/i)).toBeTruthy()
+  })
+
+  // Counts and ages on the LANDING surface go through the shared formatters. This
+  // card is BatchablePools, which /batches also renders, and both lines were bare
+  // there: harmless while every pool was small, wrong the moment one is not. The
+  // pool fixture's two rows format identically either way, so this test builds a
+  // four-figure pool, which is the only shape that can tell the difference.
+  it('formats a four-figure pool count through fmtNumber on the landing view', async () => {
+    const many = Array.from({ length: 1234 }, (_, i) => poolRow(`asgn_${String(i)}`, { asgnId: `asgn_${String(i)}` }))
+    stub({ pool: many })
+    renderAt('/workflow')
+    expect(await screen.findByText(/1,234 records across/i)).toBeTruthy()
+    expect(screen.queryByText(/1234 records across/i)).toBeNull()
+  })
+
+  // An operator whose pool is EMPTY needs to be told what puts records in it. That
+  // sentence lived on this view's own pool card until the trigger control moved
+  // into BatchablePools, and it came back as a prop rather than as fixed copy in
+  // that shared component: it points at the upload form BELOW, which exists here
+  // and not on /batches.
+  it('tells an operator with an EMPTY pool what puts records in one', async () => {
+    stub({ pool: [] })
+    renderAt('/workflow')
+    expect(await screen.findByText(/committing a bank request file below is what puts records in a pool/i)).toBeTruthy()
   })
 
   // NOT "with the stage it is on": GET /ops/batches carries no stage and no
@@ -818,5 +850,63 @@ describe('WorkflowPage: the adaptive poll', () => {
     renderAt('/workflow/btch_aaa', { fast: 10, slow: 10 })
     expect(await screen.findByText(/every record that can be activated is activated/i)).toBeTruthy()
     expect(screen.queryByText(/every record in this batch is activated/i)).toBeNull()
+  })
+
+  // The commit-to-pool window waits on the RELAY and the CONSUMER, so it wants the
+  // fast cadence. The signal for that used to be `commitBaseline !== null`, which
+  // is the CONFIRMATION signal and is deliberately null when the pre-commit pool
+  // read failed. So the one case where the pool state is unknown polled slow
+  // through precisely the window that waits on machines.
+  it('polls FAST after a commit even when the pre-commit pool read FAILED', async () => {
+    const calls = stub()
+    let committed = false
+    const inner = globalThis.fetch as unknown as (i: string | URL, init?: RequestInit) => Promise<Response>
+    vi.stubGlobal('fetch', async (i: string | URL, init: RequestInit = {}) => {
+      const url = String(i)
+      if (url.includes('/ops/uploads/bank/commit')) {
+        committed = true
+        return inner(i, init)
+      }
+      if (!committed && url.includes('/ops/pool')) {
+        calls.push({ url, init })
+        throw new Error('the pool read failed')
+      }
+      return inner(i, init)
+    })
+
+    // Far apart, so the assertion cannot pass on a slow page.
+    renderAt('/workflow', { fast: 10, slow: 5000 })
+    expect(await screen.findAllByText(/the pool read failed/i)).toBeTruthy()
+    await userEvent.upload(await screen.findByLabelText(/bank request file/i), makeFile('rows'))
+    await userEvent.click(await screen.findByRole('button', { name: /commit bank request file/i }))
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/uploads/bank/commit'))).toBe(true)
+    })
+
+    const settled = poolCalls(calls)
+    await act(async () => { await new Promise((r) => { setTimeout(r, 150) }) })
+    // At a 10ms tick a 150ms window is many reads; at 5000ms it is none.
+    expect(poolCalls(calls) - settled).toBeGreaterThan(3)
+  })
+
+  // ...and "still outstanding" cannot mean forever. If the fact never lands, an
+  // unbounded fast poll would hammer the edge for as long as the tab is open.
+  it('falls back to the SLOW cadence once the commit-to-pool bound has elapsed', async () => {
+    // The pool never changes, so the commit is never confirmed and the only thing
+    // that can end the fast window is the bound itself.
+    const calls = stub({ poolAfterCommit: POOL })
+    renderAt('/workflow', { fast: 10, slow: 5000 }, 40)
+    await userEvent.upload(await screen.findByLabelText(/bank request file/i), makeFile('rows'))
+    await userEvent.click(await screen.findByRole('button', { name: /commit bank request file/i }))
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/uploads/bank/commit'))).toBe(true)
+    })
+
+    // Past the 40ms bound, so the cadence has reverted.
+    await act(async () => { await new Promise((r) => { setTimeout(r, 120) }) })
+    const settled = poolCalls(calls)
+    await act(async () => { await new Promise((r) => { setTimeout(r, 150) }) })
+    // A slow page adds at most the one read a 5000ms interval cannot have fired.
+    expect(poolCalls(calls) - settled).toBeLessThan(3)
   })
 })

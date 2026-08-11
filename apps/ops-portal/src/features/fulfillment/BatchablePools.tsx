@@ -3,7 +3,7 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { getPoolEntries, triggerBatch, getDevices, type PoolEntryRow } from '../../api/endpoints.js'
 import { Card, CardHeader, Button, ErrorNote, InfoNote, CodeChip, SkeletonRows, Field, Input } from '../../ui/primitives.js'
-import { fmtNumber } from '../../ui/format.js'
+import { fmtNumber, fmtDays } from '../../ui/format.js'
 
 // The cap the ops-edge enforces on the trigger reason (BRD 5.3.4). Mirrored
 // here so the operator hits a maxLength on the keyboard rather than a 400 after
@@ -97,6 +97,7 @@ export function BatchablePools({
   onTriggered,
   reloadKey,
   lotSizeFor,
+  emptyHint,
 }: {
   onTriggered?: () => void
   /**
@@ -120,6 +121,20 @@ export function BatchablePools({
    * no function, no line renders and this component is exactly what it was.
    */
   lotSizeFor?: (tenantId: string, programId: string) => number | null
+  /**
+   * What to tell an operator whose pool is EMPTY, when the caller knows how this
+   * particular screen gets records into it. Given nothing, the empty state says
+   * only that nothing is waiting, which is what /batches wants.
+   *
+   * A prop rather than fixed copy because the useful sentence is surface-specific
+   * and the wrong one is worse than none: the workflow workspace can say
+   * "committing a bank request file below", because its upload form is on that
+   * same page, and on /batches there is no form below and that sentence would
+   * point at nothing. This string was on the workspace's own pool card before the
+   * trigger control moved here, and it is the one thing a new operator looking at
+   * an empty pool actually needs.
+   */
+  emptyHint?: string
 }) {
   const { client } = useAuth()
   const [pools, setPools] = useState<BatchablePool[] | null>(null)
@@ -205,13 +220,15 @@ export function BatchablePools({
     <Card>
       <CardHeader
         title="Ready to batch"
-        subtitle="Everything pooled and waiting. Triggering creates the batch for that pool."
+        subtitle="Everything pooled and waiting. One pool per tenant and program, never per bank, so a single pool can span many bank codes. Triggering creates the batch for that pool."
       />
 
       {pools === null ? (
         <SkeletonRows rows={2} cols={3} />
       ) : pools.length === 0 ? (
-        <p className="px-5 pb-5 text-sm text-muted-foreground">Nothing waiting to be batched.</p>
+        <p className="px-5 pb-5 text-sm text-muted-foreground">
+          Nothing waiting to be batched.{emptyHint !== undefined && ` ${emptyHint}`}
+        </p>
       ) : (
         <ul className="divide-y divide-border">
           {pools.map((pool) => {
@@ -226,11 +243,19 @@ export function BatchablePools({
                   {/* Every count here is pluralised. It read "6 records across
                       1 banks, oldest 0 days old" on the very first pool an
                       operator sees, and text that cannot count reads as a
-                      screen nobody checked. */}
+                      screen nobody checked.
+                      Counts go through fmtNumber and the age through fmtDays,
+                      because this card became the LANDING surface of the workflow
+                      workspace when the trigger moved onto it. Both were bare
+                      here, which was invisible while every pool was small: a
+                      four-figure pool printed "1234 records". The age phrasing
+                      matches TilesPage's "Oldest 3d in queue" rather than reading
+                      "oldest 3d old", which is what fmtDays produces if it is
+                      dropped into the old sentence unchanged. */}
                   <span className="text-sm text-muted-foreground">
-                    {pool.records} {pool.records === 1 ? 'record' : 'records'} across {pool.banks}{' '}
+                    {fmtNumber(pool.records)} {pool.records === 1 ? 'record' : 'records'} across {fmtNumber(pool.banks)}{' '}
                     {pool.banks === 1 ? 'bank' : 'banks'},{' '}
-                    {days === 0 ? 'oldest added today' : `oldest ${days} ${days === 1 ? 'day' : 'days'} old`}
+                    {days === 0 ? 'oldest added today' : `oldest ${fmtDays(days)} in the pool`}
                   </span>
                   {/* How close this pool is to forming a batch WITHOUT anybody
                       here, which is the one question that decides whether the

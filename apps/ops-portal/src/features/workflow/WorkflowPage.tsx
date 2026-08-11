@@ -82,6 +82,17 @@ export interface PollIntervals {
 }
 const DEFAULT_POLL_INTERVALS: PollIntervals = { fast: 3000, slow: 30000 }
 
+/**
+ * How long after a commit the page keeps polling FAST for the records to reach the
+ * pool. A commit writes fct.tms.bank_file_row.v1 to the TMS outbox and nothing is
+ * pooled until the relay publishes it and the consumer folds it, so this window
+ * waits on machines and wants the fast cadence. Generous relative to a healthy
+ * rail (which lands in seconds) and bounded so that a rail which is DOWN does not
+ * leave the tab polling fast indefinitely. Past the bound the page keeps polling
+ * at the slow cadence: the records may still arrive.
+ */
+const COMMIT_POOL_WAIT_MS = 120_000
+
 // The six stages that share ONE prop shape. Stages 1 and 2 are deliberately NOT
 // in here: they are presentational over the bank-upload state this page owns, so
 // they take that state instead, and the renderer below special-cases them rather
@@ -154,31 +165,46 @@ function FileNotTraceable() {
   )
 }
 
-export function WorkflowPage({ pollIntervals = DEFAULT_POLL_INTERVALS }: { pollIntervals?: PollIntervals }) {
+export function WorkflowPage({
+  pollIntervals = DEFAULT_POLL_INTERVALS,
+  commitPoolWaitMs = COMMIT_POOL_WAIT_MS,
+}: {
+  pollIntervals?: PollIntervals
+  /** Injectable for the same reason pollIntervals is: see the file header. */
+  commitPoolWaitMs?: number
+}) {
   // A nested <Routes>, the same shape UploadsPage uses, because the route is
   // registered as `/workflow/*`. `/workflow` is POOL mode (stages 1 to 3 are live
   // work) and `/workflow/:btchId` is BATCH mode (stages 1 and 2 are complete by
   // definition).
   return (
     <Routes>
-      <Route index element={<Workspace btchId={null} pollIntervals={pollIntervals} />} />
-      <Route path=":btchId" element={<BatchWorkspace pollIntervals={pollIntervals} />} />
+      <Route index element={<Workspace btchId={null} pollIntervals={pollIntervals} commitPoolWaitMs={commitPoolWaitMs} />} />
+      <Route path=":btchId" element={<BatchWorkspace pollIntervals={pollIntervals} commitPoolWaitMs={commitPoolWaitMs} />} />
       {/* A deeper path is not a 404: it is a mistyped link to the workspace. */}
       <Route path="*" element={<Navigate to="/workflow" replace />} />
     </Routes>
   )
 }
 
-function BatchWorkspace({ pollIntervals }: { pollIntervals: PollIntervals }) {
+function BatchWorkspace({ pollIntervals, commitPoolWaitMs }: { pollIntervals: PollIntervals; commitPoolWaitMs: number }) {
   const { btchId } = useParams<{ btchId: string }>()
   const id = btchId ?? ''
   // KEYED ON THE BATCH. Moving from one batch to another must not leave the
   // previous batch's detail, journey or stage timer standing while the new reads
   // are in flight; a fresh instance is the cheapest way to be sure of that.
-  return <Workspace key={id} btchId={id} pollIntervals={pollIntervals} />
+  return <Workspace key={id} btchId={id} pollIntervals={pollIntervals} commitPoolWaitMs={commitPoolWaitMs} />
 }
 
-function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollIntervals: PollIntervals }) {
+function Workspace({
+  btchId,
+  pollIntervals,
+  commitPoolWaitMs,
+}: {
+  btchId: string | null
+  pollIntervals: PollIntervals
+  commitPoolWaitMs: number
+}) {
   const { client } = useAuth()
   const mode: 'pool' | 'batch' = btchId === null ? 'pool' : 'batch'
 
@@ -262,11 +288,31 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
    */
   const commitBaseline = useRef<string | null>(null)
 
+  /**
+   * WHEN a commit whose pool confirmation is still outstanding happened, which is
+   * a DIFFERENT question from whether we can confirm it, and the two must not
+   * share one signal.
+   *
+   * `commitBaseline` answers "can this commit be confirmed by comparing the pool",
+   * and it is deliberately null when the pre-commit pool read FAILED, because a
+   * baseline we never observed would confirm an advance this commit did not cause.
+   * Reading the cadence off that same null meant the one case where the pool state
+   * is unknown polled SLOW through exactly the window that waits on the relay and
+   * the consumer, which is the opposite of what it needs.
+   *
+   * Bounded, because "still outstanding" cannot mean forever: if the fact never
+   * lands, an unbounded fast poll would hammer the edge until the tab is hidden.
+   * After the bound the page falls back to the slow cadence and keeps polling; it
+   * does not stop, because the records may still arrive.
+   */
+  const commitAt = useRef<number | null>(null)
+
   const applyPool = useCallback((rows: PoolEntryRow[]): void => {
     setPools(rows)
     const baseline = commitBaseline.current
     if (baseline !== null && poolFingerprint(rows) !== baseline) {
       commitBaseline.current = null
+      commitAt.current = null
       setPoolConfirmed(true)
     }
   }, [])
@@ -364,7 +410,7 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
     // the fulfillment consumer are what is being waited on. Reading the ref during
     // render is safe because every write to it is paired with a setState in the
     // same block, so a render always follows one.
-    commitAwaitingPool: commitBaseline.current !== null,
+    commitAwaitingPool: commitAt.current !== null && now - commitAt.current < commitPoolWaitMs,
     elapsedMsInStage: Math.max(0, now - stageEnteredAt),
   })
 
@@ -420,6 +466,7 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
     // and an outstanding baseline from the last commit must not confirm this one.
     setPoolConfirmed(false)
     commitBaseline.current = null
+    commitAt.current = null
     if (picked === null) return
     if (picked.size > MAX_UPLOAD_BYTES) {
       // BEFORE any network call, so an oversized file never posts. "5 MB", the
@@ -456,6 +503,9 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
     // own counts still render, and the pool card above the rail reads the pool for
     // itself.
     commitBaseline.current = pools === null ? null : poolFingerprint(pools)
+    // Set REGARDLESS of whether a baseline exists. This is the cadence signal, and
+    // the case with no baseline is the case that most needs the fast poll.
+    commitAt.current = Date.now()
     try {
       // ONE key per click, minted here, reused by the client across its own
       // refresh-and-retry so a retried write can never become a second one.
@@ -580,7 +630,13 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
           // saw the pool move. Without it the actionable card would sit behind
           // the page: a commit would advance the rail while the card still showed
           // the pool from before it, with no trigger for the new records.
-          poolReloadKey={pools === null ? '' : poolFingerprint(pools)}
+          // A never-read pool is NOT an empty pool. poolFingerprint([]) is '',
+          // so collapsing null to '' meant that after a FAILED first read the key
+          // never changed when a later read succeeded with an empty pool, and
+          // BatchablePools sat behind its own error card until the pool became
+          // non-empty. Same null-versus-empty conflation as the commit baseline,
+          // in a second place.
+          poolReloadKey={pools === null ? '(unread)' : poolFingerprint(pools)}
           onChanged={onChanged}
           loadError={loadError}
         />
