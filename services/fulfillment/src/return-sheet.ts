@@ -314,11 +314,13 @@ export async function ingestReturnSheet(
             standee_count: number
             sticker_count: number
             collateral_shipment: string | null
+            dispatch_group: string | null
           }[]
         >`
           SELECT id::text AS id, tenant_id::text AS tenant_id, program_id::text AS program_id,
                  batch::text AS batch, merchant_id::text AS merchant_id, trace_id, created_at,
-                 standee_count, sticker_count, collateral_shipment::text AS collateral_shipment
+                 standee_count, sticker_count, collateral_shipment::text AS collateral_shipment,
+                 dispatch_group
           FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
         `
         const entry = entryRows[0]
@@ -338,6 +340,31 @@ export async function ingestReturnSheet(
         const batchUuid = entry.batch
         const merchantUuid = entry.merchant_id
         const asgnWire = fromUuid('asgn', asgnUuid)
+
+        // W-5 dispatch group gates. On a group-bearing row the sheet's shape is
+        // a contract: a soundbox consignment cannot ship without a serial, and
+        // a collateral consignment has no unit to pair. These sit BEFORE the
+        // (2c) collateral-only guards below, and the order is load-bearing: a
+        // new-grain SOUNDBOX group's counts are zeroed (Task 5), so a
+        // serial-less SOUNDBOX row that fell through to (2c) would quarantine
+        // with the wrong reason, no_collateral_on_asgn, instead of the honest
+        // one below.
+        if (entry.dispatch_group === 'SOUNDBOX' && device === null) {
+          await tx.$executeRaw`
+            INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+            VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'device_required_for_soundbox'})
+          `
+          quarantined++
+          continue
+        }
+        if (entry.dispatch_group === 'COLLATERAL' && device !== null) {
+          await tx.$executeRaw`
+            INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+            VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'unexpected_device_for_collateral'})
+          `
+          quarantined++
+          continue
+        }
 
         // (2c) THE TWO COLLATERAL-ONLY GUARDS, and they sit HERE, before the
         // shpt birth, for the same reason the already-paired guard above does:
@@ -460,13 +487,13 @@ export async function ingestReturnSheet(
           entryId: entry.id,
         }
 
-        // THE COLLATERAL BRANCH. No unit is inserted, no unit status advances,
-        // and the assignment's dispatch_state is deliberately NOT touched:
-        // DISPATCHED_BY_VENDOR means the device kit left the vendor, and a
-        // standee-only consignment does not make that true. Marking it would
-        // report a merchant as dispatched while their soundbox is still on the
-        // print floor, which is the single most misleading thing this ingest
-        // could do.
+        // THE COLLATERAL BRANCH. No unit is inserted and no unit status
+        // advances, ever. On a LEGACY combined row (dispatch_group null)
+        // dispatch_state is deliberately NOT touched: DISPATCHED_BY_VENDOR
+        // would claim the device kit left while the soundbox is still on the
+        // print floor. On a COLLATERAL LEG that objection dissolves, the
+        // standee leaving IS this dispatch leaving, so the dispatch group
+        // joins the post-loop advance.
         if (device === null) {
           // Per-assignment idempotency, keyed exactly like the `${unitWire}|print_for`
           // precedent above: one collateral link per dispatch id, ever, whether
@@ -491,6 +518,16 @@ export async function ingestReturnSheet(
             link.asgnWires.push(asgnWire)
             link.entries.push(entrySnap)
           })
+          if (entry.dispatch_group === 'COLLATERAL') {
+            const groupKey = `${programUuid}|${batchUuid}`
+            let group = coveredGroups.get(groupKey)
+            if (!group) {
+              group = { programUuid, btchUuid: batchUuid, asgnUuids: new Set(), entries: [] }
+              coveredGroups.set(groupKey, group)
+            }
+            group.asgnUuids.add(asgnUuid)
+            group.entries.push(entrySnap)
+          }
           continue
         }
 
