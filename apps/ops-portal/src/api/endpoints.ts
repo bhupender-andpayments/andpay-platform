@@ -452,6 +452,10 @@ export interface BatchEntryRow {
   poolStatus: string
   dispatchState: string | null
   shipToSuperseded: boolean
+  // Task 6 (2026-08-11 dispatch-group split): NULL is a legacy, pre-split
+  // combined row; 'SOUNDBOX' / 'COLLATERAL' otherwise. See
+  // services/fulfillment/src/package.ts excelLinesFor for what this decides.
+  dispatchGroup: string | null
 }
 
 /** services/fulfillment/src/ops-read.ts PoolEntryRow. */

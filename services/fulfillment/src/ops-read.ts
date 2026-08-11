@@ -433,6 +433,11 @@ export interface BatchEntryRow {
   poolStatus: string
   dispatchState: string | null
   shipToSuperseded: boolean
+  // Task 6 (2026-08-11 dispatch-group split): the pending_pool_entry column,
+  // carried through so the portal can badge which delivery group a row
+  // belongs to. NULL means a legacy, pre-split combined row (see
+  // package.ts excelLinesFor for what that means for sheet membership).
+  dispatchGroup: string | null
 }
 
 interface BatchEntryDbRow {
@@ -448,6 +453,7 @@ interface BatchEntryDbRow {
   pool_status: string
   dispatch_state: string | null
   ship_to_superseded: boolean
+  dispatch_group: string | null
 }
 
 function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
@@ -464,6 +470,7 @@ function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
     poolStatus: r.pool_status,
     dispatchState: r.dispatch_state,
     shipToSuperseded: r.ship_to_superseded,
+    dispatchGroup: r.dispatch_group,
   }
 }
 
@@ -505,9 +512,10 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
     const entries = await tx.$queryRaw<BatchEntryDbRow[]>`
       SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
-             standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded
+             standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
+             dispatch_group
       FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
-      ORDER BY bank_reference_code, branch_code, asgn_id
+      ORDER BY bank_reference_code, branch_code, merchant_display_name, dispatch_group, asgn_id
     `
     // BANK then BRANCH then assignment, the one ordering every dispatch asset
     // uses (the entries list above, the dispatch sheet, and the merged delivery
@@ -515,6 +523,15 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
     // residual gap: it ordered by artifact type first, so the same batch read
     // back in a different order here than it printed in, and an operator
     // checking a page against this list was comparing two different sequences.
+    //
+    // Extended (2026-08-11 dispatch-group split design, section 1.9) with
+    // merchant_display_name then dispatch_group ahead of the asgn_id
+    // tie-breaker: bank and branch stay the primary grouping, unchanged,
+    // because they drive the printed picking sheet. A Task 5 split request
+    // mints TWO rows, one SOUNDBOX and one COLLATERAL, that otherwise sort
+    // apart under whatever asgn_id each happened to get. Sorting by merchant
+    // then group puts a request's two dispatch groups adjacent in this list,
+    // which is what the badge column exists to distinguish.
     //
     // The sort columns live on pending_pool_entry, hence the join, on the
     // already-unique pending_pool_entry.asgn_id. LEFT, not INNER: an artifact
@@ -589,6 +606,7 @@ function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
 const POOL_ENTRY_COLUMNS = `asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
+             dispatch_group,
              batch::text AS batch, created_at,
              tenant_id::text AS tenant_id, program_id::text AS program_id`
 

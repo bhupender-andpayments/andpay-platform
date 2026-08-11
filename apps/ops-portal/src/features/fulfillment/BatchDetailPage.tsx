@@ -51,6 +51,25 @@ const COLLATERAL_GROUP_LABELS: Record<string, string> = {
   COLLATERAL: 'Collateral',
 }
 
+// Task 11 (2026-08-11 dispatch-group split): the badge beside a row's
+// Dispatch ID. NULL (a legacy, pre-split combined row) renders NO badge at
+// all rather than a third, misleading label: a legacy row genuinely does not
+// know which one group it belongs to, and inventing one would claim a fact
+// the row does not carry.
+function DispatchGroupBadge({ group }: { group: string | null }) {
+  if (group !== 'SOUNDBOX' && group !== 'COLLATERAL') return null
+  const text = group === 'SOUNDBOX' ? 'SB' : 'COLL'
+  const label = group === 'SOUNDBOX' ? 'Soundbox dispatch' : 'Collateral dispatch'
+  return (
+    <span
+      className="rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+      aria-label={label}
+    >
+      {text}
+    </span>
+  )
+}
+
 export function BatchDetailPage() {
   const { btchId = '' } = useParams<{ btchId: string }>()
   const { client } = useAuth()
@@ -147,7 +166,16 @@ export function BatchDetailPage() {
   }
 
   const columns: DataTableColumn<BatchEntryRow>[] = [
-    { key: 'asgnId', header: 'Dispatch ID', cell: (r) => <CodeChip>{r.asgnId}</CodeChip> },
+    {
+      key: 'asgnId',
+      header: 'Dispatch ID',
+      cell: (r) => (
+        <span className="flex items-center gap-2">
+          <CodeChip>{r.asgnId}</CodeChip>
+          <DispatchGroupBadge group={r.dispatchGroup} />
+        </span>
+      ),
+    },
     { key: 'merchant', header: 'Merchant', cell: (r) => r.merchantDisplayName },
     { key: 'legal', header: 'Legal Name', cell: (r) => r.merchantLegalName },
     { key: 'bank', header: 'Bank', cell: (r) => `${r.bankDisplayName} (${r.bankReferenceCode})` },
@@ -198,11 +226,28 @@ export function BatchDetailPage() {
 
   // Excel buttons gate on LINE membership, not artifact presence: an orphan
   // line (no product at all) has an Excel row but no artifact, and its sheet
-  // must still be downloadable (spec 2.2). Mirrors excelLinesFor exactly.
+  // must still be downloadable (spec 2.2).
+  //
+  // Task 6 (2026-08-11 dispatch-group split), source of truth:
+  // services/fulfillment/src/package.ts excelLinesFor. GROUP FIRST: a Task 5
+  // split row already knows which one delivery group it belongs to, so its
+  // own dispatchGroup decides membership outright. Only a null-group row (a
+  // legacy, pre-split combined row) falls back to the original flag-based
+  // rule. This predicate must stay byte-for-byte identical to excelLinesFor's,
+  // or the two Excel buttons and the sheets they download can disagree about
+  // which batches have a SOUNDBOX or COLLATERAL sheet at all.
   const entries = detail?.entries ?? []
   const excelGroups = [
-    ...(entries.some((e) => e.soundbox) ? ['SOUNDBOX'] : []),
-    ...(entries.some((e) => e.standeeCount >= 1 || e.stickerCount >= 1 || !e.soundbox) ? ['COLLATERAL'] : []),
+    ...(entries.some((e) => e.dispatchGroup === 'SOUNDBOX' || (e.dispatchGroup === null && e.soundbox))
+      ? ['SOUNDBOX']
+      : []),
+    ...(entries.some(
+      (e) =>
+        e.dispatchGroup === 'COLLATERAL' ||
+        (e.dispatchGroup === null && (e.standeeCount >= 1 || e.stickerCount >= 1 || !e.soundbox)),
+    )
+      ? ['COLLATERAL']
+      : []),
   ]
 
   return (

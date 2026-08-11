@@ -38,7 +38,15 @@ const SECRET_MOBILE = '9537908017'
 const SECRET_CONTACT = 'SECRET CONTACT'
 
 async function seedPoolEntry(
-  opts: { poolStatus?: string; batchUuid?: string | null; bankRef?: string; createdAt?: string } = {},
+  opts: {
+    poolStatus?: string
+    batchUuid?: string | null
+    bankRef?: string
+    createdAt?: string
+    // Task 6 (2026-08-11 dispatch-group split): omitted defaults to NULL, the
+    // legacy pre-split shape every existing test here seeds.
+    dispatchGroup?: string | null
+  } = {},
 ): Promise<{ asgnWire: string; asgnUuid: string }> {
   const asgnWire = newId('asgn')
   const asgnUuid = toUuid(asgnWire)
@@ -47,13 +55,13 @@ async function seedPoolEntry(
       asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable,
       merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
       branch_code, ship_to_address, ship_to_contact_name, ship_to_mobile, qr_value, vpa_value,
-      pool_status, batch, source_event_id, trace_id, created_at, updated_at
+      pool_status, batch, dispatch_group, source_event_id, trace_id, created_at, updated_at
     ) VALUES (
       ${asgnUuid}::uuid, ${TENANT}::uuid, ${PROGRAM}::uuid, true, 1, 2, true,
       'BRILLIANT PERFUME', 'BRILLIANT PERFUME', '5977', ${opts.bankRef ?? '1568'}, 'GSC BANK',
       '30', ${SECRET_ADDRESS}, ${SECRET_CONTACT}, ${SECRET_MOBILE},
       'upi://pay?ver=01&mode=01&pa=x@gscb', 'x@gscb',
-      ${opts.poolStatus ?? 'POOLED'}, ${opts.batchUuid ?? null}::uuid,
+      ${opts.poolStatus ?? 'POOLED'}, ${opts.batchUuid ?? null}::uuid, ${opts.dispatchGroup ?? null},
       ${`evt-${randomUUID()}`}, ${`trace-${randomUUID()}`},
       ${opts.createdAt ?? '2026-05-01T00:00:00Z'}::timestamptz, now()
     )
@@ -140,6 +148,26 @@ describe('P2-1 ops object-spine reads: readBatchDetail', () => {
     expect(detail!.entries.map((x) => x.asgnId)).toEqual([a.asgnWire])
     expect(detail!.artifacts.map((x) => x.asgnId)).toEqual([a.asgnWire])
   })
+
+  // Task 6 (2026-08-11 dispatch-group split): dispatch_group projected on the
+  // batch-detail entries, and (design section 1.9) the entries sort by
+  // merchant then group ahead of asgn_id, so a request's two split rows (same
+  // merchant, same bank/branch, different group) sit adjacent regardless of
+  // which asgn_id sorts lower. The legacy row seeded above always has a NULL
+  // dispatchGroup; this test proves BOTH the projection and the adjacency for
+  // a split request.
+  it("projects dispatch_group and sorts a split request's two groups adjacent", async () => {
+    const b = await seedBatch()
+    // Seed SOUNDBOX first so an asgn_id-only sort would place it before
+    // COLLATERAL; the merchant+group sort must still put them next to each
+    // other (COLLATERAL < SOUNDBOX alphabetically).
+    const soundbox = await seedPoolEntry({ batchUuid: b.uuid, poolStatus: 'BATCHED', dispatchGroup: 'SOUNDBOX' })
+    const collateral = await seedPoolEntry({ batchUuid: b.uuid, poolStatus: 'BATCHED', dispatchGroup: 'COLLATERAL' })
+
+    const detail = await readBatchDetail(db, b.wire)
+    expect(detail!.entries.map((x) => x.dispatchGroup)).toEqual(['COLLATERAL', 'SOUNDBOX'])
+    expect(detail!.entries.map((x) => x.asgnId)).toEqual([collateral.asgnWire, soundbox.asgnWire])
+  })
 })
 
 describe('P2-1 ops object-spine reads: listPoolEntries', () => {
@@ -189,6 +217,18 @@ describe('P2-1 ops object-spine reads: listPoolEntries', () => {
     const rows = await listPoolEntries(db)
     expect(rows[0]!.batch).toBe(b.wire)
     expect(rows[1]!.batch).toBeNull()
+  })
+
+  // Task 6 (2026-08-11 dispatch-group split): the column the portal badges.
+  // NULL (unset above) is the legacy pre-split shape every other test in this
+  // file seeds; here one row is stamped SOUNDBOX to prove it is projected,
+  // not just carried in the type.
+  it('projects dispatch_group, null for a legacy row and the stamped value for a split one', async () => {
+    await seedPoolEntry({ createdAt: '2026-05-01T00:00:00Z' })
+    await seedPoolEntry({ dispatchGroup: 'SOUNDBOX', createdAt: '2026-05-02T00:00:00Z' })
+    const rows = await listPoolEntries(db)
+    expect(rows[0]!.dispatchGroup).toBeNull()
+    expect(rows[1]!.dispatchGroup).toBe('SOUNDBOX')
   })
 })
 

@@ -38,6 +38,7 @@ const POOL_ROW = {
   poolStatus: 'POOLED',
   dispatchState: null,
   shipToSuperseded: false,
+  dispatchGroup: null,
   batch: null,
   createdAt: '2026-05-01T00:00:00.000Z',
 }
@@ -163,6 +164,7 @@ describe('BatchDetailPage', () => {
             poolStatus: 'BATCHED',
             dispatchState: null,
             shipToSuperseded: false,
+            dispatchGroup: null,
           },
         ],
         artifacts: [{ asgnId: 'asgn_1', artifactType: 'STANDEE_IMG', assetReference: 'ref-1', supersededAt: null }],
@@ -208,6 +210,7 @@ describe('BatchDetailPage', () => {
             poolStatus: 'BATCHED',
             dispatchState: null,
             shipToSuperseded: false,
+            dispatchGroup: null,
           },
         ],
         artifacts: [],
@@ -288,6 +291,113 @@ describe('BatchDetailPage', () => {
     renderBatchDetail('btch_abc')
     expect(await screen.findByText(/No collateral has been composed/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /PDF/ })).toBeNull()
+  })
+
+  // Task 11 (2026-08-11 dispatch-group split): the badge beside the Dispatch
+  // ID. A NULL dispatchGroup is a legacy, pre-split combined row and gets no
+  // badge at all, never a third invented label.
+  it('badges a SOUNDBOX row SB, a COLLATERAL row COLL, and a legacy row with nothing', async () => {
+    stubFetch(() =>
+      jsonResponse({
+        batch: BATCH_ROW,
+        entries: [
+          {
+            asgnId: 'asgn_sb',
+            merchantDisplayName: 'ALPHA TRADERS',
+            merchantLegalName: 'ALPHA TRADERS PVT LTD',
+            bankReferenceCode: '1568',
+            bankDisplayName: 'GSC BANK',
+            branchCode: '30',
+            soundbox: true,
+            standeeCount: 0,
+            stickerCount: 0,
+            poolStatus: 'BATCHED',
+            dispatchState: null,
+            shipToSuperseded: false,
+            dispatchGroup: 'SOUNDBOX',
+          },
+          {
+            asgnId: 'asgn_coll',
+            merchantDisplayName: 'BETA TRADERS',
+            merchantLegalName: 'BETA TRADERS PVT LTD',
+            bankReferenceCode: '1568',
+            bankDisplayName: 'GSC BANK',
+            branchCode: '30',
+            soundbox: false,
+            standeeCount: 1,
+            stickerCount: 0,
+            poolStatus: 'BATCHED',
+            dispatchState: null,
+            shipToSuperseded: false,
+            dispatchGroup: 'COLLATERAL',
+          },
+          {
+            asgnId: 'asgn_legacy',
+            merchantDisplayName: 'GAMMA TRADERS',
+            merchantLegalName: 'GAMMA TRADERS PVT LTD',
+            bankReferenceCode: '1568',
+            bankDisplayName: 'GSC BANK',
+            branchCode: '30',
+            soundbox: true,
+            standeeCount: 0,
+            stickerCount: 0,
+            poolStatus: 'BATCHED',
+            dispatchState: null,
+            shipToSuperseded: false,
+            dispatchGroup: null,
+          },
+        ],
+        artifacts: [],
+      }),
+    )
+    renderBatchDetail('btch_abc')
+    await screen.findByText('ALPHA TRADERS')
+    expect(screen.getByText('SB')).toBeTruthy()
+    expect(screen.getByLabelText('Soundbox dispatch')).toBeTruthy()
+    expect(screen.getByText('COLL')).toBeTruthy()
+    expect(screen.getByLabelText('Collateral dispatch')).toBeTruthy()
+    // The legacy row's own CodeChip renders, but nothing badges it: only two
+    // badge spans exist for three rows.
+    expect(await screen.findByText('asgn_legacy')).toBeTruthy()
+    expect(screen.queryAllByText(/^(SB|COLL)$/)).toHaveLength(2)
+  })
+
+  // The membership mirror (excelGroups) must be GROUP FIRST, exactly
+  // services/fulfillment/src/package.ts excelLinesFor: a split row's own
+  // dispatchGroup decides which Excel sheet it lands on even when its raw
+  // soundbox/standeeCount/stickerCount flags would say otherwise under the
+  // legacy combined-row heuristic. This single SOUNDBOX-group row has
+  // soundbox=false and zero counts, which the OLD flag-only rule would have
+  // routed to Collateral (the orphan rule: standeeCount 0, stickerCount 0,
+  // NOT soundbox). If the mirror were left un-migrated, this test fails by
+  // showing the wrong Excel button.
+  it('the Excel buttons follow the row own dispatch group, not its raw product flags', async () => {
+    stubFetch(() =>
+      jsonResponse({
+        batch: BATCH_ROW,
+        entries: [
+          {
+            asgnId: 'asgn_sb_only',
+            merchantDisplayName: 'DELTA TRADERS',
+            merchantLegalName: 'DELTA TRADERS PVT LTD',
+            bankReferenceCode: '1568',
+            bankDisplayName: 'GSC BANK',
+            branchCode: '30',
+            soundbox: false,
+            standeeCount: 0,
+            stickerCount: 0,
+            poolStatus: 'BATCHED',
+            dispatchState: null,
+            shipToSuperseded: false,
+            dispatchGroup: 'SOUNDBOX',
+          },
+        ],
+        artifacts: [],
+      }),
+    )
+    renderBatchDetail('btch_abc')
+    expect(await screen.findByRole('button', { name: /Soundbox Excel/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Collateral Excel/ })).toBeNull()
   })
 })
 
