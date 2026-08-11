@@ -18,6 +18,11 @@ export interface ArtifactRef {
 
 export interface PackageLine {
   asgnId: string
+  // Task 6 (2026-08-11 dispatch-group split): the Task 5 column, carried
+  // straight through so callers key sheet membership and artifact selection
+  // on it. NULL means a legacy, pre-split combined row; see excelLinesFor's
+  // W-5 paragraph below for what that means downstream.
+  dispatchGroup: string | null
   // Phase 4 (P4-D5): the sort dimensions, so callers can present/assemble the
   // package in bank + branch order and split by product type.
   bankReferenceCode: string
@@ -82,6 +87,7 @@ export async function buildDispatchPackage(
       ship_to_address: string
       ship_to_contact_name: string | null
       ship_to_mobile: string | null
+      dispatch_group: string | null
       soundbox: boolean
       standee_count: number
       sticker_count: number
@@ -89,7 +95,7 @@ export async function buildDispatchPackage(
     }[]
   >`
     SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name, qr_value,
-           bank_reference_code, branch_code, soundbox, standee_count, sticker_count,
+           bank_reference_code, branch_code, dispatch_group, soundbox, standee_count, sticker_count,
            ship_to_address, ship_to_contact_name, ship_to_mobile
     FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
   `
@@ -123,6 +129,7 @@ export async function buildDispatchPackage(
       // column), so it converts back to wire form via fromUuid, matching the
       // dispatch.ts precedent for asgnIds on the dispatch fact.
       asgnId: fromUuid('asgn', e.asgn_id),
+      dispatchGroup: e.dispatch_group,
       bankReferenceCode: e.bank_reference_code,
       branchCode: e.branch_code,
       artifacts: artifactsByAsgn.get(e.asgn_id) ?? [],
@@ -195,9 +202,22 @@ const DISPATCH_COLUMNS = [
 // the membership arithmetic is unchanged: a merchant is on a sheet because of
 // what must be PRINTED for them, and the both-groups overlap is correct, not
 // a bug.
+//
+// W-5 (Task 6, 2026-08-11 dispatch-group split): membership now keys on
+// PackageLine.dispatchGroup FIRST, falling back to the rules above ONLY when
+// dispatchGroup is null. A Task 5 split row already knows which one delivery
+// group it belongs to, so its own group tag decides membership outright, even
+// if its soundbox/standeeCount/stickerCount happen to disagree with the
+// combined-row heuristic (they describe only THAT group's products, never the
+// other group's). A null-group row is a legacy, pre-split combined row, and
+// for that row alone the original flag-based rule keeps deciding membership,
+// unchanged, so every pre-split batch still lands exactly where it always
+// has.
 export function excelLinesFor(lines: PackageLine[], group: CollateralGroup): PackageLine[] {
-  if (group === 'SOUNDBOX') return lines.filter((l) => l.soundbox)
-  return lines.filter((l) => l.standeeCount >= 1 || l.stickerCount >= 1 || !l.soundbox)
+  if (group === 'SOUNDBOX') return lines.filter((l) => l.dispatchGroup === 'SOUNDBOX' || (l.dispatchGroup === null && l.soundbox))
+  return lines.filter(
+    (l) => l.dispatchGroup === 'COLLATERAL' || (l.dispatchGroup === null && (l.standeeCount >= 1 || l.stickerCount >= 1 || !l.soundbox)),
+  )
 }
 
 const GROUP_SHEET_NAMES: Record<CollateralGroup, string> = {

@@ -103,8 +103,14 @@ async function seedComposedArtifact(
 
 // Build PackageLine[] directly for the pure membership/serialization tests,
 // so they need no database rows. Only the fields the Excel path reads.
+//
+// Task 6 (2026-08-11 dispatch-group split): dispatchGroup defaults to null
+// (legacy combined row) here, since every test in THIS file predates the
+// split and exercises the flag-based fallback rule, which excelLinesFor still
+// applies unchanged for a null-group line.
 function line(over: Partial<PackageLine> & { asgnId: string }): PackageLine {
   return {
+    dispatchGroup: null,
     bankReferenceCode: 'BK01',
     branchCode: null,
     artifacts: [],

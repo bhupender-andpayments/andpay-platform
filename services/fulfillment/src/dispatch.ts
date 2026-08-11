@@ -25,8 +25,28 @@ export class TemplateTrimMismatchError extends Error {
   }
 }
 
-// which artifacts a snapshot entry gets (from the snapshot alone, C4-safe)
-function artifactTypesFor(e: { soundbox: boolean; standee_count: number; sticker_count: number }): ArtifactType[] {
+// which artifacts a snapshot entry gets (from the snapshot alone, C4-safe).
+// Task 6 (2026-08-11 dispatch-group split): group-first, same shape as
+// package.ts's excelLinesFor. A Task 5 split row's dispatch_group decides its
+// artifact set outright: SOUNDBOX renders exactly SOUNDBOX_IMG, COLLATERAL
+// renders whichever of STANDEE_IMG/STICKER_IMG the counts call for (an
+// all-zero COLLATERAL row is a legitimate orphan and renders nothing at all).
+// A null dispatch_group is a legacy, pre-split combined row, and for that row
+// alone the original rule keeps deciding, unchanged.
+function artifactTypesFor(e: {
+  dispatch_group: string | null
+  soundbox: boolean
+  standee_count: number
+  sticker_count: number
+}): ArtifactType[] {
+  if (e.dispatch_group === 'SOUNDBOX') return ['SOUNDBOX_IMG']
+  if (e.dispatch_group === 'COLLATERAL') {
+    const t: ArtifactType[] = []
+    if (e.standee_count > 0) t.push('STANDEE_IMG')
+    if (e.sticker_count > 0) t.push('STICKER_IMG')
+    return t
+  }
+  // legacy combined row (pre-split): the original rule, unchanged.
   const t: ArtifactType[] = []
   if (e.soundbox) t.push('SOUNDBOX_IMG')
   if (e.standee_count > 0) t.push('STANDEE_IMG')
@@ -84,6 +104,7 @@ interface ComposeEntry {
   qr_value: string
   bank_reference_code: string
   branch_code: string | null
+  dispatch_group: string | null
   soundbox: boolean
   standee_count: number
   sticker_count: number
@@ -148,7 +169,7 @@ async function preRenderArtifacts(
     await enterWriteScope(tx, 'fulfillment_write', programUuid)
     const rows = await tx.$queryRaw<ComposeEntry[]>`
       SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name, bank_display_name,
-             vpa_value, qr_value, bank_reference_code, branch_code, soundbox, standee_count, sticker_count
+             vpa_value, qr_value, bank_reference_code, branch_code, dispatch_group, soundbox, standee_count, sticker_count
       FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
     `
     const cfgs = await tx.$queryRaw<BankConfigRow[]>`
@@ -351,13 +372,14 @@ export async function consumeBatchFact(
             qr_value: string
             bank_reference_code: string
             branch_code: string | null
+            dispatch_group: string | null
             soundbox: boolean
             standee_count: number
             sticker_count: number
           }[]
         >`
           SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name, bank_display_name,
-                 vpa_value, qr_value, bank_reference_code, branch_code, soundbox, standee_count, sticker_count
+                 vpa_value, qr_value, bank_reference_code, branch_code, dispatch_group, soundbox, standee_count, sticker_count
           FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
         `
 
