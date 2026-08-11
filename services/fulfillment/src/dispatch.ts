@@ -33,7 +33,11 @@ export class TemplateTrimMismatchError extends Error {
 // all-zero COLLATERAL row is a legitimate orphan and renders nothing at all).
 // A null dispatch_group is a legacy, pre-split combined row, and for that row
 // alone the original rule keeps deciding, unchanged.
-function artifactTypesFor(e: {
+// Exported for the membership contract test (Task 6 review, Important): a
+// non-exported function forced the test to assert against a hand-copied twin
+// that could silently drift. The export is test-facing only; dispatch.ts
+// remains the single implementation.
+export function artifactTypesFor(e: {
   dispatch_group: string | null
   soundbox: boolean
   standee_count: number

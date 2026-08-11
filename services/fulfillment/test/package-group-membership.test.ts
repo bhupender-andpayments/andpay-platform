@@ -3,6 +3,7 @@ import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import { excelLinesFor, buildDispatchPackage } from '../src/package.js'
 import type { PackageLine } from '../src/package.js'
+import { artifactTypesFor } from '../src/dispatch.js'
 
 // Task 6 (spec 2026-08-11, Task 5's column consumed here): membership and
 // artifact selection go GROUP-FIRST, with the legacy (dispatch_group NULL)
@@ -99,32 +100,8 @@ describe('excelLinesFor, legacy fallback (dispatch_group null, the three ratifie
   })
 })
 
-// artifactTypesFor lives in dispatch.ts and is not exported, so it is tested
-// through the same table the brief specifies, reimplemented locally at the
-// EXACT contract dispatch.ts must expose (Interfaces section): a plain
-// function of the snapshot shape, no db. This pins the CONTRACT; dispatch.ts's
-// own suite (dispatch.test.ts) exercises the real function against seeded
-// pending_pool_entry rows.
-type ArtifactType = 'SOUNDBOX_IMG' | 'STANDEE_IMG' | 'STICKER_IMG'
-function artifactTypesFor(e: {
-  dispatch_group: string | null
-  soundbox: boolean
-  standee_count: number
-  sticker_count: number
-}): ArtifactType[] {
-  if (e.dispatch_group === 'SOUNDBOX') return ['SOUNDBOX_IMG']
-  if (e.dispatch_group === 'COLLATERAL') {
-    const t: ArtifactType[] = []
-    if (e.standee_count > 0) t.push('STANDEE_IMG')
-    if (e.sticker_count > 0) t.push('STICKER_IMG')
-    return t
-  }
-  const t: ArtifactType[] = []
-  if (e.soundbox) t.push('SOUNDBOX_IMG')
-  if (e.standee_count > 0) t.push('STANDEE_IMG')
-  if (e.sticker_count > 0) t.push('STICKER_IMG')
-  return t
-}
+// The REAL artifactTypesFor, imported from dispatch.ts (exported after the
+// Task 6 review flagged that a hand-copied twin here could silently drift).
 
 describe('artifactTypesFor (dispatch.ts contract, group-first)', () => {
   it("dispatch_group 'SOUNDBOX' always yields exactly SOUNDBOX_IMG, regardless of counts", () => {
