@@ -789,6 +789,20 @@ export interface BatchJourneyView {
     failed: number
     simActivated: null
   }
+  /**
+   * When this batch was FIRST sent to the print vendor: the earliest non-null
+   * sent_to_vendor_at across its rows, or null if none carries one yet.
+   *
+   * EARLIEST, not latest, because the question the Print stage asks is "when did
+   * this batch go out", and a batch's rows are written in one pass but their
+   * timestamps are per row. The earliest is the moment the vendor could first have
+   * started; a later one would understate how long the vendor has had it.
+   *
+   * Null is a real answer and must render as an absence, not as a zero or as a
+   * substitute: `batch.createdAt` is when the batch FORMED, which is earlier and a
+   * different fact, and `batch.updatedAt` moves for unrelated reasons.
+   */
+  sentToVendorAt: string | null
   /** The stage-8 worklist: delivered, not yet activated. PII-free. */
   awaitingActivation: {
     dispatchId: string
@@ -864,11 +878,20 @@ export async function readBatchJourney(
     simActivated: null,
   } as const
 
+  // Reduced over the rows already fetched, not re-queried: sent_to_vendor_at is
+  // ALREADY in DispatchDbRow and ALREADY selected by both scopedDispatchRead
+  // queries, so this costs nothing and adds no SQL.
+  const sentAt = rows
+    .map((r) => r.sent_to_vendor_at)
+    .filter((d): d is Date => d !== null)
+    .reduce<Date | null>((min, d) => (min === null || d < min ? d : min), null)
+
   return {
     batchId,
     counts,
     courier,
     activation,
+    sentToVendorAt: iso(sentAt),
     awaitingActivation: awaiting.map((r) => ({
       dispatchId: r.dispatch_id,
       merchantDisplay: r.merchant_display,

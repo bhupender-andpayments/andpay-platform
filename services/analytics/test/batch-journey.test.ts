@@ -25,16 +25,18 @@ async function insertRow(args: {
   activationStatus?: string | null
   awb?: string | null
   dispatchGroup?: string | null
+  sentToVendorAt?: Date | null
 }): Promise<void> {
   await db.$executeRaw`
     INSERT INTO dispatch_row
       (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
        batch_id, pipeline_state, courier_status, delivery_date, activation_status,
-       awb, dispatch_group, billable_flag, received_at, updated_at)
+       awb, dispatch_group, sent_to_vendor_at, billable_flag, received_at, updated_at)
     VALUES (${args.dispatchId}, ${args.programId}::uuid, 'HDFC', 'HDFC Bank', 'Acme', ARRAY['DEV1']::text[],
             ${args.batchId}, ${args.pipelineState}, ${args.courierStatus ?? null},
             ${args.deliveryDate ?? null}, ${args.activationStatus ?? null},
-            ${args.awb ?? null}, ${args.dispatchGroup ?? null}, true, now(), now())`
+            ${args.awb ?? null}, ${args.dispatchGroup ?? null}, ${args.sentToVendorAt ?? null},
+            true, now(), now())`
 }
 
 describe('readBatchJourney', () => {
@@ -154,5 +156,51 @@ describe('readBatchJourney', () => {
     // Its real owner does see it.
     const owned = await readBatchJourney(db, { kind: 'own', programIds: [progB] }, BATCH)
     expect(owned?.counts.total).toBe(1)
+  })
+
+  // The MIXED batch, which is every real batch: one bank request becomes a SOUNDBOX
+  // row and a COLLATERAL row. `total` counts both, because a COLLATERAL row really
+  // is printed, sent and dispatched. `deliverableAndActivatable` counts only what
+  // can reach DELIVERED and be activated, which is the denominator the workflow
+  // rail's last two stages measure against. Without it, delivered === total was
+  // unreachable for any batch carrying collateral and the Activation stage could
+  // never be reached at all.
+  it('counts the deliverable and activatable subset separately from the batch total', async () => {
+    // Two soundboxes, two collateral, one LEGACY row whose dispatch_group is null.
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DELIVERED', dispatchGroup: 'SOUNDBOX', deliveryDate: new Date('2026-08-10T10:00:00.000Z') })
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DELIVERED', dispatchGroup: 'SOUNDBOX', deliveryDate: new Date('2026-08-10T11:00:00.000Z') })
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED', dispatchGroup: 'COLLATERAL' })
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED', dispatchGroup: 'COLLATERAL' })
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DELIVERED', dispatchGroup: null, deliveryDate: new Date('2026-08-10T12:00:00.000Z') })
+
+    const view = (await readBatchJourney(db, { kind: 'crossTenant' }, BATCH))!
+    expect(view.counts.total).toBe(5)
+    // The two soundboxes plus the legacy row. A legacy row (dispatch_group null)
+    // predates the split and DOES activate, which is why the predicate accepts it.
+    expect(view.counts.deliverableAndActivatable).toBe(3)
+    // The subset is genuinely a subset, and delivered can now reach it.
+    expect(view.counts.delivered).toBe(3)
+    expect(view.counts.delivered).toBe(view.counts.deliverableAndActivatable)
+    // And it is NOT the total, which is the whole point.
+    expect(view.counts.delivered).not.toBe(view.counts.total)
+  })
+
+  it('reports the EARLIEST handoff instant across the batch, and null when none is recorded', async () => {
+    // Rows are written in one pass but their timestamps are per row. The earliest is
+    // the moment the vendor could first have started; a later one would understate
+    // how long they have had it.
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'SENT_TO_VENDOR', sentToVendorAt: new Date('2026-08-11T12:00:00.000Z') })
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'SENT_TO_VENDOR', sentToVendorAt: new Date('2026-08-11T10:00:00.000Z') })
+    // A row with no timestamp must not defeat the reduce.
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'BATCHED', sentToVendorAt: null })
+
+    const view = (await readBatchJourney(db, { kind: 'crossTenant' }, BATCH))!
+    expect(view.sentToVendorAt).toBe('2026-08-11T10:00:00.000Z')
+
+    // A batch where nothing carries one answers null, which the Print stage renders
+    // as an absence rather than substituting the batch's own createdAt.
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: OTHER_BATCH, pipelineState: 'BATCHED', sentToVendorAt: null })
+    const none = (await readBatchJourney(db, { kind: 'crossTenant' }, OTHER_BATCH))!
+    expect(none.sentToVendorAt).toBeNull()
   })
 })

@@ -106,6 +106,15 @@ export interface DerivedWorkflow {
      * Always an array, never null, so a consumer can map over it unconditionally.
      */
     awaitingActivation: BatchJourneyView['awaitingActivation']
+    /**
+     * When the batch was FIRST sent to the print vendor, or null when the journey
+     * read has not answered or no row carries the timestamp yet. Null must render
+     * as an absence: the Print stage deliberately showed NO timestamp until this
+     * arrived, because the only alternatives were batch.createdAt (when the batch
+     * formed, earlier and a different fact) and batch.updatedAt (which moves for
+     * unrelated reasons).
+     */
+    sentToVendorAt: string | null
   }
 }
 
@@ -151,6 +160,7 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
         elapsedMsInStage: s.elapsedMsInStage,
         // Pool mode has no journey read, so there is nothing to badge.
         watermark: null,
+        sentToVendorAt: null,
         // And nothing has been delivered yet, so there is no worklist.
         awaitingActivation: [],
       },
@@ -231,6 +241,7 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
       elapsedMsInStage: s.elapsedMsInStage,
       watermark: s.journey?.watermark ?? null,
       awaitingActivation: s.journey?.awaitingActivation ?? [],
+      sentToVendorAt: s.journey?.sentToVendorAt ?? null,
     },
   }
 }

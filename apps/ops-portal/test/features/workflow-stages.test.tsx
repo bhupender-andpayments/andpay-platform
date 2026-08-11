@@ -197,18 +197,41 @@ describe('PrintStage', () => {
     expect(container.textContent).not.toMatch(/pulled|downloaded|collected|picked up by/i)
   })
 
-  // The ruling with the most reasoning behind it, and it had no test.
-  // dispatch_row.sent_to_vendor_at exists but BatchJourneyView does not select it, so
-  // this stage has no honest instant to show. batch.createdAt is when the batch FORMED,
-  // earlier and different; batch.updatedAt moves for unrelated reasons. Substituting
-  // either would put a plausible wrong time on screen.
-  it('shows NO availability timestamp, because no read here carries one', () => {
+  // The ruling with the most reasoning behind it. This stage rendered NO timestamp
+  // at all until the journey read could answer one, because the only alternatives
+  // were batch.createdAt (when the batch FORMED, earlier and a different fact) and
+  // batch.updatedAt (which moves for unrelated reasons), and either would have put a
+  // plausible wrong time on screen. BatchJourneyView now carries sentToVendorAt, the
+  // earliest non-null sent_to_vendor_at across the batch, so BOTH directions matter:
+  // a real instant renders, and its absence still renders as an absence.
+  it('shows no date at all when no handoff time has been recorded', () => {
+    // journey is null on this snapshot, so facts.sentToVendorAt is null.
     const { container } = wrap(<PrintStage derived={deriveWorkflow(snapshot({ batchDetail: detail }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
     // Nothing date-shaped at all, in any format fmtDateTime or fmtDate can produce.
     expect(container.textContent).not.toMatch(/\d{1,2} [A-Z][a-z]{2}/)
     // And specifically not the batch's own createdAt, so a future substitution of it
     // fails loudly here rather than shipping as a plausible wrong time.
     expect(container.textContent).not.toContain(fmtDateTime(BATCH_DETAIL.batch.createdAt))
+    expect(container.textContent).toMatch(/no handoff time has been recorded/i)
+  })
+
+  it('renders the recorded handoff instant, and it is NOT the batch createdAt', () => {
+    const sentAt = '2026-08-11T14:12:00.000Z'
+    const j = {
+      batchId: 'btch_1',
+      counts: { total: 4, deliverableAndActivatable: 4, sentToVendor: 4, dispatched: 0, delivered: 0, activated: 0 },
+      courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
+      activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null as null },
+      awaitingActivation: [],
+      sentToVendorAt: sentAt,
+      watermark: { asOf: '2026-08-11T15:00:00.000Z', perTopic: {} },
+    }
+    const { container } = wrap(<PrintStage derived={deriveWorkflow(snapshot({ batchDetail: detail, journey: j }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
+    expect(container.textContent).toContain(fmtDateTime(sentAt))
+    // The two are DIFFERENT instants, which is the whole reason this field exists
+    // rather than the batch's own createdAt being reused.
+    expect(container.textContent).not.toContain(fmtDateTime(BATCH_DETAIL.batch.createdAt))
+    expect(container.textContent).not.toMatch(/no handoff time has been recorded/i)
   })
 
   it('says the vendor can pull it now, and that the downloads are for checking', () => {
@@ -229,6 +252,7 @@ describe('DispatchStage', () => {
       courier: { pickedUp: 3, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
       activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null as null },
       awaitingActivation: [],
+      sentToVendorAt: null,
       watermark: { asOf: '2026-08-11T09:00:00.000Z', perTopic: {} },
     }
     const detail = { ...BATCH_DETAIL, artifacts: [{ asgnId: 'a', artifactType: 'SOUNDBOX_IMG', assetReference: 'r', supersededAt: null }] }
@@ -249,6 +273,7 @@ describe('DeliveryStage', () => {
       courier: { pickedUp: 1, inTransit: 1, outForDelivery: 1, delivered: 7, exception: 0 },
       activation: { awaiting: 7, activated: 0, failed: 0, simActivated: null as null },
       awaitingActivation: [],
+      sentToVendorAt: null,
       watermark: { asOf: '2026-08-11T09:00:00.000Z', perTopic: {} },
     }
     const detail = { ...BATCH_DETAIL, artifacts: [{ asgnId: 'a', artifactType: 'SOUNDBOX_IMG', assetReference: 'r', supersededAt: null }] }
@@ -265,6 +290,7 @@ describe('DeliveryStage', () => {
       courier: { pickedUp: 1, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
       activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null as null },
       awaitingActivation: [],
+      sentToVendorAt: null,
       watermark: { asOf: '2026-08-11T09:00:00.000Z', perTopic: {} },
     }
     const detail = { ...BATCH_DETAIL, artifacts: [{ asgnId: 'a', artifactType: 'SOUNDBOX_IMG', assetReference: 'r', supersededAt: null }] }
@@ -286,6 +312,7 @@ describe('ActivationStage', () => {
       { dispatchId: 'asgn_a', merchantDisplay: 'Acme', awb: 'AWB1', deliveryDate: '2026-08-10T10:00:00.000Z' },
       { dispatchId: 'asgn_b', merchantDisplay: 'Kirana', awb: 'AWB2', deliveryDate: '2026-08-10T11:00:00.000Z' },
     ],
+    sentToVendorAt: null,
     watermark: { asOf: '2026-08-11T09:00:00.000Z', perTopic: {} },
   }
   const detail = { ...BATCH_DETAIL, artifacts: [{ asgnId: 'a', artifactType: 'SOUNDBOX_IMG', assetReference: 'r', supersededAt: null }] }

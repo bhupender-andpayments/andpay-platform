@@ -1254,6 +1254,16 @@ export interface BatchJourneyView {
     failed: number
     simActivated: null
   }
+  /**
+   * When this batch was FIRST sent to the print vendor: the earliest non-null
+   * sent_to_vendor_at across its rows, or null when no row carries one yet.
+   *
+   * Null renders as an ABSENCE. Never substitute batch.createdAt (when the batch
+   * FORMED, an earlier and different fact) or batch.updatedAt (which moves for
+   * unrelated reasons); the Print stage had no timestamp at all until this field
+   * existed, precisely because those two were the only alternatives.
+   */
+  sentToVendorAt: string | null
   /** The stage-8 worklist: delivered, not yet activated. */
   awaitingActivation: {
     dispatchId: string

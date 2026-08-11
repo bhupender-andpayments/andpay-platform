@@ -13,6 +13,7 @@ function journey(over: Partial<BatchJourneyView> = {}): BatchJourneyView {
     courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
     activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null },
     awaitingActivation: [],
+    sentToVendorAt: null,
     watermark: { asOf: null, perTopic: {} },
     ...over,
   }

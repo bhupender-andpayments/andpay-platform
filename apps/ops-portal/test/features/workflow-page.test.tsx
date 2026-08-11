@@ -170,6 +170,7 @@ function journey(over: Record<string, unknown> = {}) {
     courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
     activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null },
     awaitingActivation: [],
+    sentToVendorAt: null,
     watermark: { asOf: '2026-08-11T09:00:00.000Z', perTopic: {} },
     ...over,
   }

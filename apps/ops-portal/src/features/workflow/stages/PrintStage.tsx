@@ -11,7 +11,7 @@ import {
   printLayoutLabel,
 } from '../../../lib/dispatchGroups.js'
 import { ErrorNote, InfoNote } from '../../../ui/primitives.js'
-import { fmtNumber } from '../../../ui/format.js'
+import { fmtNumber, fmtDateTime } from '../../../ui/format.js'
 import type { DerivedWorkflow } from '../workflowStage.js'
 
 // Stage 5. THE STAGE WITH NOTHING TO PRESS, and that is also the whole design.
@@ -119,15 +119,24 @@ export function PrintStage({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {/* NO AVAILABILITY TIMESTAMP HERE YET, and the blank is deliberate.
-              dispatch_row.sent_to_vendor_at does exist and the
-              print-vendor-pendency report already exposes it, but BatchJourneyView
-              does not select it, so this stage has no honest instant to show.
-              Substituting the batch's own createdAt (when the batch FORMED, which
-              is earlier and different) or updatedAt (which moves for unrelated
-              reasons) would put a plausible wrong time on screen, which is exactly
-              the class of defect this workspace exists to remove. Widening the
-              analytics read and its DTO is tracked outside features/workflow. */}
+          {/* THE AVAILABILITY TIMESTAMP, which this stage deliberately went without
+              until the journey read could answer it. The seam that used to be here
+              said so: sent_to_vendor_at existed on dispatch_row and the
+              print-vendor-pendency report already exposed it, but BatchJourneyView
+              did not carry it, and substituting the batch's own createdAt (when the
+              batch FORMED, earlier and a different fact) or updatedAt (which moves
+              for unrelated reasons) would have put a plausible wrong time on screen.
+              It is now the EARLIEST non-null sent_to_vendor_at across the batch's
+              rows, and null still renders as an absence rather than as a guess. */}
+          {derived.facts.sentToVendorAt !== null ? (
+            <p className="text-sm text-foreground">
+              {`Available to the vendor since ${fmtDateTime(derived.facts.sentToVendorAt)}.`}
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No handoff time has been recorded for this batch yet.
+            </p>
+          )}
           <p className="text-sm text-foreground">
             The print vendor can pull it now, under their own credential. Nothing records when they do, so this stage
             cannot tell you whether they have.
