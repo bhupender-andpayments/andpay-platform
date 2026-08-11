@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { PrismaClient, readBatchJourney } from '../src/index.js'
+import { PrismaClient } from '../generated/client/index.js'
+import { readBatchJourney } from '../src/mediation.js'
 
-const db = new PrismaClient()
+const url =
+  process.env.ANALYTICS_DATABASE_URL ??
+  'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics'
+const db = new PrismaClient({ datasourceUrl: url })
+
 afterAll(async () => { await db.$disconnect() })
 
 const BATCH = `btch_${randomUUID().replace(/-/g, '')}`
