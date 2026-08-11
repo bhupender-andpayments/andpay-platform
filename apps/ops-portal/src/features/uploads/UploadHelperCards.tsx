@@ -6,7 +6,10 @@ import type { StepKey, UploadKind } from './uploadKinds.js'
 // "Good to know" is the kind's real contract (the 5 MB cap, server-side
 // parsing, where quarantined rows land), stated BEFORE an operator wastes an
 // upload rather than in a rejection message afterwards.
-function HelperCard({ heading, lines, numbered }: { heading: string; lines: readonly string[]; numbered: boolean }) {
+// Exported because the workflow workspace renders the same two cards under its
+// own eight-stage flow, and had a byte-for-byte copy of this. One card, so the
+// two surfaces cannot drift apart.
+export function HelperCard({ heading, lines, numbered }: { heading: string; lines: readonly string[]; numbered: boolean }) {
   return (
     <Card>
       <CardContent className="pt-6">

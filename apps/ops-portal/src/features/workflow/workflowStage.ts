@@ -44,6 +44,17 @@ export interface WorkflowSnapshot {
   /** Pool mode only: that preview has been committed. */
   hasCommitted: boolean
   /**
+   * Pool mode only: a commit has been accepted and NO pool read has shown its
+   * records yet, so the flow is waiting on the relay and the fulfillment consumer
+   * rather than on a person. It is the one window in pool mode where the machine
+   * is working, and it is why pool mode is not a single cadence.
+   *
+   * Note it is not the same thing as `!hasCommitted`: `hasCommitted` is the pool
+   * confirmation itself, so this is true only in the gap BEFORE it, and false
+   * again once the pool has caught up.
+   */
+  commitAwaitingPool: boolean
+  /**
    * How long the current stage has been the current stage. Passed IN rather than
    * computed from Date.now() so this module stays pure and its tests stay
    * deterministic.
@@ -119,8 +130,15 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
       current,
       completed: order(done),
       isComplete: false,
-      // Every pool stage waits on a person: drop a file, review it, decide to batch.
-      pollSpeed: 'slow',
+      // Pool mode waits on a PERSON almost throughout: drop a file, review it,
+      // decide to batch. There is exactly one window where it does not, and it is
+      // on the primary flow: between a commit and the pool showing that commit's
+      // records, the screen is waiting on the relay and the fulfillment consumer.
+      // At the slow cadence the rail took up to thirty seconds to move there.
+      // The cadence rule lives here rather than being overridden in the page,
+      // because a second rule beside this derivation is the defect class this
+      // module exists to remove.
+      pollSpeed: s.commitAwaitingPool ? 'fast' : 'slow',
       facts: {
         fileTraceable: true,
         journeyAvailable: false,

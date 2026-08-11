@@ -3,6 +3,7 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { getPoolEntries, triggerBatch, getDevices, type PoolEntryRow } from '../../api/endpoints.js'
 import { Card, CardHeader, Button, ErrorNote, InfoNote, CodeChip, SkeletonRows, Field, Input } from '../../ui/primitives.js'
+import { fmtNumber } from '../../ui/format.js'
 
 // The cap the ops-edge enforces on the trigger reason (BRD 5.3.4). Mirrored
 // here so the operator hits a maxLength on the keyboard rather than a 400 after
@@ -63,6 +64,19 @@ export function groupBatchablePools(entries: readonly PoolEntryRow[]): Batchable
   })
 }
 
+/**
+ * How close a pool is to batching itself, for a caller that resolved the
+ * configured lot size. Says the lot size is not configured rather than printing
+ * one: the domain's ultimate fallback is a code default inside the fulfillment
+ * service, and restating it here would make the portal a second source of truth
+ * for it.
+ */
+function lotProgress(records: number, lot: number | null): string {
+  return lot === null
+    ? `${fmtNumber(records)} ready, lot size not configured`
+    : `${fmtNumber(records)} of ${fmtNumber(lot)} ready`
+}
+
 function ageInDays(iso: string): number {
   const ms = Date.now() - new Date(iso).getTime()
   return Math.max(0, Math.floor(ms / 86_400_000))
@@ -79,7 +93,34 @@ function ageInDays(iso: string): number {
  * The parent already owns a `load` for that table and already hands it to
  * PoolEntryActions as `onChanged`. This is the same wire, for the other write.
  */
-export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
+export function BatchablePools({
+  onTriggered,
+  reloadKey,
+  lotSizeFor,
+}: {
+  onTriggered?: () => void
+  /**
+   * A value that changes when the caller has learned the pool changed. This card
+   * owns its own read, so without it the card would sit stale behind a page that
+   * polls: the workflow workspace commits a bank file, its own poll sees the new
+   * records, and this list would still be showing the pool from before the commit
+   * with no trigger for them. The workspace passes its pool fingerprint.
+   *
+   * A prop rather than a React `key` on purpose: remounting would also discard
+   * whatever reason the operator had already typed.
+   */
+  reloadKey?: string
+  /**
+   * How close a pool is to batching itself, when the caller knows. Returns the
+   * configured lot size for that pool's scope, or null when none is configured.
+   *
+   * Injected rather than read here because the resolution belongs to whoever
+   * already holds GET /ops/batching-config, and because the caller that does not
+   * hold it must show nothing rather than a number this component invented. Given
+   * no function, no line renders and this component is exactly what it was.
+   */
+  lotSizeFor?: (tenantId: string, programId: string) => number | null
+}) {
   const { client } = useAuth()
   const [pools, setPools] = useState<BatchablePool[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -116,7 +157,7 @@ export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
   useEffect(() => {
     void load()
     // `load` is redefined every render, so it is deliberately not a dependency.
-  }, [client])
+  }, [client, reloadKey])
 
   async function handleTrigger(pool: BatchablePool): Promise<void> {
     const key = `${pool.tenantId}|${pool.programId}`
@@ -191,6 +232,17 @@ export function BatchablePools({ onTriggered }: { onTriggered?: () => void }) {
                     {pool.banks === 1 ? 'bank' : 'banks'},{' '}
                     {days === 0 ? 'oldest added today' : `oldest ${days} ${days === 1 ? 'day' : 'days'} old`}
                   </span>
+                  {/* How close this pool is to forming a batch WITHOUT anybody
+                      here, which is the one question that decides whether the
+                      trigger beside it should be used at all. Rendered only when
+                      the caller resolved the configured lot size: a screen that
+                      does not know says nothing rather than printing a default
+                      the fulfillment service owns. */}
+                  {lotSizeFor !== undefined && (
+                    <span className="num text-sm text-muted-foreground">
+                      {lotProgress(pool.records, lotSizeFor(pool.tenantId, pool.programId))}
+                    </span>
+                  )}
                   {/* A STOCK WARNING, NOT A BLOCK, and the distinction is the
                       ruling. Batching never touched `unit` and still does not:
                       no device is reserved here, and the print vendor chooses

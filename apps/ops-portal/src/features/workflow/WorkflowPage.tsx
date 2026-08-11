@@ -21,6 +21,9 @@ import {
 } from '../../api/endpoints.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { EmptyState, ErrorNote, InfoNote, PageHeader, SkeletonRows } from '../../ui/primitives.js'
+// The two cards under the flow are the uploads flow's own, imported rather than
+// copied: this file held a byte-for-byte duplicate of them.
+import { HelperCard } from '../uploads/UploadHelperCards.js'
 import { LiveWorkView } from './LiveWorkView.js'
 import { NeedsYouBlock } from './NeedsYouBlock.js'
 import { WorkflowRail } from './WorkflowRail.js'
@@ -55,6 +58,16 @@ import { ActivationStage } from './stages/ActivationStage.js'
 //      the fast cadence is three seconds: a workspace left open on a second
 //      monitor overnight would otherwise ask the edge for a batch journey twenty
 //      thousand times for nobody.
+//
+// THE POOL'S TRIGGER IS ON THE LANDING VIEW, NOT ON STAGE 3, and the rail does
+// not move for a full pool. Pooled records waiting on a human were shown on the
+// landing view and could only be acted on from BatchStage, which pool mode reaches
+// only after an in-session commit, so a fresh session could see six pooled records
+// and had no way to batch them. LiveWorkView renders BatchablePools now and
+// BatchStage does not. What did NOT change is the rail: pending_pool_entry holds
+// no file_id, so a fresh session cannot know that any file completed, and a
+// non-empty pool must therefore leave the rail at step 1 of 8. Only reachability
+// moved.
 //
 // NO OPTIMISTIC ADVANCE, anywhere. A commit returns counts, and those counts are
 // rendered, but the rail moves to Batch only after a POOL READ shows the pool has
@@ -100,41 +113,20 @@ function asArray<T>(rows: unknown): T[] {
  * The pool as a comparable value. Used for one question only: did the commit
  * actually change the pool. Ids rather than a count, so a commit that pooled one
  * record while a batch drained another still reads as a change.
+ *
+ * IT TAKES AN ARRAY, NEVER NULL, and that is the fix for a real defect rather
+ * than a tidy-up. It used to answer '' for a null pool, so a commit made while
+ * the mount pool read had FAILED took '' as its baseline, and the first
+ * successful read of PRE-EXISTING rows differed from '' and confirmed an advance
+ * that commit had not caused. A pool we never saw cannot be compared against, so
+ * there is now no value to compare it as. See handleCommit.
  */
-function poolFingerprint(rows: readonly PoolEntryRow[] | null): string {
-  if (rows === null) return ''
+function poolFingerprint(rows: readonly PoolEntryRow[]): string {
   return [...rows.map((r) => r.asgnId)].sort().join(',')
 }
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback
-}
-
-// The two cards under the flow, identical in shape to the uploads flow's
-// UploadHelperCards so the two read as one system: WHAT HAPPENS NEXT re-renders
-// per stage so it is never stale filler, and GOOD TO KNOW states the real
-// contract before the operator waits on something that is not going to happen.
-function HelperCard({ heading, lines, numbered }: { heading: string; lines: readonly string[]; numbered: boolean }) {
-  return (
-    <Card>
-      <CardContent className="pt-6">
-        <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{heading}</p>
-        {numbered ? (
-          <ol className="list-decimal space-y-1.5 pl-4 text-sm text-muted-foreground">
-            {lines.map((l) => (
-              <li key={l}>{l}</li>
-            ))}
-          </ol>
-        ) : (
-          <ul className="list-disc space-y-1.5 pl-4 text-sm text-muted-foreground">
-            {lines.map((l) => (
-              <li key={l}>{l}</li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
-  )
 }
 
 // Stages 1 and 2 in BATCH mode. They are complete-by-definition there (honesty
@@ -258,6 +250,9 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
    * ref because the polled `refresh` closes over it: a stale closure would leave
    * the rail unable to ever notice.
    *
+   * It stays NULL when the pool was never successfully read, because there is
+   * then nothing for a later read to differ from. See handleCommit.
+   *
    * ITS ONE HONEST LIMIT: a pool read carries no file id (PoolEntryRow has no
    * such field), so "the pool changed" is the closest thing to "the rows this
    * commit accepted are now pooled" that is actually observable. A pool that
@@ -364,6 +359,12 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
     journey,
     hasPreview: previewOk,
     hasCommitted: poolConfirmed,
+    // The one window in pool mode where the MACHINE is working: the commit has
+    // been accepted and no pool read has shown its records yet, so the relay and
+    // the fulfillment consumer are what is being waited on. Reading the ref during
+    // render is safe because every write to it is paired with a setState in the
+    // same block, so a render always follows one.
+    commitAwaitingPool: commitBaseline.current !== null,
     elapsedMsInStage: Math.max(0, now - stageEnteredAt),
   })
 
@@ -399,8 +400,9 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
     if (hidden) return
     if (derived.pollSpeed === 'off') return
     const ms = derived.pollSpeed === 'fast' ? pollIntervals.fast : pollIntervals.slow
+    // No setNow here: `refresh` sets it on every path it can take, including both
+    // of its error paths, so a second one would only be a second place to forget.
     const id = window.setInterval(() => {
-      setNow(Date.now())
       void refresh()
     }, ms)
     return () => {
@@ -443,7 +445,17 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
     setCommitting(true)
     // The pool as it is BEFORE the write, recorded before the await so a poll
     // landing mid-commit cannot move the goalposts.
-    commitBaseline.current = poolFingerprint(pools)
+    //
+    // A NULL POOL IS NOT AN EMPTY POOL, and conflating them confirmed advances
+    // that had not happened. If the mount pool read failed, this commit has no
+    // baseline to be compared against and therefore cannot be confirmed by any
+    // later read: the first successful read would differ from an assumed-empty
+    // pool merely by showing rows that were already there. So the baseline stays
+    // null and the rail stays where it is. This is strictly behind the system,
+    // which is the property the no-optimistic-advance rule protects; the commit's
+    // own counts still render, and the pool card above the rail reads the pool for
+    // itself.
+    commitBaseline.current = pools === null ? null : poolFingerprint(pools)
     try {
       // ONE key per click, minted here, reused by the client across its own
       // refresh-and-retry so a retried write can never become a second one.
@@ -554,7 +566,17 @@ function Workspace({ btchId, pollIntervals }: { btchId: string | null; pollInter
   return (
     <div className="flex flex-col gap-6">
       {mode === 'pool' ? (
-        <LiveWorkView pools={pools} batches={batches} configs={configs} now={now} loadError={loadError} />
+        <LiveWorkView
+          batches={batches}
+          configs={configs}
+          // The pool card owns its own read, so it is told when this page's poll
+          // saw the pool move. Without it the actionable card would sit behind
+          // the page: a commit would advance the rail while the card still showed
+          // the pool from before it, with no trigger for the new records.
+          poolReloadKey={pools === null ? '' : poolFingerprint(pools)}
+          onChanged={onChanged}
+          loadError={loadError}
+        />
       ) : (
         <>
           <PageHeader

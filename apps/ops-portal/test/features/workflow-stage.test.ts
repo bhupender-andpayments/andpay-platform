@@ -35,6 +35,7 @@ function batchMode(over: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
     journey: journey(),
     hasPreview: false,
     hasCommitted: false,
+    commitAwaitingPool: false,
     elapsedMsInStage: 0,
     ...over,
   }
@@ -232,6 +233,45 @@ describe('deriveWorkflow: the poll speed follows who is being waited on', () => 
 
   it('polls slow while a HUMAN is being waited on', () => {
     const d = deriveWorkflow({ ...batchMode(), mode: 'pool', batchDetail: null, journey: null })
+    expect(d.pollSpeed).toBe('slow')
+  })
+
+  // The one window where pool mode is NOT waiting on a person, and it is on the
+  // primary flow. A commit writes fct.tms.bank_file_row.v1 to the TMS outbox and
+  // the records are pooled only once the relay has published it and the
+  // fulfillment consumer has folded it, so between the commit and the pool
+  // showing them the screen is waiting on the machine. At the slow cadence the
+  // rail took up to thirty seconds to move.
+  it('polls FAST in pool mode while a commit is still waiting on the pool', () => {
+    const d = deriveWorkflow({
+      ...batchMode(),
+      mode: 'pool',
+      batchDetail: null,
+      journey: null,
+      hasPreview: true,
+      // The commit landed; no pool read has shown its records yet, so hasCommitted
+      // is still false. That gap is the whole point.
+      hasCommitted: false,
+      commitAwaitingPool: true,
+    })
+    expect(d.pollSpeed).toBe('fast')
+    // And the rail has NOT moved for it: only a pool read may do that.
+    expect(d.current).toBe('validate')
+  })
+
+  it('returns to slow in pool mode once the pool has confirmed the commit', () => {
+    const d = deriveWorkflow({
+      ...batchMode(),
+      mode: 'pool',
+      batchDetail: null,
+      journey: null,
+      hasPreview: true,
+      hasCommitted: true,
+      commitAwaitingPool: false,
+    })
+    expect(d.current).toBe('batch')
+    // Batching a pool early is a person's decision, so there is nothing left to
+    // watch at three-second intervals.
     expect(d.pollSpeed).toBe('slow')
   })
 

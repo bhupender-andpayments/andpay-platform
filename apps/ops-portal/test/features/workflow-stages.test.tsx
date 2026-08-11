@@ -45,7 +45,7 @@ const BATCH_DETAIL = {
 function snapshot(over: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
   return {
     mode: 'batch', pools: [], batchDetail: BATCH_DETAIL, journey: null,
-    hasPreview: false, hasCommitted: false, elapsedMsInStage: 0, ...over,
+    hasPreview: false, hasCommitted: false, commitAwaitingPool: false, elapsedMsInStage: 0, ...over,
   }
 }
 
@@ -61,11 +61,33 @@ describe('BatchStage', () => {
   beforeEach(() => { clearAccessToken(); setAccessToken('tok-1'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup() })
 
-  // Pool mode REUSES BatchablePools rather than reimplementing the trigger form,
-  // the per-pool reason field, the grouping or the stock advisory. Finding that
-  // component's own heading is what proves it was reused.
-  it('reuses the existing batchable-pools control in pool mode', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([])))
+  // Pool mode EXPLAINS AND POINTS, and carries no trigger of its own. It used to
+  // render BatchablePools here, which put the workspace's only trigger behind a
+  // stage pool mode reaches only after an in-session commit; that control now
+  // lives in LiveWorkView, which is on screen on every load. Rendering it in both
+  // would put two reason fields and two Trigger buttons on one page for one pool,
+  // because this stage and LiveWorkView are on screen together at step 3.
+  it('explains batching in pool mode and carries NO trigger of its own', async () => {
+    // A POOLED row on the wire, so a BatchablePools left behind here would have
+    // something to render a reason field and a Trigger button FOR. Answering with
+    // an empty list would make the two absence assertions below pass whether the
+    // component is here or not.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) =>
+        String(input).includes('/ops/pool')
+          ? jsonResponse([
+              {
+                asgnId: 'asgn_1', merchantDisplayName: 'Acme', merchantLegalName: 'ACME LTD',
+                bankReferenceCode: 'HDFC001', bankDisplayName: 'HDFC Bank', branchCode: 'BR1',
+                soundbox: true, standeeCount: 0, stickerCount: 0, poolStatus: 'POOLED',
+                dispatchState: null, shipToSuperseded: false, dispatchGroup: 'SOUNDBOX', batch: null,
+                createdAt: '2026-08-10T09:00:00.000Z', tenantId: 'tnnt_1', programId: 'prg_1',
+              },
+            ])
+          : jsonResponse([]),
+      ),
+    )
     wrap(
       <BatchStage
         derived={deriveWorkflow(snapshot({ mode: 'pool', batchDetail: null }))}
@@ -74,8 +96,15 @@ describe('BatchStage', () => {
         onChanged={() => {}}
       />,
     )
-    expect(await screen.findByText(/ready to batch/i)).toBeTruthy()
+    // Let anything that DID mount finish its own read before the absences are
+    // claimed, so this cannot pass merely by being early.
+    await act(async () => { await new Promise((r) => { setTimeout(r, 0) }) })
+
     expect(screen.getByText(/forms on its own/i)).toBeTruthy()
+    // Where the one control is, said out loud rather than left to be hunted for.
+    expect(screen.getByText(/pool card above/i)).toBeTruthy()
+    expect(screen.queryByLabelText(/reason/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /trigger batch/i })).toBeNull()
   })
 
   it('summarises a formed batch, and omits the reason line when no human fired it', () => {

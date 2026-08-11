@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, act, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, act, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -222,7 +222,8 @@ interface StubOptions {
   /** POOLED rows. Mutated by a bank commit, so the pool read after a commit differs. */
   pool?: unknown
   batches?: unknown
-  detail?: unknown
+  /** `404` makes the batch-detail read 404, which is the "no such batch" case. */
+  detail?: unknown | 404
   /** `404` makes the journey read 404, the analytics-projection-has-no-rows case. */
   journeyBody?: unknown | 404
   artifacts?: { asgnId: string; artifactType: string; assetReference: string; supersededAt: string | null }[]
@@ -270,7 +271,13 @@ function stub(opts: StubOptions = {}): Call[] {
         return jsonResponse(opts.journeyBody ?? journey())
       }
       if (url.includes('/ops/batching-config')) return jsonResponse(CONFIGS)
-      if (/\/ops\/batches\/btch_/.test(url)) return jsonResponse(opts.detail ?? batchDetail(opts.artifacts))
+      // Any /ops/batches/<id>, not only a well-formed btch_ one: the "no such
+      // batch" branch is reached by a MISTYPED id, so a stub that only answered
+      // for real-looking ids could not express the case it exists for.
+      if (/\/ops\/batches\/[^/?]+/.test(url)) {
+        if (opts.detail === 404) return jsonResponse({ message: 'no such batch' }, 404)
+        return jsonResponse(opts.detail ?? batchDetail(opts.artifacts))
+      }
       if (url.includes('/ops/batches')) return jsonResponse(opts.batches ?? BATCHES)
       if (url.includes('/ops/pool')) {
         if (!committed) return jsonResponse(poolBefore)
@@ -347,6 +354,16 @@ describe('WorkflowPage: the landing view', () => {
     expect(screen.getByRole('link', { name: /btch_bbb/i })).toBeTruthy()
     // 1,234 through fmtNumber, not a bare 1234.
     expect(screen.getByText(/1,234/)).toBeTruthy()
+
+    // THE NEGATIVE, which is the half the name promises. The row carries an id, a
+    // count and a timestamp and NOTHING that reads as a stage or a status: the
+    // batch list read carries neither, so anything of that shape here would be
+    // invented. Adding `triggerReason` (LOT_SIZE, which is on the fixture) or a
+    // stage label to the row fails this.
+    expect(link.textContent).not.toMatch(/lot_size|lot size/i)
+    for (const label of ['Upload', 'Validate', 'Generate', 'Print', 'Dispatch', 'Delivery', 'Activation']) {
+      expect(link.textContent).not.toMatch(new RegExp(label, 'i'))
+    }
   })
 
   it('selecting a batch moves to /workflow/:btchId and renders its rail', async () => {
@@ -354,10 +371,38 @@ describe('WorkflowPage: the landing view', () => {
     renderAt('/workflow')
     await userEvent.click(await screen.findByRole('link', { name: /btch_aaa/i }))
     expect(await screen.findByRole('navigation', { name: /workflow stages/i })).toBeTruthy()
-    // Batch mode, not the landing view: the way back appears and the two live
-    // regions are gone.
+    // Batch mode, not the landing view: the way back appears and the live pool
+    // region is gone. A pool trigger on a page scoped to ONE batch would act on
+    // something the page is not about, so the pool section is pool mode only.
     expect(screen.getByRole('link', { name: /everything in flight/i })).toBeTruthy()
-    expect(screen.queryByText(/waiting to be batched/i)).toBeNull()
+    expect(screen.queryByText(/ready to batch/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /trigger batch/i })).toBeNull()
+  })
+
+  // REQUIREMENT A, and both halves matter.
+  //
+  // Observed live: six records sat POOLED, this screen showed them, and the reason
+  // field and the Trigger button existed only inside BatchStage's pool body, which
+  // pool mode reaches only after an in-session commit. So work that was waiting on
+  // a human could not be actioned from the product's front door.
+  //
+  // The rail is the other half. It still says step 1 of 8 for a fresh session with
+  // a full pool, and it must: pending_pool_entry holds no file_id, so this session
+  // genuinely cannot know that any file completed, and marking Upload and Validate
+  // complete would be exactly the invented claim the honesty rules forbid. Only
+  // the trigger became reachable.
+  it('a fresh load with a non-empty pool can trigger it, and STILL says Step 1 of 8', async () => {
+    stub()
+    renderAt('/workflow')
+
+    // Actionable, with no upload and no commit in this session.
+    expect(await screen.findByLabelText(/^reason$/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /trigger batch/i })).toBeTruthy()
+
+    // And the rail has claimed nothing it cannot know.
+    expect(screen.getByText(/step 1 of 8/i)).toBeTruthy()
+    expect(await currentStage()).toMatch(/upload/i)
+    expect(screen.getByLabelText(/bank request file/i)).toBeTruthy()
   })
 })
 
@@ -375,8 +420,44 @@ describe('WorkflowPage: batch mode', () => {
     const rail = await screen.findByRole('navigation', { name: /workflow stages/i })
     // A completed pill is a button (the rail makes only completed stages
     // clickable), so Upload and Validate being buttons IS the completion claim.
-    expect(rail.querySelectorAll('button').length).toBeGreaterThanOrEqual(2)
+    // NAMED, not counted: a count of two passed with neither of them among them,
+    // which is the one thing this test is for.
+    expect(within(rail).getByRole('button', { name: /upload/i })).toBeTruthy()
+    expect(within(rail).getByRole('button', { name: /validate/i })).toBeTruthy()
     expect(screen.queryByLabelText(/bank request file/i)).toBeNull()
+  })
+
+  // The one interaction task 7 added on its own initiative, and it had nothing
+  // exercising it: the rail makes a completed pill clickable, so on a formed batch
+  // the Upload pill can be clicked, and what must come back is the cannot-be-traced
+  // note rather than a live bank-file drop zone. A file picked there would have
+  // nothing to do with the batch on screen, and the operator would have every
+  // reason to think it did.
+  it('clicking the completed Upload pill on a batch says the file cannot be traced, and offers no picker', async () => {
+    stub({ artifacts: [ARTIFACT] })
+    renderAt('/workflow/btch_aaa')
+    const rail = await screen.findByRole('navigation', { name: /workflow stages/i })
+    await userEvent.click(within(rail).getByRole('button', { name: /upload/i }))
+
+    const note = await screen.findByText(/cannot be traced back to the files that fed it/i)
+    expect(note).toBeTruthy()
+    // No drop zone and no file input of any kind.
+    expect(screen.queryByLabelText(/bank request file/i)).toBeNull()
+    expect(document.querySelector('input[type="file"]')).toBeNull()
+    // And the help beside it is Upload's, because that is the stage on screen.
+    expect(screen.getByText(/nothing is written yet/i)).toBeTruthy()
+  })
+
+  // The "no such batch" branch, which /workflow/nonsense reaches. An unknown batch
+  // is not a broken page: the edge 404s it deliberately, so it is told apart from
+  // a transport failure and given a way back.
+  it('says so and offers a way back when the batch does not exist', async () => {
+    stub({ detail: 404 })
+    renderAt('/workflow/nonsense')
+    expect(await screen.findByText(/no such batch/i)).toBeTruthy()
+    expect(screen.getByRole('link', { name: /back to everything in flight/i })).toBeTruthy()
+    // No rail: there is no batch to derive a stage for.
+    expect(screen.queryByRole('navigation', { name: /workflow stages/i })).toBeNull()
   })
 
   it('a 404 on the journey read does not blank the page: the earlier stages still render', async () => {
@@ -464,10 +545,32 @@ describe('WorkflowPage: the bank upload, restored', () => {
     renderAt('/workflow')
     await userEvent.upload(await screen.findByLabelText(/bank request file/i), makeFile('rows'))
     await userEvent.click(await screen.findByRole('button', { name: /commit bank request file/i }))
-    // BatchStage's pool body, which is stage 3.
-    expect(await screen.findByText(/ready to batch/i)).toBeTruthy()
+    // READ OFF THE RAIL, not off the pool card's presence. The pool card renders on
+    // every load now (requirement A), so "Ready to batch is on screen" no longer
+    // discriminates between a rail that advanced and one that did not.
+    await waitFor(async () => {
+      expect(await currentStage()).toMatch(/batch/i)
+    })
     // Still the same url: the whole flow is one screen.
     expect(screen.getByRole('heading', { name: /^workflow$/i })).toBeTruthy()
+  })
+
+  // REQUIREMENT A's trap, pinned by COUNTING. LiveWorkView and BatchStage are on
+  // screen together the moment pool mode reaches step 3, so a trigger left in both
+  // would render two reason fields and two Trigger buttons for the same pool, with
+  // two element ids. Exactly one, never "at least one".
+  it('renders exactly ONE reason field and ONE trigger button per pool at step 3', async () => {
+    stub({ poolAfterCommit: [...POOL, poolRow('asgn_3', { asgnId: 'asgn_3' })] })
+    renderAt('/workflow')
+    await userEvent.upload(await screen.findByLabelText(/bank request file/i), makeFile('rows'))
+    await userEvent.click(await screen.findByRole('button', { name: /commit bank request file/i }))
+    await waitFor(async () => {
+      expect(await currentStage()).toMatch(/batch/i)
+    })
+
+    // One (tenant, program) pool in the fixture, so one of each.
+    expect(screen.getAllByLabelText(/^reason$/i).length).toBe(1)
+    expect(screen.getAllByRole('button', { name: /trigger batch/i }).length).toBe(1)
   })
 
   // THE REAL SYSTEM'S SHAPE, and the case a synchronous stub hides completely.
@@ -495,17 +598,21 @@ describe('WorkflowPage: the bank upload, restored', () => {
       // poll, sees the records.
       poolLagReads: 1,
     })
-    // Pool mode is always the SLOW cadence, so that is the interval to shrink.
-    // Not to single digits: a 10ms poll issues two reads per tick and buries the
-    // DOM queries under its own re-renders.
-    renderAt('/workflow', { fast: 5000, slow: 40 })
+    // THE FAST interval is the one to shrink, and that is the point of this
+    // window: a commit whose pool confirmation is still outstanding is waiting on
+    // the relay and the consumer, not on a person, so the derivation polls fast
+    // there. Shrinking `slow` instead leaves this test waiting 5000ms for a read
+    // that would have taken 40, which is the thirty-second wait the operator had.
+    // Not single digits: a 10ms poll issues two reads per tick and buries the DOM
+    // queries under its own re-renders.
+    renderAt('/workflow', { fast: 40, slow: 5000 })
     await userEvent.upload(await screen.findByLabelText(/bank request file/i), makeFile('rows'))
     await userEvent.click(await screen.findByRole('button', { name: /commit bank request file/i }))
 
     // The rail follows the system rather than the click.
     await waitFor(
-      () => {
-        expect(screen.queryByText(/ready to batch/i)).toBeTruthy()
+      async () => {
+        expect(await currentStage()).toMatch(/batch/i)
       },
       { timeout: 3000 },
     )
@@ -522,7 +629,53 @@ describe('WorkflowPage: the bank upload, restored', () => {
     // The commit counts render on the Validate stage. An EXACT match: the
     // Validate stage's own helper copy also contains the word "accepted".
     expect(await screen.findByText('Accepted')).toBeTruthy()
-    expect(screen.queryByText(/ready to batch/i)).toBeNull()
+    expect(await currentStage()).toMatch(/validate/i)
+  })
+
+  // MINOR 4, and it is correctness rather than tidiness. poolFingerprint answered
+  // '' for a pool that had never been read, so a commit made after a FAILED pool
+  // read took '' as its baseline, and the first successful read of rows that were
+  // already there differed from '' and confirmed an advance the commit had not
+  // caused. This is not the documented "the pool changed for an unrelated reason"
+  // limit: there the pool changed, here it was simply never seen.
+  it('a commit after a FAILED pool read does not advance on the next successful read', async () => {
+    // The pool answers with a row that was ALREADY pooled before this commit
+    // existed. That is the trap: against an assumed-empty baseline of '', the
+    // first successful read differs and looks like this commit's own doing.
+    const calls = stub({ pool: [poolRow('asgn_pre')], poolAfterCommit: [poolRow('asgn_pre')] })
+    // Every pool read fails until the commit has been sent, so the commit is made
+    // with a pool this session has never successfully seen. Reads then succeed,
+    // starting with the one handleCommit makes itself.
+    let committed = false
+    const inner = globalThis.fetch as unknown as (i: string | URL, init?: RequestInit) => Promise<Response>
+    vi.stubGlobal('fetch', async (i: string | URL, init: RequestInit = {}) => {
+      const url = String(i)
+      if (url.includes('/ops/uploads/bank/commit')) {
+        committed = true
+        return inner(i, init)
+      }
+      if (!committed && url.includes('/ops/pool')) {
+        calls.push({ url, init })
+        throw new Error('the pool read failed')
+      }
+      return inner(i, init)
+    })
+
+    renderAt('/workflow', { fast: 5000, slow: 40 })
+    // Named rather than swallowed, which is also how we know the page is in the
+    // state under test rather than merely slow.
+    expect(await screen.findAllByText(/the pool read failed/i)).toBeTruthy()
+
+    await userEvent.upload(await screen.findByLabelText(/bank request file/i), makeFile('rows'))
+    await userEvent.click(await screen.findByRole('button', { name: /commit bank request file/i }))
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/uploads/bank/commit'))).toBe(true)
+    })
+
+    // Several successful pool reads later the rail has still not moved, because
+    // nothing ever observed the pool this commit was supposed to change.
+    await act(async () => { await new Promise((r) => { setTimeout(r, 200) }) })
+    expect(await currentStage()).toMatch(/validate/i)
   })
 
   // Carried finding 2: a whole-file rejection keeps the reasons AND the file
@@ -548,14 +701,12 @@ describe('WorkflowPage: the bank upload, restored', () => {
   })
 
   it('a trigger returning null says nothing was eligible rather than spinning', async () => {
-    stub({ poolAfterCommit: [...POOL, poolRow('asgn_3', { asgnId: 'asgn_3' })], trigger: null })
+    stub({ trigger: null })
     renderAt('/workflow')
-    await userEvent.upload(await screen.findByLabelText(/bank request file/i), makeFile('rows'))
-    await userEvent.click(await screen.findByRole('button', { name: /commit bank request file/i }))
-    await screen.findByText(/ready to batch/i)
-
-    // BatchablePools requires a reason before it will let the trigger fire.
-    await userEvent.type(screen.getAllByLabelText(/reason/i)[0]!, 'batching early for the pilot')
+    // Straight from the landing view, with no upload and no commit first: that is
+    // requirement A, and it is what an operator arriving at a pool that is already
+    // full actually does.
+    await userEvent.type(await screen.findByLabelText(/^reason$/i), 'batching early for the pilot')
     await userEvent.click(screen.getByRole('button', { name: /trigger batch/i }))
     expect(await screen.findByText(/nothing to batch/i)).toBeTruthy()
   })

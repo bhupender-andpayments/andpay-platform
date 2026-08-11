@@ -1,5 +1,4 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { BatchablePools } from '../../fulfillment/BatchablePools.js'
 import { CodeChip, StatusPill } from '../../../ui/primitives.js'
 import { fmtDateTime, fmtNumber } from '../../../ui/format.js'
 import type { DerivedWorkflow } from '../workflowStage.js'
@@ -7,13 +6,18 @@ import type { BatchDetailView } from '../../../api/endpoints.js'
 
 // Stage 3, the hinge between the two modes.
 //
-// POOL MODE renders the EXISTING BatchablePools unchanged. That component already
-// owns the per-pool reason field, the (tenant, program) grouping, the stock
-// advisory and the trigger call itself, and reimplementing any of it here would
-// give the workspace a second trigger that has to be kept in step with the first.
-// `onChanged` is wired to its `onTriggered` so the page around this stage re-reads
-// once a batch forms; without that the workspace would show a pool it had just
-// emptied.
+// POOL MODE EXPLAINS AND POINTS. It used to render BatchablePools itself, which
+// put the only trigger in the workspace behind a stage pool mode reaches only
+// after an in-session commit: pooled work that was waiting for a human was
+// visible on the landing view and unreachable from it. BatchablePools now renders
+// in LiveWorkView, which is on screen on every load, so the trigger is always
+// reachable.
+//
+// It is NOT rendered in both. LiveWorkView and this stage are on screen together
+// whenever pool mode reaches step 3, so a copy here would put two reason fields
+// and two "Trigger batch" buttons on one page for the same pool, with two ids.
+// One control, one source of truth; this stage says what batching is and where
+// the control is.
 //
 // BATCH MODE is a summary of one formed batch. It states only what the batch read
 // carries, and in particular it does NOT restate `unitCount` as devices: that
@@ -28,7 +32,7 @@ export function BatchStage({
   derived: _derived,
   batchDetail,
   btchId: _btchId,
-  onChanged,
+  onChanged: _onChanged,
 }: {
   derived: DerivedWorkflow
   batchDetail: BatchDetailView | null
@@ -37,17 +41,28 @@ export function BatchStage({
 }) {
   if (batchDetail === null) {
     return (
-      <div className="space-y-4">
-        {/* Stated before the operator goes looking for a button: batching is not
-            something that has to be started. A manual trigger is an override of
-            the pool's own economics, which is why BatchablePools makes the reason
-            mandatory. */}
-        <p className="text-sm text-muted-foreground">
-          A batch forms on its own once the pool reaches its lot size, or once its max wait elapses. Triggering one
-          below forms it early, so the reason is recorded on the batch.
-        </p>
-        <BatchablePools onTriggered={onChanged} />
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Waiting on the pool</CardTitle>
+          <CardDescription>
+            Batching is per tenant and program, never per bank, so one batch can span many bank codes.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {/* Stated before the operator goes looking for a button: batching is not
+              something that has to be started. */}
+          <p className="text-sm text-muted-foreground">
+            A batch forms on its own once the pool reaches its lot size, or once its max wait elapses. Nothing has to be
+            started here.
+          </p>
+          {/* Where the control is, because it is on this same page and above this
+              stage rather than in it. A manual trigger is an override of the
+              pool's own economics, which is why the reason there is mandatory. */}
+          <p className="text-sm text-muted-foreground">
+            To form one now, use the pool card above: the reason typed there is recorded on the batch.
+          </p>
+        </CardContent>
+      </Card>
     )
   }
 
