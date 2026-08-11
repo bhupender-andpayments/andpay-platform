@@ -169,12 +169,21 @@ export function LoginPage() {
         />
 
         <div className="max-w-xl">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+          {/* Rahul's 2026-08-11 hero ruling: badge, two-line headline with the
+              journey highlighted in the house amber (--primary, the one orange
+              the design system owns), and a sub-text line. */}
+          <p className="inline-block rounded-full border border-border bg-card/60 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
             Soundbox Dispatch Console
           </p>
-          <h2 className="mt-5 text-5xl font-bold leading-[1.05] tracking-[-0.03em] text-brand xl:text-6xl">
-            Every soundbox, from bank file to activation.
+          <h2 className="mt-6 text-5xl font-bold leading-[1.05] tracking-[-0.03em] text-brand xl:text-6xl">
+            Every soundbox,
+            <br />
+            from <span className="text-primary">bank file to activation</span>.
           </h2>
+          <p className="mt-5 max-w-md text-base leading-relaxed text-muted-foreground">
+            Streamline soundbox provisioning, file processing, and live
+            activation in one unified dashboard.
+          </p>
         </div>
 
         <p className="text-xs text-muted-foreground">
