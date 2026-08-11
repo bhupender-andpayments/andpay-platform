@@ -67,7 +67,7 @@ export const EDGE_DEPS = 'OPS_EDGE_DEPS'
 // The multipart file size cap for the bank/damage upload routes
 // (authenticated-DoS guard, mirroring vendor-edge's MAX_SHEET_BYTES): without a
 // limit, multer buffers an arbitrarily large "file" part fully into memory
-// before the handler runs. 5 MiB matches the cap the ops portal already
+// before the handler runs. 5 MB matches the cap the ops portal already
 // enforces client-side today (apps/ops-portal parseSheet.ts MAX_UPLOAD_BYTES).
 // An oversized part is aborted by multer (MulterError LIMIT_FILE_SIZE), which
 // NestJS's default FileInterceptor maps to a 413 PayloadTooLargeException, so no

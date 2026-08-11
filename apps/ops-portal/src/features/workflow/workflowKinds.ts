@@ -52,7 +52,7 @@ export const STAGE_HELP: Readonly<
   upload: {
     next: ['Drop the bank file to see a per-row verdict. Nothing is written yet.'],
     goodToKnow: [
-      'Files up to 5 MiB, .csv or .xlsx.',
+      'Files up to 5 MB, .csv or .xlsx.',
       'The file is parsed on the server; what you see is the server verdict.',
     ],
   },

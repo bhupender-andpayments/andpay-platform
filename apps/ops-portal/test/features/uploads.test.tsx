@@ -128,7 +128,7 @@ function makeFile(content: string, name: string, type = 'text/csv'): File {
 }
 
 function makeOversizedFile(name = 'huge.csv'): File {
-  // 6 MiB of zero bytes, well past the 5 MiB cap. No need for real content
+  // 6 MB of zero bytes, well past the 5 MB cap. No need for real content
   // since the size check must reject before any preview/commit network call.
   return new File([new Uint8Array(6 * 1024 * 1024)], name, { type: 'text/csv' })
 }
@@ -221,7 +221,7 @@ describe('uploads', () => {
     expect(screen.getByRole('link', { name: /view in quarantine queue/i })).toBeTruthy()
   })
 
-  it('damage upload: a file over 5 MiB is rejected client-side and never posted', async () => {
+  it('damage upload: a file over 5 MB is rejected client-side and never posted', async () => {
     const fetchMock = vi.fn(async () => jsonResponse(DAMAGE_PREVIEW_RESULT))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -231,7 +231,7 @@ describe('uploads', () => {
     await userEvent.upload(input, makeOversizedFile())
 
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/5 MiB/i)
+    expect(alert.textContent).toMatch(/5 MB/i)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -384,7 +384,7 @@ describe('uploads', () => {
     expect(rowCell).toBeTruthy()
   })
 
-  it('device inventory upload: a file over 5 MiB is rejected client-side and never posted', async () => {
+  it('device inventory upload: a file over 5 MB is rejected client-side and never posted', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
       return jsonResponse(DEVICE_INVENTORY_RESULT)
@@ -398,7 +398,7 @@ describe('uploads', () => {
     await userEvent.upload(input, makeOversizedFile('huge.csv'))
 
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/5 MiB/i)
+    expect(alert.textContent).toMatch(/5 MB/i)
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/ops/uploads/device-inventory'), expect.anything())
   })
 
@@ -509,7 +509,7 @@ describe('uploads', () => {
     fireEvent.drop(zone, { dataTransfer: { files: [makeOversizedFile('huge-drop.csv')] } })
 
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/5 MiB/i)
+    expect(alert.textContent).toMatch(/5 MB/i)
     // Refused, so nothing is staged.
     expect(screen.queryByText('huge-drop.csv')).toBeNull()
   })

@@ -204,7 +204,7 @@ describe('return upload', () => {
     expect(screen.queryByRole('button', { name: /submit return sheet/i })).toBeNull()
   })
 
-  it('a file over 5 MiB is rejected client-side and never POSTs', async () => {
+  it('a file over 5 MB is rejected client-side and never POSTs', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/session/login')) return jsonResponse({ accessToken: FAKE_TOKEN })
       return jsonResponse({})
@@ -217,7 +217,7 @@ describe('return upload', () => {
     await userEvent.upload(input, makeOversizedFile())
 
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/5 MiB/i)
+    expect(alert.textContent).toMatch(/5 MB/i)
     expect(fetchMock.mock.calls.some(([url]: [string]) => url.includes('/vendor/return'))).toBe(false)
     expect(screen.queryByRole('button', { name: /submit return sheet/i })).toBeNull()
   })

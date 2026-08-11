@@ -44,9 +44,9 @@ describe('workflow stage 1: Upload', () => {
     expect(screen.getByLabelText(/bank request file/i)).toBeTruthy()
   })
 
-  it('surfaces an error the page handed it, such as the 5 MiB rejection', () => {
-    wrap(<UploadStage file={null} previewing={false} error="File exceeds the 5 MiB upload limit." onPick={() => {}} />)
-    expect(screen.getByRole('alert').textContent).toMatch(/5 MiB/)
+  it('surfaces an error the page handed it, such as the 5 MB rejection', () => {
+    wrap(<UploadStage file={null} previewing={false} error="File exceeds the 5 MB upload limit." onPick={() => {}} />)
+    expect(screen.getByRole('alert').textContent).toMatch(/5 MB/)
   })
 })
 

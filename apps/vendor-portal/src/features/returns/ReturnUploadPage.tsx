@@ -52,7 +52,7 @@ export function ReturnUploadPage() {
     setStatus('idle')
 
     if (file.size > MAX_UPLOAD_BYTES) {
-      setError('File exceeds the 5 MiB upload limit. Split it into smaller files and try again.')
+      setError('File exceeds the 5 MB upload limit. Split it into smaller files and try again.')
       return
     }
     if (principal?.vndr === undefined) {
@@ -112,7 +112,7 @@ export function ReturnUploadPage() {
       <h1 className="text-xl font-semibold text-slate-900">Return upload</h1>
       <div>
         <label className="block text-sm font-medium text-slate-700" htmlFor="return-upload-file">
-          Return sheet file (CSV, max 5 MiB)
+          Return sheet file (CSV, max 5 MB)
         </label>
         <input
           id="return-upload-file"

@@ -10,7 +10,7 @@ import type { ReportCell, ReportRow } from './mediation.js'
 // '\n' (quoted per below) can never be confused with a record boundary.
 const CRLF = '\r\n'
 
-// The same 5 MiB-class discipline as the existing edges (see
+// The same 5 MB-class discipline as the existing edges (see
 // apps/vendor-edge/src/deps.ts MAX_SHEET_BYTES): bounded and fails closed
 // rather than silently truncating or streaming without limit.
 export const MAX_CSV_BYTES = 5 * 1024 * 1024
@@ -65,7 +65,7 @@ export function toCsv(rows: ReportRow[]): string {
   const bytes = Buffer.byteLength(csv, 'utf8')
   if (bytes > MAX_CSV_BYTES) {
     throw new Error(
-      `CSV export exceeds the 5 MiB inline-serialization bound (${bytes} bytes); the presigned-S3 transport is a deferred follow-up`,
+      `CSV export exceeds the 5 MB inline-serialization bound (${bytes} bytes); the presigned-S3 transport is a deferred follow-up`,
     )
   }
   return csv

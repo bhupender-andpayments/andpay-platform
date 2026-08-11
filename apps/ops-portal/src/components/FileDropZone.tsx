@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button'
 // control reachable by keyboard and assistive tech, and keeps it addressable as
 // a file input by tests and by the browser's own file dialog.
 //
-// Validation deliberately does NOT live here. The page owns it (the 5 MiB cap
+// Validation deliberately does NOT live here. The page owns it (the 5 MB cap
 // lives next to the upload call), so this component reports a pick and nothing
 // more, and one rule cannot drift between the pages.
 
@@ -48,7 +48,7 @@ export function FileDropZone({
   onPick,
   disabled = false,
   accept = ACCEPT,
-  constraint = 'CSV or XLSX, max 5 MiB',
+  constraint = 'CSV or XLSX, max 5 MB',
   expects,
   done = false,
 }: {

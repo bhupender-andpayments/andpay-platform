@@ -114,7 +114,7 @@ export function DeviceInventoryUploadPage() {
     }
     if (picked.size > MAX_UPLOAD_BYTES) {
       setFile(null)
-      setError('File exceeds the 5 MiB upload limit. Split it into smaller files and try again.')
+      setError('File exceeds the 5 MB upload limit. Split it into smaller files and try again.')
       return
     }
     setFile(picked)

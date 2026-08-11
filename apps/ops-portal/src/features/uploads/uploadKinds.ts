@@ -53,7 +53,7 @@ const COMMIT: UploadStep = { key: 'commit', label: 'Commit' }
 const SUBMIT: UploadStep = { key: 'submit', label: 'Submit' }
 
 const SHARED_GOOD_TO_KNOW = [
-  'Files up to 5 MiB, .csv or .xlsx.',
+  'Files up to 5 MB, .csv or .xlsx.',
   'The file is parsed on the server; what you see is the server verdict.',
 ] as const
 

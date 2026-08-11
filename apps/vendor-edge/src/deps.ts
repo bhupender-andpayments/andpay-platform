@@ -47,7 +47,7 @@ export const DEFAULT_FULFILLMENT_DATABASE_URL =
 // The multipart file size cap shared by /vendor/intake and /vendor/return
 // (authenticated-DoS review fix): without a limit, multer buffers an
 // arbitrarily large "file" part fully into memory before the handler ever
-// sees it. 5 MiB is generous for a JSON vendor sheet; an oversized upload is
+// sees it. 5 MB is generous for a JSON vendor sheet; an oversized upload is
 // aborted by multer (MulterError code LIMIT_FILE_SIZE), which NestJS's
 // default FileInterceptor already maps to a 413 PayloadTooLargeException, so
 // no additional exception filter is needed here.

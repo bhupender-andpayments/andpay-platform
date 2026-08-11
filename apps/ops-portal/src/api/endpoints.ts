@@ -895,7 +895,7 @@ export function deviceInventoryStructuralReasons(err: unknown): DeviceInventoryS
   return out
 }
 
-// The 5 MiB multipart cap the ops-edge FileInterceptor enforces
+// The 5 MB multipart cap the ops-edge FileInterceptor enforces
 // (apps/ops-edge/src/deps.ts MAX_UPLOAD_BYTES). Checked client-side against
 // File.size BEFORE any network call, so an oversized file never posts.
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024

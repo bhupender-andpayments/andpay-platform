@@ -3,7 +3,7 @@ import { toCsv, MAX_CSV_BYTES } from '../src/export.js'
 import type { ReportRow } from '../src/mediation.js'
 
 // Task 6: inline CSV export of a mediated ReportRow[] result. RFC 4180
-// quoting; no S3, no port; bounded to the same 5 MiB-class discipline as the
+// quoting; no S3, no port; bounded to the same 5 MB-class discipline as the
 // existing edges (the presigned-S3 transport is a deferred follow-up).
 
 describe('toCsv', () => {
@@ -56,12 +56,12 @@ describe('toCsv', () => {
     expect(lines[2]).toContain('disp_2')
   })
 
-  it('throws (bounded, no silent truncation) when the serialized CSV exceeds the 5 MiB-class discipline', () => {
+  it('throws (bounded, no silent truncation) when the serialized CSV exceeds the 5 MB-class discipline', () => {
     // One ~200-byte row repeated enough times to exceed MAX_CSV_BYTES.
     const bigCell = 'x'.repeat(150)
     const row: ReportRow = { col: bigCell }
     const rowCount = Math.ceil(MAX_CSV_BYTES / 150) + 100
     const rows: ReportRow[] = Array.from({ length: rowCount }, () => row)
-    expect(() => toCsv(rows)).toThrow(/5 MiB/)
+    expect(() => toCsv(rows)).toThrow(/5 MB/)
   })
 })

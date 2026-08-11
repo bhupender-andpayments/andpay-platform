@@ -26,7 +26,7 @@ import { UploadHelperCards } from './UploadHelperCards.js'
 // the browser uploads the raw picked file; the server parses AND validates
 // it server-side (previewDamage -> a per-row projected outcome, writes
 // nothing; commitDamage -> partial-accept, writes). No client-side parsing
-// of the picked file remains authoritative. The 5 MiB cap is still enforced
+// of the picked file remains authoritative. The 5 MB cap is still enforced
 // against File.size before any network call.
 //
 // Flow mirrors BankUploadPage exactly: pick a file -> preview (per-row
@@ -49,7 +49,7 @@ export function DamageUploadPage() {
     setCommitResult(null)
     if (picked === null) return
     if (picked.size > MAX_UPLOAD_BYTES) {
-      setError('File exceeds the 5 MiB upload limit. Split it into smaller files and try again.')
+      setError('File exceeds the 5 MB upload limit. Split it into smaller files and try again.')
       return
     }
     setPreviewing(true)

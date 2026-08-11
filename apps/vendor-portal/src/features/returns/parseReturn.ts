@@ -32,7 +32,7 @@ export class ReturnParseError extends Error {
   }
 }
 
-// The client-side 5 MiB upload cap, checked against File.size BEFORE any
+// The client-side 5 MB upload cap, checked against File.size BEFORE any
 // read/parse/POST, so an oversized file never touches the network. Mirrors
 // the edge's own MAX_SHEET_BYTES (apps/vendor-edge/src/deps.ts) so a file
 // that would be rejected server-side is rejected here first.
