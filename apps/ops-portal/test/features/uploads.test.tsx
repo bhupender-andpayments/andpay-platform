@@ -553,7 +553,26 @@ describe('uploads', () => {
     expect(screen.getByRole('button', { name: railPill('upload') })).toBeTruthy()
   })
 
-  it('device inventory upload: requires a manufacturer AND a file before Submit is enabled; submits multipart with the manufacturer wire id + a fresh Idempotency-Key; renders real per-row invalid errors without a preview stage', async () => {
+  // Ruling 2026-08-11: device inventory has no preview route on the edge at
+  // all, so its rail is exactly three steps (Choose, Upload, Submit), the
+  // shortest of the three surfaces, proving the rail adapts to what a file
+  // actually needs rather than asserting a Review that would have nothing to
+  // show.
+  it('device inventory: the rail has NO Review step, and ends in Submit', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
+        return jsonResponse({})
+      }),
+    )
+    renderAt('/uploads/device-inventory')
+    expect(await screen.findByText(/device inventory upload/i)).toBeTruthy()
+    expect(screen.queryByText(/^review$/i)).toBeNull()
+    expect(screen.getByText(/^submit$/i)).toBeTruthy()
+  })
+
+  it('device inventory: Continue needs BOTH a file and a manufacturer, and Submit is the confirm step', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
@@ -573,18 +592,26 @@ describe('uploads', () => {
     expect(within(select).getByText('Acme Devices')).toBeTruthy()
     expect(within(select).queryByText('Print Co')).toBeNull()
 
-    const submitButton = screen.getByRole('button', { name: /upload device inventory file/i }) as HTMLButtonElement
-    expect(submitButton.disabled).toBe(true)
+    const continueButton = screen.getByRole('button', { name: /continue to submit/i }) as HTMLButtonElement
+    expect(continueButton.disabled).toBe(true)
 
     const input = screen.getByLabelText(/device inventory file/i) as HTMLInputElement
     await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'inventory.csv'))
-    // A file alone (no manufacturer yet) must not enable Submit, and nothing
-    // is posted to the upload route merely from picking a file.
-    expect(submitButton.disabled).toBe(true)
+    // A file alone (no manufacturer yet) must not enable Continue, and
+    // nothing is posted to the upload route merely from picking a file.
+    expect(continueButton.disabled).toBe(true)
     expect(calls.some((c) => c.url.includes('/ops/uploads/device-inventory'))).toBe(false)
 
     await userEvent.selectOptions(select, 'vndr_manu1')
+    expect(continueButton.disabled).toBe(false)
+
+    await userEvent.click(continueButton)
+
+    // Submit is the confirm step: the upload button lives here, not before,
+    // and nothing has been posted by merely reaching it.
+    const submitButton = (await screen.findByRole('button', { name: /upload device inventory file/i })) as HTMLButtonElement
     expect(submitButton.disabled).toBe(false)
+    expect(calls.some((c) => c.url.includes('/ops/uploads/device-inventory'))).toBe(false)
 
     await userEvent.click(submitButton)
 
@@ -601,8 +628,12 @@ describe('uploads', () => {
     expect(fileText).toBe('irrelevant, the server parses this')
 
     // Real per-row invalid breakdown from the mocked response: no decorative
-    // rows, exactly what the server reported (row 4, missing_sim_no).
-    expect(await screen.findByText('2')).toBeTruthy() // Accepted
+    // rows, exactly what the server reported (row 4, missing_sim_no). The
+    // "2" also matches the rail's own done-step digit, so the Accepted count
+    // is read off its own definition-list value rather than a bare text
+    // match, the same idiom the bank/damage tests use.
+    const acceptedDd = (await screen.findByText('Accepted')).nextElementSibling as HTMLElement
+    expect(acceptedDd.textContent).toBe('2')
     expect(screen.getByText('Missing Sim No')).toBeTruthy()
     const rowCell = screen.getByText('4')
     expect(rowCell).toBeTruthy()
@@ -646,7 +677,8 @@ describe('uploads', () => {
     const input = screen.getByLabelText(/device inventory file/i) as HTMLInputElement
     await userEvent.upload(input, makeFile('Device ID,Device QR\nD1,{}\n', 'cwd-export.csv'))
     await userEvent.selectOptions(select, 'vndr_manu1')
-    await userEvent.click(screen.getByRole('button', { name: /upload device inventory file/i }))
+    await userEvent.click(screen.getByRole('button', { name: /continue to submit/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /upload device inventory file/i }))
   }
 
   it('device inventory upload: names the offending column when the header is wrong', async () => {
@@ -694,7 +726,7 @@ describe('uploads', () => {
     renderWithProviders(<DeviceInventoryUploadPage />)
     await screen.findByLabelText(/device inventory file/i)
 
-    const submit = screen.getByRole('button', { name: /upload device inventory file/i }) as HTMLButtonElement
+    const continueButton = screen.getByRole('button', { name: /continue to submit/i }) as HTMLButtonElement
     const zone = screen.getByText(/Drop your file here/i).closest('div')!
     const dropped = makeFile('Device ID,Sim No,Device QR\n1,2,3\n', 'dropped-inventory.csv')
 
@@ -705,14 +737,14 @@ describe('uploads', () => {
     expect(screen.getByText(/ready to upload/i)).toBeTruthy()
     expect(screen.queryByText(/Drop your file here/i)).toBeNull()
 
-    // A manufacturer is still required, so a drop alone must not enable Submit.
-    expect(submit.disabled).toBe(true)
+    // A manufacturer is still required, so a drop alone must not enable Continue.
+    expect(continueButton.disabled).toBe(true)
     await userEvent.selectOptions(screen.getByLabelText(/manufacturer/i), 'vndr_manu1')
-    expect(submit.disabled).toBe(false)
+    expect(continueButton.disabled).toBe(false)
 
     await userEvent.click(screen.getByRole('button', { name: /remove file/i }))
     expect(await screen.findByText(/Drop your file here/i)).toBeTruthy()
-    expect(submit.disabled).toBe(true)
+    expect(continueButton.disabled).toBe(true)
   })
 
   it('device inventory upload: an oversized DROP is refused with the same limit message as a pick', async () => {

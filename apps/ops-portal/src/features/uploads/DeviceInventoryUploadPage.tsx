@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
@@ -19,6 +20,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ErrorNote, StatusPill } from '../../ui/primitives.js'
 import { FileDropZone } from '../../components/FileDropZone.js'
 import { PerRowErrors } from '../../components/PerRowErrors.js'
+import { kindBySlug, type StepKey } from './uploadKinds.js'
+import { UploadStepper } from './UploadStepper.js'
+import { UploadHelperCards } from './UploadHelperCards.js'
 
 // Phase 7 Task 7 (edge + permission already built Phase-5 Task 1, D-G,
 // FR-01a): the ops device-inventory upload, the THIRD upload surface. Same
@@ -145,116 +149,177 @@ export function DeviceInventoryUploadPage() {
 
   const canSubmit = file !== null && manufacturerVndrId !== '' && !busy
 
+  // The page's position on the rail. Device inventory has no preview route on
+  // the edge at all (unlike bank/damage), so there is no Review step to
+  // derive: `step` is only ever 'upload' or 'submit', and 'submit' is where a
+  // structural rejection lands too, since that is where the operator is
+  // standing when it arrives.
+  const [confirming, setConfirming] = useState(false)
+  const canContinue = file !== null && manufacturerVndrId !== ''
+  const step: StepKey = result !== null || confirming ? 'submit' : 'upload'
+  const KIND = kindBySlug('device-inventory')!
+  const navigate = useNavigate()
+  const unlocked: StepKey[] = ['choose', 'upload', ...(canContinue || result !== null ? (['submit'] as const) : [])]
+  const selectedManufacturer = manufacturers.find((m) => m.id === manufacturerVndrId) ?? null
+
+  function onStepClick(key: StepKey): void {
+    if (key === 'choose') {
+      navigate('/uploads', { replace: true })
+      return
+    }
+    if (key === 'upload') {
+      // Clearing `confirming` alone is not enough: with a result standing,
+      // the step derivation above always reads 'submit', so Upload is only
+      // reachable again by clearing the result itself, the same correction
+      // Task 3 landed for the bank page's Review pill.
+      setConfirming(false)
+      setResult(null)
+      return
+    }
+    if (key === 'submit') setConfirming(true)
+  }
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Device inventory upload</CardTitle>
-        <CardDescription>
-          The file is parsed on the server. A missing column rejects the whole file; individual bad
-          rows are skipped and listed below.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {vendorsError !== null && <ErrorNote>{vendorsError}</ErrorNote>}
+    <div className="flex flex-col gap-6">
+      <UploadStepper
+        steps={KIND.steps}
+        current={step}
+        unlocked={unlocked}
+        onStepClick={onStepClick}
+        guidance="Step 3 needs a manufacturer and a file. Start at Upload."
+      />
 
-        <div className="space-y-2">
-          <Label htmlFor="device-inventory-manufacturer">Manufacturer</Label>
-          {/* Uses the SHARED Select primitive rather than a hand-styled raw
-              select. It was raw, with its own copy of the class list, and the
-              copy had already drifted: it kept rounded-lg on an opaque
-              background while the spec (4.6) asks for the Input's rounded-3xl
-              bg-input/50, so this control looked different from every other
-              field on the screen. Sharing the primitive is what stops that
-              happening again. Still a native select underneath: the spec's
-              Radix composite changes how the control is driven in tests, so it
-              lands with its test rewrite rather than as a drive-by. */}
-          <Select
-            id="device-inventory-manufacturer"
-            value={manufacturerVndrId}
-            onChange={(e) => setManufacturerVndrId(e.target.value)}
-          >
-            <option value="">Select a manufacturer...</option>
-            {manufacturers.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.displayName}
-              </option>
-            ))}
-          </Select>
-          <p className="text-xs text-muted-foreground">Required before the file can be submitted.</p>
-        </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Device inventory upload</CardTitle>
+          <CardDescription>
+            The file is parsed on the server. A missing column rejects the whole file; individual bad
+            rows are skipped and listed below.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {vendorsError !== null && <ErrorNote>{vendorsError}</ErrorNote>}
 
-        <div className="space-y-2">
-          <Label htmlFor="device-inventory-file">Device inventory file</Label>
-          <FileDropZone
-            id="device-inventory-file"
-            file={file}
-            onPick={handleFile}
-            disabled={busy}
-            expects={EXPECTED_COLUMN_LIST}
-            done={result !== null}
-          />
-        </div>
-
-        {structuralErrors.length > 0 && (
-          <div className="space-y-2">
-            {structuralErrors.map((e) => (
-              <ErrorNote key={e.code + (e.column ?? '')}>{structuralMessage(e)}</ErrorNote>
-            ))}
-            <p className="text-sm text-muted-foreground">
-              No rows were ingested. Expected columns: {EXPECTED_COLUMNS}. Column names are matched
-              ignoring case and extra spaces.
-            </p>
-          </div>
-        )}
-        {error !== null && <ErrorNote>{error}</ErrorNote>}
-
-        {/* shadcn's Button has no `loading` prop (the pre-spec primitive did):
-            the spec's idiom is a spinning lucide icon inside a disabled button,
-            which its base class already sizes via [&_svg] rules. */}
-        <Button
-          type="button"
-          className="self-start"
-          onClick={() => {
-            void handleSubmit()
-          }}
-          disabled={!canSubmit}
-        >
-          {busy && <Loader2 className="animate-spin" aria-hidden="true" />}
-          Upload device inventory file
-        </Button>
-
-        {result !== null && (
-          <div className="space-y-3">
-            <PerRowErrors result={{ accepted: result.accepted, flagged: result.flagged, invalid: result.invalid }} />
-            {result.invalidRows.length > 0 && (
-              <div className="overflow-x-auto rounded-lg border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Row</TableHead>
-                      <TableHead>Errors</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {result.invalidRows.map((r) => (
-                      <TableRow key={r.rowNo}>
-                        <TableCell className="num">{r.rowNo}</TableCell>
-                        <TableCell>
-                          <div className="flex flex-wrap gap-1">
-                            {r.errors.map((code) => (
-                              <StatusPill key={code} value={code} />
-                            ))}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+          {step === 'upload' && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="device-inventory-manufacturer">Manufacturer</Label>
+                {/* Uses the SHARED Select primitive rather than a hand-styled raw
+                    select. It was raw, with its own copy of the class list, and the
+                    copy had already drifted: it kept rounded-lg on an opaque
+                    background while the spec (4.6) asks for the Input's rounded-3xl
+                    bg-input/50, so this control looked different from every other
+                    field on the screen. Sharing the primitive is what stops that
+                    happening again. Still a native select underneath: the spec's
+                    Radix composite changes how the control is driven in tests, so it
+                    lands with its test rewrite rather than as a drive-by. */}
+                <Select
+                  id="device-inventory-manufacturer"
+                  value={manufacturerVndrId}
+                  onChange={(e) => setManufacturerVndrId(e.target.value)}
+                >
+                  <option value="">Select a manufacturer...</option>
+                  {manufacturers.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.displayName}
+                    </option>
+                  ))}
+                </Select>
+                <p className="text-xs text-muted-foreground">Required before the file can be submitted.</p>
               </div>
-            )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+
+              <div className="space-y-2">
+                <Label htmlFor="device-inventory-file">Device inventory file</Label>
+                <FileDropZone
+                  id="device-inventory-file"
+                  file={file}
+                  onPick={handleFile}
+                  disabled={busy}
+                  expects={EXPECTED_COLUMN_LIST}
+                  done={result !== null}
+                />
+              </div>
+
+              <Button type="button" onClick={() => setConfirming(true)} disabled={!canContinue || busy}>
+                Continue to submit
+              </Button>
+            </>
+          )}
+
+          {error !== null && <ErrorNote>{error}</ErrorNote>}
+
+          {step === 'submit' && (
+            <>
+              {result === null && selectedManufacturer !== null && (
+                <p className="text-[13px] text-muted-foreground">
+                  The file will be ingested for {selectedManufacturer.displayName}.
+                </p>
+              )}
+
+              {structuralErrors.length > 0 && (
+                <div className="space-y-2">
+                  {structuralErrors.map((e) => (
+                    <ErrorNote key={e.code + (e.column ?? '')}>{structuralMessage(e)}</ErrorNote>
+                  ))}
+                  <p className="text-sm text-muted-foreground">
+                    No rows were ingested. Expected columns: {EXPECTED_COLUMNS}. Column names are matched
+                    ignoring case and extra spaces.
+                  </p>
+                </div>
+              )}
+
+              {/* shadcn's Button has no `loading` prop (the pre-spec primitive did):
+                  the spec's idiom is a spinning lucide icon inside a disabled button,
+                  which its base class already sizes via [&_svg] rules. */}
+              <Button
+                type="button"
+                className="self-start"
+                onClick={() => {
+                  void handleSubmit()
+                }}
+                disabled={!canSubmit}
+              >
+                {busy && <Loader2 className="animate-spin" aria-hidden="true" />}
+                Upload device inventory file
+              </Button>
+
+              {result !== null && (
+                <div className="space-y-3">
+                  <PerRowErrors result={{ accepted: result.accepted, flagged: result.flagged, invalid: result.invalid }} />
+                  {result.invalidRows.length > 0 && (
+                    <div className="overflow-x-auto rounded-lg border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Row</TableHead>
+                            <TableHead>Errors</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {result.invalidRows.map((r) => (
+                            <TableRow key={r.rowNo}>
+                              <TableCell className="num">{r.rowNo}</TableCell>
+                              <TableCell>
+                                <div className="flex flex-wrap gap-1">
+                                  {r.errors.map((code) => (
+                                    <StatusPill key={code} value={code} />
+                                  ))}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <UploadHelperCards kind={KIND} step={step} />
+    </div>
   )
 }
