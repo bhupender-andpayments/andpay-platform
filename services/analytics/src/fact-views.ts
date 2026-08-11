@@ -35,6 +35,10 @@ export interface AssignmentFactView {
   // Phase 3 Task 4: Branch Code snapshot, OPTIONAL on the wire (D120 FULL compat),
   // projected into DispatchRow.branch.
   branchCode?: string
+  // W-5: which physical consignment this assignment is, OPTIONAL on the wire
+  // (D120 FULL compat), projected into DispatchRow.dispatchGroup. A fact
+  // without it is pre-split and projects to null.
+  dispatchGroup?: 'SOUNDBOX' | 'COLLATERAL'
 }
 
 // fct.tms.assignment.ship_to_amended.v1

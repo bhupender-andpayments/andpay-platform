@@ -1,0 +1,27 @@
+-- W-5: dispatch group and request provenance off fct.tms.assignment.v1.
+--
+-- One bank row now mints one TMS assignment PER dispatch group (SOUNDBOX and,
+-- when the row also ordered collateral, COLLATERAL), so a single incoming
+-- request can now surface as one or two dispatch_row records. dispatch_group
+-- says which physical consignment this record is, and source_ref is the
+-- shared key that lets two records be recognised as the SAME request (the
+-- assignment fact's sourceEventId, folded verbatim).
+--
+-- Both NULLABLE, and both stay nullable: they are optional on the wire (D120
+-- FULL compat), and NULL means the fact predates the split. A NULL row is
+-- legacy, not missing data, and every consumer (tile, report, the ops-edge
+-- activate gate) treats null as pre-split, same as the branch column before
+-- it: activation counts it, tiles count it.
+--
+-- Backfill is deliberately NOT done, for the same reason the batch_id and
+-- collateral columns gave: the modeled layer is rebuildable from the
+-- append-only raw_event log by construction (rebuildDispatchRows folds the
+-- SAME applyFact over the SAME ordered rows), so existing rows gain these
+-- values from a rebuild rather than from a hand-written UPDATE that could
+-- drift from the fold.
+--
+-- Additive only (S23): two nullable columns, no DROP, no ALTER of an existing
+-- column, no RLS or grant change (analytics_write and analytics_read already
+-- hold table-level privileges on dispatch_row).
+ALTER TABLE analytics.dispatch_row ADD COLUMN IF NOT EXISTS dispatch_group TEXT;
+ALTER TABLE analytics.dispatch_row ADD COLUMN IF NOT EXISTS source_ref TEXT;

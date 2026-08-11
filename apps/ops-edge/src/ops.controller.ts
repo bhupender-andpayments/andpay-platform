@@ -693,6 +693,12 @@ export class OpsController {
     if (status === null || status.deliveryDate === null) {
       throw new ConflictException('not-delivered')
     }
+    // W-5: paper does not activate. A COLLATERAL group's lifecycle ends at
+    // DELIVERED; activating it by hand must be impossible, not merely absent
+    // from the worklist.
+    if (status.dispatchGroup === 'COLLATERAL') {
+      throw new ConflictException('not-activatable')
+    }
     return activateAssignmentOps(this.deps.tmsDb, {
       asgnId: body.dispatchId,
       port: new ManualDevicePort(),

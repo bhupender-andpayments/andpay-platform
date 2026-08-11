@@ -43,6 +43,15 @@ export interface DispatchRowState {
   bankCode: string | null
   bankDisplay: string | null
   branch: string | null
+  /**
+   * W-5: which physical consignment this record is (SOUNDBOX or COLLATERAL,
+   * one bank row can now mint one assignment per group), and the shared key
+   * that recognises two records as the SAME request. Both null for a fact
+   * folded before the split (D120 FULL compat); every consumer treats null
+   * as legacy.
+   */
+  dispatchGroup: string | null
+  sourceRef: string | null
   merchantDisplay: string | null
   deviceIds: string[]
   awb: string | null
@@ -101,6 +110,8 @@ function freshState(dispatchId: string): DispatchRowState {
     bankCode: null,
     bankDisplay: null,
     branch: null,
+    dispatchGroup: null,
+    sourceRef: null,
     merchantDisplay: null,
     deviceIds: [],
     awb: null,
@@ -169,6 +180,10 @@ export function applyFact(
       // (BRD 5.1b, optional on the wire for D120 FULL compat). A fact WITHOUT it
       // (a pre-Task-4 / legacy fact) still projects to null.
       s.branch = p.branchCode ?? null
+      // W-5: dispatch group + request provenance, optional on the wire; legacy facts
+      // project null and every consumer treats null as pre-split.
+      s.dispatchGroup = p.dispatchGroup ?? null
+      s.sourceRef = p.sourceEventId ?? null
       return s
     }
     case T.SHIP_TO_AMENDED:
@@ -340,6 +355,8 @@ function toUpsertInput(s: DispatchRowState): Prisma.DispatchRowUncheckedCreateIn
     bankCode: s.bankCode as string,
     bankDisplay: s.bankDisplay as string,
     branch: s.branch,
+    dispatchGroup: s.dispatchGroup,
+    sourceRef: s.sourceRef,
     merchantDisplay: s.merchantDisplay as string,
     deviceIds: s.deviceIds,
     awb: s.awb,

@@ -51,6 +51,13 @@ model DispatchRow {
   bankCode                String    @map("bank_code")
   bankDisplay             String    @map("bank_display")
   branch                  String?
+  // W-5: which physical consignment this record is (SOUNDBOX or COLLATERAL,
+  // one bank row can now mint one assignment per group), and the shared key
+  // (the assignment fact's sourceEventId) that recognises two records as the
+  // SAME request. Both optional on the wire (D120 FULL compat); null means
+  // the fact predates the split, and every consumer treats null as legacy.
+  dispatchGroup           String?   @map("dispatch_group")
+  sourceRef               String?   @map("source_ref")
   merchantDisplay         String    @map("merchant_display")
   deviceIds               String[]  @map("device_ids")
   awb                     String?

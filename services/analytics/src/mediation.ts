@@ -95,6 +95,8 @@ interface DispatchDbRow {
   bank_code: string
   bank_display: string
   branch: string | null
+  dispatch_group: string | null
+  source_ref: string | null
   merchant_display: string
   device_ids: string[] | null
   awb: string | null
@@ -135,11 +137,11 @@ async function scopedDispatchRead(db: AnalyticsDb, scope: ReadScope): Promise<Di
       const arrayLiteral = `{${scope.programIds.join(',')}}`
       return tx.$queryRaw<DispatchDbRow[]>`
         SELECT dispatch_id, program_id::text AS program_id, bank_code, bank_display, branch,
-               merchant_display, device_ids, awb, shpt_id, batch_id, dispatch_date, courier_status,
-               delivery_date, activation_status, sim_activation_status, activation_date,
-               activation_failure_reason, pipeline_state, is_replacement, original_dispatch_id,
-               damage_reason, replacement_dispatch_id, replacement_status, billable_flag,
-               received_at, sent_to_vendor_at, dispatched_at
+               dispatch_group, source_ref, merchant_display, device_ids, awb, shpt_id, batch_id,
+               dispatch_date, courier_status, delivery_date, activation_status,
+               sim_activation_status, activation_date, activation_failure_reason, pipeline_state,
+               is_replacement, original_dispatch_id, damage_reason, replacement_dispatch_id,
+               replacement_status, billable_flag, received_at, sent_to_vendor_at, dispatched_at
         FROM dispatch_row
         WHERE program_id = ANY(${arrayLiteral}::uuid[])`
     }
@@ -147,11 +149,11 @@ async function scopedDispatchRead(db: AnalyticsDb, scope: ReadScope): Promise<Di
     // row, so no application predicate is needed.
     return tx.$queryRaw<DispatchDbRow[]>`
       SELECT dispatch_id, program_id::text AS program_id, bank_code, bank_display, branch,
-             merchant_display, device_ids, awb, shpt_id, batch_id, dispatch_date, courier_status,
-             delivery_date, activation_status, sim_activation_status, activation_date,
-             activation_failure_reason, pipeline_state, is_replacement, original_dispatch_id,
-             damage_reason, replacement_dispatch_id, replacement_status, billable_flag,
-             received_at, sent_to_vendor_at, dispatched_at
+             dispatch_group, source_ref, merchant_display, device_ids, awb, shpt_id, batch_id,
+             dispatch_date, courier_status, delivery_date, activation_status,
+             sim_activation_status, activation_date, activation_failure_reason, pipeline_state,
+             is_replacement, original_dispatch_id, damage_reason, replacement_dispatch_id,
+             replacement_status, billable_flag, received_at, sent_to_vendor_at, dispatched_at
       FROM dispatch_row`
   })
 }
@@ -167,6 +169,8 @@ function toReportRow(r: DispatchDbRow): ReportRow {
     bankCode: r.bank_code,
     bankDisplay: r.bank_display,
     branch: r.branch,
+    dispatchGroup: r.dispatch_group,
+    sourceRef: r.source_ref,
     merchantDisplay: r.merchant_display,
     deviceIds: r.device_ids ?? [],
     awb: r.awb,
@@ -233,10 +237,26 @@ function withinWindow(d: Date | null, filters: ReportFilters): boolean {
  * mediated, RLS-scoped read), so there is NO global pre-aggregated counter:
  * every value here decomposes per Program by construction (D97).
  */
+// W-5: a SOUNDBOX or a legacy (pre-split, dispatch_group null) row. COLLATERAL
+// groups are physical paper: they ship and deliver but never activate, so the
+// two activation tiles below must not count them. Every other tile keeps
+// counting rows, because they track things physically moving through print
+// and courier, and a COLLATERAL row is a real physical thing moving.
+const isSoundboxOrLegacy = (r: DispatchDbRow): boolean =>
+  r.dispatch_group === null || r.dispatch_group === 'SOUNDBOX'
+
 function computeTiles(rows: DispatchDbRow[], filters: ReportFilters): TileSet {
   const narrowed = narrowByBankAndCourier(rows, filters)
 
-  const requestsReceived = narrowed.filter((r) => withinWindow(r.received_at, filters)).length
+  // requestsReceived counts REQUESTS, not dispatch groups. One bank row can
+  // now mint one or two dispatch_row records (a SOUNDBOX group and a
+  // COLLATERAL group) sharing the same source_ref, and both are the SAME
+  // incoming request. A legacy row (source_ref null) has no group sibling, so
+  // it falls back to its own dispatch_id and counts individually, same as
+  // today.
+  const requestsReceived = new Set(
+    narrowed.filter((r) => withinWindow(r.received_at, filters)).map((r) => r.source_ref ?? r.dispatch_id),
+  ).size
 
   const pendingQr = narrowed.filter(
     (r) => r.pipeline_state === 'RECEIVED' || r.pipeline_state === 'POOLED',
@@ -258,16 +278,21 @@ function computeTiles(rows: DispatchDbRow[], filters: ReportFilters): TileSet {
 
   // ACTIVATION-EMPTY (build decision 3): activation_status is null everywhere
   // in live v1 data (no activation write path exists), so this counts
-  // everything delivered.
+  // everything delivered. W-5: filtered to soundbox-or-legacy, because a
+  // COLLATERAL group's lifecycle ends at DELIVERED and it must never appear
+  // on the activation worklist.
   const deliveredNotActivated = narrowed.filter(
-    (r) => r.delivery_date !== null && r.activation_status === null,
+    (r) => isSoundboxOrLegacy(r) && r.delivery_date !== null && r.activation_status === null,
   ).length
 
   const damagedReplacementOpen = narrowed.filter((r) => r.replacement_status === 'RAISED').length
 
   // ACTIVATION-EMPTY: reads 0 under live v1 data; the predicate itself is the
   // real, general aggregate (correct once an activation write path exists).
-  const activatedSuccessfully = narrowed.filter((r) => r.activation_status === 'ACTIVATED').length
+  // W-5: filtered to soundbox-or-legacy, mirroring deliveredNotActivated.
+  const activatedSuccessfully = narrowed.filter(
+    (r) => isSoundboxOrLegacy(r) && r.activation_status === 'ACTIVATED',
+  ).length
 
   // DISTINCT, because one batch spans many records: counting rows would report
   // the number of batched RECORDS, which is the mistake this tile exists to
@@ -308,11 +333,11 @@ function tilePredicate(tile: TileName): (r: DispatchDbRow) => boolean {
     case 'dispatchedNotDelivered':
       return (r) => r.dispatched_at !== null && r.delivery_date === null
     case 'deliveredNotActivated':
-      return (r) => r.delivery_date !== null && r.activation_status === null
+      return (r) => isSoundboxOrLegacy(r) && r.delivery_date !== null && r.activation_status === null
     case 'damagedReplacementOpen':
       return (r) => r.replacement_status === 'RAISED'
     case 'activatedSuccessfully':
-      return (r) => r.activation_status === 'ACTIVATED'
+      return (r) => isSoundboxOrLegacy(r) && r.activation_status === 'ACTIVATED'
   }
 }
 
@@ -553,9 +578,16 @@ function computeReport(report: ReportName, rows: DispatchDbRow[], filters: Repor
         .filter((r) => r.dispatched_at !== null && withinReportWindow(r.dispatch_date, filters))
         .map(soundboxDeliveryRow)
     case 'activation':
+      // W-5: filtered to soundbox-or-legacy, mirroring the deliveredNotActivated
+      // tile. A COLLATERAL group's lifecycle ends at DELIVERED and must never
+      // appear on the activation worklist.
       return rows
         .filter(
-          (r) => r.delivery_date !== null && r.activation_status === null && withinReportWindow(r.delivery_date, filters),
+          (r) =>
+            isSoundboxOrLegacy(r) &&
+            r.delivery_date !== null &&
+            r.activation_status === null &&
+            withinReportWindow(r.delivery_date, filters),
         )
         .map(activationRow)
     case 'damaged-replacement':
@@ -620,6 +652,12 @@ export interface DispatchActivationStatus {
   deliveryDate: string | null
   activationStatus: string | null
   activationDate: string | null
+  /**
+   * W-5: which physical consignment this dispatch_row is. Null for a legacy
+   * (pre-split) row. The ops-edge activate route 409s a COLLATERAL group
+   * before it ever reaches the TMS write: paper does not activate.
+   */
+  dispatchGroup: string | null
 }
 
 /**
@@ -648,8 +686,15 @@ export async function readDispatchActivationStatus(
 ): Promise<DispatchActivationStatus | null> {
   const rows = await db.$transaction(async (tx: Tx) => {
     await enterAnalyticsReadScope(tx, { kind: 'crossTenant' })
-    return tx.$queryRaw<{ delivery_date: Date | null; activation_status: string | null; activation_date: Date | null }[]>`
-      SELECT delivery_date, activation_status, activation_date FROM dispatch_row WHERE dispatch_id = ${dispatchId}
+    return tx.$queryRaw<
+      {
+        delivery_date: Date | null
+        activation_status: string | null
+        activation_date: Date | null
+        dispatch_group: string | null
+      }[]
+    >`
+      SELECT delivery_date, activation_status, activation_date, dispatch_group FROM dispatch_row WHERE dispatch_id = ${dispatchId}
     `
   })
   if (rows.length === 0) return null
@@ -658,5 +703,6 @@ export async function readDispatchActivationStatus(
     deliveryDate: iso(r.delivery_date),
     activationStatus: r.activation_status,
     activationDate: iso(r.activation_date),
+    dispatchGroup: r.dispatch_group,
   }
 }

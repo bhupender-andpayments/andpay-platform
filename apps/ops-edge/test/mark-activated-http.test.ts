@@ -123,14 +123,17 @@ async function seedTmsAssignment(asgnId: string): Promise<void> {
 // Seed the LOCAL analytics projection row the DELIVERED gate reads. Mirrors
 // apps/ops-edge/test/reports-routes.test.ts's insertRow shape (the required
 // dispatch_row columns), plus delivery_date set only when `delivered`.
-async function seedDispatchRow(dispatchId: string, delivered: boolean): Promise<void> {
+// W-5: an optional dispatchGroup, so the not-activatable gate test below can
+// seed a COLLATERAL row without a second helper.
+async function seedDispatchRow(dispatchId: string, delivered: boolean, dispatchGroup: string | null = null): Promise<void> {
   const programId = randomUUID()
   await analyticsDb.$executeRaw`
     INSERT INTO dispatch_row
       (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
-       pipeline_state, billable_flag, delivery_date, received_at, updated_at)
+       pipeline_state, billable_flag, delivery_date, received_at, dispatch_group, updated_at)
     VALUES (${dispatchId}, ${programId}::uuid, 'HDFC', 'HDFC Bank', 'Acme', ARRAY['DEV1']::text[],
-            ${delivered ? 'DELIVERED' : 'DISPATCHED'}, true, ${delivered ? new Date() : null}, now(), now())`
+            ${delivered ? 'DELIVERED' : 'DISPATCHED'}, true, ${delivered ? new Date() : null}, now(),
+            ${dispatchGroup}, now())`
 }
 
 beforeAll(async () => {
@@ -219,6 +222,34 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
       .send({ dispatchId: asgnId })
 
     expect(res.status).toBe(409)
+
+    const row = await tmsDb.$queryRaw<{ activated_at: Date | null; demand_state: string }[]>`
+      SELECT activated_at, demand_state FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+    expect(row[0]!.activated_at).toBeNull()
+    expect(row[0]!.demand_state).toBe('pooled-for-fulfillment')
+
+    expect(await tmsActivatedFactCount()).toBe(0)
+    expect(await tmsAuditRows()).toHaveLength(0)
+    expect(await fulfillmentAuditRows()).toHaveLength(0)
+  })
+
+  // W-5: a DELIVERED COLLATERAL group must never activate by hand. Paper's
+  // lifecycle ends at DELIVERED; without this gate an operator could still
+  // hit the route directly (it is absent from the worklist, not blocked).
+  it('a DELIVERED COLLATERAL dispatch -> 409 not-activatable, no activation, no activated fact, no 6e ALLOW', async () => {
+    const asgnId = newId('asgn')
+    await seedTmsAssignment(asgnId)
+    await seedDispatchRow(asgnId, true, 'COLLATERAL')
+
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .post('/ops/assignments/activate')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ dispatchId: asgnId })
+
+    expect(res.status).toBe(409)
+    expect(res.body.message).toBe('not-activatable')
 
     const row = await tmsDb.$queryRaw<{ activated_at: Date | null; demand_state: string }[]>`
       SELECT activated_at, demand_state FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
