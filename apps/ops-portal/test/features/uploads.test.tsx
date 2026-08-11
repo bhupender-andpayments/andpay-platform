@@ -364,7 +364,7 @@ describe('uploads', () => {
     expect(screen.getByRole('link', { name: /device inventory/i })).toBeTruthy()
   })
 
-  it('bank: a completed Upload step is clickable from Review; a locked Commit is not clickable from Upload', async () => {
+  it('bank: a completed Upload step is clickable from Review; Commit is not clickable before a preview exists', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
@@ -388,14 +388,42 @@ describe('uploads', () => {
     await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'bank.csv'))
     expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
 
-    // After preview: Upload is a completed, clickable step from Review; the
-    // still-locked Commit step is not.
-    expect(screen.queryByRole('button', { name: railPill('commit') })).toBeNull()
+    // After preview: Upload is a completed, clickable step from Review.
     fireEvent.click(screen.getByRole('button', { name: railPill('upload') }))
 
     // Back on Upload: the picked file is still shown, and the table is gone.
     expect(await screen.findByText('bank.csv')).toBeTruthy()
     expect(screen.queryByText('BMR-1')).toBeNull()
+  })
+
+  // Finding 3: at Review, bank used to render the Commit pill inert even
+  // though "Continue to commit" is right there, because `unlocked` gated
+  // commit on `previewOk && (confirming || commitResult !== null)`, both of
+  // which already force step === 'commit', so the gate could never be
+  // satisfied from Review. Device inventory's Submit pill is a live forward
+  // jump once canContinue holds; bank/damage now match that shape.
+  it('bank: from Review, the Commit rail pill is a live forward jump (a clickable button, not inert)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/uploads/bank/preview')) return jsonResponse(BANK_PREVIEW_RESULT)
+        return jsonResponse({})
+      }),
+    )
+
+    renderWithProviders(<BankUploadPage />)
+
+    const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
+    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'bank.csv'))
+    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
+
+    const railPill = (label: string) => new RegExp(`^\\d\\s*${label}$`, 'i')
+    fireEvent.click(screen.getByRole('button', { name: railPill('commit') }))
+
+    // Clicking the Commit pill from Review advances the flow: the commit
+    // step's own copy and button render, exactly as "Continue to commit" does.
+    expect(screen.getByText(/will be committed/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /commit bank request file/i })).toBeTruthy()
   })
 
   // Review fix, round 1: a committed file's preview is stale, so Review must
@@ -776,5 +804,31 @@ describe('uploads', () => {
     // Nothing may be invented about which column was at fault.
     expect(screen.queryByText(/Missing required column/)).toBeNull()
     expect(screen.queryByText(/No rows were ingested/)).toBeNull()
+  })
+
+  // Finding 5: onStepClick('upload') cleared `result` but not
+  // `structuralErrors`, so after a structural rejection, clicking Upload then
+  // Continue without picking a new file re-rendered the PREVIOUS rejection
+  // above a fresh confirm line, a screen asserting a rejection that has not
+  // happened this time.
+  it('device inventory upload: going back to Upload after a structural rejection clears the stale rejection', async () => {
+    await submitInventory(400, {
+      code: 'invalid',
+      message: 'invalid request',
+      reasons: [{ code: 'missing_required_column', column: 'Sim No' }],
+    })
+    expect(await screen.findByText(/Missing required column "Sim No"/)).toBeTruthy()
+
+    const railPill = (label: string) => new RegExp(`^\\d\\s*${label}$`, 'i')
+    fireEvent.click(screen.getByRole('button', { name: railPill('upload') }))
+
+    // Back at Upload: the stale rejection must not still be standing.
+    expect(screen.queryByText(/Missing required column "Sim No"/)).toBeNull()
+
+    // Continue again without picking a new file: still no stale rejection,
+    // only the fresh confirm line.
+    await userEvent.click(screen.getByRole('button', { name: /continue to submit/i }))
+    expect(screen.queryByText(/Missing required column "Sim No"/)).toBeNull()
+    expect(screen.getByText(/the file will be ingested/i)).toBeTruthy()
   })
 })

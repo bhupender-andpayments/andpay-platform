@@ -98,7 +98,14 @@ export function DamageUploadPage() {
   // rail whose entire premise is that it tells the truth. Commit stays
   // unlocked after a commit because that is the step you are standing on
   // and it holds the result.
-  const unlocked: StepKey[] = ['choose', 'upload', ...(previewOk && commitResult === null ? (['review'] as const) : []), ...(previewOk && (confirming || commitResult !== null) ? (['commit'] as const) : [])]
+  //
+  // Commit unlocks on `previewOk` alone, matching device inventory's Submit
+  // pill: a live forward jump from Review is exactly what "Continue to
+  // commit" already offers, so the rail pill should not sit inert next to
+  // it. Gating on `confirming || commitResult !== null` here was circular
+  // (both already force step === 'commit'), which is what made the pill
+  // dead in the first place.
+  const unlocked: StepKey[] = ['choose', 'upload', ...(previewOk && commitResult === null ? (['review'] as const) : []), ...(previewOk ? (['commit'] as const) : [])]
 
   function onStepClick(key: StepKey): void {
     if (key === 'choose') {
@@ -128,7 +135,7 @@ export function DamageUploadPage() {
         current={step}
         unlocked={unlocked}
         onStepClick={onStepClick}
-        guidance="Steps 3 and 4 need a previewed file. Start at Upload."
+        guidance={KIND.guidanceByStep?.[step]}
       />
 
       <Card>

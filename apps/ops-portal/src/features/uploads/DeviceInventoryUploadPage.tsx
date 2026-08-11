@@ -20,7 +20,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ErrorNote, StatusPill } from '../../ui/primitives.js'
 import { FileDropZone } from '../../components/FileDropZone.js'
 import { PerRowErrors } from '../../components/PerRowErrors.js'
-import { kindBySlug, type StepKey } from './uploadKinds.js'
+import { kindBySlug, DEVICE_INVENTORY_COLUMNS, type StepKey } from './uploadKinds.js'
 import { UploadStepper } from './UploadStepper.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
 
@@ -52,14 +52,10 @@ import { UploadHelperCards } from './UploadHelperCards.js'
 
 // The three columns FR-01a mandates, in sheet order. Shown when a file is
 // rejected structurally, because knowing what was expected is most of what an
-// operator needs to fix the file.
-// The FR-01a column contract, as the adapter's own HEADERS constant spells it.
-// One source for both the drop zone's up-front hint and the rejection copy, so
-// the two can never disagree about what a valid sheet looks like.
-// EXPORTED so the uploads index can state the same columns from the same
-// source. Two copies of this list would eventually disagree about what a valid
-// sheet looks like, and the operator would believe whichever one they read.
-export const DEVICE_INVENTORY_COLUMNS = ['Device ID', 'Sim No', 'Device QR'] as const
+// operator needs to fix the file. The constant itself lives in uploadKinds.ts
+// now (see the WHY comment there): re-exported here under its original name
+// so every existing caller of THIS module keeps working unchanged.
+export { DEVICE_INVENTORY_COLUMNS } from './uploadKinds.js'
 const EXPECTED_COLUMN_LIST = DEVICE_INVENTORY_COLUMNS
 const EXPECTED_COLUMNS = EXPECTED_COLUMN_LIST.join(', ')
 
@@ -174,6 +170,11 @@ export function DeviceInventoryUploadPage() {
       // Task 3 landed for the bank page's Review pill.
       setConfirming(false)
       setResult(null)
+      // A prior structural rejection belongs to the file that caused it. Left
+      // standing, clicking Upload then Continue without picking a new file
+      // would re-render that rejection above a fresh confirm line, a screen
+      // asserting a rejection that has not happened this time.
+      setStructuralErrors([])
       return
     }
     if (key === 'submit') setConfirming(true)
@@ -186,7 +187,7 @@ export function DeviceInventoryUploadPage() {
         current={step}
         unlocked={unlocked}
         onStepClick={onStepClick}
-        guidance="Step 3 needs a manufacturer and a file. Start at Upload."
+        guidance={KIND.guidanceByStep?.[step]}
       />
 
       <Card>

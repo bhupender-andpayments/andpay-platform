@@ -26,7 +26,11 @@ export function UploadStepper({
 }) {
   const currentIdx = steps.findIndex((s) => s.key === current)
   return (
-    <div className="flex flex-col gap-1.5">
+    // The rail is now the ONLY way back to the index (UploadFrame is retired),
+    // so a bare <ol> with no accessible name is no longer just decoration; it
+    // is unlabeled navigation. `nav` plus `aria-label` names it for assistive
+    // tech without touching the visible markup at all.
+    <nav aria-label="Upload steps" className="flex flex-col gap-1.5">
       <ol className="flex flex-wrap items-center gap-2">
         {steps.map((step, i) => {
           const isCurrent = step.key === current
@@ -79,6 +83,6 @@ export function UploadStepper({
         })}
       </ol>
       {guidance !== undefined && <p className="text-[13px] text-muted-foreground">{guidance}</p>}
-    </div>
+    </nav>
   )
 }

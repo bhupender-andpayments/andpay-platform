@@ -1,5 +1,3 @@
-import { DEVICE_INVENTORY_COLUMNS } from './DeviceInventoryUploadPage.js'
-
 // One module owns every string the uploads flow shows: the step-1 cards, the
 // rail labels, and the helper-card copy. The rail, the cards, and the helpers
 // reading one source is what stops them disagreeing about what a step is
@@ -32,6 +30,16 @@ export interface UploadKind {
   nextByStep: Readonly<Partial<Record<StepKey, readonly string[]>>>
   /** The real contract, stated before an operator wastes an upload. */
   goodToKnow: readonly string[]
+  /**
+   * The rail's guidance line, per CURRENT step. Written WITHOUT step numbers
+   * (steps are keyed by name for exactly that reason, see StepKey above), and
+   * present only for a step where the guidance is still true: a static line
+   * telling the operator to "start at Upload" would keep showing on Commit or
+   * Submit after the flow is done, which is advice for a step that has
+   * already passed. No entry for review, commit, submit, or choose; the index
+   * keeps its own guidance line.
+   */
+  guidanceByStep?: Readonly<Partial<Record<StepKey, string>>>
 }
 
 const CHOOSE: UploadStep = { key: 'choose', label: 'Choose file' }
@@ -44,6 +52,16 @@ const SHARED_GOOD_TO_KNOW = [
   'Files up to 5 MiB, .csv or .xlsx.',
   'The file is parsed on the server; what you see is the server verdict.',
 ] as const
+
+// The FR-01a column contract, in sheet order. Lives HERE rather than on
+// DeviceInventoryUploadPage.tsx, which re-exports the same NAME for its own
+// module's callers: this descriptor module is dereferenced at module
+// evaluation time (inside the UPLOAD_KINDS literal below), and a page that
+// imports kindBySlug back from here would otherwise close a circular import,
+// where whichever module the cycle is entered through first wins and the
+// other sees an undefined value. Keeping the constant on the descriptor side
+// of that edge removes the cycle instead of relying on import order.
+export const DEVICE_INVENTORY_COLUMNS = ['Device ID', 'Sim No', 'Device QR'] as const
 
 export const UPLOAD_KINDS: readonly UploadKind[] = [
   {
@@ -62,6 +80,9 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
       'Preview writes nothing; only Commit does.',
       'A soundbox row whose VPA already exists is HELD and names the original.',
     ],
+    guidanceByStep: {
+      upload: 'Review and Commit unlock once the file previews cleanly.',
+    },
   },
   {
     slug: 'damage',
@@ -79,6 +100,9 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
       'Preview writes nothing; only Commit does.',
       'Rows are matched to a dispatch by bank code plus VPA, and the reason must be an active damage reason.',
     ],
+    guidanceByStep: {
+      upload: 'Review and Commit unlock once the file previews cleanly.',
+    },
   },
   {
     slug: 'device-inventory',
@@ -96,6 +120,9 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
       `Required columns: ${DEVICE_INVENTORY_COLUMNS.join(', ')}. Names are matched ignoring case and extra spaces.`,
       'A missing column rejects the whole file; individual bad rows are skipped, not fatal.',
     ],
+    guidanceByStep: {
+      upload: 'Submit unlocks once a manufacturer and a file are set.',
+    },
   },
 ]
 
