@@ -11,6 +11,7 @@ import {
   type BatchEntryRow,
 } from '../../api/endpoints.js'
 import { saveBlob } from '../../lib/saveBlob.js'
+import { COLLATERAL_GROUP_LABELS, collateralGroupsFor, excelGroupsFor } from '../../lib/dispatchGroups.js'
 import { RecomposeForm } from '../operations/RecomposeForm.js'
 import {
   PageHeader,
@@ -36,20 +37,17 @@ import { fmtDateTime } from '../../ui/format.js'
 // artifact is not offered at all.
 
 // The print vendor receives TWO merged PDFs per batch, not three per-type ones:
-// a Soundbox PDF and a Collateral PDF combining sticker and standee. A merchant
-// wanting both a sticker and a standee gets ONE page in the collateral PDF,
-// because the two share the same branded artwork (BRD Annexure A) and a second
-// page would be one VPA's QR printed twice.
+// a Soundbox PDF and a Collateral PDF combining sticker and standee. The buttons
+// are therefore GROUPS, derived from the artifact types the batch actually has.
 //
-// The buttons are therefore GROUPS, derived from the artifact types the batch
-// actually has. Storage still holds the three types unchanged, which is why the
-// mapping lives here and in package.ts rather than in a migration. RecomposeForm
-// below still works on the three STORED types: a recompose targets a row, not a
-// delivery group.
-const COLLATERAL_GROUP_LABELS: Record<string, string> = {
-  SOUNDBOX: 'Soundbox',
-  COLLATERAL: 'Collateral',
-}
+// The three group predicates (COLLATERAL_GROUP_LABELS, collateralGroupsFor,
+// excelGroupsFor) used to be declared inline here. They now live in
+// lib/dispatchGroups.ts, because the workflow workspace's Print stage renders the
+// same buttons and two copies of a rule that must match package.ts is worse than
+// one. Behaviour is unchanged; see that module for the full rationale.
+//
+// RecomposeForm below still works on the three STORED types: a recompose targets
+// a row, not a delivery group.
 
 // Task 11 (2026-08-11 dispatch-group split): the badge beside a row's
 // Dispatch ID. NULL (a legacy, pre-split combined row) renders NO badge at
@@ -218,40 +216,12 @@ export function BatchDetailPage() {
             ? `${formed} . All ${total} ${total === 1 ? 'record' : 'records'} dispatched`
             : `${formed} . ${dispatched} of ${total} dispatched`
 
-  // The delivery groups this batch actually has, in a stable order. At most two
-  // buttons: a batch with stickers AND standees offers ONE Collateral PDF, not
-  // one per type, because that is the single PDF the vendor is handed.
-  const artifactTypes = new Set((detail?.artifacts ?? []).map((a) => a.artifactType))
-  const availableGroups = [
-    ...(artifactTypes.has('SOUNDBOX_IMG') ? ['SOUNDBOX'] : []),
-    ...(artifactTypes.has('STANDEE_IMG') || artifactTypes.has('STICKER_IMG') ? ['COLLATERAL'] : []),
-  ]
-
-  // Excel buttons gate on LINE membership, not artifact presence: an orphan
-  // line (no product at all) has an Excel row but no artifact, and its sheet
-  // must still be downloadable (spec 2.2).
-  //
-  // Task 6 (2026-08-11 dispatch-group split), source of truth:
-  // services/fulfillment/src/package.ts excelLinesFor. GROUP FIRST: a Task 5
-  // split row already knows which one delivery group it belongs to, so its
-  // own dispatchGroup decides membership outright. Only a null-group row (a
-  // legacy, pre-split combined row) falls back to the original flag-based
-  // rule. This predicate must stay byte-for-byte identical to excelLinesFor's,
-  // or the two Excel buttons and the sheets they download can disagree about
-  // which batches have a SOUNDBOX or COLLATERAL sheet at all.
-  const entries = detail?.entries ?? []
-  const excelGroups = [
-    ...(entries.some((e) => e.dispatchGroup === 'SOUNDBOX' || (e.dispatchGroup === null && e.soundbox))
-      ? ['SOUNDBOX']
-      : []),
-    ...(entries.some(
-      (e) =>
-        e.dispatchGroup === 'COLLATERAL' ||
-        (e.dispatchGroup === null && (e.standeeCount >= 1 || e.stickerCount >= 1 || !e.soundbox)),
-    )
-      ? ['COLLATERAL']
-      : []),
-  ]
+  // The delivery groups this batch actually has, in a stable order. Both rules
+  // (PDF buttons gate on artifact presence, Excel buttons gate on line
+  // membership) now come from lib/dispatchGroups.ts, which the Print stage of the
+  // workflow workspace reads too.
+  const availableGroups = collateralGroupsFor(detail?.artifacts ?? [])
+  const excelGroups = excelGroupsFor(detail?.entries ?? [])
 
   return (
     <div className="space-y-6">

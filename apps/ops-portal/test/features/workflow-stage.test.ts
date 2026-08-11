@@ -165,6 +165,22 @@ describe('deriveWorkflow: honesty rule 3, a stage with no backing read says so',
     expect(deriveWorkflow(batchMode({ journey: null })).facts.watermark).toBeNull()
   })
 
+  // The stage-8 worklist has to travel through here. The Activation stage cannot
+  // fetch it (it renders from props) and cannot rebuild it from batchDetail.entries,
+  // which carry no delivery_date and no awb; rebuilding would also drop the
+  // soundbox-or-legacy gate readBatchJourney applies, putting a delivered standee
+  // on a worklist whose write would 409 it.
+  it('forwards the awaiting-activation worklist, and an EMPTY ARRAY rather than undefined with no journey', () => {
+    const rows = [{ dispatchId: 'asgn_a', merchantDisplay: 'Acme', awb: 'AWB1', deliveryDate: '2026-08-10T10:00:00.000Z' }]
+    const withJourney = deriveWorkflow(batchMode({ journey: journey({ awaitingActivation: rows }) }))
+    expect(withJourney.facts.awaitingActivation).toEqual(rows)
+
+    // Never undefined and never null on any path, so a consumer maps over it
+    // unconditionally instead of guarding at every call site.
+    expect(deriveWorkflow(batchMode({ journey: null })).facts.awaitingActivation).toEqual([])
+    expect(deriveWorkflow({ ...batchMode(), mode: 'pool' }).facts.awaitingActivation).toEqual([])
+  })
+
   // Reachable: batchDetail and journey are independent reads, and the analytics
   // projection folds the batch fact asynchronously, so composed artifacts
   // routinely exist before the journey row does. The old clamp made `generate`

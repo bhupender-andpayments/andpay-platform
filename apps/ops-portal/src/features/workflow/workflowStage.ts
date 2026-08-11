@@ -85,6 +85,16 @@ export interface DerivedWorkflow {
      * as live truth without the badge that says otherwise.
      */
     watermark: Watermark | null
+    /**
+     * The stage-8 worklist, forwarded from the journey read. It travels through the
+     * derivation rather than being fetched by the stage or rebuilt from
+     * batchDetail.entries, because those entries carry no delivery_date and no awb,
+     * and rebuilding would drop the soundbox-or-legacy gate that keeps delivered
+     * COLLATERAL paper off a worklist whose write would 409 it.
+     *
+     * Always an array, never null, so a consumer can map over it unconditionally.
+     */
+    awaitingActivation: BatchJourneyView['awaitingActivation']
   }
 }
 
@@ -123,6 +133,8 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
         elapsedMsInStage: s.elapsedMsInStage,
         // Pool mode has no journey read, so there is nothing to badge.
         watermark: null,
+        // And nothing has been delivered yet, so there is no worklist.
+        awaitingActivation: [],
       },
     }
   }
@@ -175,6 +187,7 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
       activation: s.journey?.activation ?? null,
       elapsedMsInStage: s.elapsedMsInStage,
       watermark: s.journey?.watermark ?? null,
+      awaitingActivation: s.journey?.awaitingActivation ?? [],
     },
   }
 }
