@@ -375,8 +375,11 @@ export async function onDemandAccrued(
 
   const tenantUuid = toUuid(tenantWire)
   const programUuid = toUuid(programWire)
+  // W-5: Minimum Lot Size counts MERCHANT REQUESTS (the BRD's own unit), not
+  // dispatch groups. Both dispatch groups of one bank row share source_event_id, so DISTINCT
+  // restores the pre-split meaning; legacy rows count once by construction.
   const counted = await db.$queryRaw<{ n: bigint }[]>`
-    SELECT count(*) AS n FROM pending_pool_entry
+    SELECT count(DISTINCT source_event_id) AS n FROM pending_pool_entry
     WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid AND pool_status = 'POOLED'
   `
   const count = Number(counted[0]?.n ?? 0)

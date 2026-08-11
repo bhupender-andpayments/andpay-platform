@@ -25,6 +25,13 @@ const BASE = new Date('2026-01-01T00:00:00.000Z')
 // test/batching-lotsize.test.ts's own seedPooled): updated_at and trace_id
 // are NOT NULL columns, both set explicitly so the fixture never depends on a
 // column default.
+//
+// source_event_id is derived from traceId (one per call, since every caller
+// already passes a distinct traceId per simulated entry), not a shared
+// literal: Task 9 (W-5) made the lot-size gate count DISTINCT source_event_id,
+// so a fixture representing N separate merchant requests must give each row
+// its OWN source_event_id, matching the convention already used by
+// test/batching-config.test.ts's own seedPooled.
 async function seedPooled(
   tenantUuid: string,
   programUuid: string,
@@ -41,7 +48,7 @@ async function seedPooled(
     ) VALUES (
       ${asgnUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, true, 1, 1, true,
       'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
-      'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'POOLED', 'file-1|1', ${traceId}, ${createdAt}, now()
+      'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'POOLED', ${'file-' + traceId}, ${traceId}, ${createdAt}, now()
     )
   `
   return { asgnWire, asgnUuid }
