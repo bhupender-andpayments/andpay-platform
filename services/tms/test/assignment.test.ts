@@ -51,11 +51,14 @@ function enrollmentEnv(ids: { mrchId: string; progId: string; tnntId: string }, 
 }
 
 describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', () => {
-  it('joins the pending row, snapshots from projections, creates one asgn_ pooled-for-fulfillment, and emits the demand fact (checks 2, 9)', async () => {
+  it('joins the pending row, snapshots from projections, mints one asgn_ PER dispatch group, and emits a demand fact per group (checks 2, 9, W-5)', async () => {
     const ids = await seed('file-1|1')
     const res = await createAssignmentFromEnrollment(db, enrollmentEnv(ids, 'file-1|1'))
     expect(res.created).toBe(true)
-    expect(() => parseId('asgn', res.asgnId!)).not.toThrow()
+    // seed() is soundbox=true, standee 1, sticker 2, so this row deserves TWO
+    // dispatch groups (W-5): SOUNDBOX (zeroed) and COLLATERAL (keeps the counts).
+    expect(res.asgnIds).toHaveLength(2)
+    for (const id of res.asgnIds) expect(() => parseId('asgn', id)).not.toThrow()
 
     const asgn = await db.$queryRaw<{
       merchant_display_name: string
@@ -74,38 +77,50 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
       contact_name: string | null
       mobile: string | null
       branch_code: string | null
+      dispatch_group: string
     }[]>`
       SELECT merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
              ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count, demand_state, source_event_id,
-             contact_name, mobile, branch_code
-      FROM assignment
+             contact_name, mobile, branch_code, dispatch_group
+      FROM assignment ORDER BY dispatch_group
     `
-    expect(asgn).toHaveLength(1)
-    expect(asgn[0]!.merchant_display_name).toBe('Acme')     // from merchant_projection (check 2)
-    expect(asgn[0]!.merchant_legal_name).toBe('Acme Pvt Ltd')
-    expect(asgn[0]!.merchant_mcc).toBe('5814')
-    expect(asgn[0]!.bank_reference_code).toBe('HDFC')       // from tenant_projection
-    expect(asgn[0]!.bank_display_name).toBe('HDFC Bank')
-    expect(asgn[0]!.ship_to_address).toBe('221B Baker Street') // from pending_row
-    expect(asgn[0]!.qr_value).toBe('upi://pay?pa=acme@hdfcbank')
-    expect(asgn[0]!.vpa_value).toBe('acme@hdfcbank')
-    expect(asgn[0]!.soundbox).toBe(true)
-    expect(asgn[0]!.standee_count).toBe(1)
-    expect(asgn[0]!.sticker_count).toBe(2)
-    expect(asgn[0]!.demand_state).toBe('pooled-for-fulfillment')
-    expect(asgn[0]!.source_event_id).toBe('file-1|1')
-    // 06a check 1: the recipient contact snapshot carried from pending_row.
-    expect(asgn[0]!.contact_name).toBe('Jane Doe')
-    expect(asgn[0]!.mobile).toBe('+91-9000000000')
-    // Task 4: the Branch Code snapshot carried from pending_row.
-    expect(asgn[0]!.branch_code).toBe('BR-001')
+    expect(asgn).toHaveLength(2)
+    const soundboxRow = asgn.find((a) => a.dispatch_group === 'SOUNDBOX')!
+    const collateralRow = asgn.find((a) => a.dispatch_group === 'COLLATERAL')!
+    // both rows share the merchant/bank/ship-to/recipient snapshot (check 2).
+    for (const row of asgn) {
+      expect(row.merchant_display_name).toBe('Acme')     // from merchant_projection (check 2)
+      expect(row.merchant_legal_name).toBe('Acme Pvt Ltd')
+      expect(row.merchant_mcc).toBe('5814')
+      expect(row.bank_reference_code).toBe('HDFC')       // from tenant_projection
+      expect(row.bank_display_name).toBe('HDFC Bank')
+      expect(row.ship_to_address).toBe('221B Baker Street') // from pending_row
+      expect(row.qr_value).toBe('upi://pay?pa=acme@hdfcbank')
+      expect(row.vpa_value).toBe('acme@hdfcbank')
+      expect(row.demand_state).toBe('pooled-for-fulfillment')
+      expect(row.source_event_id).toBe('file-1|1')
+      // 06a check 1: the recipient contact snapshot carried from pending_row.
+      expect(row.contact_name).toBe('Jane Doe')
+      expect(row.mobile).toBe('+91-9000000000')
+      // Task 4: the Branch Code snapshot carried from pending_row.
+      expect(row.branch_code).toBe('BR-001')
+    }
+    // W-5: the product mix diverges PER dispatch group.
+    expect(soundboxRow.soundbox).toBe(true)
+    expect(soundboxRow.standee_count).toBe(0)
+    expect(soundboxRow.sticker_count).toBe(0)
+    expect(collateralRow.soundbox).toBe(false)
+    expect(collateralRow.standee_count).toBe(1)
+    expect(collateralRow.sticker_count).toBe(2)
 
-    const ob = await db.$queryRaw<{ event_type: string; partition_key: string; payload: Envelope<AssignmentFactPayload> }[]>`SELECT event_type, partition_key, payload FROM outbox`
-    expect(ob).toHaveLength(1)
-    expect(ob[0]!.event_type).toBe(TMS_ASSIGNMENT_TOPIC)
-    expect(ob[0]!.partition_key).toBe(res.asgnId)          // partitions on asgn_ (E5)
-    expect(ob[0]!.payload.traceId).toBe('trace-9')          // trace_id propagates (check 9)
-    expect(ob[0]!.payload.subject).toBe(res.asgnId)         // envelope subject = asgn_ wire id (E5)
+    const ob = await db.$queryRaw<{ event_type: string; partition_key: string; payload: Envelope<AssignmentFactPayload> }[]>`SELECT event_type, partition_key, payload FROM outbox ORDER BY created_at`
+    expect(ob).toHaveLength(2) // one fact per dispatch group
+    expect(ob.map((o) => o.partition_key).sort()).toEqual([...res.asgnIds].sort())     // partitions on asgn_ (E5)
+    expect(ob.map((o) => o.payload.subject).sort()).toEqual([...res.asgnIds].sort())   // envelope subject = asgn_ wire id (E5)
+    for (const o of ob) {
+      expect(o.event_type).toBe(TMS_ASSIGNMENT_TOPIC)
+      expect(o.payload.traceId).toBe('trace-9')             // trace_id propagates (check 9)
+    }
 
     // check 4 (positive direction): ingest.test.ts proves the QR/VPA value is
     // ABSENT from the row fact (S7/S5); this proves the D117 custody handoff
@@ -115,27 +130,32 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
     // on the bus), not the assignment table, so a wrong column mapping inside
     // emitDemandFact's payload build would be caught even if the table
     // snapshot itself were correct.
-    const fact = ob[0]!.payload.payload
-    expect(fact.qrValue).toBe('upi://pay?pa=acme@hdfcbank')
-    expect(fact.vpaValue).toBe('acme@hdfcbank')
-    expect(fact.shipToAddress).toBe('221B Baker Street')
-    expect(fact.merchantDisplayName).toBe('Acme')
-    expect(fact.merchantLegalName).toBe('Acme Pvt Ltd')
-    expect(fact.merchantMcc).toBe('5814')
-    expect(fact.bankReferenceCode).toBe('HDFC')
-    expect(fact.bankDisplayName).toBe('HDFC Bank')
-    expect(fact.soundbox).toBe(true)
-    expect(fact.standeeCount).toBe(1)
-    expect(fact.stickerCount).toBe(2)
-    expect(fact.billable).toBe(true)
-    expect(fact.demandState).toBe('pooled-for-fulfillment')
-    // 06a check 1: the recipient contact snapshot lands on the emitted fact
-    // (populated for every new assignment, though optional on the wire).
-    expect(fact.contactName).toBe('Jane Doe')
-    expect(fact.mobile).toBe('+91-9000000000')
-    // Task 4: the Branch Code snapshot lands on the emitted fact (populated for
-    // every new assignment, optional on the wire).
-    expect(fact.branchCode).toBe('BR-001')
+    const facts = ob.map((o) => o.payload.payload)
+    const soundboxFact = facts.find((f) => f.soundbox === true)!
+    const collateralFact = facts.find((f) => f.soundbox === false)!
+    expect(soundboxFact.standeeCount).toBe(0)
+    expect(soundboxFact.stickerCount).toBe(0)
+    expect(collateralFact.standeeCount).toBe(1)
+    expect(collateralFact.stickerCount).toBe(2)
+    for (const fact of facts) {
+      expect(fact.qrValue).toBe('upi://pay?pa=acme@hdfcbank')
+      expect(fact.vpaValue).toBe('acme@hdfcbank')
+      expect(fact.shipToAddress).toBe('221B Baker Street')
+      expect(fact.merchantDisplayName).toBe('Acme')
+      expect(fact.merchantLegalName).toBe('Acme Pvt Ltd')
+      expect(fact.merchantMcc).toBe('5814')
+      expect(fact.bankReferenceCode).toBe('HDFC')
+      expect(fact.bankDisplayName).toBe('HDFC Bank')
+      expect(fact.billable).toBe(true)
+      expect(fact.demandState).toBe('pooled-for-fulfillment')
+      // 06a check 1: the recipient contact snapshot lands on the emitted fact
+      // (populated for every new assignment, though optional on the wire).
+      expect(fact.contactName).toBe('Jane Doe')
+      expect(fact.mobile).toBe('+91-9000000000')
+      // Task 4: the Branch Code snapshot lands on the emitted fact (populated for
+      // every new assignment, optional on the wire).
+      expect(fact.branchCode).toBe('BR-001')
+    }
   })
 
   it('06a check 2: a legacy row with NULL contact/mobile re-emits a FULL-compatible fact with the fields ABSENT (not JSON null)', async () => {
@@ -166,19 +186,24 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
     expect(keys).not.toContain('branchCode')
   })
 
-  it('a redelivered enrollment fact creates no second assignment (check 3, inbox + source_event_id UNIQUE)', async () => {
+  it('a redelivered enrollment fact creates no additional assignments (check 3, inbox + source_event_id/dispatch_group UNIQUE)', async () => {
     const ids = await seed('file-1|1')
+    // seed() deserves TWO dispatch groups (W-5); the redelivery must not add a third.
     await createAssignmentFromEnrollment(db, enrollmentEnv(ids, 'file-1|1'))
     const again = await createAssignmentFromEnrollment(db, enrollmentEnv(ids, 'file-1|1'))
     expect(again.created).toBe(false)
     const n = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment`
-    expect(Number(n[0]!.n)).toBe(1)
+    expect(Number(n[0]!.n)).toBe(2)
   })
 
-  it('Phase 2 task 3 (D-F): a merchant first assignment is INITIAL, and a second row for the SAME merchant_id is ADDITIONAL (both persist)', async () => {
+  it('Phase 2 task 3 (D-F): a merchant first assignment is INITIAL, and a second row for the SAME merchant_id is ADDITIONAL (both persist, both dispatch groups each)', async () => {
     const ids = await seed('file-5|1')
     const res1 = await createAssignmentFromEnrollment(db, enrollmentEnv(ids, 'file-5|1'))
     expect(res1.created).toBe(true)
+    // seed() is soundbox=true with nonzero standee/sticker, so this row mints
+    // BOTH dispatch groups (W-5), and the origin computed once before the loop
+    // means both groups of this first request are INITIAL.
+    expect(res1.asgnIds).toHaveLength(2)
 
     // a second bank-file row for the SAME merchant_id (an add-on soundbox request).
     // A distinct dedupKey is required here: enrollmentEnv hardcodes one fixed
@@ -195,13 +220,20 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
     })
     const res2 = await createAssignmentFromEnrollment(db, env2)
     expect(res2.created).toBe(true)
+    // this row is ALSO soundbox=true with nonzero standee/sticker, so it too
+    // mints both dispatch groups, this time both ADDITIONAL.
+    expect(res2.asgnIds).toHaveLength(2)
 
     const rows = await db.$queryRaw<{ source_event_id: string; origin: string }[]>`
       SELECT source_event_id, origin FROM assignment WHERE merchant_id = ${toUuid(ids.mrchId)}::uuid ORDER BY source_event_id
     `
-    expect(rows).toHaveLength(2) // both rows persist under the same merchant_id
-    expect(rows.find((r) => r.source_event_id === 'file-5|1')!.origin).toBe('INITIAL')
-    expect(rows.find((r) => r.source_event_id === 'file-5|2')!.origin).toBe('ADDITIONAL')
+    expect(rows).toHaveLength(4) // two dispatch groups per source row, both rows persist under the same merchant_id
+    const file1Rows = rows.filter((r) => r.source_event_id === 'file-5|1')
+    const file2Rows = rows.filter((r) => r.source_event_id === 'file-5|2')
+    expect(file1Rows).toHaveLength(2)
+    expect(file2Rows).toHaveLength(2)
+    expect(file1Rows.every((r) => r.origin === 'INITIAL')).toBe(true)
+    expect(file2Rows.every((r) => r.origin === 'ADDITIONAL')).toBe(true)
   })
 
   it('throws when a projection is not yet present, so the inbox redelivers (readiness)', async () => {
@@ -262,10 +294,12 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
 
     const ok = await createAssignmentFromEnrollment(db, enrollmentEnv(ids, 'file-3|1'))
     expect(ok.created).toBe(true)
+    // seed() deserves TWO dispatch groups (W-5), so the real call mints both.
+    expect(ok.asgnIds).toHaveLength(2)
     const a1 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment`
     const o1 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox`
-    expect(Number(a1[0]!.n)).toBe(1)
-    expect(Number(o1[0]!.n)).toBe(1)
+    expect(Number(a1[0]!.n)).toBe(2)
+    expect(Number(o1[0]!.n)).toBe(2)
   })
 
   it('throws when the tenant projection is missing even though the merchant projection is present (tenant readiness gate, readiness)', async () => {

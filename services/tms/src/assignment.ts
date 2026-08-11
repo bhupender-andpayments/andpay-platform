@@ -126,18 +126,39 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
   return asgnId
 }
 
+// W-5: the dispatch group split. A bank row is up to two physical consignments wearing
+// one correlation id. The COLLATERAL clause keeps the ratified orphan rule at
+// the new grain: a row requesting nothing still becomes a visible collateral
+// dispatch group rather than vanishing (a vanished line is a merchant whose kit never
+// gets printed). A soundbox-only row mints ONLY the soundbox group.
+export type DispatchGroup = 'SOUNDBOX' | 'COLLATERAL'
+
+export function dispatchGroupsFor(row: {
+  soundbox: boolean
+  standee_count: number
+  sticker_count: number
+}): { group: DispatchGroup; soundbox: boolean; standeeCount: number; stickerCount: number }[] {
+  const groups: { group: DispatchGroup; soundbox: boolean; standeeCount: number; stickerCount: number }[] = []
+  if (row.soundbox) groups.push({ group: 'SOUNDBOX', soundbox: true, standeeCount: 0, stickerCount: 0 })
+  if (row.standee_count > 0 || row.sticker_count > 0 || !row.soundbox) {
+    groups.push({ group: 'COLLATERAL', soundbox: false, standeeCount: row.standee_count, stickerCount: row.sticker_count })
+  }
+  return groups
+}
+
 // The ingest-to-assignment join (D116). On the enrollment fact: find the pending
 // row by the {file_id}|{row_no} correlation id (sourceEventId), snapshot the
 // merchant from merchant_projection and the bank from tenant_projection (no C4
-// read), create exactly one asgn_ (idempotent on source_event_id), emit the
-// demand fact, and move to pooled-for-fulfillment. All within one E1 tx wrapped
-// in onceWithin (E6). Built with only the TmsDb (check 2).
+// read), mint one asgn_ PER dispatch group the row's product mix deserves
+// (W-5, idempotent on (source_event_id, dispatch_group)), emit the demand
+// fact for each, and move each to pooled-for-fulfillment. All within one E1 tx
+// wrapped in onceWithin (E6). Built with only the TmsDb (check 2).
 export async function createAssignmentFromEnrollment(
   db: TmsDb,
   env: Envelope<EnrollmentFactView>,
-): Promise<{ created: boolean; asgnId?: string }> {
+): Promise<{ created: boolean; asgnIds: string[] }> {
   const p = env.payload
-  let result: { created: boolean; asgnId?: string } = { created: false }
+  let result: { created: boolean; asgnIds: string[] } = { created: false, asgnIds: [] }
 
   await db.$transaction(async (tx: Tx) => {
     // Fix wave (spec 10d consolidated defect): enter tms_write FIRST, before
@@ -171,7 +192,6 @@ export async function createAssignmentFromEnrollment(
       const pr = pend[0]!
       const m = merch[0]!
       const t = ten[0]!
-      const asgnUuid = toUuid(newId('asgn'))
       // Phase 2 task 3 (D-F): the provenance marker, computed locally (no
       // fact-schema change) inside this same transaction. If merchant_id
       // already has at least one existing assignment, this one is
@@ -182,6 +202,10 @@ export async function createAssignmentFromEnrollment(
       // rows here and both be marked INITIAL. Acceptable for v1 (the marker
       // is informational provenance, not an authoritative ordering
       // guarantee); no locking added for it.
+      // W-5: computed ONCE before the dispatch-group loop below, so both
+      // groups minted for a first request are INITIAL (the sibling inserted
+      // moments earlier in the same loop must not flip the second dispatch
+      // group to ADDITIONAL).
       const priorCount = await tx.$queryRaw<{ n: bigint }[]>`
         SELECT count(*) AS n FROM assignment WHERE merchant_id = ${mrchUuid}::uuid
       `
@@ -201,30 +225,34 @@ export async function createAssignmentFromEnrollment(
       // While the tenant was keyed on the row's bank code these two values were
       // identical, so this is a NO-OP for existing data and only diverges once
       // a file declares a tenant of its own.
-      // interim until Task 2/4 splits minting per dispatch group
-      const dispatchGroup = pr.soundbox ? 'SOUNDBOX' : 'COLLATERAL'
-      const won = await tx.$queryRaw<{ id: string }[]>`
-        INSERT INTO assignment (
-          id, merchant_id, program_id, tenant_id,
-          merchant_display_name, merchant_legal_name, merchant_mcc,
-          bank_reference_code, bank_display_name, ship_to_address,
-          qr_value, vpa_value, soundbox, standee_count, sticker_count,
-          billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, dispatch_group, updated_at
-        ) VALUES (
-          ${asgnUuid}::uuid, ${mrchUuid}::uuid, ${progUuid}::uuid, ${tnntUuid}::uuid,
-          ${m.display_name}, ${m.legal_name}, ${m.mcc},
-          ${pr.tenant_reference}, ${t.display_name}, ${pr.ship_to_address},
-          ${pr.qr_value}, ${pr.vpa_value}, ${pr.soundbox}, ${pr.standee_count}, ${pr.sticker_count},
-          ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, ${pr.branch_code}, ${dispatchGroup}, now()
-        )
-        ON CONFLICT (source_event_id, dispatch_group) DO NOTHING
-        RETURNING id
-      `
-      if (won.length === 0) return // already created (idempotent, check 3)
-
-      const asgnId = await emitDemandFact(tx, asgnUuid, env.id, env.traceId)
+      // W-5: one bank row is up to two physical consignments (dispatchGroupsFor),
+      // each minting its own asgn_ row, idempotent on (source_event_id, dispatch_group).
+      const asgnIds: string[] = []
+      for (const groupSpec of dispatchGroupsFor(pr)) {
+        const asgnUuid = toUuid(newId('asgn'))
+        const won = await tx.$queryRaw<{ id: string }[]>`
+          INSERT INTO assignment (
+            id, merchant_id, program_id, tenant_id,
+            merchant_display_name, merchant_legal_name, merchant_mcc,
+            bank_reference_code, bank_display_name, ship_to_address,
+            qr_value, vpa_value, soundbox, standee_count, sticker_count,
+            billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, dispatch_group, updated_at
+          ) VALUES (
+            ${asgnUuid}::uuid, ${mrchUuid}::uuid, ${progUuid}::uuid, ${tnntUuid}::uuid,
+            ${m.display_name}, ${m.legal_name}, ${m.mcc},
+            ${pr.tenant_reference}, ${t.display_name}, ${pr.ship_to_address},
+            ${pr.qr_value}, ${pr.vpa_value}, ${groupSpec.soundbox}, ${groupSpec.standeeCount}, ${groupSpec.stickerCount},
+            ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, ${pr.branch_code}, ${groupSpec.group}, now()
+          )
+          ON CONFLICT (source_event_id, dispatch_group) DO NOTHING
+          RETURNING id
+        `
+        if (won.length === 0) continue // this dispatch group already exists (idempotent, check 3)
+        asgnIds.push(await emitDemandFact(tx, asgnUuid, `${env.id}|${groupSpec.group}`, env.traceId))
+      }
+      if (asgnIds.length === 0) return // every dispatch group already created
       await tx.$executeRaw`UPDATE pending_row SET status = 'consumed' WHERE correlation_id = ${p.sourceEventId}`
-      result = { created: true, asgnId }
+      result = { created: true, asgnIds }
     })
   })
   return result

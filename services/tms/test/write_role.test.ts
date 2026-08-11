@@ -447,7 +447,10 @@ describe('tms_write role and the assignment_scoped WITH CHECK gate (spec 10d Tas
       try {
         const res = await createAssignmentFromEnrollment(db, enrollmentEnv(ids, 'wr-inbox|1', 'evt-wr-inbox|1'))
         expect(res.created).toBe(true)
-        expect(res.asgnId?.startsWith('asgn_')).toBe(true)
+        // seedForCreate() is soundbox=true with nonzero standee/sticker, so this
+        // row deserves TWO dispatch groups (W-5).
+        expect(res.asgnIds).toHaveLength(2)
+        expect(res.asgnIds.every((id) => id.startsWith('asgn_'))).toBe(true)
       } finally {
         await uninstallInboxGuard()
       }

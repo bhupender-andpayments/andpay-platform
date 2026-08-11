@@ -61,17 +61,23 @@ describe('TMS-thin to Identity-min round trip (checks 1, 2)', () => {
     await projectTenantFact(tms, tenantFact as never)
     const asgnRes = await createAssignmentFromEnrollment(tms, enrollmentFact as never)
     expect(asgnRes.created).toBe(true)
+    // this row is soundbox=true with nonzero standee/sticker counts, so it
+    // deserves TWO dispatch groups (W-5): SOUNDBOX and COLLATERAL.
+    expect(asgnRes.asgnIds).toHaveLength(2)
 
-    // 4. Exactly one assignment, snapshot sourced from the TMS projection (check
-    // 2, no C4 read), correlation join on {file_id}|{row_no}.
-    const asgn = await tms.$queryRaw<{ merchant_display_name: string; bank_reference_code: string; ship_to_address: string; source_event_id: string }[]>`
-      SELECT merchant_display_name, bank_reference_code, ship_to_address, source_event_id FROM assignment
+    // 4. One assignment PER dispatch group, snapshot sourced from the TMS
+    // projection (check 2, no C4 read), correlation join on {file_id}|{row_no}.
+    const asgn = await tms.$queryRaw<{ merchant_display_name: string; bank_reference_code: string; ship_to_address: string; source_event_id: string; dispatch_group: string }[]>`
+      SELECT merchant_display_name, bank_reference_code, ship_to_address, source_event_id, dispatch_group FROM assignment ORDER BY dispatch_group
     `
-    expect(asgn).toHaveLength(1)
-    expect(asgn[0]!.merchant_display_name).toBe('Acme')     // from merchant_projection <- fct.identity.merchant.v1
-    expect(asgn[0]!.bank_reference_code).toBe('3')       // from tenant_projection
-    expect(asgn[0]!.ship_to_address).toBe('221B Baker Street')
-    expect(asgn[0]!.source_event_id).toBe('file-1|1')       // correlation join
+    expect(asgn).toHaveLength(2)
+    expect(asgn.map((a) => a.dispatch_group)).toEqual(['COLLATERAL', 'SOUNDBOX'])
+    for (const row of asgn) {
+      expect(row.merchant_display_name).toBe('Acme')     // from merchant_projection <- fct.identity.merchant.v1
+      expect(row.bank_reference_code).toBe('3')       // from tenant_projection
+      expect(row.ship_to_address).toBe('221B Baker Street')
+      expect(row.source_event_id).toBe('file-1|1')       // correlation join
+    }
 
     // the enrollment fact carried the row's correlation id as sourceEventId
     expect((enrollmentFact.payload as { sourceEventId: string }).sourceEventId).toBe('file-1|1')
