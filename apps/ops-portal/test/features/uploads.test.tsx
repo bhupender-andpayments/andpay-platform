@@ -461,6 +461,10 @@ describe('uploads', () => {
     expect(headerValue(previewCall!, 'Idempotency-Key')).toBeNull()
     expect(calls.some((c) => c.url.includes('/ops/uploads/damage/commit'))).toBe(false)
 
+    // Commit is now its own step (ruling 2026-08-11): Review must be left
+    // deliberately before the commit button exists at all.
+    await userEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
+
     await userEvent.click(screen.getByRole('button', { name: /commit damage report file/i }))
     expect(await screen.findByText('Replaced')).toBeTruthy()
 
@@ -484,6 +488,69 @@ describe('uploads', () => {
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toMatch(/5 MiB/i)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  // Ruling 2026-08-11: Commit moved off the Review card onto its own rail
+  // step, so a preview no longer hands the operator a commit button in the
+  // same breath as the table.
+  it('damage: preview lands on Review, and Commit is its own step', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/uploads/damage/preview')) return jsonResponse(DAMAGE_PREVIEW_RESULT)
+        if (url.includes('/ops/uploads/damage/commit')) return jsonResponse({ replaced: 1, quarantined: 1, duplicate: 0, fileId: 'file-2' })
+        return jsonResponse({})
+      }),
+    )
+
+    renderWithProviders(<DamageUploadPage />)
+
+    const input = screen.getByLabelText(/damage report file/i) as HTMLInputElement
+    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'damage.csv'))
+
+    // After preview resolves: the summary and per-row table render, and the
+    // commit button does NOT exist yet.
+    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /commit damage report file/i })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
+
+    // The commit step states what is about to be written, then offers the button.
+    expect(screen.getByText(/will open replacements/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /commit damage report file/i })).toBeTruthy()
+  })
+
+  // Review fix, round 1: a committed file's preview is stale, so Review must
+  // LOCK rather than stay clickable with the click going nowhere. Upload
+  // stays a real, clickable way to start over.
+  it('damage: once committed, the Review rail pill locks (renders inert, not a button); Upload stays clickable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/uploads/damage/preview')) return jsonResponse(DAMAGE_PREVIEW_RESULT)
+        if (url.includes('/ops/uploads/damage/commit')) return jsonResponse({ replaced: 1, quarantined: 1, duplicate: 0, fileId: 'file-2' })
+        return jsonResponse({})
+      }),
+    )
+
+    renderWithProviders(<DamageUploadPage />)
+
+    const input = screen.getByLabelText(/damage report file/i) as HTMLInputElement
+    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'damage.csv'))
+    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
+    await userEvent.click(screen.getByRole('button', { name: /commit damage report file/i }))
+    expect(await screen.findByText('Replaced')).toBeTruthy()
+
+    const railPill = (label: string) => new RegExp(`^\\d\\s*${label}$`, 'i')
+    // Locked: Review's own label text still renders in the rail, but it is
+    // no longer a button (UploadStepper renders a locked step as an inert
+    // span).
+    expect(screen.getByText(/^review$/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: railPill('review') })).toBeNull()
+    // Still a real move: Upload remains clickable so a new file can be picked.
+    expect(screen.getByRole('button', { name: railPill('upload') })).toBeTruthy()
   })
 
   it('device inventory upload: requires a manufacturer AND a file before Submit is enabled; submits multipart with the manufacturer wire id + a fresh Idempotency-Key; renders real per-row invalid errors without a preview stage', async () => {

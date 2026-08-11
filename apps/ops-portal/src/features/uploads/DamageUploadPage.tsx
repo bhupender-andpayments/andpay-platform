@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
@@ -16,6 +17,9 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ErrorNote, StatusPill } from '../../ui/primitives.js'
 import { FileDropZone } from '../../components/FileDropZone.js'
+import { kindBySlug, type StepKey } from './uploadKinds.js'
+import { UploadStepper } from './UploadStepper.js'
+import { UploadHelperCards } from './UploadHelperCards.js'
 
 // Rewired to the D-K multipart contract (Phase 2 Task 4) and given preview
 // parity with the bank upload (Phase 7 Task 7, L11/FR08-3 decision item 11):
@@ -77,82 +81,150 @@ export function DamageUploadPage() {
   const rows = preview?.rows ?? []
   const columns = rows.length > 0 ? Object.keys(rows[0]!.row) : []
 
+  // The page's position on the rail. NOT a new state machine: 'upload' and
+  // 'review' are DERIVED from the flow state that already existed (no preview
+  // yet versus a clean preview), and the one genuinely new state is
+  // `confirming`, because Commit is now a deliberate step rather than a
+  // button under the table.
+  const [confirming, setConfirming] = useState(false)
+  const previewOk = preview !== null && preview.structuralErrors.length === 0
+  const step: StepKey = commitResult !== null || (confirming && previewOk) ? 'commit' : previewOk ? 'review' : 'upload'
+  const KIND = kindBySlug('damage')!
+  const navigate = useNavigate()
+  // Review locks the instant a commit lands: the preview it would show is
+  // stale the moment the commit writes, so leaving it unlocked would render a
+  // clickable rail pill whose click the `step` formula above silently
+  // ignores (`commitResult !== null` always wins), a dead affordance on a
+  // rail whose entire premise is that it tells the truth. Commit stays
+  // unlocked after a commit because that is the step you are standing on
+  // and it holds the result.
+  const unlocked: StepKey[] = ['choose', 'upload', ...(previewOk && commitResult === null ? (['review'] as const) : []), ...(previewOk && (confirming || commitResult !== null) ? (['commit'] as const) : [])]
+
+  function onStepClick(key: StepKey): void {
+    if (key === 'choose') {
+      navigate('/uploads', { replace: true })
+      return
+    }
+    if (key === 'upload') {
+      // Clearing `confirming` alone is not enough: with a clean preview
+      // standing, the step derivation above always reads 'review', so Upload
+      // is only reachable again by clearing the preview itself. The picked
+      // `file` is untouched, so the drop zone still shows what was staged;
+      // picking a new file (or re-previewing the same one) is what reopens
+      // Review.
+      setConfirming(false)
+      setPreview(null)
+      setCommitResult(null)
+      return
+    }
+    if (key === 'review') setConfirming(false)
+    if (key === 'commit') setConfirming(true)
+  }
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Damage report upload</CardTitle>
-        <CardDescription>Preview the match/reason outcome per row, then commit once it looks right.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="damage-upload-file">Damage report file</Label>
-          <FileDropZone id="damage-upload-file" file={file} onPick={(f) => { void handleFile(f) }} disabled={previewing || committing} done={commitResult !== null} />
-        </div>
+    <div className="flex flex-col gap-6">
+      <UploadStepper
+        steps={KIND.steps}
+        current={step}
+        unlocked={unlocked}
+        onStepClick={onStepClick}
+        guidance="Steps 3 and 4 need a previewed file. Start at Upload."
+      />
 
-        {error !== null && <ErrorNote>{error}</ErrorNote>}
+      <Card>
+        <CardHeader>
+          <CardTitle>Damage report upload</CardTitle>
+          <CardDescription>Preview the match/reason outcome per row, then commit once it looks right.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {step === 'upload' && (
+            <div className="space-y-2">
+              <Label htmlFor="damage-upload-file">Damage report file</Label>
+              <FileDropZone id="damage-upload-file" file={file} onPick={(f) => { void handleFile(f) }} disabled={previewing || committing} done={commitResult !== null} />
+            </div>
+          )}
 
-        {preview !== null && preview.structuralErrors.length > 0 && (
-          <ErrorNote>
-            <ul className="space-y-1">
-              {preview.structuralErrors.map((se) => (
-                <li key={se.code}>{se.message}</li>
-              ))}
-            </ul>
-          </ErrorNote>
-        )}
+          {error !== null && <ErrorNote>{error}</ErrorNote>}
 
-        {preview !== null && preview.structuralErrors.length === 0 && commitResult === null && (
-          <div className="space-y-3">
-            <p className="text-[13px] text-muted-foreground">
-              {preview.summary.total} row(s) previewed: {preview.summary.valid} would replace, {preview.summary.invalid}{' '}
-              would quarantine.
-            </p>
-            <div className="overflow-x-auto rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Row</TableHead>
-                    <TableHead>Projected outcome</TableHead>
-                    <TableHead>Reason</TableHead>
-                    {columns.map((c) => (
-                      <TableHead key={c}>{c}</TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((r) => (
-                    <TableRow key={r.rowNo}>
-                      <TableCell className="num">{r.rowNo}</TableCell>
-                      <TableCell>
-                        <StatusPill value={r.valid ? 'would_replace' : 'would_quarantine'} />
-                      </TableCell>
-                      <TableCell>{r.reasonCode !== undefined && <StatusPill value={r.reasonCode} />}</TableCell>
+          {step === 'upload' && preview !== null && preview.structuralErrors.length > 0 && (
+            <ErrorNote>
+              <ul className="space-y-1">
+                {preview.structuralErrors.map((se) => (
+                  <li key={se.code}>{se.message}</li>
+                ))}
+              </ul>
+            </ErrorNote>
+          )}
+
+          {step === 'review' && preview !== null && (
+            <div className="space-y-3">
+              <p className="text-[13px] text-muted-foreground">
+                {preview.summary.total} row(s) previewed: {preview.summary.valid} would replace, {preview.summary.invalid}{' '}
+                would quarantine.
+              </p>
+              <div className="overflow-x-auto rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Row</TableHead>
+                      <TableHead>Projected outcome</TableHead>
+                      <TableHead>Reason</TableHead>
                       {columns.map((c) => (
-                        <TableCell key={c}>
-                          {String((r.row as unknown as Record<string, unknown>)[c] ?? '')}
-                        </TableCell>
+                        <TableHead key={c}>{c}</TableHead>
                       ))}
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {rows.map((r) => (
+                      <TableRow key={r.rowNo}>
+                        <TableCell className="num">{r.rowNo}</TableCell>
+                        <TableCell>
+                          <StatusPill value={r.valid ? 'would_replace' : 'would_quarantine'} />
+                        </TableCell>
+                        <TableCell>{r.reasonCode !== undefined && <StatusPill value={r.reasonCode} />}</TableCell>
+                        {columns.map((c) => (
+                          <TableCell key={c}>
+                            {String((r.row as unknown as Record<string, unknown>)[c] ?? '')}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <Button type="button" onClick={() => setConfirming(true)} disabled={rows.length === 0}>
+                Continue to commit
+              </Button>
             </div>
-            <Button
-              type="button"
-              onClick={() => {
-                void handleCommit()
-              }}
-              disabled={committing || rows.length === 0}
-              className="self-start"
-            >
-              {committing && <Loader2 className="animate-spin" aria-hidden="true" />}
-              Commit damage report file
-            </Button>
-          </div>
-        )}
+          )}
 
-        {commitResult !== null && <PerRowErrors result={commitResult} />}
-      </CardContent>
-    </Card>
+          {step === 'commit' && preview !== null && (
+            <div className="space-y-3">
+              {commitResult === null && (
+                <p className="text-[13px] text-muted-foreground">
+                  {preview.summary.valid} row(s) will open replacements; {preview.summary.invalid} will be quarantined.
+                </p>
+              )}
+              {commitResult === null && (
+                <Button
+                  type="button"
+                  onClick={() => {
+                    void handleCommit()
+                  }}
+                  disabled={committing || rows.length === 0}
+                  className="self-start"
+                >
+                  {committing && <Loader2 className="animate-spin" aria-hidden="true" />}
+                  Commit damage report file
+                </Button>
+              )}
+              {commitResult !== null && <PerRowErrors result={commitResult} />}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <UploadHelperCards kind={KIND} step={step} />
+    </div>
   )
 }
