@@ -164,6 +164,24 @@ describe('deriveWorkflow: honesty rule 3, a stage with no backing read says so',
     expect(withJourney.facts.watermark?.asOf).toBe('2026-08-11T09:00:00.000Z')
     expect(deriveWorkflow(batchMode({ journey: null })).facts.watermark).toBeNull()
   })
+
+  // Reachable: batchDetail and journey are independent reads, and the analytics
+  // projection folds the batch fact asynchronously, so composed artifacts
+  // routinely exist before the journey row does. The old clamp made `generate`
+  // both complete and current here, which is the one thing rule 2 forbids.
+  it('never reports a stage as current AND complete, with artifacts present but no journey yet', () => {
+    const detail = {
+      ...batchMode().batchDetail!,
+      artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
+    }
+    const d = deriveWorkflow(batchMode({ batchDetail: detail, journey: null }))
+    expect(d.completed).toContain('generate')
+    expect(d.current).toBe('print')
+    expect(d.completed).not.toContain(d.current)
+    // The honesty signal, not the stage number, is what tells Print it cannot
+    // speak about courier or activation data.
+    expect(d.facts.journeyAvailable).toBe(false)
+  })
 })
 
 describe('deriveWorkflow: the Generate hang state', () => {
@@ -232,5 +250,58 @@ describe('deriveWorkflow: pool mode advances with the flow, never with a Next bu
     })
     expect(d.current).toBe('batch')
     expect(d.completed).toContain('validate')
+  })
+})
+
+// The general form of the rule 2 invariant that the clamp bug violated: across
+// every shape this fixture set can produce, `current` is never one of the
+// stages already in `completed`, unless the whole workflow is done. Modeled
+// on env.test.ts's closing "never returns an empty string, whatever it is
+// handed" test: one targeted example earns its own `it`, and the sweep across
+// fixtures is the belt-and-suspenders check that nothing else was missed.
+describe('deriveWorkflow: current is never also complete, across every fixture shape', () => {
+  const withArtifact = {
+    ...batchMode().batchDetail!,
+    artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
+  }
+
+  const snapshots: WorkflowSnapshot[] = [
+    batchMode(),
+    batchMode({ journey: null }),
+    batchMode({ batchDetail: withArtifact, journey: null }),
+    batchMode({ batchDetail: withArtifact, journey: journey({ counts: { total: 10, sentToVendor: 10, dispatched: 0, delivered: 0, activated: 0 } }) }),
+    batchMode({
+      batchDetail: withArtifact,
+      journey: journey({
+        counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 9, activated: 2 },
+        courier: { pickedUp: 0, inTransit: 1, outForDelivery: 0, delivered: 9, exception: 0 },
+      }),
+    }),
+    batchMode({
+      batchDetail: withArtifact,
+      journey: journey({
+        counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 3 },
+        activation: { awaiting: 7, activated: 3, failed: 0, simActivated: null },
+      }),
+    }),
+    batchMode({
+      batchDetail: withArtifact,
+      journey: journey({
+        counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 10 },
+        activation: { awaiting: 0, activated: 10, failed: 0, simActivated: null },
+      }),
+    }),
+    { ...batchMode(), mode: 'pool', batchDetail: null, journey: null },
+    { ...batchMode(), mode: 'pool', batchDetail: null, journey: null, hasPreview: true },
+    { ...batchMode(), mode: 'pool', batchDetail: null, journey: null, hasPreview: true, hasCommitted: true },
+  ]
+
+  it('holds for every fixture in this file', () => {
+    for (const snapshot of snapshots) {
+      const d = deriveWorkflow(snapshot)
+      if (!d.isComplete) {
+        expect(d.completed).not.toContain(d.current)
+      }
+    }
   })
 })

@@ -17,7 +17,13 @@ import { WORKFLOW_STAGES, type WorkflowStageKey } from './workflowKinds.js'
 //      so "step 7 of 8" means "7 is the earliest stage still holding anyone".
 //   3. A stage with no backing read renders its not-available marker, never a
 //      zero. `journeyAvailable` and `simActivationAvailable` are how a stage
-//      learns the difference between "none" and "we cannot know".
+//      learns the difference between "none" and "we cannot know". No clamp is
+//      needed to keep `current` from outrunning the journey read: every
+//      completion check past Generate is already guarded by
+//      `journeyAvailable`, so a later stage simply cannot COMPLETE while the
+//      journey is null, and `current` naturally stops at the first stage the
+//      data cannot speak for. `facts.journeyAvailable` is what that stage then
+//      renders from.
 
 /** How long Generate may run with nothing to show before the screen stops pretending. */
 export const GENERATE_STALL_MS = 90_000
@@ -139,13 +145,11 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
   const completed = order(done)
   const first = WORKFLOW_STAGES.map((st) => st.key).find((k) => !completed.includes(k))
   const isComplete = first === undefined
-  // With the journey read absent there is nothing to claim past Generate, so the
-  // derivation refuses to advance into stages it cannot see.
-  const current: WorkflowStageKey = isComplete
-    ? 'activation'
-    : !journeyAvailable && ['print', 'dispatch', 'delivery', 'activation'].includes(first)
-      ? 'generate'
-      : first
+  // No clamp: nothing past Generate can enter `completed` while `journey` is
+  // null, because every later stage's completion check above is already
+  // guarded by `journeyAvailable`. So `first` naturally stops at the earliest
+  // stage the data cannot speak for, with no separate rule needed here.
+  const current: WorkflowStageKey = isComplete ? 'activation' : first
 
   const generateStalled = current === 'generate' && artifactCount === 0 && s.elapsedMsInStage > GENERATE_STALL_MS
 
