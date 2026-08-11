@@ -484,6 +484,17 @@ async function buildGridCards(
     if (rec === null) {
       throw new AssetResolutionError(`stored collateral not found for a ${artifactType} artifact in batch ${btchId}`)
     }
+    // The NOT-READABLE half of the contract (Task 14 review, Important): the
+    // ONE_PER_PAGE loop converts a corrupt-PDF parse failure into
+    // AssetResolutionError; without this probe the grid path would surface a
+    // raw pdf-lib error from inside the imposer instead. The parse result is
+    // discarded (the imposer embeds from bytes); the double parse is the
+    // price of failing with the domain error before any sheet is built.
+    try {
+      await PDFDocument.load(rec.bytes)
+    } catch {
+      throw new AssetResolutionError(`stored collateral is not a readable PDF for a ${artifactType} artifact in batch ${btchId}`)
+    }
     cards.push({ bytes: rec.bytes, copies })
   }
   return cards

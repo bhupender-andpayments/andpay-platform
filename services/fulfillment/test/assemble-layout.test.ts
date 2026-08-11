@@ -355,6 +355,23 @@ describe('assembleGroupPdf: GRID_3X2 imposition', () => {
 
     await expect(assembleGroupPdf(db, store, btchWire, 'SOUNDBOX')).rejects.toBeInstanceOf(AssetResolutionError)
   })
+
+  it('a resolvable but CORRUPT asset throws AssetResolutionError, not a raw pdf-lib error (Task 14 review fix)', async () => {
+    const store = new InMemoryAssetStore()
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('GRID_3X2')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+    const e = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', soundbox: true })
+    // Real reference, garbage bytes: the not-readable half of the contract the
+    // ONE_PER_PAGE loop has always had.
+    const put = await store.put('corrupt', new TextEncoder().encode('not a pdf'), {
+      contentType: 'application/pdf',
+      filename: 'corrupt.pdf',
+    })
+    await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'SOUNDBOX_IMG', put.reference)
+
+    await expect(assembleGroupPdf(db, store, btchWire, 'SOUNDBOX')).rejects.toBeInstanceOf(AssetResolutionError)
+  })
 })
 
 // ---------------------------------------------------------------------------
