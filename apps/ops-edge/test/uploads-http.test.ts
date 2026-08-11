@@ -411,8 +411,12 @@ describe('ops-edge uploads: damage COMMIT (multipart)', () => {
     expect(res.body.replaced).toBe(1)
     expect(res.body.quarantined).toBe(1)
 
+    // W-5: seedOriginalAssignment is the legacy combined shape (soundbox plus
+    // counts on one row), so the matched row's like-for-like clone mints TWO
+    // replacement groups (SOUNDBOX and COLLATERAL). replaced stays 1 because
+    // it counts file ROWS, not minted groups.
     const repl = await tmsDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
-    expect(Number(repl[0]!.n)).toBe(1)
+    expect(Number(repl[0]!.n)).toBe(2)
 
     const allow = await tmsOutboxAuthz()
     expect(allow).toEqual([{ decision: 'ALLOW', operation: 'ops:upload-damage-file' }])
