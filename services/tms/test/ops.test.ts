@@ -461,6 +461,11 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
   })
 
   it('commitDamageFile runs the damage ingest under tms_write: a matched row replaces, an unmatched row quarantines', async () => {
+    // Task 4 (W-5): seedOriginalAssignment is the LEGACY combined shape (one
+    // row, soundbox=true AND standee_count/sticker_count > 0), so the matched
+    // row's like-for-like clone mints TWO replacement groups (SOUNDBOX +
+    // COLLATERAL) for the one matched ROW, not one; `r.replaced` still counts
+    // 1 because it is a per-ROW outcome.
     await seedOriginalAssignment('acme@hdfcbank', 'HDFC')
     const clientKey = randomUUID()
     const csv = toCsv(DAMAGE_HEADERS, [
@@ -474,7 +479,7 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     expect(r.fileId).toBe(clientKey)
 
     const repl = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
-    expect(Number(repl[0]!.n)).toBe(1)
+    expect(Number(repl[0]!.n)).toBe(2)
   })
 
   it('commitDamageFile is idempotent on the client key (replay is a no-op)', async () => {
@@ -769,13 +774,17 @@ describe('soundbox duplicate-VPA hold (ruling 2026-08-10): previewBankFile parit
 })
 
 describe('FR08-2: damage case-status transition + ops-read working list', () => {
-  // Seed an original, then commit a damage row so exactly one replacement
-  // (case_status Open) exists; return its WIRE asgn id (what the edge passes).
+  // Seed an original, then commit a damage row so a replacement (case_status
+  // Open) exists; return one WIRE asgn id (what the edge passes). Task 4
+  // (W-5): seedOriginalAssignment is the legacy combined shape, so this
+  // actually mints TWO replacement groups (SOUNDBOX + COLLATERAL); either one
+  // is a valid case_status target for the tests in this describe block, which
+  // only exercise a single case by its wire id.
   async function seedOneReplacement(vpa = 'acme@hdfcbank'): Promise<string> {
     await seedOriginalAssignment(vpa, 'HDFC')
     const csv = toCsv(DAMAGE_HEADERS, [damageCells({ vpaValue: vpa })])
     await commitDamageFile(db, { fileBytes: csv, filename: 'damage.csv', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-seed' })
-    const repl = await db.$queryRaw<{ id: string }[]>`SELECT id FROM assignment WHERE replacement_of IS NOT NULL AND vpa_value = ${vpa}`
+    const repl = await db.$queryRaw<{ id: string }[]>`SELECT id FROM assignment WHERE replacement_of IS NOT NULL AND vpa_value = ${vpa} ORDER BY dispatch_group LIMIT 1`
     return fromUuid('asgn', repl[0]!.id)
   }
 

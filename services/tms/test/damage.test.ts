@@ -33,6 +33,12 @@ async function seedOriginal(vpa: string, bank: string, sourceEventId = 'req-1|1'
 
 describe('damage ingest and replacement (check 6, D116)', () => {
   it('matches by (tenant, vpa), creates a non-billable replacement, and emits both facts', async () => {
+    // Task 4 (W-5): seedOriginal is the LEGACY combined shape (one row,
+    // soundbox=true AND standee_count/sticker_count > 0). With no per-row
+    // items supplied, damage matching now clones it like-for-like AT THE
+    // REQUEST GRAIN: dispatchGroupsFor(original) mints BOTH a SOUNDBOX and a
+    // COLLATERAL replacement, each replacement_of the same single legacy row
+    // (this supersedes the pre-Task-4 single-replacement expectation).
     const original = await seedOriginal('acme@hdfcbank', 'HDFC')
     // Phase 3 Task 1 (BRD FR-08, FR-11): the damage reason must now match the
     // seeded ACTIVE damage_reason master by label (case/whitespace-
@@ -42,37 +48,42 @@ describe('damage ingest and replacement (check 6, D116)', () => {
     const r = await ingestDamageRow(db, { fileId: 'dmg-1', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank', damageReason: '  Battery Issue  ', bankRemarks: 'replace asap', shipToAddress: 'New Addr' }, 't')
     expect(r).toBe('replaced')
 
-    const repl = await db.$queryRaw<{ id: string; replacement_of: string; billable: boolean; case_status: string; damage_reason: string; bank_remarks: string; demand_state: string; contact_name: string | null; mobile: string | null; branch_code: string | null }[]>`
-      SELECT id, replacement_of, billable, case_status, damage_reason, bank_remarks, demand_state, contact_name, mobile, branch_code FROM assignment WHERE replacement_of IS NOT NULL
+    const repl = await db.$queryRaw<{ id: string; replacement_of: string; dispatch_group: string; billable: boolean; case_status: string; damage_reason: string; bank_remarks: string; demand_state: string; contact_name: string | null; mobile: string | null; branch_code: string | null }[]>`
+      SELECT id, replacement_of, dispatch_group, billable, case_status, damage_reason, bank_remarks, demand_state, contact_name, mobile, branch_code FROM assignment WHERE replacement_of IS NOT NULL ORDER BY dispatch_group
     `
-    expect(repl).toHaveLength(1)
-    expect(fromUuid('asgn', repl[0]!.replacement_of)).toBe(original)
-    expect(repl[0]!.billable).toBe(false)
-    expect(repl[0]!.case_status).toBe('Open')
-    // The stored value is the RAW row text, unnormalized (only the MATCH is
-    // case/whitespace-insensitive; the persisted damage_reason is verbatim).
-    expect(repl[0]!.damage_reason).toBe('  Battery Issue  ')
-    expect(repl[0]!.bank_remarks).toBe('replace asap')
-    expect(repl[0]!.demand_state).toBe('pooled-for-fulfillment')
-    // 06a check 1 on the D116 replacement path: the recipient snapshot carries
-    // forward from the original (the damage file supplies no recipient columns).
-    expect(repl[0]!.contact_name).toBe('Original Contact')
-    expect(repl[0]!.mobile).toBe('+91-8888888888')
-    // Task 4 on the D116 replacement path: the Branch Code snapshot carries
-    // forward from the original (the damage file supplies no branch column).
-    expect(repl[0]!.branch_code).toBe('BR-ORIG')
+    expect(repl).toHaveLength(2)
+    expect(repl.map((x) => x.dispatch_group).sort()).toEqual(['COLLATERAL', 'SOUNDBOX'])
+    for (const row of repl) {
+      expect(fromUuid('asgn', row.replacement_of)).toBe(original)
+      expect(row.billable).toBe(false)
+      expect(row.case_status).toBe('Open')
+      // The stored value is the RAW row text, unnormalized (only the MATCH is
+      // case/whitespace-insensitive; the persisted damage_reason is verbatim).
+      expect(row.damage_reason).toBe('  Battery Issue  ')
+      expect(row.bank_remarks).toBe('replace asap')
+      expect(row.demand_state).toBe('pooled-for-fulfillment')
+      // 06a check 1 on the D116 replacement path: the recipient snapshot carries
+      // forward from the original (the damage file supplies no recipient columns).
+      expect(row.contact_name).toBe('Original Contact')
+      expect(row.mobile).toBe('+91-8888888888')
+      // Task 4 on the D116 replacement path: the Branch Code snapshot carries
+      // forward from the original (the damage file supplies no branch column).
+      expect(row.branch_code).toBe('BR-ORIG')
+    }
 
-    // and the replacement's emitted demand fact carries the recipient too.
+    // and each replacement's emitted demand fact carries the recipient too.
     const demand = await db.$queryRaw<{ payload: { payload: { contactName?: string; mobile?: string; branchCode?: string } } }[]>`
       SELECT payload FROM outbox WHERE event_type = ${TMS_ASSIGNMENT_TOPIC}
     `
-    expect(demand).toHaveLength(1)
-    expect(demand[0]!.payload.payload.contactName).toBe('Original Contact')
-    expect(demand[0]!.payload.payload.mobile).toBe('+91-8888888888')
-    // Task 4: the replacement's demand fact carries the original's Branch Code,
-    // so analytics DispatchRow.branch is populated for the replacement dispatch
-    // (not null), matching the original.
-    expect(demand[0]!.payload.payload.branchCode).toBe('BR-ORIG')
+    expect(demand).toHaveLength(2)
+    for (const d of demand) {
+      expect(d.payload.payload.contactName).toBe('Original Contact')
+      expect(d.payload.payload.mobile).toBe('+91-8888888888')
+      // Task 4: the replacement's demand fact carries the original's Branch Code,
+      // so analytics DispatchRow.branch is populated for the replacement dispatch
+      // (not null), matching the original.
+      expect(d.payload.payload.branchCode).toBe('BR-ORIG')
+    }
 
     // the original moves to replacement-raised
     const orig = await db.$queryRaw<{ demand_state: string }[]>`SELECT demand_state FROM assignment WHERE id = ${toUuid(original)}::uuid`
@@ -83,14 +94,18 @@ describe('damage ingest and replacement (check 6, D116)', () => {
     expect(types).toContain(TMS_ASSIGNMENT_TOPIC)
   })
 
-  it('a redelivered damage row creates no second replacement (check 6 idempotency)', async () => {
+  it('a redelivered damage row creates no THIRD replacement (check 6 idempotency)', async () => {
+    // Task 4 (W-5): the legacy combined seedOriginal clones to TWO replacement
+    // groups on the first run (see the test above); redelivery must win zero
+    // more, not create a third.
     await seedOriginal('acme@hdfcbank', 'HDFC')
     const row = { fileId: 'dmg-1', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank', damageReason: 'physical damage', bankRemarks: '', shipToAddress: 'New Addr' }
-    await ingestDamageRow(db, row, 't')
+    const first = await ingestDamageRow(db, row, 't')
+    expect(first).toBe('replaced')
     const again = await ingestDamageRow(db, row, 't')
     expect(again).toBe('duplicate')
     const n = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
-    expect(Number(n[0]!.n)).toBe(1)
+    expect(Number(n[0]!.n)).toBe(2)
   })
 
   it('an unmatched damage row is quarantined', async () => {
@@ -111,13 +126,20 @@ describe('damage ingest and replacement (check 6, D116)', () => {
 
 describe('FR08-1 per-row item replacement + FR08-2 case-status seed', () => {
   // seedOriginal creates the original with soundbox=true, standee_count=1, sticker_count=2.
-  it('clones the original item counts when the damage row supplies no item columns (backward compatible)', async () => {
+  it('clones the original item counts when the damage row supplies no item columns (backward compatible, per group)', async () => {
+    // Task 4 (W-5): "clone" now happens AT THE REQUEST GRAIN. seedOriginal's
+    // combined mix (soundbox=true, standee=1, sticker=2) pools into TWO
+    // replacement groups (dispatchGroupsFor), each carrying only its OWN
+    // group's product columns, not a single row with the full combined
+    // triple as before Task 4.
     await seedOriginal('acme@hdfcbank', 'HDFC')
     const r = await ingestDamageRow(db, { fileId: 'dmg-i1', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank', damageReason: 'battery issue', bankRemarks: '', shipToAddress: 'A' }, 't')
     expect(r).toBe('replaced')
-    const repl = await db.$queryRaw<{ soundbox: boolean; standee_count: number; sticker_count: number }[]>`
-      SELECT soundbox, standee_count, sticker_count FROM assignment WHERE replacement_of IS NOT NULL`
-    expect(repl[0]).toMatchObject({ soundbox: true, standee_count: 1, sticker_count: 2 })
+    const repl = await db.$queryRaw<{ dispatch_group: string; soundbox: boolean; standee_count: number; sticker_count: number }[]>`
+      SELECT dispatch_group, soundbox, standee_count, sticker_count FROM assignment WHERE replacement_of IS NOT NULL ORDER BY dispatch_group`
+    expect(repl).toHaveLength(2)
+    expect(repl.find((x) => x.dispatch_group === 'SOUNDBOX')).toMatchObject({ soundbox: true, standee_count: 0, sticker_count: 0 })
+    expect(repl.find((x) => x.dispatch_group === 'COLLATERAL')).toMatchObject({ soundbox: false, standee_count: 1, sticker_count: 2 })
   })
 
   it('honors the row item spec when supplied (does not clone the original)', async () => {
@@ -168,8 +190,11 @@ describe('damage reason master validation (Phase 3 Task 1, BRD FR-08/FR-11)', ()
       )
       expect(r).toBe('replaced')
     }
+    // Task 4 (W-5): each legacy combined seedOriginal clones to TWO
+    // replacement groups (SOUNDBOX + COLLATERAL), so 4 matched rows mint 8
+    // replacements, not 4.
     const repl = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
-    expect(Number(repl[0]!.n)).toBe(4)
+    expect(Number(repl[0]!.n)).toBe(8)
   })
 
   it('a DEACTIVATED reason no longer matches: an otherwise-matching row quarantines (invalid_damage_reason)', async () => {
