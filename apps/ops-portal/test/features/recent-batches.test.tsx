@@ -13,9 +13,14 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function batch(id: string, createdAt: string, over: Record<string, unknown> = {}) {
+  // NO `status` here, and its absence is the point. This fixture used to supply
+  // status: 'BORN', a field the server stopped sending on 2026-08-10 and a value
+  // that was the write-once 'BORN' every batch carried for its whole life even
+  // when it did exist. So the suite rendered a populated pill while the real app
+  // rendered an empty one, and the widget's defect was invisible here. A fixture
+  // must answer what the server answers.
   return {
     id,
-    status: 'BORN',
     triggerReason: 'LOT_SIZE',
     unitCount: 3,
     printVndr: null,
@@ -108,6 +113,29 @@ describe('RecentBatches', () => {
     )
     renderIt()
     expect(await screen.findByText('1 record')).toBeTruthy()
+  })
+
+  it('formats the unit count through fmtNumber and renders no status pill', async () => {
+    // Two defects in one row, both of which the old fixture hid.
+    //
+    // The count was rendered bare, so a four-figure batch printed "1234 records".
+    // Every count in this portal goes through fmtNumber, and the only way to see
+    // the difference is a number with a thousands separator in it: the suite's
+    // other counts are 1 and 3, which format identically either way.
+    //
+    // The pill was bound to b.status, a field the server has not sent since
+    // 2026-08-10, so it rendered empty for every row in the real app while this
+    // suite showed 'BORN' from its own fixture. Asserting its ABSENCE keeps it
+    // from being reintroduced without a read that can answer it.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse([batch('btch_big', '2026-08-03T00:00:00.000Z', { unitCount: 1234 })])),
+    )
+    renderIt()
+    const row = await screen.findByRole('listitem')
+    expect(within(row).getByText('1,234 records')).toBeTruthy()
+    expect(within(row).queryByText('1234 records')).toBeNull()
+    expect(within(row).queryByText('BORN')).toBeNull()
   })
 
   it('distinguishes batches formed on the SAME DAY, so the claimed order is visible', async () => {

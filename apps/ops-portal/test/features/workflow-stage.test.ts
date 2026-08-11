@@ -9,7 +9,7 @@ import type { BatchJourneyView } from '../../src/api/endpoints.js'
 function journey(over: Partial<BatchJourneyView> = {}): BatchJourneyView {
   return {
     batchId: 'btch_1',
-    counts: { total: 10, sentToVendor: 0, dispatched: 0, delivered: 0, activated: 0 },
+    counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 0, dispatched: 0, delivered: 0, activated: 0 },
     courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
     activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null },
     awaitingActivation: [],
@@ -24,7 +24,7 @@ function batchMode(over: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
     pools: [],
     batchDetail: {
       batch: {
-        id: 'btch_1', status: 'FORMED', triggerReason: 'LOT_SIZE', unitCount: 10,
+        id: 'btch_1', triggerReason: 'LOT_SIZE', unitCount: 10,
         printVndr: 'vndr_1', triggeredByActor: null, triggerNote: null,
         createdAt: '2026-08-11T09:00:00.000Z', updatedAt: '2026-08-11T09:00:00.000Z',
       },
@@ -77,7 +77,7 @@ describe('deriveWorkflow: honesty rule 2, current is the LOWEST incomplete stage
           ...batchMode().batchDetail!,
           artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
         },
-        journey: journey({ counts: { total: 10, sentToVendor: 10, dispatched: 0, delivered: 0, activated: 0 } }),
+        journey: journey({ counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 0, delivered: 0, activated: 0 } }),
       }),
     )
     expect(d.current).toBe('print')
@@ -94,7 +94,7 @@ describe('deriveWorkflow: honesty rule 2, current is the LOWEST incomplete stage
           artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
         },
         journey: journey({
-          counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 9, activated: 2 },
+          counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 10, delivered: 9, activated: 2 },
           courier: { pickedUp: 0, inTransit: 1, outForDelivery: 0, delivered: 9, exception: 0 },
         }),
       }),
@@ -114,7 +114,7 @@ describe('deriveWorkflow: honesty rule 2, current is the LOWEST incomplete stage
           artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
         },
         journey: journey({
-          counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 3 },
+          counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 3 },
           activation: { awaiting: 7, activated: 3, failed: 0, simActivated: null },
         }),
       }),
@@ -131,13 +131,79 @@ describe('deriveWorkflow: honesty rule 2, current is the LOWEST incomplete stage
           artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
         },
         journey: journey({
-          counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 10 },
+          counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 10 },
           activation: { awaiting: 0, activated: 10, failed: 0, simActivated: null },
         }),
       }),
     )
     expect(d.completed).toContain('activation')
     expect(d.isComplete).toBe(true)
+  })
+
+  // The mixed batch, which is EVERY real batch: one bank request becomes a
+  // SOUNDBOX row and a COLLATERAL row, and delivery is counted on the device
+  // parcel only. Before the per-stage denominator these two cases were
+  // indistinguishable from a half-delivered batch, so `delivered === total` could
+  // never be true and Activation was unreachable on the live system.
+  it('completes Delivery for a MIXED batch once the deliverable subset is delivered, not the whole batch', () => {
+    const d = deriveWorkflow(
+      batchMode({
+        batchDetail: {
+          ...batchMode().batchDetail!,
+          artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
+        },
+        journey: journey({
+          // 10 rows, only 5 of which can ever deliver or activate. This is the
+          // exact shape captured from the running system on 2026-08-11.
+          counts: { total: 10, deliverableAndActivatable: 5, sentToVendor: 10, dispatched: 10, delivered: 5, activated: 0 },
+          activation: { awaiting: 5, activated: 0, failed: 0, simActivated: null },
+        }),
+      }),
+    )
+    expect(d.completed).toContain('delivery')
+    expect(d.current).toBe('activation')
+  })
+
+  it('does NOT complete Delivery for a MIXED batch while the deliverable subset is only part delivered', () => {
+    // The direction that stops the fix from degenerating into "always complete".
+    const d = deriveWorkflow(
+      batchMode({
+        batchDetail: {
+          ...batchMode().batchDetail!,
+          artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
+        },
+        journey: journey({
+          counts: { total: 10, deliverableAndActivatable: 5, sentToVendor: 10, dispatched: 10, delivered: 4, activated: 0 },
+          activation: { awaiting: 4, activated: 0, failed: 0, simActivated: null },
+        }),
+      }),
+    )
+    expect(d.completed).not.toContain('delivery')
+    expect(d.current).toBe('delivery')
+  })
+
+  it('claims nothing for a COLLATERAL-ONLY batch, whose deliverable subset is zero', () => {
+    // Paper does not activate (W-5), so this batch has a zero denominator and
+    // `0 === 0` would mark both stages complete while nothing was delivered or
+    // activated. The guard refuses that claim. KNOWN RESIDUAL, pinned here rather
+    // than left implicit: such a batch never completes Delivery, because the rail
+    // has no "not applicable to this batch" vocabulary yet. This test exists so
+    // that whoever adds one changes it deliberately.
+    const d = deriveWorkflow(
+      batchMode({
+        batchDetail: {
+          ...batchMode().batchDetail!,
+          artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
+        },
+        journey: journey({
+          counts: { total: 4, deliverableAndActivatable: 0, sentToVendor: 4, dispatched: 4, delivered: 0, activated: 0 },
+          activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null },
+        }),
+      }),
+    )
+    expect(d.completed).not.toContain('delivery')
+    expect(d.completed).not.toContain('activation')
+    expect(d.isComplete).toBe(false)
   })
 })
 
@@ -283,7 +349,7 @@ describe('deriveWorkflow: the poll speed follows who is being waited on', () => 
           artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
         },
         journey: journey({
-          counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 10 },
+          counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 10 },
           activation: { awaiting: 0, activated: 10, failed: 0, simActivated: null },
         }),
       }),
@@ -325,25 +391,25 @@ describe('deriveWorkflow: current is never also complete, across every fixture s
     batchMode(),
     batchMode({ journey: null }),
     batchMode({ batchDetail: withArtifact, journey: null }),
-    batchMode({ batchDetail: withArtifact, journey: journey({ counts: { total: 10, sentToVendor: 10, dispatched: 0, delivered: 0, activated: 0 } }) }),
+    batchMode({ batchDetail: withArtifact, journey: journey({ counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 0, delivered: 0, activated: 0 } }) }),
     batchMode({
       batchDetail: withArtifact,
       journey: journey({
-        counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 9, activated: 2 },
+        counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 10, delivered: 9, activated: 2 },
         courier: { pickedUp: 0, inTransit: 1, outForDelivery: 0, delivered: 9, exception: 0 },
       }),
     }),
     batchMode({
       batchDetail: withArtifact,
       journey: journey({
-        counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 3 },
+        counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 3 },
         activation: { awaiting: 7, activated: 3, failed: 0, simActivated: null },
       }),
     }),
     batchMode({
       batchDetail: withArtifact,
       journey: journey({
-        counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 10 },
+        counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 10, delivered: 10, activated: 10 },
         activation: { awaiting: 0, activated: 10, failed: 0, simActivated: null },
       }),
     }),

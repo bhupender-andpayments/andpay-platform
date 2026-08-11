@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { getBatches, type BatchRow } from '../../api/endpoints.js'
-import { Card, CardHeader, ErrorNote, SkeletonRows, StatusPill, CodeChip, EmptyState } from '../../ui/primitives.js'
-import { fmtDateTime } from '../../ui/format.js'
+import { Card, CardHeader, ErrorNote, SkeletonRows, CodeChip, EmptyState } from '../../ui/primitives.js'
+import { fmtDateTime, fmtNumber } from '../../ui/format.js'
 
 // C-3 (old P2-6): the Command Center's below-the-fold region.
 //
@@ -84,9 +84,20 @@ export function RecentBatches() {
                 to={`/batches/${encodeURIComponent(b.id)}`}
                 className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 transition-colors hover:bg-primary/5"
               >
-                <StatusPill value={b.status} />
+                {/* NO STATUS PILL. There was one here, bound to `b.status`, and
+                    it rendered EMPTY in the running app for every row: the
+                    2026-08-10 ruling ("derive a batch's state from its children,
+                    never store a second copy") dropped batch.status, corrected the
+                    ops reader, and left this widget reading a field the server no
+                    longer sends. The suite did not catch it because the fixture
+                    kept supplying the old write-once 'BORN'.
+                    Nothing replaces it, deliberately. GET /ops/batches carries no
+                    stage and no status of any kind, and deriving one here would
+                    need a journey request per row (which 404s for a batch just
+                    formed) and would stand up a second, weaker derivation beside
+                    the workflow workspace's deriveWorkflow. One derivation. */}
                 <span className="num text-sm text-foreground">
-                  {b.unitCount} {b.unitCount === 1 ? 'record' : 'records'}
+                  {fmtNumber(b.unitCount)} {b.unitCount === 1 ? 'record' : 'records'}
                 </span>
                 <span className="text-sm text-muted-foreground">{b.triggerReason}</span>
                 <CodeChip>{b.id}</CodeChip>

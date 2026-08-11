@@ -426,7 +426,12 @@ export function getVendors(c: Client) {
 /** services/fulfillment/src/ops-read.ts BatchRow. */
 export interface BatchRow {
   id: string
-  status: string
+  // NO `status`. It was declared here and the server stopped sending it: the
+  // 2026-08-10 ruling dropped batch.status ("derive a batch's state from its
+  // children, never store a second copy") and corrected
+  // services/fulfillment/src/ops-read.ts, whose BatchRow projects no such column.
+  // This copy outlived it and made RecentBatches render an empty pill in the real
+  // app. Do not add a stage or status here without a read that can answer it.
   triggerReason: string
   unitCount: number
   printVndr: string | null
@@ -1203,6 +1208,27 @@ export interface BatchJourneyView {
    */
   counts: {
     total: number
+    /**
+     * The rows that CAN reach DELIVERED and CAN be activated, which is a SUBSET
+     * of `total` and is the denominator stages 7 and 8 of the workflow rail
+     * measure against. Analytics owns the predicate (isSoundboxOrLegacy); the
+     * portal consumes this number and never re-expresses it, so there is no
+     * second definition of "deliverable" to drift.
+     *
+     * It exists because `delivered` and `total` are at different grains.
+     * Delivery is tracked on the DEVICE parcel, so a COLLATERAL group (sticker
+     * plus standee) ships and delivers under its own AWB but never carries a
+     * merchant to DELIVERED, and never activates at all. Observed live on
+     * 2026-08-11: a batch of 5 bank requests was 10 rows, all 10 shipments
+     * reached DELIVERED, and this read answered total 10 with delivered 5, so
+     * `delivered === total` was unreachable for any batch carrying collateral,
+     * which is every real batch.
+     *
+     * ONE FIELD FOR BOTH STAGES: the same predicate gates delivery and
+     * activation, so two fields would always hold the same number and would only
+     * give the two a way to drift apart.
+     */
+    deliverableAndActivatable: number
     sentToVendor: number
     dispatched: number
     delivered: number

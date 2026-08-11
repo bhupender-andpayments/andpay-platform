@@ -225,7 +225,7 @@ describe('DispatchStage', () => {
   it('counts what has been returned and warns that one request can carry two AWBs', () => {
     const journey = {
       batchId: 'btch_1',
-      counts: { total: 4, sentToVendor: 4, dispatched: 3, delivered: 0, activated: 0 },
+      counts: { total: 4, deliverableAndActivatable: 4, sentToVendor: 4, dispatched: 3, delivered: 0, activated: 0 },
       courier: { pickedUp: 3, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
       activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null as null },
       awaitingActivation: [],
@@ -245,7 +245,7 @@ describe('DeliveryStage', () => {
   it('shows the courier fan-out rather than one status for the batch', () => {
     const journey = {
       batchId: 'btch_1',
-      counts: { total: 10, sentToVendor: 10, dispatched: 10, delivered: 7, activated: 0 },
+      counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 10, delivered: 7, activated: 0 },
       courier: { pickedUp: 1, inTransit: 1, outForDelivery: 1, delivered: 7, exception: 0 },
       activation: { awaiting: 7, activated: 0, failed: 0, simActivated: null as null },
       awaitingActivation: [],
@@ -261,7 +261,7 @@ describe('DeliveryStage', () => {
   it('badges the analytics freshness rather than presenting the numbers as live', () => {
     const journey = {
       batchId: 'btch_1',
-      counts: { total: 1, sentToVendor: 1, dispatched: 1, delivered: 0, activated: 0 },
+      counts: { total: 1, deliverableAndActivatable: 1, sentToVendor: 1, dispatched: 1, delivered: 0, activated: 0 },
       courier: { pickedUp: 1, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
       activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null as null },
       awaitingActivation: [],
@@ -279,7 +279,7 @@ describe('ActivationStage', () => {
 
   const journey = {
     batchId: 'btch_1',
-    counts: { total: 2, sentToVendor: 2, dispatched: 2, delivered: 2, activated: 0 },
+    counts: { total: 2, deliverableAndActivatable: 2, sentToVendor: 2, dispatched: 2, delivered: 2, activated: 0 },
     courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 2, exception: 0 },
     activation: { awaiting: 2, activated: 0, failed: 0, simActivated: null as null },
     awaitingActivation: [

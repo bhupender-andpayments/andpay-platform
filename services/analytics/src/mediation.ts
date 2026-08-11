@@ -732,6 +732,33 @@ export interface BatchJourneyView {
    */
   counts: {
     total: number
+    /**
+     * The rows that CAN reach DELIVERED and CAN be activated: the
+     * isSoundboxOrLegacy subset, which is a SUBSET of `total` and is the
+     * denominator stages 7 and 8 of the ops workflow rail measure against.
+     *
+     * It exists because `delivered` and `total` are at different grains.
+     * Delivery is tracked on the DEVICE parcel, so a COLLATERAL group (sticker
+     * plus standee) ships and delivers under its own AWB but never carries a
+     * merchant to DELIVERED, and never activates at all. `total` counts every
+     * row, collateral included. Observed live on 2026-08-11: a batch of 5 bank
+     * requests was 10 rows, all 10 shipments reached DELIVERED in
+     * fulfillment.shpt, and this read answered total 10 with delivered 5. So
+     * `delivered === total` was unreachable for any batch carrying collateral,
+     * which is every real batch.
+     *
+     * ONE FIELD FOR BOTH STAGES, deliberately. isSoundboxOrLegacy is the same
+     * predicate for delivery and for activation (it mirrors the activate route's
+     * own group gate), so a separate deliverable count and activatable count
+     * would always hold the same number and would only give the two a way to
+     * drift apart.
+     *
+     * The earlier counts keep `total` as their denominator, and that is correct
+     * rather than an oversight: a COLLATERAL row really is printed, really is
+     * sent to the vendor and really is dispatched, so sentToVendor and
+     * dispatched genuinely apply to every row.
+     */
+    deliverableAndActivatable: number
     sentToVendor: number
     dispatched: number
     delivered: number
@@ -799,6 +826,12 @@ export async function readBatchJourney(
 
   const counts = {
     total: rows.length,
+    // The stage 7 and 8 denominator, at the grain those two stages actually
+    // measure. Same predicate the two activation tiles and the awaiting worklist
+    // below already apply, called rather than re-expressed: an earlier change in
+    // this feature reproduced one of its two gates by hand and shipped the other
+    // one missing.
+    deliverableAndActivatable: rows.filter(isSoundboxOrLegacy).length,
     sentToVendor: rows.filter((r) => atLeast(r.pipeline_state, 'SENT_TO_VENDOR')).length,
     dispatched: rows.filter((r) => atLeast(r.pipeline_state, 'DISPATCHED')).length,
     delivered: rows.filter((r) => atLeast(r.pipeline_state, 'DELIVERED')).length,

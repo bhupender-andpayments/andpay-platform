@@ -166,7 +166,7 @@ const ARTIFACT = { asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReferenc
 function journey(over: Record<string, unknown> = {}) {
   return {
     batchId: 'btch_aaa',
-    counts: { total: 2, sentToVendor: 2, dispatched: 0, delivered: 0, activated: 0 },
+    counts: { total: 2, deliverableAndActivatable: 2, sentToVendor: 2, dispatched: 0, delivered: 0, activated: 0 },
     courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
     activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null },
     awaitingActivation: [],
@@ -738,7 +738,7 @@ describe('WorkflowPage: the adaptive poll', () => {
     const calls = stub({
       artifacts: [ARTIFACT],
       journeyBody: journey({
-        counts: { total: 2, sentToVendor: 2, dispatched: 2, delivered: 2, activated: 0 },
+        counts: { total: 2, deliverableAndActivatable: 2, sentToVendor: 2, dispatched: 2, delivered: 2, activated: 0 },
         courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 2, exception: 0 },
         activation: { awaiting: 2, activated: 0, failed: 0, simActivated: null },
       }),
@@ -775,7 +775,7 @@ describe('WorkflowPage: the adaptive poll', () => {
     const calls = stub({
       artifacts: [ARTIFACT],
       journeyBody: journey({
-        counts: { total: 2, sentToVendor: 2, dispatched: 2, delivered: 2, activated: 2 },
+        counts: { total: 2, deliverableAndActivatable: 2, sentToVendor: 2, dispatched: 2, delivered: 2, activated: 2 },
         courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 2, exception: 0 },
         activation: { awaiting: 0, activated: 2, failed: 0, simActivated: null },
       }),

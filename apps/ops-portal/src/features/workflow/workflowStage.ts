@@ -169,8 +169,33 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
   // the vendor having taken it, and the stage says so.
   if (journeyAvailable && total > 0 && (c!.dispatched > 0 || c!.delivered > 0)) done.push('print')
   if (journeyAvailable && total > 0 && c!.dispatched === total) done.push('dispatch')
-  if (journeyAvailable && total > 0 && c!.delivered === total) done.push('delivery')
-  if (journeyAvailable && total > 0 && c!.activated === total) done.push('activation')
+  // DELIVERY AND ACTIVATION MEASURE AGAINST A DIFFERENT DENOMINATOR, and the
+  // difference is the whole point. `delivered` and `activated` are counted on the
+  // DEVICE parcel: a COLLATERAL group (sticker plus standee) ships and delivers
+  // under its own AWB but never carries a merchant to DELIVERED and never
+  // activates at all (W-5, paper does not activate). `total` counts every row,
+  // collateral included, so comparing these two against `total` compares a
+  // device-parcel numerator with an all-rows denominator.
+  //
+  // Observed live on 2026-08-11: 5 bank requests became 10 rows, all 10 shipments
+  // reached DELIVERED, and the read answered total 10 with delivered 5. So
+  // `delivered === total` was UNREACHABLE for any batch carrying collateral, which
+  // is every real batch, and `current` sat on Delivery permanently while the
+  // awaiting-activation worklist was ready and unreachable.
+  //
+  // The earlier stages keep `total` deliberately: a COLLATERAL row really is
+  // printed, really is sent to the vendor and really is dispatched, and both of
+  // those counts read 10 of 10 in that same live capture.
+  const activatable = c?.deliverableAndActivatable ?? 0
+  // The `> 0` guard is NOT belt-and-braces, it is a refusal to claim something.
+  // A batch holding only COLLATERAL has a zero denominator, and `0 === 0` would
+  // mark both stages complete while nothing was ever delivered or activated. The
+  // rail has no "not applicable to this batch" vocabulary yet, so the honest
+  // choice is to stay silent rather than assert completion. Consequence, logged as
+  // a known residual: a collateral-only batch never completes Delivery. That case
+  // needs a ruling, and inventing a claim here would hide it.
+  if (journeyAvailable && activatable > 0 && c!.delivered === activatable) done.push('delivery')
+  if (journeyAvailable && activatable > 0 && c!.activated === activatable) done.push('activation')
 
   const completed = order(done)
   const first = WORKFLOW_STAGES.map((st) => st.key).find((k) => !completed.includes(k))

@@ -45,7 +45,6 @@ const POOL_ROW = {
 
 const BATCH_ROW = {
   id: 'btch_abc',
-  status: 'BORN',
   triggerReason: 'LOT_SIZE',
   unitCount: 42,
   printVndr: null,
@@ -466,7 +465,7 @@ describe('Batches: two regions, no tab strip', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (url.includes('/ops/batches')) {
         return new Response(JSON.stringify([{
-          id: 'btch_1', status: 'BORN', triggerReason: 'MANUAL', unitCount: 3,
+          id: 'btch_1', triggerReason: 'MANUAL', unitCount: 3,
           printVndr: null, triggeredByActor: null,
           createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
         }]), { status: 200, headers: { 'content-type': 'application/json' } })
