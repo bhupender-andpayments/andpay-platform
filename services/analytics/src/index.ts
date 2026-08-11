@@ -12,6 +12,7 @@ export {
   readTileDrilldown,
   readReport,
   readDispatchActivationStatus,
+  readBatchJourney,
   type TileSet,
   type TileName,
   type ReportName,
@@ -19,6 +20,7 @@ export {
   type ReportCell,
   type ReportFilters,
   type DispatchActivationStatus,
+  type BatchJourneyView,
 } from './mediation.js'
 export type {
   AssignmentFactView,

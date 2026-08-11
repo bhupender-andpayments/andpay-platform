@@ -706,3 +706,136 @@ export async function readDispatchActivationStatus(
     dispatchGroup: r.dispatch_group,
   }
 }
+
+/**
+ * The batch-journey rollup (workflow workspace, 2026-08-11 ruling). ONE batch's
+ * position in the Bank Request to Activation lifecycle, for stages 6 to 8 of the
+ * ops workflow workspace.
+ *
+ * Exists because no other read can answer it. GET /ops/dispatches returns shpt_
+ * ids with no batch link at all (services/fulfillment/src/ops-read.ts:719), and
+ * batch_id, courier_status and activation_status sit together only here.
+ *
+ * batch_id holds the WIRE btch_ string, not a uuid (project.ts folds it straight
+ * off the batch fact, whose producer emits btchWire), so it is matched directly
+ * and there is no toUuid and no invalid-id path.
+ *
+ * Returns null for a batch with no rows, mirroring readDispatchActivationStatus,
+ * so the caller can tell "no such batch" from "a batch at stage zero".
+ */
+export interface BatchJourneyView {
+  batchId: string
+  /**
+   * CUMULATIVE stage counts off PIPELINE_RANK: a DELIVERED row has also been
+   * sent to vendor and dispatched, so it is counted in all three. This is what
+   * lets the rail mark a stage complete only when nobody is still behind it.
+   */
+  counts: {
+    total: number
+    sentToVendor: number
+    dispatched: number
+    delivered: number
+    activated: number
+  }
+  /**
+   * The courier fan-out. A batch's records are at different courier stages at
+   * once, so one status for the batch would be a fiction. `exception` is any
+   * terminal-but-not-delivered status (RTO, FAILED), which is the only part of
+   * this the operator must act on.
+   */
+  courier: {
+    pickedUp: number
+    inTransit: number
+    outForDelivery: number
+    delivered: number
+    exception: number
+  }
+  /**
+   * `simActivated` is ALWAYS null: sim_activation_status has no write path
+   * anywhere in the system, so any number here would be invented. Null is what
+   * makes the portal render "Not available yet" instead of a truthful-looking
+   * zero.
+   */
+  activation: {
+    awaiting: number
+    activated: number
+    failed: number
+    simActivated: null
+  }
+  /** The stage-8 worklist: delivered, not yet activated. PII-free. */
+  awaitingActivation: {
+    dispatchId: string
+    merchantDisplay: string
+    awb: string | null
+    deliveryDate: string | null
+  }[]
+  watermark: Watermark
+}
+
+const JOURNEY_RANK: Record<string, number> = {
+  RECEIVED: 1,
+  BATCHED: 2,
+  SENT_TO_VENDOR: 3,
+  DISPATCHED: 4,
+  DELIVERED: 5,
+  ACTIVATED: 6,
+}
+
+function atLeast(state: string, floor: string): boolean {
+  return (JOURNEY_RANK[state] ?? 0) >= (JOURNEY_RANK[floor] ?? 0)
+}
+
+export async function readBatchJourney(
+  db: AnalyticsDb,
+  scope: ReadScope,
+  batchId: string,
+): Promise<BatchJourneyView | null> {
+  // Watermark FIRST (check 4), same floor-property rationale as readTiles: read
+  // after the data and asOf could overstate what the rows reflect.
+  const watermark = await readFreshness(db)
+  const all = await scopedDispatchRead(db, scope)
+  const rows = all.filter((r) => r.batch_id === batchId)
+  if (rows.length === 0) return null
+
+  const counts = {
+    total: rows.length,
+    sentToVendor: rows.filter((r) => atLeast(r.pipeline_state, 'SENT_TO_VENDOR')).length,
+    dispatched: rows.filter((r) => atLeast(r.pipeline_state, 'DISPATCHED')).length,
+    delivered: rows.filter((r) => atLeast(r.pipeline_state, 'DELIVERED')).length,
+    activated: rows.filter((r) => atLeast(r.pipeline_state, 'ACTIVATED')).length,
+  }
+
+  const courier = {
+    pickedUp: rows.filter((r) => r.courier_status === 'PICKED_UP').length,
+    inTransit: rows.filter((r) => r.courier_status === 'IN_TRANSIT').length,
+    outForDelivery: rows.filter((r) => r.courier_status === 'OUT_FOR_DELIVERY').length,
+    delivered: rows.filter((r) => r.courier_status === 'DELIVERED').length,
+    exception: rows.filter((r) => r.courier_status === 'RTO' || r.courier_status === 'FAILED').length,
+  }
+
+  // Delivered on the DEVICE's parcel and not yet activated. delivery_date is the
+  // same gate the activate route enforces server-side, so this list can never
+  // offer a record the write would reject.
+  const awaiting = rows.filter((r) => r.delivery_date !== null && !atLeast(r.pipeline_state, 'ACTIVATED'))
+
+  const activation = {
+    awaiting: awaiting.length,
+    activated: counts.activated,
+    failed: rows.filter((r) => r.activation_failure_reason !== null).length,
+    simActivated: null,
+  } as const
+
+  return {
+    batchId,
+    counts,
+    courier,
+    activation,
+    awaitingActivation: awaiting.map((r) => ({
+      dispatchId: r.dispatch_id,
+      merchantDisplay: r.merchant_display,
+      awb: r.awb,
+      deliveryDate: iso(r.delivery_date),
+    })),
+    watermark,
+  }
+}
