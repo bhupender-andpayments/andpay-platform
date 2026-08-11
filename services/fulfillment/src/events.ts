@@ -111,6 +111,10 @@ export interface AssignmentFactView {
   // Phase 3 Task 5a: the branch code snapshot (T4, D120 FULL-compat), OPTIONAL
   // on the wire. Tolerate its absence: an older/pre-T4 fact carries none.
   branchCode?: string
+  // W-5: the dispatch group marker, OPTIONAL on the wire. Legacy means absent:
+  // a fact with no dispatchGroup key is a pre-split combined row, and its
+  // absence, not any default, is what downstream branches on.
+  dispatchGroup?: 'SOUNDBOX' | 'COLLATERAL'
 }
 export interface CredentialFactView {
   apiId: string; vndrRef: string; status: string; epoch: number; mode: string

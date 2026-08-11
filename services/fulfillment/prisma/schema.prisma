@@ -141,6 +141,10 @@ model PendingPoolEntry {
   tenantId            String   @map("tenant_id") @db.Uuid
   programId           String   @map("program_id") @db.Uuid
   soundbox            Boolean
+  // W-5: the dispatch group marker off fct.tms.assignment.v1, NULL for a
+  // legacy combined row. Deliberately never backfilled; downstream
+  // membership and pairing branch on that NULL to keep pre-split semantics.
+  dispatchGroup       String?  @map("dispatch_group")
   standeeCount        Int      @map("standee_count")
   stickerCount        Int      @map("sticker_count")
   billable            Boolean
