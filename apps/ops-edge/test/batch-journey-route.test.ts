@@ -13,10 +13,29 @@ const EXPECTED_ISS = 'https://auth.andpay.test'
 const KID = 'test-kid-journey'
 const WATERMARK_ISO = '2026-08-11T09:00:00.000Z'
 
-const analyticsDb = new AnalyticsClient()
-const tmsDb = new TmsClient()
-const fulfillmentDb = new FulfillmentClient()
-const identityDb = new IdentityClient()
+// EVERY client takes an explicit datasourceUrl with a local fallback, the idiom all
+// six sibling ops-edge http suites use. These were bare `new XClient()` calls, which
+// read the env var directly, and CI sets IDENTITY / TMS / FULFILLMENT / ORCHESTRATOR
+// but NOT ANALYTICS_DATABASE_URL (.github/workflows/ci.yml). So this suite could
+// never pass in CI: all eight of its tests died on
+// "Environment variable not found: ANALYTICS_DATABASE_URL" the first time the full
+// gate was run against it. The same defect was caught and fixed once already, in
+// services/analytics/test/batch-journey.test.ts; this is its twin, in the file
+// nobody re-checked.
+const analyticsUrl =
+  process.env.ANALYTICS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics'
+const analyticsDb = new AnalyticsClient({ datasourceUrl: analyticsUrl })
+const tmsDb = new TmsClient({
+  datasourceUrl: process.env.TMS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms',
+})
+const fulfillmentDb = new FulfillmentClient({
+  datasourceUrl:
+    process.env.FULFILLMENT_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment',
+})
+const identityDb = new IdentityClient({
+  datasourceUrl:
+    process.env.IDENTITY_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=identity',
+})
 
 let app: INestApplication
 // Inferred from generateKeyPair, the way all six sibling ops-edge http suites

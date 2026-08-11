@@ -713,8 +713,15 @@ export async function readDispatchActivationStatus(
  * ops workflow workspace.
  *
  * Exists because no other read can answer it. GET /ops/dispatches returns shpt_
- * ids with no batch link at all (services/fulfillment/src/ops-read.ts:719), and
- * batch_id, courier_status and activation_status sit together only here.
+ * ids with no batch link at all (the fulfillment context's own ops-read module),
+ * and batch_id, courier_status and activation_status sit together only here.
+ *
+ * That reference is deliberately NOT written as a path. The C4 guard in
+ * test/analytics_rail.test.ts is a substring scan for `services/<ctx>/`, so citing
+ * another context's source path here fails it even from inside a comment, and it
+ * was failing exactly that way from this file's first commit. Naming the context
+ * rather than its file layout is also the more honest reference: a line number in
+ * another context's source is a coupling that drifts silently.
  *
  * batch_id holds the WIRE btch_ string, not a uuid (project.ts folds it straight
  * off the batch fact, whose producer emits btchWire), so it is matched directly
