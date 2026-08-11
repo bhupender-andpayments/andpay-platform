@@ -14,6 +14,7 @@ import {
   readTiles,
   readReport,
   readTileDrilldown,
+  readBatchJourney,
   toCsv,
   type ReadScope,
   type ReportName,
@@ -125,6 +126,38 @@ export class ReportsController {
       res.setHeader('Content-Type', 'text/csv; charset=utf-8')
       return toCsv(result.rows)
     }
+    return result
+  }
+
+  // GET /ops/reports/batch-journey/:btchId (workflow workspace, 2026-08-11
+  // ruling): ONE batch's position in the Bank Request to Activation lifecycle.
+  //
+  // It lives HERE and not on OpsReadController's /ops/batches/:btchId/journey,
+  // even though that URL reads better. This is an analytics-mediated CROSS-TENANT
+  // read, so guardrail G3 binds it to emit both the per-read analytics 6e and the
+  // D99 cross-tenant-access entry, which is this controller's whole posture.
+  // OpsReadController is pinned by object-spine-http.test.ts to emit ZERO audit
+  // records ("reads are NOT mutations", check 3), so hosting it there would have
+  // silently broken that guarantee to buy a prettier path.
+  //
+  // The btchId is a WIRE btch_ string and is matched directly: analytics
+  // dispatch_row.batch_id holds the wire id, not a uuid, so there is no toUuid
+  // and therefore no invalid-id 400 on this route.
+  //
+  // 404 on a batch with no rows, mirroring OpsReadController's batchDetail, so
+  // the caller can tell "no such batch" from "a batch at stage zero".
+  @Get('batch-journey/:btchId')
+  @HttpCode(200)
+  async batchJourney(
+    @Req() req: EdgeRequest,
+    @Param('btchId') btchId: string,
+    @Res({ passthrough: true }) res: EdgeResponse,
+  ): Promise<unknown> {
+    await this.authorize(req, 'analytics:read-batch-journey')
+    const scope: ReadScope = { kind: 'crossTenant' }
+    const result = await readBatchJourney(this.deps.analyticsDb, scope, btchId)
+    if (result === null) throw new NotFoundException()
+    res.setHeader('x-analytics-watermark', result.watermark.asOf ?? 'none')
     return result
   }
 
