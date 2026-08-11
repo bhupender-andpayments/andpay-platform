@@ -398,6 +398,39 @@ describe('uploads', () => {
     expect(screen.queryByText('BMR-1')).toBeNull()
   })
 
+  // Review fix, round 1: a committed file's preview is stale, so Review must
+  // LOCK rather than stay clickable with the click going nowhere. Upload
+  // stays a real, clickable way to start over.
+  it('bank: once committed, the Review rail pill locks (renders inert, not a button); Upload stays clickable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/uploads/bank/preview')) return jsonResponse(BANK_PREVIEW_RESULT)
+        if (url.includes('/ops/uploads/bank/commit')) return jsonResponse({ accepted: 1, quarantined: 1, duplicate: 0, fileId: 'file-1' })
+        return jsonResponse({})
+      }),
+    )
+
+    renderWithProviders(<BankUploadPage />)
+
+    const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
+    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'bank.csv'))
+    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
+    await userEvent.click(screen.getByRole('button', { name: /commit bank request file/i }))
+    expect(await screen.findByText('Accepted')).toBeTruthy()
+
+    const railPill = (label: string) => new RegExp(`^\\d\\s*${label}$`, 'i')
+    // Locked: Review's own label text still renders in the rail, but it is
+    // no longer a button (UploadStepper renders a locked step as an inert
+    // span).
+    expect(screen.getByText(/^review$/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: railPill('review') })).toBeNull()
+    // Still a real move: Upload remains clickable so a new file can be picked.
+    expect(screen.getByRole('button', { name: railPill('upload') })).toBeTruthy()
+  })
+
   it('damage upload: picking a file POSTs it multipart to preview (no Idempotency-Key, writes nothing) and renders the real per-row projected outcome, then Commit POSTs with a fresh Idempotency-Key and shows the counts', async () => {
     const calls: Call[] = []
     vi.stubGlobal(

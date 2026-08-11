@@ -91,7 +91,14 @@ export function BankUploadPage() {
   const step: StepKey = commitResult !== null || (confirming && previewOk) ? 'commit' : previewOk ? 'review' : 'upload'
   const KIND = kindBySlug('bank')!
   const navigate = useNavigate()
-  const unlocked: StepKey[] = ['choose', 'upload', ...(previewOk ? (['review'] as const) : []), ...(previewOk && (confirming || commitResult !== null) ? (['commit'] as const) : [])]
+  // Review locks the instant a commit lands: the preview it would show is
+  // stale the moment the commit writes, so leaving it unlocked would render a
+  // clickable rail pill whose click the `step` formula above silently
+  // ignores (`commitResult !== null` always wins), a dead affordance on a
+  // rail whose entire premise is that it tells the truth. Commit stays
+  // unlocked after a commit because that is the step you are standing on
+  // and it holds the result.
+  const unlocked: StepKey[] = ['choose', 'upload', ...(previewOk && commitResult === null ? (['review'] as const) : []), ...(previewOk && (confirming || commitResult !== null) ? (['commit'] as const) : [])]
 
   function onStepClick(key: StepKey): void {
     if (key === 'choose') {
