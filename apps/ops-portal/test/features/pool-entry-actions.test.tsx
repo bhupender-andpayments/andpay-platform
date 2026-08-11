@@ -22,6 +22,7 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 function entry(over: Partial<PoolEntryRow> = {}): PoolEntryRow {
   return {
     asgnId: 'asgn_50000000008008000000000001',
+    dispatchGroup: null,
     merchantDisplayName: 'BRILLIANT PERFUME',
     merchantLegalName: 'BRILLIANT PERFUME',
     bankReferenceCode: '3',
