@@ -107,8 +107,8 @@ async function seedPendingEntry(opts: SeedEntryOpts): Promise<void> {
   // row (batching.ts writes it with the fact); this fixture did not, so seed it
   // to keep the fixture whole.
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
-    VALUES (${opts.batchUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, 'BORN', 'LOT_SIZE', 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, trigger_reason, unit_count, updated_at)
+    VALUES (${opts.batchUuid}::uuid, ${opts.tenantUuid}::uuid, ${opts.programUuid}::uuid, 'LOT_SIZE', 1, now())
     ON CONFLICT (id) DO NOTHING
   `
   await db.$executeRaw`

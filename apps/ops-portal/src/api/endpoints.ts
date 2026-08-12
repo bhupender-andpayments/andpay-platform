@@ -405,6 +405,72 @@ export function getVendors(c: Client) {
 }
 
 // -----------------------------------------------------------------------
+// The print vendor's RETURN sheet, uploaded by ops (BRD FR-05 para 322: in
+// Phase 1 the vendor emails the filled sheet and the AndPayments team uploads
+// it). Preview parses and dry-runs the vendor resolution, writing nothing;
+// commit ingests under ops:upload-return-file. The vendor identity is resolved
+// SERVER-SIDE from the rows' batches, never sent from here.
+
+/** services/fulfillment/src/return-sheet-adapter.ts ReturnSheetRowError. */
+export interface ReturnRowError {
+  rowNo: number
+  errors: string[]
+}
+
+export interface ReturnPreviewResult {
+  validRows: { deviceSerial: string; asgnId: string; awb: string; courierCode?: string }[]
+  invalidRows: ReturnRowError[]
+  structuralErrors: { code: string; message: string }[]
+  /** Display name of the print vendor every row resolves to, or null. */
+  resolvedVendor: string | null
+  /** Why resolution failed, when it did. Null when resolvedVendor is set. */
+  resolutionError: string | null
+}
+
+export interface ReturnCommitResult {
+  rejected?: string
+  pairedUnitIds: string[]
+  quarantined: number
+  shptIds: string[]
+  deduped: boolean
+  vndrId?: string
+  invalidRows: ReturnRowError[]
+}
+
+export function previewReturnUpload(c: Client, file: File) {
+  return postFile<ReturnPreviewResult>(c, '/ops/uploads/return/preview', file)
+}
+
+export function commitReturnUpload(c: Client, file: File, idempotencyKey: string) {
+  return postFile<ReturnCommitResult>(c, '/ops/uploads/return/commit', file, idempotencyKey)
+}
+
+/**
+ * POST /ops/vendors (ops:vendor-create). apps/ops-edge/src/ops.controller.ts
+ * VendorCreateBody; the row is born ACTIVE.
+ *
+ * This mattered more than a registry nicety: batch compose requires EXACTLY ONE
+ * ACTIVE PRINT vendor (services/fulfillment/src/dispatch.ts) and dead-letters
+ * every batch until one exists, and the portal had no way to create it.
+ */
+export interface VendorCreateBody {
+  /** MANUFACTURER | PRINT | COURIER, validated server-side. */
+  type: string
+  displayName: string
+  /** The short code courier files carry (e.g. BLUEDART). COURIER only. */
+  courierCode?: string
+}
+
+export function createVendor(c: Client, body: VendorCreateBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; vndrId: string | null }>({
+    method: 'POST',
+    path: '/ops/vendors',
+    body,
+    idempotencyKey,
+  })
+}
+
+// -----------------------------------------------------------------------
 // P2-1 object spine (apps/ops-edge/src/ops-read.controller.ts batches / pool /
 // dispatches / batchDetail, over services/fulfillment/src/ops-read.ts). Same
 // class-3 guard-only posture as GET /ops/vendors above: no per-op D2
@@ -462,6 +528,9 @@ export interface BatchArtifactRow {
   artifactType: string
   assetReference: string
   supersededAt: string | null
+  /** The QR payload the stored artifact was composed with; what the batch
+   *  generation preview draws so the proof and the stored PDF share one string. */
+  labelQr: string
 }
 
 /** services/fulfillment/src/ops-read.ts BatchDetailView. */
@@ -606,6 +675,39 @@ export interface DamageReasonRow {
 
 export function getDamageReasons(c: Client) {
   return c.request<DamageReasonRow[]>({ method: 'GET', path: '/ops/damage-reasons' })
+}
+
+/**
+ * services/tms/src/ops-read.ts DamageCaseView: one row per REPLACEMENT
+ * assignment (the query is `WHERE replacement_of IS NOT NULL`), carrying the
+ * parent it replaces.
+ *
+ * `asgnId` and `replacementOf` are both WIRE asgn ids, so they compare directly
+ * against the pool's own `asgnId` with no decoding. That is what lets the
+ * Batches records table say "this row is a replacement, and here is its parent"
+ * from a read that already existed; the route has been live since Phase 3 and
+ * the portal simply never called it.
+ */
+export interface DamageCaseRow {
+  asgnId: string
+  replacementOf: string
+  merchantDisplayName: string
+  bankReferenceCode: string
+  branchCode: string | null
+  damageReason: string | null
+  bankRemarks: string | null
+  caseStatus: string | null
+  billable: boolean
+  demandState: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** `includeClosed` so a replacement stays labelled after its case is closed;
+ *  the linkage is a permanent fact about the dispatch, not an open task. */
+export function getDamageCases(c: Client, includeClosed = true) {
+  const q = includeClosed ? '?includeClosed=true' : ''
+  return c.request<DamageCaseRow[]>({ method: 'GET', path: `/ops/damage-cases${q}` })
 }
 
 /**

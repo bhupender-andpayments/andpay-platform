@@ -27,8 +27,10 @@ vi.mock('../../src/features/dashboards/TilesPage.js', () => ({
 vi.mock('../../src/features/fulfillment/FulfillmentPage.js', () => ({
   FulfillmentPage: () => <h1>Batches</h1>,
 }))
-vi.mock('../../src/features/fulfillment/BatchDetailPage.js', () => ({
-  BatchDetailPage: () => <h1>Batch detail</h1>,
+// /batches/:btchId renders the generate page now; the separate detail page is
+// deleted.
+vi.mock('../../src/features/fulfillment/generate/BatchGeneratePage.js', () => ({
+  BatchGeneratePage: () => <h1>Batch detail</h1>,
 }))
 vi.mock('../../src/features/queues/QueuesPage.js', () => ({
   QueuesPage: () => <h1>Queues</h1>,

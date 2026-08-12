@@ -15,6 +15,7 @@
     "@andpay/audit": "workspace:*",
     "@andpay/authz": "workspace:*",
     "@andpay/bank-qr": "workspace:*",
+    "@andpay/collateral": "workspace:*",
     "@andpay/engine": "workspace:*",
     "@andpay/envelope": "workspace:*",
     "@andpay/ids": "workspace:*",

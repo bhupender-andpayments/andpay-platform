@@ -205,7 +205,11 @@ export class OpsReadController {
   @Get('batches/:btchId/dispatch-excel')
   async dispatchExcel(@Param('btchId') btchId: string, @Res() res: EdgeResponse): Promise<void> {
     const lines = await buildDispatchPackage(this.deps.fulfillmentDb, btchId, 'ship')
-    const xlsx = await dispatchXlsx(lines)
+    // The OPERATOR's copy: one sheet, one row per Dispatch ID, the merchant's own
+    // columns plus exactly three appended (Dispatch ID, Device ID, AWB). The
+    // vendor-channel pull keeps the measured two-sheet split, which is
+    // dispatchXlsx's default variant.
+    const xlsx = await dispatchXlsx(lines, 'ops')
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename="dispatch-${btchId}.xlsx"`)
     res.status(200).send(xlsx)

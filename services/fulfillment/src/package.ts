@@ -18,6 +18,8 @@ export interface ArtifactRef {
 
 export interface PackageLine {
   asgnId: string
+  /** The batch this line was built for, echoed onto every operator-workbook row. */
+  btchId: string
   // Phase 4 (P4-D5): the sort dimensions, so callers can present/assemble the
   // package in bank + branch order and split by product type.
   bankReferenceCode: string
@@ -113,6 +115,11 @@ export async function buildDispatchPackage(
       // column), so it converts back to wire form via fromUuid, matching the
       // dispatch.ts precedent for asgnIds on the dispatch fact.
       asgnId: fromUuid('asgn', e.asgn_id),
+      // The batch this line belongs to, carried onto every row of the operator
+      // workbook. The print vendor receives ONE workbook per batch but works
+      // several at a time, so without this the returned file cannot be told
+      // apart from another batch's by looking at it.
+      btchId,
       bankReferenceCode: e.bank_reference_code,
       branchCode: e.branch_code,
       artifacts: artifactsByAsgn.get(e.asgn_id) ?? [],
@@ -148,7 +155,11 @@ export async function buildDispatchPackage(
 const DISPATCH_COLUMNS = [
   { header: 'Bank', key: 'bank' },
   { header: 'Branch', key: 'branch' },
-  { header: 'Assignment', key: 'asgnId' },
+  // 'Dispatch ID' is the BRD FR-04 name for this column and what the print
+  // vendor is told to key their return on. It was shipped as 'Assignment';
+  // the return parser accepts BOTH names (RETURN_COLUMN_ALIASES), so old
+  // sheets in flight keep parsing while new ones carry the BRD name.
+  { header: 'Dispatch ID', key: 'asgnId' },
   { header: 'Merchant', key: 'labelDisplayName' },
   { header: 'Legal Name', key: 'merchantLegalName' },
   { header: 'Soundbox', key: 'soundbox' },
@@ -159,6 +170,27 @@ const DISPATCH_COLUMNS = [
   { header: 'Contact', key: 'contactName' },
   { header: 'Mobile', key: 'mobile' },
   { header: 'Artifact Refs', key: 'artifactRefs' },
+  // THE RETURN COLUMNS. Written EMPTY on purpose: the print vendor fills them in
+  // and sends the same workbook back (BRD FR-05).
+  //
+  // These close a round trip that did not close. `return-sheet-adapter.ts:17`
+  // states the requirement as "the vendor returns OUR dispatch sheet with Device
+  // ID and AWB filled in", and its RETURN_COLUMN_ALIASES require exactly
+  // `Device ID` and `AWB`, with `Assignment` already accepted as the Dispatch ID.
+  // But this sheet shipped neither column, so the file we sent could never be the
+  // file we accept: a vendor had to add two columns by hand, spelled exactly
+  // right, with nothing telling them so.
+  //
+  // KEEP THESE HEADERS IN STEP WITH RETURN_COLUMN_ALIASES in
+  // services/fulfillment/src/return-sheet-adapter.ts. A test asserts the two
+  // agree, because a silent rename here breaks pairing for a whole batch and the
+  // symptom appears at the far end, as a missing_column on a file the vendor
+  // filled in correctly.
+  { header: 'Device ID', key: 'deviceId' },
+  { header: 'AWB', key: 'awb' },
+  // Optional on the way back: an unknown courier code is recorded as an exception
+  // and the row is still paired (return-sheet.ts:307).
+  { header: 'Courier Partner', key: 'courierPartner' },
 ]
 
 /**
@@ -185,23 +217,105 @@ const DISPATCH_COLUMNS = [
  * never gets printed. Those lines go on `Standy` and are counted, never
  * dropped; see the orphan handling below.
  */
-export async function dispatchXlsx(lines: PackageLine[]): Promise<Buffer> {
+/**
+ * THE OPERATOR'S COPY (ruled by product, 2026-08-12).
+ *
+ * "Simply we will have as many rows as we get in the initial ingestion file.
+ * Simple. And after the final generation, simply we need that same file of that
+ * batch, same entries, with three extra: Dispatch ID and two empty columns."
+ * Phase 1 is people re-keying spreadsheets, so the file they get back must look
+ * like the file they sent, not like a new format they have to learn.
+ *
+ * So: the merchant's own columns, then EXACTLY THREE appended.
+ *
+ * What is deliberately NOT here, all of which was:
+ *   - `Artifact Refs`, holding `dev-asset:artifact/<btch>/<uuid>/STANDEE_IMG:v1`
+ *     storage pointers. Internal asset layout, meaningless to a vendor, and it
+ *     should not ride a file that leaves the building.
+ *   - `Courier Partner`. It is a fourth appended column and was never asked for.
+ *     Dropping it is safe for the round trip: the return ingest treats courier as
+ *     OPTIONAL (an unrecognised code is recorded as a non-blocking exception and
+ *     the row still pairs), and the courier is established by the status upload.
+ *
+ * One honest limit. This is the merchant data as the pipeline HOLDS it, not a
+ * byte-for-byte echo of the bank's sheet. The bank ships Address / Address2 /
+ * Address3 / City / State / Pincode and the source profile joins them into one
+ * address before anything is stored, and Email ID / QR Type / Category Code are
+ * not carried on PackageLine at all. Reproducing the bank's exact header list
+ * would mean widening the read, not reformatting here.
+ */
+const OPS_DISPATCH_COLUMNS = [
+  { header: 'Bank', key: 'bank' },
+  { header: 'Branch', key: 'branch' },
+  { header: 'Merchant', key: 'labelDisplayName' },
+  { header: 'Legal Name', key: 'merchantLegalName' },
+  { header: 'Soundbox', key: 'soundbox' },
+  { header: 'Standee Count', key: 'standeeCount' },
+  { header: 'Sticker Count', key: 'stickerCount' },
+  { header: 'QR', key: 'labelQr' },
+  { header: 'Ship To', key: 'shipToAddress' },
+  { header: 'Contact', key: 'contactName' },
+  { header: 'Mobile', key: 'mobile' },
+  // Which batch this row came from, the same wire id on every row of both
+  // sheets. The vendor works several batches at once and returns the workbook
+  // as-is, so this is what identifies the file without opening the portal.
+  { header: 'Batch ID', key: 'btchId' },
+  // THE THREE. Dispatch ID filled, the other two empty for the vendor.
+  { header: 'Dispatch ID', key: 'asgnId' },
+  { header: 'Device ID', key: 'deviceId' },
+  { header: 'AWB', key: 'awb' },
+]
+
+/**
+ * Which reader the workbook is for.
+ *
+ * BOTH variants are now two sheets split by product (Soundbox / Standy). 'ops'
+ * differs only in its COLUMN list: the operator copy drops the internal
+ * `Artifact Refs` asset pointers and `Courier Partner`, and carries `Batch ID`.
+ *
+ * The ops variant was briefly ONE sheet. That was the right fix for the wrong
+ * problem: the complaint was that a three-merchant batch showed two rows on the
+ * first sheet (the third merchant had no soundbox, so he was correctly only on
+ * sheet two), which reads as a broken export. Product has since ruled the split
+ * is what the print vendor works from, so it is back, and the real cure for that
+ * confusion is the per-product Dispatch ID change (each line then appears on
+ * exactly ONE sheet, and nothing looks missing because nothing is).
+ *
+ * UNTIL that lands, one Dispatch ID per merchant means a merchant wanting both
+ * products appears on BOTH sheets with the SAME Dispatch ID. Say so when handing
+ * the file over; it is the known gap, not a defect in the split.
+ */
+export type DispatchXlsxVariant = 'vendor' | 'ops'
+
+export async function dispatchXlsx(lines: PackageLine[], variant: DispatchXlsxVariant = 'vendor'): Promise<Buffer> {
   const wb = new ExcelJS.Workbook()
+  const columns = variant === 'ops' ? OPS_DISPATCH_COLUMNS : DISPATCH_COLUMNS
   const soundboxLines = lines.filter((l) => l.soundbox)
-  const standeeLines = lines.filter((l) => l.standeeCount >= 1)
+  // Anything with something to PRINT belongs on Standy. The predicate used to
+  // be `standeeCount >= 1` alone, which sent a sticker-only line into the
+  // orphan bucket below and onto the same sheet by accident. Same destination,
+  // but now it is the rule rather than a fallback catching it.
+  const printLines = lines.filter((l) => l.standeeCount >= 1 || l.stickerCount >= 1)
   // A line on NEITHER sheet would be silently lost. Keep it visible on Standy,
   // which is the general collateral sheet, rather than letting a merchant fall
   // out of the package entirely.
-  const orphans = lines.filter((l) => !l.soundbox && l.standeeCount < 1)
-  addSheet(wb, 'Soundbox', soundboxLines)
-  addSheet(wb, 'Standy', [...standeeLines, ...orphans])
+  const orphans = lines.filter((l) => !l.soundbox && l.standeeCount < 1 && l.stickerCount < 1)
+  addSheet(wb, 'Soundbox', soundboxLines, columns)
+  addSheet(wb, 'Standy', [...printLines, ...orphans], columns)
   const arrayBuf = await wb.xlsx.writeBuffer()
   return Buffer.from(arrayBuf)
 }
 
-function addSheet(wb: ExcelJS.Workbook, name: string, lines: PackageLine[]): void {
+function addSheet(
+  wb: ExcelJS.Workbook,
+  name: string,
+  lines: PackageLine[],
+  columns: ReadonlyArray<{ header: string; key: string }>,
+): void {
   const ws = wb.addWorksheet(name)
-  ws.columns = DISPATCH_COLUMNS
+  // The column list is what selects fields: writeRows keys its addRow object by
+  // column key, and a key with no matching column is ignored.
+  ws.columns = [...columns]
   writeRows(ws, lines)
 }
 
@@ -215,6 +329,9 @@ function writeRows(ws: ExcelJS.Worksheet, lines: PackageLine[]): void {
       bank: l.bankReferenceCode,
       branch: l.branchCode ?? '',
       asgnId: l.asgnId,
+      // Only the ops column list carries this; a key with no matching column is
+      // ignored, so the vendor sheet is byte-identical to before.
+      btchId: l.btchId,
       labelDisplayName: l.labelDisplayName,
       merchantLegalName: l.merchantLegalName,
       // Y/N rather than TRUE/FALSE: this is read off a printed picking sheet by

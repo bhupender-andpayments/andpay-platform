@@ -173,12 +173,26 @@ export async function projectActivationToUnits(
 }
 
 export interface ReplacementRaisedFactView {
+  /** The NEW replacement assignment. Carries no units: it has not been printed
+   *  or dispatched yet, so it is deliberately NOT what gets written off here. */
   asgnId: string
+  /** The ORIGINAL assignment whose device is the broken one. */
+  replacedAsgnId: string
 }
 
 /**
  * fct.tms.replacement.raised.v1: the bank reported this kit damaged, so the
  * device it replaces is written off.
+ *
+ * WRITES OFF `replacedAsgnId`, NOT `asgnId`, and the difference is the whole
+ * point. The fact names two assignments: the new replacement (`asgnId`) and the
+ * original it replaces (`replacedAsgnId`). This used to advance units for
+ * `asgnId`, which is the replacement that was created microseconds earlier and
+ * has no unit attached to it at all, so the projection was a silent no-op and
+ * the genuinely broken device stayed DELIVERED/ACTIVATED forever. The producer
+ * has always sent both ids (services/tms/src/damage.ts), and the analytics
+ * consumer already reads `replacedAsgnId` correctly; only this view type
+ * dropped it, which is why nothing failed loudly.
  *
  * DAMAGED is a terminal branch, reachable from anywhere on the spine (a device
  * can be damaged in transit or in the field) and never left, so a later stale
@@ -192,7 +206,11 @@ export async function projectReplacementToUnits(
   await db.$transaction(async (tx) => {
     await enterWriteRole(tx as unknown as Tx, 'fulfillment_write')
     await onceWithin(tx as unknown as Tx, CONSUMER, `${env.dedupKey}|unit_damaged`, async () => {
-      advanced = await advanceUnitsForAssignment(tx as unknown as Tx, toUuid(env.payload.asgnId), 'DAMAGED')
+      advanced = await advanceUnitsForAssignment(
+        tx as unknown as Tx,
+        toUuid(env.payload.replacedAsgnId),
+        'DAMAGED',
+      )
     })
   })
   return { advanced }

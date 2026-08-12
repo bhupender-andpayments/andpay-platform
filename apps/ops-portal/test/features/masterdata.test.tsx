@@ -4,6 +4,7 @@ import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
+import { ToastProvider } from '../../src/ui/Toast.js'
 import { MasterDataPage } from '../../src/features/masterdata/MasterDataPage.js'
 import { VendorRegistryPage } from '../../src/features/masterdata/VendorRegistryPage.js'
 import { CourierMasterPage } from '../../src/features/masterdata/CourierMasterPage.js'
@@ -124,7 +125,9 @@ function stubAllReads(calls: Call[]) {
 function renderPage(ui: ReactElement) {
   return render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <AuthProvider>{ui}</AuthProvider>
+      <AuthProvider>
+        <ToastProvider>{ui}</ToastProvider>
+      </AuthProvider>
     </MemoryRouter>,
   )
 }
@@ -153,9 +156,11 @@ describe('master data views', () => {
     expect(await screen.findByText('Acme Devices')).toBeTruthy()
     expect(screen.getByText('Print Co')).toBeTruthy()
     expect(screen.getByText('Speedy Couriers')).toBeTruthy()
-    expect(screen.getByText('MANUFACTURER')).toBeTruthy()
-    expect(screen.getByText('PRINT')).toBeTruthy()
-    expect(screen.getByText('COURIER')).toBeTruthy()
+    // getAllBy: each type name now also appears as an option in the Add
+    // vendor form's type select, which sits above the table.
+    expect(screen.getAllByText('MANUFACTURER').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('PRINT').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('COURIER').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('SPD')).toBeTruthy()
     // Two of the three rows have a null courierCode: rendered as a dash, never
     // the literal string "null".
@@ -292,28 +297,46 @@ describe('master data views', () => {
     expect(screen.getByText('Could not display these rows.')).toBeTruthy()
   })
 
-  it('has NO write controls anywhere and issues only GET reads across every tab', async () => {
+  it('carries only the two vendor writes and reads with GET everywhere', async () => {
+    // Revised alongside the vendor-create form (2026-08-11). Master Data was
+    // all-reads by design, but the missing vendor create broke the pipeline
+    // invisibly: batch compose requires exactly one ACTIVE PRINT vendor and
+    // dead-letters every batch until one exists, and no portal surface could
+    // create one. The registry now carries that ONE write control; everything
+    // else on every tab stays read-only, which is what this still asserts.
     const calls: Call[] = []
     stubAllReads(calls)
 
     renderPage(<MasterDataPage />)
 
-    const tabLabels = ['Vendor Registry', 'Courier Master', 'Bank Masters', 'Damage Reasons', 'Batching Config']
+    const tabLabels = [
+      'Vendor Registry',
+      'Vendor Actions',
+      'Courier Master',
+      'Bank Masters',
+      'Damage Reasons',
+      'Batching Config',
+    ]
+    // The TWO vendor writes Setup now owns, each on its own tab: create on the
+    // registry, suspend on Vendor Actions (moved off /dispatches). Every other
+    // control on every tab stays read-only, which is what the loop asserts.
+    const allowedWrites = ['Create vendor', 'Suspend']
     for (const label of tabLabels) {
       await userEvent.click(screen.getByRole('button', { name: label }))
       // Wait for that tab's data (or its error/empty state) to settle before
       // inspecting the button set, since a race would just find the previous
-      // tab's buttons (also none), silently passing for the wrong reason.
+      // tab's buttons, silently passing for the wrong reason.
       await screen.findAllByRole('button')
       const buttons = screen.getAllByRole('button')
       const buttonNames = buttons.map((b) => b.textContent ?? '')
-      // Every visible button must be a tab switch, never a write control.
       for (const name of buttonNames) {
+        if (allowedWrites.includes(name)) continue
         expect(tabLabels).toContain(name)
         expect(name).not.toMatch(WRITE_CONTROL_PATTERN)
       }
     }
 
+    // No button was CLICKED beyond tab switches, so the wire stays read-only.
     expect(calls.length).toBeGreaterThan(0)
     for (const call of calls) {
       const method = (call.init.method ?? 'GET').toUpperCase()

@@ -25,8 +25,10 @@ vi.mock('../../src/features/dashboards/TilesPage.js', () => ({
 vi.mock('../../src/features/fulfillment/FulfillmentPage.js', () => ({
   FulfillmentPage: () => <div>batches stub</div>,
 }))
-vi.mock('../../src/features/fulfillment/BatchDetailPage.js', () => ({
-  BatchDetailPage: () => <div>batch detail stub</div>,
+// /batches/:btchId renders the generate page now; the separate detail page is
+// deleted.
+vi.mock('../../src/features/fulfillment/generate/BatchGeneratePage.js', () => ({
+  BatchGeneratePage: () => <div>batch detail stub</div>,
 }))
 
 // Same fake-JWT approach as test/routes.test.tsx: the real /session/login

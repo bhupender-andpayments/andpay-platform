@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
+import { ToastProvider } from '../../src/ui/Toast.js'
 import { UploadsPage } from '../../src/features/uploads/UploadsPage.js'
 
 // Redesign step 4. Uploads was three TABS with "Bank Requests" selected by
@@ -19,10 +20,14 @@ afterEach(() => { cleanup() })
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      {/* ToastProvider as App.tsx composes it: the collateral store reports commit
+          outcomes through the toast channel, so the tree cannot mount without it. */}
       <AuthProvider>
-        <Routes>
-          <Route path="/uploads/*" element={<UploadsPage />} />
-        </Routes>
+        <ToastProvider>
+          <Routes>
+            <Route path="/uploads/*" element={<UploadsPage />} />
+          </Routes>
+        </ToastProvider>
       </AuthProvider>
     </MemoryRouter>,
   )
@@ -62,7 +67,9 @@ describe('Uploads index: three equal choices, none preselected', () => {
   // it describes those files instead of inventing headers.
   it('states the device inventory columns up front', () => {
     renderAt('/uploads')
-    expect(screen.getByText(/Device ID/)).toBeTruthy()
+    // 'Device ID' now appears on several cards (inventory, vendor return,
+    // activation results), which is correct: each names its own contract.
+    expect(screen.getAllByText(/Device ID/).length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText(/Sim No/)).toBeTruthy()
   })
 })
@@ -70,7 +77,12 @@ describe('Uploads index: three equal choices, none preselected', () => {
 describe('Uploads: each upload is its own linkable route', () => {
   it('opens the bank upload directly', async () => {
     renderAt('/uploads/bank')
-    expect(await screen.findByText(/bank request upload/i)).toBeTruthy()
+    // The bank route is ONE page ending at commit: drop zone plus the
+    // recent-batches panel saying where committed rows go. Generation lives
+    // with the batch, not here.
+    expect(await screen.findByLabelText(/bank request file/i)).toBeTruthy()
+    expect(screen.getByText(/recent batches/i)).toBeTruthy()
+    expect(screen.getByRole('link', { name: /all batches/i })).toBeTruthy()
   })
 
   it('opens the damage upload directly', async () => {

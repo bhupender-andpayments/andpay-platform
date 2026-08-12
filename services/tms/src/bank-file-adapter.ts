@@ -333,7 +333,18 @@ function normalizeDamageRow(
   const rawSticker = get('stickerCount')
   if (rawSoundbox !== '' || rawStandee !== '' || rawSticker !== '') {
     row.items = {
-      soundbox: parseBoolean(rawSoundbox),
+      // Y/N IS ACCEPTED HERE, and it has to be. The shared parseBoolean takes
+      // only true|yes|1; a bank request file survives shipping bare `Y` because
+      // ANNEXURE_B_PROFILE rewrites it before the mapping runs, and damage files
+      // deliberately have NO source profile, so `Y` reached parseBoolean raw and
+      // came back FALSE. That is the identical defect the profile was written to
+      // stop, with a worse outcome: a merchant reports a dead soundbox, the bank
+      // sends `soundbox = Y`, and the replacement is created asking for no
+      // soundbox at all. Normalized in the damage path's own normalizer rather
+      // than by widening parseBoolean, because that function is shared with the
+      // request path and its dialect belongs to the profile (see the note on
+      // Soundbox(Yes/No) in bank-source-profile.ts).
+      soundbox: /^y(es)?$/i.test(rawSoundbox.trim()) || parseBoolean(rawSoundbox),
       standeeCount: parseCount(rawStandee),
       stickerCount: parseCount(rawSticker),
     }

@@ -55,12 +55,22 @@ describe('ExceptionSurface: the landing page says what needs attention', () => {
     expect(await screen.findByText(/rejected bank rows/i)).toBeTruthy()
   })
 
-  // The whole point: a route straight to the work, not just a number.
-  it('links to the queue that holds the work', async () => {
+  // The whole point: a route straight to the work, not just a number. And
+  // "straight to" now means the TAB, not the page: all three cards used to point
+  // at a bare /queues, which always opened Quarantine, so the intake and status
+  // cards sent an operator somewhere other than where they said.
+  it('links to the queue TAB that holds the work, not just the queues page', async () => {
     stub({ quarantine: [QUARANTINE_ROW] })
     renderSurface()
     const link = await screen.findByRole('link', { name: /rejected bank rows/i })
-    expect(link.getAttribute('href')).toBe('/queues')
+    expect(link.getAttribute('href')).toBe('/queues/quarantine')
+  })
+
+  it('sends the intake card to the intake tab, not to quarantine', async () => {
+    stub({ intake: [QUARANTINE_ROW] })
+    renderSurface()
+    const link = await screen.findByRole('link', { name: /device intake exceptions/i })
+    expect(link.getAttribute('href')).toBe('/queues/intake')
   })
 
   it('says plainly when nothing needs attention', async () => {

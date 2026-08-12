@@ -110,9 +110,9 @@ function tokenizeCsv(text: string): string[][] {
   return rows.filter((r) => r.some((c) => c.trim() !== ''))
 }
 
-function readXlsxGrid(workbook: ExcelJS.Workbook): string[][] {
-  const ws = workbook.worksheets[0]
-  if (!ws || ws.rowCount === 0) return []
+/** One sheet to a grid of cell text, header row included. */
+function sheetGrid(ws: ExcelJS.Worksheet): string[][] {
+  if (ws.rowCount === 0) return []
   const headerRow = ws.getRow(1)
   const ncols = Math.max(headerRow.cellCount, headerRow.actualCellCount)
   const grid: string[][] = []
@@ -123,6 +123,50 @@ function readXlsxGrid(workbook: ExcelJS.Workbook): string[][] {
     grid.push(cells)
   }
   return grid
+}
+
+/**
+ * EVERY sheet, not just the first, with each sheet's header row dropped after the
+ * first so the result is one grid.
+ *
+ * This used to read `worksheets[0]` alone, and that silently discarded most of a
+ * returned file. Our own dispatch workbook has TWO sheets, `Soundbox` then `Standy`
+ * (package.ts dispatchXlsx), and `Standy` is the bigger one: in the sample file it
+ * is 340 rows against Soundbox's 116. `worksheets[0]` is Soundbox, so a vendor who
+ * filled in the Standy sheet, which is where most of the work is, had every one of
+ * those rows ignored. Nothing reported it: the rows were not quarantined, they were
+ * never read.
+ *
+ * Sheets are concatenated rather than requiring a chosen one, because the vendor
+ * returns the same two-sheet workbook we sent and a merchant needing both a soundbox
+ * and a standee legitimately appears on both. Duplicate (assignment, device) pairs
+ * are not a problem here: pairing is idempotent per unit
+ * (return-sheet.ts onceWithin on `${unitWire}|print_for`) and a device already paired
+ * quarantines as `unit_already_paired` rather than pairing twice.
+ *
+ * A later sheet is only appended when its HEADER ROW MATCHES the first sheet's. The
+ * two sheets we emit share one column list by construction (package.ts addSheet
+ * assigns the same DISPATCH_COLUMNS to both), but blindly dropping a differing
+ * header and appending the rows beneath it would read every value out of the wrong
+ * column, which is worse than ignoring the sheet.
+ */
+function readXlsxGrid(workbook: ExcelJS.Workbook): string[][] {
+  let header: string[] | null = null
+  const out: string[][] = []
+  for (const ws of workbook.worksheets) {
+    const grid = sheetGrid(ws)
+    if (grid.length === 0) continue
+    if (header === null) {
+      header = grid[0]!
+      out.push(...grid)
+      continue
+    }
+    const sameShape =
+      grid[0]!.length === header.length &&
+      grid[0]!.every((h, i) => h.trim().toLowerCase() === header![i]!.trim().toLowerCase())
+    if (sameShape) out.push(...grid.slice(1))
+  }
+  return out
 }
 
 export async function parseReturnWorkbook(

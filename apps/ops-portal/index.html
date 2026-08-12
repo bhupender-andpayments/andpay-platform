@@ -18,8 +18,16 @@
            X-Frame-Options: DENY
          The API edges now send both on every response (@andpay/edge
          applyApiSecurityHeaders); the DOCUMENT is served by the CDN, so its
-         header is a deploy-time obligation, not something this file can fix. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:*; img-src 'self' data:; base-uri 'none'; object-src 'none'" />
+         header is a deploy-time obligation, not something this file can fix.
+
+         frame-src carries blob: because the collateral proof pane shows an
+         in-memory PDF through an iframe whose src is a blob: URL the app itself
+         created. Without it, frame-src falls back to default-src 'self', Chrome
+         blocks the frame, and the proof renders as an empty grey box. blob:
+         frames are same-origin documents this page minted; script execution
+         stays governed by script-src 'self'. The production edge header must
+         carry the same directive or the proof pane goes grey again in prod. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:*; img-src 'self' data:; frame-src 'self' blob:; base-uri 'none'; object-src 'none'" />
     <title>AndPayments Ops</title>
   </head>
   <body>

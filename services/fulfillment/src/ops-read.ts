@@ -1,4 +1,5 @@
 import { fromUuid, toUuid } from '@andpay/ids'
+import { decodeBankQrPayload } from '@andpay/bank-qr'
 import type { FulfillmentDb } from './db.js'
 import type { Tx } from './internal.js'
 
@@ -462,10 +463,23 @@ export interface BatchArtifactRow {
   artifactType: string
   assetReference: string
   supersededAt: Date | null
+  /**
+   * The QR payload this artifact was composed WITH. Carried so the portal's
+   * batch-scoped generation preview can draw the same card the stored PDF holds
+   * without a second source of truth for the string.
+   *
+   * D104 note: the batch entry projection deliberately excludes qr/vpa, and
+   * that posture is unchanged. This is not the pool's value; it is the label
+   * the composed artifact already carries, and the SAME class-3 principal
+   * already receives it in full via GET /ops/batches/:id/dispatch-excel. What
+   * the default-exclude protects (address, contact, mobile) stays excluded.
+   */
+  labelQr: string
 }
 
 interface BatchArtifactDbRow {
   asgn_id: string
+  label_qr: string
   artifact_type: string
   asset_reference: string
   superseded_at: Date | null
@@ -500,7 +514,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
       ORDER BY bank_reference_code, branch_code, asgn_id
     `
     const artifacts = await tx.$queryRaw<BatchArtifactDbRow[]>`
-      SELECT asgn_id::text AS asgn_id, artifact_type, asset_reference, superseded_at
+      SELECT asgn_id::text AS asgn_id, artifact_type, asset_reference, superseded_at, label_qr
       FROM composed_artifact WHERE btch_id = ${btchUuid}::uuid
       ORDER BY artifact_type, asgn_id
     `
@@ -512,6 +526,15 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
         artifactType: a.artifact_type,
         assetReference: a.asset_reference,
         supersededAt: a.superseded_at,
+        // CORRECTED, exactly as buildDispatchPackage corrects it. The bank's
+        // export HTML-escapes the QR separator, so the stored string can read
+        // `ver=01&amp;mode=01`. Left raw, a scanner parses the second parameter
+        // as `amp;mode` and the real `mode` is lost, and the portal's card
+        // preview drew a DIFFERENT payload from the stored PDF it claims to
+        // mirror. @andpay/bank-qr is the single rule for this defect (CLAUDE.md:
+        // fulfillment CORRECTS at the artifact boundaries), and a QR about to be
+        // rendered onto a card is such a boundary.
+        labelQr: decodeBankQrPayload(a.label_qr),
       })),
     }
   })

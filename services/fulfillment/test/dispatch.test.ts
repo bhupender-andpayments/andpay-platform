@@ -74,8 +74,8 @@ async function seedBankConfig(tenantUuid: string, bankCode: string, branchCode =
 // batch id without caring whether an earlier helper already did.
 async function seedBatchRow(tenantUuid: string, programUuid: string, btchUuid: string): Promise<void> {
   await db.$executeRaw`
-    INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
-    VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BORN', 'LOT_SIZE', 1, now())
+    INSERT INTO batch (id, tenant_id, program_id, trigger_reason, unit_count, updated_at)
+    VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'LOT_SIZE', 1, now())
     ON CONFLICT (id) DO NOTHING
   `
 }

@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { DispatchHistoryPage } from '../operations/DispatchHistoryPage.js'
 import { StatusCorrectionForm } from '../operations/StatusCorrectionForm.js'
 import { TerminalOverrideForm } from '../destructive/TerminalOverrideForm.js'
-import { VendorSuspendButton } from '../destructive/VendorSuspendButton.js'
-import { PageHeader, InfoNote } from '../../ui/primitives.js'
+import { Link } from 'react-router-dom'
+import { PageHeader, InfoNote, Button } from '../../ui/primitives.js'
 import { useAuth } from '../../auth/AuthContext.js'
 import { IconShield } from '../../ui/icons.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
@@ -114,6 +114,14 @@ export function DispatchesPage() {
       <PageHeader
         title="Dispatches"
         description="Every dispatch and where it has reached. Correct a status or override a terminal state from the row it belongs to."
+        actions={
+          /* The batch feed for this page: FR-06's file mode, on the Uploads
+             card where every arriving file lives. Linked from here because
+             this is where its effect shows. */
+          <Link to="/uploads/statuses">
+            <Button variant="secondary">Upload courier statuses</Button>
+          </Link>
+        }
       />
 
       {/* Labelled landmarks. Both forms now share a page with the table they
@@ -141,22 +149,6 @@ export function DispatchesPage() {
 
       <DispatchHistoryPage onCorrectStatus={startCorrection} onOverrideTerminal={startOverride} />
 
-      {/* VENDOR SUSPEND IS PARKED HERE AND THIS IS NOT ITS HOME. Flagged rather
-          than quietly placed, because two ratified decisions leave it homeless
-          and neither should be overridden by a portal change:
-            - Redesign section 4 enumerates where each Operations verb goes
-              (batch trigger, status correction, recompose, hold and release)
-              and never mentions vendor suspend.
-            - Principle 1 says a write is reached from the page of the thing it
-              changes, which would be the vendor registry. But L9 defers the
-              whole FR-11 vendor admin console and names SUSPEND in the
-              deferral, and MasterDataPage says outright "Do not add a write
-              control to any tab".
-          So the object's own page is closed to it by ruling, and the IA has not
-          assigned it anywhere else. Deleting the Operations page without a
-          decision would have silently removed a working control, which is worse
-          than showing it in an imperfect place. It keeps its step-up gate
-          either way. Needs Bhupender's ruling; moving it later is one import. */}
       <Card>
         <CardHeader
           title="Shipments"
@@ -186,32 +178,13 @@ export function DispatchesPage() {
         )}
       </Card>
 
-      {/* VENDOR SUSPEND IS PARKED HERE AND THIS IS STILL NOT ITS HOME.
-          Left where it is on purpose rather than moved, because BOTH candidate
-          homes are closed by a ratified decision and a portal change is not
-          the place to overrule either:
-            - Principle 1 says a write is reached from the page of the thing it
-              changes, which is the vendor registry. But L9 defers the whole
-              FR-11 vendor admin console and names SUSPEND in that deferral,
-              and MasterDataPage says outright "Do not add a write control to
-              any tab".
-            - Redesign section 4 enumerates where every Operations verb goes
-              and never mentions this one.
-          Deleting the page would have silently removed a working, step-up
-          gated control; inventing a new destination would be inventing IA.
-          So it stays reachable and is now clearly SEPARATED and LABELLED, so
-          it reads as a vendor action that happens to live here rather than as
-          something you do to a dispatch. Bhupender's ruling; moving it is one
-          import. */}
-      <Card>
-        <CardHeader
-          title="Vendor actions"
-          subtitle="Not part of a dispatch. Parked here until the vendor admin console (L9) is undeferred."
-        />
-        <div className="p-5">
-          <VendorSuspendButton />
-        </div>
-      </Card>
+      {/* VENDOR SUSPEND HAS MOVED to Setup > Master Data > Vendor Registry
+          (2026-08-12). It was parked here with a comment admitting this was not
+          its home, because the vendor registry tab was documented read-only and
+          moving it would have overruled that. The registry now carries vendor
+          CREATE, so the reason to park it is gone: vendors are a Setup object
+          and every write on one belongs on the object's own page. This page is
+          dispatches only. */}
     </div>
   )
 }

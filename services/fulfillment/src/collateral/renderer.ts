@@ -1,6 +1,7 @@
 import QRCode from 'qrcode'
 import { PDFDocument, StandardFonts, rgb, degrees, type PDFFont, type PDFPage } from 'pdf-lib'
 import { decodeBankQrPayload } from '@andpay/bank-qr'
+import { GSCB_STANDEE, PT_PER_MM, fitFontMm, mmToPt } from '@andpay/collateral'
 
 // Phase 4 (BRD 5.3 FR-03): the PURE, in-house collateral renderer. Turns one
 // merchant artifact (soundbox / standee / sticker) into a print-ready VECTOR PDF
@@ -48,6 +49,24 @@ export interface CollateralInput {
   merchantLegalName?: string
   bankName: string
   bankCode: string
+  /**
+   * Printed beside the bank code on the plate path, as `<bank> - <branch>`, which is
+   * how the approved artwork sets it. Absent on the fallback layout, which draws the
+   * bank code alone as vertical text per BRD 5.3.
+   */
+  branchCode?: string | null
+  /**
+   * The bank's approved artwork: the whole fixed face of the card as ONE raster,
+   * with the four per-merchant regions erased. When present this is composited full
+   * bleed and only those four fields are drawn over it, which is the only way to
+   * reproduce the approved card (see @andpay/collateral for why).
+   *
+   * When absent the renderer falls back to the drawn vector layout below, so a bank
+   * with no plate yet still produces collateral.
+   */
+  plate?: { bytes: Uint8Array; contentType: string } | null
+  /** The bank disc that sits ON the QR. Only meaningful alongside a plate. */
+  disc?: { bytes: Uint8Array; contentType: string } | null
   // Lenient config off bank_composition_config; unknown-shaped, read best-effort.
   imageTemplate?: unknown
   brandingParams?: unknown
@@ -145,8 +164,129 @@ function drawCenteredClamped(
   page.drawText(t, { x: (page.getWidth() - w) / 2, y: opts.y, size: opts.size, font: opts.font, color: opts.color })
 }
 
+/**
+ * Composite the bank's approved artwork and draw only the four per-merchant fields.
+ *
+ * This is the path that produces what the bank signed off. The geometry is shared
+ * with the ops portal's proof renderer (@andpay/collateral) so the card an operator
+ * approves on screen is the card stored here, to the millimetre.
+ *
+ * Drawn, in order: plate full bleed, the QR, the disc over the QR's centre, then
+ * merchant name, UPI ID and `<bank> - <branch>`. Nothing else: the headline, the
+ * bank names including the Gujarati line, the acceptance marks, the QR frame, the
+ * ground and the wave are all inside the plate.
+ */
+async function renderOnPlate(input: CollateralInput, plate: { bytes: Uint8Array; contentType: string }): Promise<Uint8Array> {
+  const g = GSCB_STANDEE
+  const doc = await PDFDocument.create()
+  // Same fixed metadata as the drawn path: identical input must yield identical
+  // bytes, so the asset key can be content-addressed and a redelivery re-renders
+  // to the same object rather than a second one.
+  doc.setCreationDate(new Date(0))
+  doc.setModificationDate(new Date(0))
+  doc.setProducer('andpay-collateral')
+  doc.setCreator('andpay-collateral')
+
+  const W = mmToPt(g.trimMm.width)
+  const H = mmToPt(g.trimMm.height)
+  const page = doc.addPage([W, H])
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold)
+
+  // REFUSE a plate whose shape is not the trim's, rather than stretching it. A
+  // uniform fit would leave white down each card and a non-uniform one would make
+  // the QR a rectangle, which does not scan. Either way a whole print run is wasted,
+  // so this fails loudly at compose time instead.
+  const embedded = plate.contentType.toLowerCase().includes('png')
+    ? await doc.embedPng(plate.bytes)
+    : await doc.embedJpg(plate.bytes)
+  const plateAspect = embedded.width / embedded.height
+  const trimAspect = g.trimMm.width / g.trimMm.height
+  if (Math.abs(plateAspect - trimAspect) > 0.01) {
+    throw new PlateAspectError(
+      `The plate is ${embedded.width}x${embedded.height} (aspect ${plateAspect.toFixed(4)}) but the trim is ` +
+        `${g.trimMm.width}x${g.trimMm.height} mm (aspect ${trimAspect.toFixed(4)}). ` +
+        'A plate must be authored at the trim it prints at.',
+    )
+  }
+  page.drawImage(embedded, { x: 0, y: 0, width: W, height: H })
+
+  // margin: 0 because the geometry's QR rectangle is the MODULE area measured off the
+  // approved card, not a box with a quiet zone inside it; the plate already carries
+  // white surround out to the printed frame. Level H matches what the bank encoded,
+  // which is what tolerates the disc over the centre.
+  const qrPng = await QRCode.toBuffer(decodeBankQrPayload(input.qrValue), {
+    type: 'png',
+    margin: 0,
+    scale: 14,
+    errorCorrectionLevel: 'H',
+  })
+  const qrSide = mmToPt(g.qr.sizeMm)
+  const qrX = mmToPt(g.qr.xMm)
+  // The QR's y is measured to its TOP edge; pdf-lib's origin is the page foot.
+  const qrY = H - mmToPt(g.qr.yMm) - qrSide
+  page.drawImage(await doc.embedPng(qrPng), { x: qrX, y: qrY, width: qrSide, height: qrSide })
+
+  // Fixed artwork that sits ON the QR, so it is drawn after it. Its transparent
+  // surround lets the modules show right up to the printed ring.
+  if (input.disc && input.disc.bytes.length > 0) {
+    try {
+      const discImg = await doc.embedPng(input.disc.bytes)
+      const side = mmToPt(g.discDiameterMm)
+      page.drawImage(discImg, {
+        x: qrX + (qrSide - side) / 2,
+        y: qrY + (qrSide - side) / 2,
+        width: side,
+        height: side,
+      })
+    } catch {
+      // A missing or unreadable disc leaves a bare QR, which still scans. Losing the
+      // centre mark is not worth failing a batch over.
+    }
+  }
+
+  const fields: [typeof g.merchantName, string][] = [
+    [g.merchantName, input.merchantDisplayName],
+    [g.vpa, `UPI ID: ${input.vpa}`],
+    [g.bankCode, `${input.bankCode} - ${input.branchCode ?? ''}`.trim().replace(/-$/, '').trim()],
+  ]
+  for (const [spec, raw] of fields) {
+    const text = winAnsiSafe(raw)
+    const { fontMm } = fitFontMm(spec, text, (t, sizeMm) => bold.widthOfTextAtSize(t, mmToPt(sizeMm)) / PT_PER_MM)
+    const size = mmToPt(fontMm)
+    const w = bold.widthOfTextAtSize(text, size)
+    const anchor = mmToPt(spec.anchorMm)
+    page.drawText(text, {
+      x: spec.align === 'center' ? anchor - w / 2 : anchor - w,
+      y: mmToPt(g.trimMm.height - spec.baselineMm),
+      size,
+      font: bold,
+      color: hexToRgb(spec.colorHex),
+    })
+  }
+
+  return await doc.save()
+}
+
+/** A plate authored at the wrong aspect. Fails the compose rather than the press run. */
+export class PlateAspectError extends Error {
+  readonly kind = 'plate_aspect' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'PlateAspectError'
+  }
+}
+
 // Render ONE collateral artifact to a single-page PDF. Deterministic.
 export async function renderCollateralPdf(input: CollateralInput): Promise<Uint8Array> {
+  // The approved-artwork path when the bank has a plate; the drawn layout below
+  // otherwise, so a bank without one still gets collateral.
+  if (input.plate && input.plate.bytes.length > 0) {
+    return await renderOnPlate(input, input.plate)
+  }
+  return await renderDrawnLayout(input)
+}
+
+async function renderDrawnLayout(input: CollateralInput): Promise<Uint8Array> {
   const tpl = resolveTemplate(input)
   const doc = await PDFDocument.create()
   // Fixed metadata (epoch 0, no clock read) so identical input yields byte-

@@ -1,0 +1,20 @@
+{
+  "name": "@andpay/collateral",
+  "version": "0.0.0",
+  "description": "The bank-approved QR card geometry, measured once and shared by the renderer and the portal.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  }
+}

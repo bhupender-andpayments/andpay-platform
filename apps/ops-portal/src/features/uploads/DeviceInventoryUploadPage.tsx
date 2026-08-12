@@ -1,22 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   MAX_UPLOAD_BYTES,
   getVendors,
+  getDevices,
   commitDeviceInventory,
   deviceInventoryStructuralReasons,
   type VendorRow,
+  type UnitInventoryRow,
   type DeviceInventoryUploadResult,
   type DeviceInventoryStructuralReason,
 } from '../../api/endpoints.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Loader2 } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select } from '../../ui/primitives.js'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { ErrorNote, StatusPill } from '../../ui/primitives.js'
+import { ErrorNote, InfoNote, StatusPill } from '../../ui/primitives.js'
 import { FileDropZone } from '../../components/FileDropZone.js'
 import { PerRowErrors } from '../../components/PerRowErrors.js'
 
@@ -77,6 +80,113 @@ function structuralMessage(reason: DeviceInventoryStructuralReason): string {
   }
 }
 
+/**
+ * Where uploaded devices GO, shown before the drop zone.
+ *
+ * The same gap the bank page's "Recent batches" panel closes, and it was left
+ * open here: this page ended at a bare row count, so an operator had no way to
+ * tell whether stock they uploaded a minute ago was actually in the system, and
+ * no route onward to check. An upload surface that reports only on the file it
+ * just ate cannot answer "is my inventory there", which is the actual question.
+ *
+ * Deliberately reuses GET /ops/devices (the Inventory page's own read) rather
+ * than inventing an upload-history read: what matters is the resulting STOCK,
+ * not a log of files.
+ */
+function RecentInventory({ reloadToken }: { reloadToken: number }) {
+  const { client } = useAuth()
+  const [devices, setDevices] = useState<readonly UnitInventoryRow[] | null>(null)
+  const [total, setTotal] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void getDevices(client)
+      .then((rows) => {
+        if (cancelled) return
+        // Array.isArray before .length/.slice: an error envelope is a truthy
+        // object, and reading .slice off one throws during render.
+        if (!Array.isArray(rows)) {
+          setError('Could not read the device inventory.')
+          setDevices([])
+          return
+        }
+        setTotal(rows.length)
+        setDevices(rows.slice(0, 5))
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Could not load the device inventory.')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client, reloadToken])
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            {/* The title names WHAT IS ON SCREEN, which is at most five rows.
+                It read "Devices in stock (12)" over a list of five, so the
+                heading and the list contradicted each other and the count looked
+                like a bug in the list rather than a total. The full number still
+                belongs on the page, but as "5 of 12", where it explains the
+                All inventory button instead of fighting the rows.
+                "by Device ID", not "newest first": GET /ops/devices is
+                ORDER BY device_serial (fulfillment ops-read.ts), so this is the
+                lowest five serials, NOT the five most recently uploaded. Saying
+                newest would have put a second wrong label on the same panel. */}
+            <CardTitle className="text-base">Devices in stock</CardTitle>
+            <CardDescription className="mt-1">
+              {devices !== null && total > devices.length ? (
+                <>
+                  Showing {devices.length} of {total}, by Device ID. Open All inventory for the full list.
+                </>
+              ) : (
+                <>Uploaded devices land here as stock, ordered by Device ID.</>
+              )}{' '}
+              A print vendor return can only name a device that is already in stock.
+            </CardDescription>
+          </div>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/inventory">
+              All inventory
+              <ArrowRight aria-hidden="true" />
+            </Link>
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {error !== null ? (
+          <ErrorNote>{error}</ErrorNote>
+        ) : devices === null ? (
+          <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            Loading
+          </div>
+        ) : devices.length === 0 ? (
+          <div className="rounded-lg border border-dashed py-6 text-center text-sm text-muted-foreground">
+            No devices in stock yet. Upload the manufacturer&apos;s inventory sheet below.
+          </div>
+        ) : (
+          <ul className="divide-y rounded-lg border">
+            {devices.map((d) => (
+              <li key={d.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs">{d.deviceSerial ?? d.id}</span>
+                <StatusPill value={d.status} />
+                <span className="flex-none text-xs text-muted-foreground">
+                  {new Date(d.createdAt).toLocaleDateString()}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function DeviceInventoryUploadPage() {
   const { client } = useAuth()
   const [manufacturers, setManufacturers] = useState<VendorRow[]>([])
@@ -87,17 +197,24 @@ export function DeviceInventoryUploadPage() {
   const [error, setError] = useState<string | null>(null)
   const [structuralErrors, setStructuralErrors] = useState<DeviceInventoryStructuralReason[]>([])
   const [busy, setBusy] = useState(false)
+  // Bumped after a successful upload so the stock panel above re-reads and the
+  // devices just added actually appear. Without it the panel is a snapshot from
+  // page load, which is the most misleading moment to freeze it at.
+  const [reloadToken, setReloadToken] = useState(0)
+  const [vendorsLoaded, setVendorsLoaded] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     getVendors(client)
       .then((res) => {
         if (cancelled) return
-        setManufacturers(res.filter((r) => r.type === 'MANUFACTURER'))
+        setManufacturers(Array.isArray(res) ? res.filter((r) => r.type === 'MANUFACTURER') : [])
+        setVendorsLoaded(true)
       })
       .catch((err: unknown) => {
         if (cancelled) return
         setVendorsError(err instanceof Error ? err.message : 'Failed to load manufacturers.')
+        setVendorsLoaded(true)
       })
     return () => {
       cancelled = true
@@ -128,6 +245,7 @@ export function DeviceInventoryUploadPage() {
     try {
       const res = await commitDeviceInventory(client, file, manufacturerVndrId, newIdempotencyKey())
       setResult(res)
+      setReloadToken((n) => n + 1)
     } catch (err) {
       // A structural rejection is reported on its own, naming the offending
       // column. Anything else keeps the generic message. `err.message` is NOT
@@ -143,19 +261,58 @@ export function DeviceInventoryUploadPage() {
     }
   }
 
+  // Back to an empty form, KEEPING the manufacturer selection: the next sheet in
+  // a delivery almost always comes from the same manufacturer, and clearing it
+  // would re-disable the button for no reason the operator can see.
+  const reset = useCallback((): void => {
+    setFile(null)
+    setResult(null)
+    setError(null)
+    setStructuralErrors([])
+  }, [])
+
   const canSubmit = file !== null && manufacturerVndrId !== '' && !busy
+  const noManufacturers = vendorsLoaded && vendorsError === null && manufacturers.length === 0
+
+  // WHY the submit button is disabled, in the button's own words. It used to be
+  // an unexplained grey button: a file sits in the drop zone reading "ready to
+  // upload" while the only control that would move it does nothing, and the sole
+  // clue is a 12px "Required before the file can be submitted" line above it.
+  // That reads as a broken page, not as a form waiting on a field. Worse, when
+  // no MANUFACTURER vendor exists the select holds nothing but its placeholder,
+  // so the button can NEVER enable and the page gives no way to find that out.
+  const blockedReason: string | null = noManufacturers
+    ? 'No manufacturer vendor exists yet, so there is nothing to attribute this stock to.'
+    : file === null
+      ? 'Choose the inventory file to upload.'
+      : manufacturerVndrId === ''
+        ? 'Select which manufacturer sent this file, then upload.'
+        : null
 
   return (
-    <Card>
+    <div className="space-y-5">
+      <RecentInventory reloadToken={reloadToken} />
+      <Card>
       <CardHeader>
         <CardTitle>Device inventory upload</CardTitle>
         <CardDescription>
-          The file is parsed on the server. A missing column rejects the whole file; individual bad
-          rows are skipped and listed below.
+          Columns: {EXPECTED_COLUMNS}. The file is parsed on the server. A missing column rejects the whole file;
+          individual bad rows are skipped and listed below.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {vendorsError !== null && <ErrorNote>{vendorsError}</ErrorNote>}
+
+        {noManufacturers && (
+          <ErrorNote>
+            <strong>No manufacturer vendor exists.</strong> Device stock is recorded against the manufacturer that sent
+            it, so one has to exist before this file can be uploaded. Create a MANUFACTURER vendor in{' '}
+            <Link className="underline" to="/masterdata">
+              Master Data
+            </Link>
+            , then come back.
+          </ErrorNote>
+        )}
 
         <div className="space-y-2">
           <Label htmlFor="device-inventory-manufacturer">Manufacturer</Label>
@@ -211,21 +368,87 @@ export function DeviceInventoryUploadPage() {
         {/* shadcn's Button has no `loading` prop (the pre-spec primitive did):
             the spec's idiom is a spinning lucide icon inside a disabled button,
             which its base class already sizes via [&_svg] rules. */}
-        <Button
-          type="button"
-          className="self-start"
-          onClick={() => {
-            void handleSubmit()
-          }}
-          disabled={!canSubmit}
-        >
-          {busy && <Loader2 className="animate-spin" aria-hidden="true" />}
-          Upload device inventory file
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            onClick={() => {
+              void handleSubmit()
+            }}
+            disabled={!canSubmit || result !== null}
+          >
+            {busy && <Loader2 className="animate-spin" aria-hidden="true" />}
+            Upload device inventory file
+          </Button>
+          {/* The result badge reports the OUTCOME, matching the bank page: a
+              green tick only when devices actually entered stock. */}
+          {result !== null &&
+            (result.accepted > 0 ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
+                <Check className="size-3.5" aria-hidden="true" />
+                {result.accepted} added to stock
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                <AlertTriangle className="size-3.5" aria-hidden="true" />
+                Nothing added to stock
+              </span>
+            ))}
+          {/* The page was a DEAD END after one upload: the button stayed enabled
+              but re-submitting the same file was pointless, and there was no way
+              to load the next sheet without a browser reload. Real inventory
+              arrives as several files, so clearing back to an empty form is a
+              normal next action, not an edge case. */}
+          {result !== null && (
+            <Button type="button" variant="outline" onClick={reset}>
+              Upload another file
+            </Button>
+          )}
+        </div>
+        {blockedReason !== null && result === null && (
+          <p className="text-sm text-muted-foreground">{blockedReason}</p>
+        )}
 
         {result !== null && (
           <div className="space-y-3">
             <PerRowErrors result={{ accepted: result.accepted, flagged: result.flagged, invalid: result.invalid }} />
+            {result.accepted > 0 ? (
+              <InfoNote>
+                <strong>{result.accepted} device(s) are now in stock.</strong> They can be named on a print vendor
+                return sheet from here on.{' '}
+                <Link className="underline" to="/inventory">
+                  View all inventory
+                </Link>
+                .
+              </InfoNote>
+            ) : (
+              /* SHORT, and it ENDS IN THE ACTION. The previous copy was three
+                 lines of consequence ("a print vendor return naming these
+                 devices would still be rejected... the counts above say what
+                 happened to each row") and never named a reason or offered a way
+                 to find one, because the upload response carries only a FLAGGED
+                 COUNT, no per-row reason codes. So the honest move is to stop
+                 padding and hand over the one thing that does hold the reason.
+                 The button goes straight to the Intake exceptions TAB, which is
+                 only addressable now that the queue tabs are real URLs. */
+              <ErrorNote>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span>
+                    <strong>Rejected. Nothing was added to stock.</strong>{' '}
+                    {result.flagged > 0
+                      ? `All ${result.flagged} row(s) were held. The reason for each one is in Intake exceptions.`
+                      : 'See the counts above for what happened to each row.'}
+                  </span>
+                  {result.flagged > 0 && (
+                    <Button asChild variant="outline" size="sm">
+                      <Link to="/queues/intake">
+                        See the reason
+                        <ArrowRight aria-hidden="true" />
+                      </Link>
+                    </Button>
+                  )}
+                </div>
+              </ErrorNote>
+            )}
             {result.invalidRows.length > 0 && (
               <div className="overflow-x-auto rounded-lg border">
                 <Table>
@@ -255,6 +478,7 @@ export function DeviceInventoryUploadPage() {
           </div>
         )}
       </CardContent>
-    </Card>
+      </Card>
+    </div>
   )
 }

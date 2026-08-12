@@ -71,6 +71,10 @@ describe('ops-portal smoke', () => {
     // link, and the routed feature heading, not a brand-text literal.
     expect(await screen.findByRole('navigation', { name: /main/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /queues/i })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: /^queues$/i })).toBeTruthy()
+    // findBy, not getBy: the queue tab lives in the URL now, so bare /queues
+    // REDIRECTS to /queues/quarantine and the heading arrives a render later.
+    // Keeping the entry at bare /queues is deliberate, it proves the old path
+    // still resolves rather than 404ing.
+    expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 })

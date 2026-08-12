@@ -268,8 +268,19 @@ export async function commitBankFile(
 
       for (const row of parsed.rows) {
         if (hasEncodedSeparator(row.qrValue)) qrMalformed += 1
+        // Repeat VPA: seen earlier in THIS file or held from an earlier upload.
+        // Ruled 2026-08-11 (product, superseding the earlier flag-only
+        // posture): the row is QUARANTINED rather than accepted, so nothing
+        // repeats a VPA into the pool without a human look. The count keeps
+        // reporting so the operator's toast can say how many; the resolution
+        // path (ops:resolve-quarantine) re-ingests without this check, which is
+        // the reviewed-and-accepted outcome the additional-soundbox case needs.
+        let isRepeatVpa = false
         if (row.vpaValue !== '') {
-          if (seenVpa.has(row.vpaValue)) duplicateVpa += 1
+          if (seenVpa.has(row.vpaValue)) {
+            duplicateVpa += 1
+            isRepeatVpa = true
+          }
           seenVpa.add(row.vpaValue)
         }
         if (typeof row.mobile === 'string' && row.mobile !== '') {
@@ -282,7 +293,12 @@ export async function commitBankFile(
           next.add(row.vpaValue)
           seenMobile.set(row.mobile, next)
         }
-        const outcome = await ingestRequestRowWithinTx(tx, row, args.traceId)
+        const outcome = await ingestRequestRowWithinTx(
+          tx,
+          row,
+          args.traceId,
+          isRepeatVpa ? 'duplicate_vpa' : undefined,
+        )
         tally[outcome] += 1
       }
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the ingest.

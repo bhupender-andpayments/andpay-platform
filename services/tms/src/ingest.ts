@@ -66,6 +66,14 @@ export type RequestRowRejectReason =
   | 'invalid_branch_code_format'
   | 'invalid_standee_count'
   | 'invalid_sticker_count'
+  // NOT produced by requestRowRejectReason (which is pure and cannot see prior
+  // uploads): the COMMIT path passes it in when a row's VPA repeats one already
+  // held, in this file or an earlier one. Ruled 2026-08-11 (product): a repeat
+  // VPA blocks THE ROW, not the file, and lands in quarantine where
+  // ops:resolve-quarantine already lets an operator accept the legitimate
+  // additional-soundbox case after a look. That resolve path re-ingests without
+  // the override, which is exactly "reviewed and accepted".
+  | 'duplicate_vpa'
 
 // D11 RULED (Bhupender, 2026-08-07): GSCB is the ONLY tenant in scope, so its
 // dialect IS the platform's dialect and the D3 patterns are enforced right here,
@@ -150,12 +158,17 @@ export async function ingestRequestRowWithinTx(
   tx: Tx,
   row: BankRequestRow,
   traceId: string,
+  // A caller-established rejection the pure row rules cannot see (today only
+  // 'duplicate_vpa', which needs the commit loop's cross-file VPA sets). Takes
+  // effect only when the row is otherwise valid: a malformed row keeps its own
+  // more actionable reason.
+  overrideReject?: RequestRowRejectReason,
 ): Promise<'accepted' | 'duplicate' | 'quarantined'> {
   const correlationId = `${row.fileId}|${row.rowNo}`
 
   // S8 row-level validation (the SAME rules the preview surface runs): a
   // failure quarantines the row via the reject/report path.
-  const rejectReason = requestRowRejectReason(row)
+  const rejectReason = requestRowRejectReason(row) ?? overrideReject ?? null
   if (rejectReason) {
     let quarantined = false
     const won = await tx.$queryRaw<{ id: string }[]>`

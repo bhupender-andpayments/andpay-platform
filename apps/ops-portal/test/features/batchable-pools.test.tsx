@@ -81,19 +81,27 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     expect(await screen.findAllByRole('button', { name: /trigger/i })).toHaveLength(1)
   })
 
-  it('counts the records waiting in the pool', async () => {
+  // Redesign 2026-08-12: the row used to LEAD with the bank name as plain
+  // context. For a demo tenant with no real Bank Master entry that string IS
+  // the bare aggregator code ("3"), so the row opened with an unlabeled number
+  // that read as a broken count sitting above the real one. Bank identity is
+  // not the batching decision (BRD FR-033 is lot size and wait time), so it is
+  // gone from this row entirely; the two big stats below are what replaced it.
+  it('counts the records waiting in the pool, as a stat, not a bank label', async () => {
     stub([entry({ asgnId: 'asgn_a' }), entry({ asgnId: 'asgn_b' })])
-    render(withProviders(<BatchablePools />))
-    expect(await screen.findByText(/2 records/i)).toBeTruthy()
+    render(withProviders(<BatchablePools minLotSize={50} />))
+    expect(await screen.findByText('records pooled')).toBeTruthy()
+    expect(screen.getByText('2', { selector: 'p' })).toBeTruthy()
   })
 
-  it('shows how many aggregator banks the pool spans, as context', async () => {
+  it('never shows the aggregator bank code: it is not what decides when a batch forms', async () => {
     stub([
-      entry({ asgnId: 'asgn_a', bankReferenceCode: '3' }),
-      entry({ asgnId: 'asgn_b', bankReferenceCode: '18' }),
+      entry({ asgnId: 'asgn_a', bankReferenceCode: '3', bankDisplayName: '3' }),
+      entry({ asgnId: 'asgn_b', bankReferenceCode: '18', bankDisplayName: '3' }),
     ])
     render(withProviders(<BatchablePools />))
-    expect(await screen.findByText(/2 banks/i)).toBeTruthy()
+    await screen.findByText('records pooled')
+    expect(screen.queryByText(/\bbank\b/i)).toBeNull()
   })
 
   it('separates two genuinely different pools', async () => {
@@ -146,7 +154,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
   it('says the queue is empty rather than rendering a bare table', async () => {
     stub([])
     render(withProviders(<BatchablePools />))
-    expect(await screen.findByText(/nothing waiting/i)).toBeTruthy()
+    expect(await screen.findByText(/nothing is waiting/i)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /trigger/i })).toBeNull()
   })
 
@@ -210,7 +218,8 @@ describe('BatchablePools: telling the rest of the page that the pool changed', (
   it('counts in words that agree with the number, including at one', async () => {
     stub([entry()])
     render(withProviders(<BatchablePools />))
-    // One record, one bank: "1 records across 1 banks" was what it said.
-    expect(await screen.findByText(/1 record across 1 bank,/)).toBeTruthy()
+    // Singular at one, both stats: "1 records pooled" / "1 days queued" was
+    // what the old sentence-form row said.
+    expect(await screen.findByText('record pooled')).toBeTruthy()
   })
 })

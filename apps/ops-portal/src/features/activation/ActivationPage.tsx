@@ -3,6 +3,7 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { getReport, markActivated, type ReportCell, type ReportRow } from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { Link } from 'react-router-dom'
 import { PageHeader, Card, CardHeader, Button, ErrorNote, InfoNote, SkeletonRows, StatusPill } from '../../ui/primitives.js'
 import { fmtDateTime } from '../../ui/format.js'
 
@@ -180,6 +181,14 @@ export function ActivationPage() {
       <PageHeader
         title="Activation"
         description="Delivered, not-yet-activated soundboxes. Mark a device+SIM activated once the CWD confirms it out of band."
+        actions={
+          /* CWD returns its outcomes as a file in Phase 1 (BRD para 356); the
+             upload lives with the other arriving files and is linked from the
+             page its effect shows on. */
+          <Link to="/uploads/activation">
+            <Button variant="secondary">Upload CWD results</Button>
+          </Link>
+        }
       />
 
       {loadError !== null && <ErrorNote>{loadError}</ErrorNote>}

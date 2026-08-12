@@ -4,6 +4,7 @@ import { render, screen, within, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider, useAuth } from '../../src/auth/AuthContext.js'
+import { ToastProvider } from '../../src/ui/Toast.js'
 import { AppRoutes } from '../../src/routes.js'
 import { clearAccessToken } from '../../src/api/tokenStore.js'
 
@@ -92,7 +93,9 @@ async function renderAuthedShell(): Promise<void> {
   render(
     <MemoryRouter initialEntries={['/command-center']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
+        <ToastProvider>
         <AuthedAppRoutes onError={(e) => { throw e }} />
+        </ToastProvider>
       </AuthProvider>
     </MemoryRouter>,
   )

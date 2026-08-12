@@ -14,8 +14,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { ErrorNote, StatusPill } from '../../ui/primitives.js'
+import { ErrorNote, InfoNote, StatusPill } from '../../ui/primitives.js'
 import { FileDropZone } from '../../components/FileDropZone.js'
+import { Link } from 'react-router-dom'
 
 // Rewired to the D-K multipart contract (Phase 2 Task 4) and given preview
 // parity with the bank upload (Phase 7 Task 7, L11/FR08-3 decision item 11):
@@ -75,7 +76,32 @@ export function DamageUploadPage() {
   }
 
   const rows = preview?.rows ?? []
-  const columns = rows.length > 0 ? Object.keys(rows[0]!.row) : []
+  // `fileId` is a server-owned correlation value and `rowNo` already has its own
+  // column, so neither belongs in the derived set: they were pure noise pushing
+  // the columns an operator actually checks off the right edge.
+  const HIDDEN_PREVIEW_KEYS = new Set(['fileId', 'rowNo'])
+  const columns = rows.length > 0 ? Object.keys(rows[0]!.row).filter((c) => !HIDDEN_PREVIEW_KEYS.has(c)) : []
+
+  /**
+   * `items` is the optional {soundbox, standeeCount, stickerCount} group, and
+   * String()-ing it rendered the literal text "[object Object]" in the one
+   * column that decides what gets printed. Absent is meaningful rather than
+   * empty: the ingest clones the ORIGINAL dispatch's kit when the row supplies
+   * no item columns, so say that instead of leaving a blank cell.
+   */
+  function formatPreviewCell(key: string, value: unknown): string {
+    if (key === 'items') {
+      if (value === null || value === undefined) return 'same as the original'
+      const it = value as { soundbox?: boolean; standeeCount?: number; stickerCount?: number }
+      const parts: string[] = []
+      if (it.soundbox === true) parts.push('soundbox')
+      if ((it.standeeCount ?? 0) > 0) parts.push(`${it.standeeCount} standee`)
+      if ((it.stickerCount ?? 0) > 0) parts.push(`${it.stickerCount} sticker`)
+      return parts.length > 0 ? parts.join(', ') : 'nothing requested'
+    }
+    if (typeof value === 'boolean') return value ? 'Y' : 'N'
+    return String(value ?? '')
+  }
 
   return (
     <Card>
@@ -129,7 +155,7 @@ export function DamageUploadPage() {
                       <TableCell>{r.reasonCode !== undefined && <StatusPill value={r.reasonCode} />}</TableCell>
                       {columns.map((c) => (
                         <TableCell key={c}>
-                          {String((r.row as unknown as Record<string, unknown>)[c] ?? '')}
+                          {formatPreviewCell(c, (r.row as unknown as Record<string, unknown>)[c])}
                         </TableCell>
                       ))}
                     </TableRow>
@@ -151,7 +177,35 @@ export function DamageUploadPage() {
           </div>
         )}
 
-        {commitResult !== null && <PerRowErrors result={commitResult} />}
+        {commitResult !== null && (
+          <div className="space-y-3">
+            <PerRowErrors result={commitResult} />
+            {/* WHERE THE REPLACEMENTS WENT. The commit response is counts only,
+                so this page used to end at a number: an operator had no way to
+                know a replacement is a real new Dispatch ID that pools and
+                batches exactly like a bank request. Mirrors the bank page's
+                closing note, and says the two facts specific to a replacement
+                (non-billable, linked to the dispatch it replaces). */}
+            {commitResult.replaced > 0 ? (
+              <InfoNote>
+                <strong>
+                  {commitResult.replaced} replacement dispatch(es) created, non-billable.
+                </strong>{' '}
+                Each one is linked to the dispatch it replaces and now pools toward the next batch, alongside normal
+                requests. Trigger and generate from{' '}
+                <Link className="underline" to="/batches">
+                  Batches
+                </Link>
+                , where they carry a Replacement label naming their original.
+              </InfoNote>
+            ) : (
+              <ErrorNote>
+                <strong>No replacement was created.</strong> Nothing in this file matched an existing dispatch, so no
+                batch will change. The counts above say what happened to each row.
+              </ErrorNote>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   )

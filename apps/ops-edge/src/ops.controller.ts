@@ -14,8 +14,10 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common'
+import { createHash } from 'node:crypto'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { authorize, requireStepUp, OPS_STEP_UP_CATALOG } from '@andpay/authz'
+import { toUuid } from '@andpay/ids'
 import {
   correctStatus,
   overrideTerminal,
@@ -33,8 +35,12 @@ import {
   setBankLogo,
   upsertBatchingConfig,
   ingestOpsDeviceInventory,
+  parseReturnWorkbook,
+  ingestReturnSheetOps,
   type IntakeSheet,
   type OpsDeviceInventoryResult,
+  type OpsReturnResult,
+  type ReturnSheetParseResult,
 } from '@andpay/fulfillment-service'
 import {
   previewBankFile,
@@ -450,6 +456,89 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
+  }
+
+  // BRD FR-05 para 322: the print vendor's filled return sheet, uploaded by the
+  // AndPayments team (Phase 1: the vendor emails it). Two-phase like the bank
+  // upload: preview parses and dry-runs the vendor resolution, writing nothing
+  // and taking no Idempotency-Key; commit gates on ops:upload-return-file and
+  // ingests through ingestReturnSheetOps, which resolves the vendor
+  // SERVER-SIDE from Batch.printVndr (M7/S16: never the request body). fileId
+  // is a CONTENT HASH, matching the vendor route, so an ops upload and the
+  // vendor's own upload of the same file dedup against each other.
+  @Post('uploads/return/preview')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async previewReturnUpload(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+  ): Promise<ReturnSheetParseResult & { resolvedVendor: string | null; resolutionError: string | null }> {
+    // Guard-only like the other previews: authenticated class-3, no D2
+    // authorize and no 6e, because nothing is written.
+    void req
+    if (!file) throw new BadRequestException('missing file')
+    const parsed = await parseReturnWorkbook(new Uint8Array(file.buffer), file.originalname ?? '')
+    if (parsed.structuralErrors.length > 0 || parsed.validRows.length === 0) {
+      return { ...parsed, resolvedVendor: null, resolutionError: null }
+    }
+    // Dry vendor resolution so the operator learns about a mixed or unbound
+    // batch BEFORE committing, from the same query the commit will run.
+    const asgnUuids: string[] = []
+    for (const row of parsed.validRows) {
+      try {
+        asgnUuids.push(toUuid(row.asgnId))
+      } catch {
+        // Malformed ids quarantine per row at commit; not a preview failure.
+      }
+    }
+    const vendors =
+      asgnUuids.length === 0
+        ? []
+        : await this.deps.fulfillmentDb.$queryRaw<{ print_vndr: string | null; display_name: string | null }[]>`
+            SELECT DISTINCT b.print_vndr::text AS print_vndr, v.display_name
+            FROM pending_pool_entry p
+            JOIN batch b ON b.id = p.batch
+            LEFT JOIN vndr v ON v.id = b.print_vndr
+            WHERE p.asgn_id = ANY(${asgnUuids}::uuid[])
+          `
+    if (vendors.length === 0) {
+      return { ...parsed, resolvedVendor: null, resolutionError: 'No row names a Dispatch ID from a formed batch.' }
+    }
+    if (vendors.length > 1) {
+      return {
+        ...parsed,
+        resolvedVendor: null,
+        resolutionError: 'Rows span batches bound to different print vendors; upload one vendor\u2019s sheet at a time.',
+      }
+    }
+    if (vendors[0]!.print_vndr === null) {
+      return {
+        ...parsed,
+        resolvedVendor: null,
+        resolutionError: 'The covered batch has no print vendor recorded, so the sheet cannot be attributed.',
+      }
+    }
+    return { ...parsed, resolvedVendor: vendors[0]!.display_name ?? 'print vendor', resolutionError: null }
+  }
+
+  @Post('uploads/return/commit')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async commitReturnUpload(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<OpsReturnResult & { invalidRows: unknown[] }> {
+    const g = await this.gate(req, 'ops:upload-return-file', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+    const parsed = await parseReturnWorkbook(new Uint8Array(file.buffer), file.originalname ?? '')
+    if (parsed.structuralErrors.length > 0) {
+      throw new BadRequestException(parsed.structuralErrors.map((e) => e.message).join(' '))
+    }
+    const fileId = createHash('sha256').update(file.buffer).digest('hex')
+    const result = await ingestReturnSheetOps(this.deps.fulfillmentDb, { fileId, rows: parsed.validRows })
+    void g
+    return { ...result, invalidRows: parsed.invalidRows }
   }
 
   // Phase 5 Task 1 (D-G, FR-01a): the ops device-inventory upload, the ops

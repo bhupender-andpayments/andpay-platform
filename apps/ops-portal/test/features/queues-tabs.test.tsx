@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { QueuesPage } from '../../src/features/queues/QueuesPage.js'
 import { QuarantineTab } from '../../src/features/queues/QuarantineTab.js'
@@ -25,10 +25,20 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
+// The active tab is a ROUTE PARAM now, so the page must be mounted under a
+// matching route: rendered bare it redirects to the canonical first tab and, in
+// a router with no routes, nothing renders.
 function wrap(ui: React.ReactNode) {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <AuthProvider>{ui}</AuthProvider>
+    <MemoryRouter
+      initialEntries={['/queues/quarantine']}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <AuthProvider>
+        <Routes>
+          <Route path="/queues/:tab" element={ui} />
+        </Routes>
+      </AuthProvider>
     </MemoryRouter>,
   )
 }

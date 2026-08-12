@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
+import { VendorSuspendButton } from '../destructive/VendorSuspendButton.js'
 import { VendorRegistryPage } from './VendorRegistryPage.js'
 import { CourierMasterPage } from './CourierMasterPage.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
@@ -22,10 +23,15 @@ import { fmtDate, fmtNumber, shortId } from '../../ui/format.js'
 // admin console (create/edit/suspend/activate/deactivate/set) is deferred
 // (ratified L9) and is NOT built here. Do not add a write control to any tab.
 
-type TabKey = 'vendors' | 'couriers' | 'bank-masters' | 'damage-reasons' | 'batching-config'
+type TabKey = 'vendors' | 'vendor-actions' | 'couriers' | 'bank-masters' | 'damage-reasons' | 'batching-config'
 
 const TABS: ReadonlyArray<{ key: TabKey; label: string }> = [
   { key: 'vendors', label: 'Vendor Registry' },
+  // Vendor WRITES, moved off the Dispatches page (2026-08-12): suspending a
+  // vendor has nothing to do with a dispatch, and living there made a
+  // shipment-tracking screen read as a vendor console. Its own tab rather than
+  // sharing the registry's, because the control brings its own vendor list.
+  { key: 'vendor-actions', label: 'Vendor Actions' },
   { key: 'couriers', label: 'Courier Master' },
   { key: 'bank-masters', label: 'Bank Masters' },
   { key: 'damage-reasons', label: 'Damage Reasons' },
@@ -45,6 +51,7 @@ export function MasterDataPage() {
         <InfoNote>Read-only view. Admin console for edits is deferred.</InfoNote>
       </div>
       {tab === 'vendors' && <VendorRegistryPage />}
+      {tab === 'vendor-actions' && <VendorSuspendButton />}
       {tab === 'couriers' && <CourierMasterPage />}
       {tab === 'bank-masters' && <BankMastersView />}
       {tab === 'damage-reasons' && <DamageReasonsView />}

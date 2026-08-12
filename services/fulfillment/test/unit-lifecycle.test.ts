@@ -139,6 +139,20 @@ describe('the cross-context consumers (C4: TMS cannot write fulfillment)', () =>
     return { payload: { asgnId, activatedAt: '2026-08-07T00:00:00.000Z' }, dedupKey } as never
   }
 
+  /**
+   * The replacement-raised fact names TWO assignments, and the projection must
+   * write off the right one. This helper keeps them DISTINCT on purpose: the
+   * old tests passed one id as both, so a projection that wrote off the new
+   * replacement instead of the original device looked identical to a correct
+   * one and the real defect stayed green.
+   */
+  function replacementEnvelope(args: { asgnId: string; replacedAsgnId: string; dedupKey: string }): never {
+    return {
+      payload: { asgnId: args.asgnId, replacedAsgnId: args.replacedAsgnId },
+      dedupKey: args.dedupKey,
+    } as never
+  }
+
   it('an activation fact takes the device live', async () => {
     const asgnWire = newId('asgn')
     const { unitUuid } = await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(asgnWire) })
@@ -155,19 +169,59 @@ describe('the cross-context consumers (C4: TMS cannot write fulfillment)', () =>
     expect((await projectActivationToUnits(db, envelope(asgnWire, key))).advanced).toBe(0)
   })
 
-  it('a replacement-raised fact writes the device off as DAMAGED', async () => {
-    const asgnWire = newId('asgn')
-    const { unitUuid } = await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(asgnWire) })
-    const res = await projectReplacementToUnits(db, envelope(asgnWire, `${asgnWire}|replace`))
+  // The ORIGINAL's device is the broken one. The replacement assignment is
+  // minted microseconds earlier and owns no unit at all, so writing it off is a
+  // no-op that leaves the real device live.
+  it('a replacement-raised fact writes off the ORIGINAL device, not the replacement', async () => {
+    const originalWire = newId('asgn')
+    const replacementWire = newId('asgn')
+    const { unitUuid } = await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(originalWire) })
+    const res = await projectReplacementToUnits(
+      db,
+      replacementEnvelope({
+        asgnId: replacementWire,
+        replacedAsgnId: originalWire,
+        dedupKey: `${replacementWire}|replace`,
+      }),
+    )
     expect(res.advanced).toBe(1)
     expect(await statusOf(unitUuid)).toBe('DAMAGED')
   })
 
+  // The regression stated directly: a device belonging to the REPLACEMENT id
+  // must not be touched, or the projection is writing off the wrong kit.
+  it('leaves a device attached to the replacement assignment alone', async () => {
+    const originalWire = newId('asgn')
+    const replacementWire = newId('asgn')
+    await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(originalWire) })
+    const { unitUuid: replacementUnit } = await seedUnit({
+      status: 'IN_STOCK',
+      asgnUuid: toUuid(replacementWire),
+    })
+    await projectReplacementToUnits(
+      db,
+      replacementEnvelope({
+        asgnId: replacementWire,
+        replacedAsgnId: originalWire,
+        dedupKey: `${replacementWire}|replace`,
+      }),
+    )
+    expect(await statusOf(replacementUnit)).toBe('IN_STOCK')
+  })
+
   it('a damaged device stays damaged even if an activation fact arrives after', async () => {
-    const asgnWire = newId('asgn')
-    const { unitUuid } = await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(asgnWire) })
-    await projectReplacementToUnits(db, envelope(asgnWire, `${asgnWire}|replace`))
-    const late = await projectActivationToUnits(db, envelope(asgnWire, `${asgnWire}|activate`))
+    const originalWire = newId('asgn')
+    const replacementWire = newId('asgn')
+    const { unitUuid } = await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(originalWire) })
+    await projectReplacementToUnits(
+      db,
+      replacementEnvelope({
+        asgnId: replacementWire,
+        replacedAsgnId: originalWire,
+        dedupKey: `${replacementWire}|replace`,
+      }),
+    )
+    const late = await projectActivationToUnits(db, envelope(originalWire, `${originalWire}|activate`))
     expect(late.advanced).toBe(0)
     expect(await statusOf(unitUuid)).toBe('DAMAGED')
   })

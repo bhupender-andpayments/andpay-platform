@@ -137,6 +137,106 @@ export async function ingestReturnSheet(
   )
   if (!decision.allowed) return emptyResult('unauthorized')
 
+  return ingestReturnSheetBody(db, sheet)
+}
+
+/**
+ * The OPS-INITIATED return ingest. BRD FR-05 para 322: "In Phase 1, return file
+ * would be sent via email and uploaded into system by AndPayments team." The
+ * vendor emails the filled sheet; an operator uploads it here.
+ *
+ * NO CLAIM PARAMETER, deliberately. The caller is the ops edge, whose gate()
+ * has already run the D2 authorize on 'ops:upload-return-file' and co-committed
+ * the 6e, exactly the posture of ingestOpsDeviceInventory. Taking a claim and
+ * re-running the vendor-scoped authorize here would deny every class-3 human by
+ * construction, which is what kept this path blocked.
+ *
+ * THE VENDOR IS RESOLVED SERVER-SIDE, never accepted from the request (M7,
+ * S16, 105c): the rows' Dispatch IDs name pool entries, pool entries name their
+ * batch, and Batch.printVndr records which print vendor that batch was
+ * dispatched to. The sheet then proceeds under that vendor's identity for
+ * everything the vendor path records (intake_exception.vndr_id, the
+ * {vendor}|{file_id} idempotency key), so an ops upload and the vendor's own
+ * upload of the same file are the SAME ingest, deduped against each other.
+ *
+ * Resolution refusals are whole-file, before any transaction:
+ *   no_resolvable_dispatch  no row's Dispatch ID matches a batched pool entry
+ *   mixed_vendors           rows span batches bound to different print vendors
+ *   batch_has_no_vendor     a covered batch has no printVndr recorded, and
+ *                           guessing would pair devices under the wrong vendor
+ */
+export type OpsReturnRejection = 'schema_invalid' | 'no_resolvable_dispatch' | 'mixed_vendors' | 'batch_has_no_vendor'
+
+export interface OpsReturnResult extends Omit<ReturnResult, 'rejected'> {
+  rejected?: OpsReturnRejection
+  /** The print vendor the sheet was ingested under, once resolution succeeds. */
+  vndrId?: string
+}
+
+export async function ingestReturnSheetOps(
+  db: FulfillmentDb,
+  args: { fileId: string; rows: ReturnRow[] },
+): Promise<OpsReturnResult> {
+  // Same whole-file schema gate as the vendor path, and FIRST: resolution below
+  // trusts row shapes.
+  if (
+    !Array.isArray(args.rows) ||
+    args.rows.length === 0 ||
+    args.rows.some((row) => row === null || typeof row !== 'object' || !isStructurallyValid(row))
+  ) {
+    return { ...emptyResult('schema_invalid'), rejected: 'schema_invalid' }
+  }
+
+  // Resolve the vendor from the rows' batches. Malformed asgn ids are skipped
+  // here rather than failing the file; the body quarantines them row-by-row as
+  // invalid_asgn_id exactly as the vendor path would.
+  const asgnUuids: string[] = []
+  for (const row of args.rows) {
+    try {
+      asgnUuids.push(toUuid(row.asgnId))
+    } catch (err) {
+      if (!(err instanceof InvalidIdError)) throw err
+    }
+  }
+  const vendors =
+    asgnUuids.length === 0
+      ? []
+      : await db.$queryRaw<{ print_vndr: string | null }[]>`
+          SELECT DISTINCT b.print_vndr::text AS print_vndr
+          FROM pending_pool_entry p JOIN batch b ON b.id = p.batch
+          WHERE p.asgn_id = ANY(${asgnUuids}::uuid[])
+        `
+  if (vendors.length === 0) {
+    return { ...emptyResult('schema_invalid'), rejected: 'no_resolvable_dispatch' }
+  }
+  if (vendors.length > 1) {
+    return { ...emptyResult('schema_invalid'), rejected: 'mixed_vendors' }
+  }
+  if (vendors[0]!.print_vndr === null) {
+    return { ...emptyResult('schema_invalid'), rejected: 'batch_has_no_vendor' }
+  }
+
+  const vndrId = fromUuid('vndr', vendors[0]!.print_vndr)
+  const { rejected, ...result } = await ingestReturnSheetBody(db, {
+    fileId: args.fileId,
+    vndrId,
+    // Recorded for call-shape parity; the body never reads it (only STEP A's
+    // vendor authorize did, and that step is the edge gate on this path).
+    workQueue: 'ops-upload',
+    rows: args.rows,
+  })
+  // The body can only reject as schema_invalid (this function already gated the
+  // schema, so in practice never), and TypeScript cannot see that narrowing.
+  return { ...result, ...(rejected !== undefined ? { rejected: 'schema_invalid' as const } : {}), vndrId }
+}
+
+/**
+ * STEPS B and C, shared verbatim by the vendor path (after its own-vendor
+ * authorize) and the ops path (after the edge gate plus vendor resolution).
+ * Everything from here down is claim-independent: it acts on sheet.vndrId,
+ * which each caller has established by its own rule.
+ */
+async function ingestReturnSheetBody(db: FulfillmentDb, sheet: ReturnSheet): Promise<ReturnResult> {
   // STEP B: whole-file schema validation BEFORE any transaction opens. One
   // structurally invalid row rejects the WHOLE file: no pairing, no
   // intake_exception rows, no partial credit.

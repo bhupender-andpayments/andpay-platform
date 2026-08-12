@@ -27,11 +27,16 @@ export interface UploadResultBreakdown {
   invalid?: number
   duplicate?: number
   qrMalformed?: number
-  // `duplicateVpa` (bank commit only, D-2) is also NOT an outcome count: those
-  // rows ingested normally. It reports how many carried a VPA already seen, in
-  // this file or an earlier upload. Deliberately a REVIEW FLAG and never a
-  // rejection, because a repeat VPA is usually an additional soundbox request
-  // for a merchant we already have, and blocking it would stall a real order.
+  // `duplicateVpa` (bank commit only, D-2) reports how many rows carried a VPA
+  // already seen, in this file or an earlier upload.
+  //
+  // These rows are QUARANTINED (ruled 2026-08-11, superseding the earlier
+  // flag-only posture). This paragraph used to read "accepted, not held", and
+  // kept saying it for a while after the server started holding them, which is
+  // the worst possible failure for a results panel: an operator who re-uploaded
+  // a file saw a red "nothing was committed" toast and a panel underneath
+  // telling them the rows went through. Those rows are ALREADY COUNTED in
+  // `quarantined` above; this only names the reason.
   duplicateVpa?: number
   // `duplicateMobile` is a DIFFERENT signal from duplicateVpa and gets its own
   // notice: a repeat VPA is one merchant returning, a repeat mobile on another
@@ -66,7 +71,10 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
             {result.quarantined > 0 && (
               <>
                 {' '}
-                <Link to="/queues" className="text-sm font-medium text-primary underline hover:text-primary/80">
+                {/* Deep-linked to the TAB that holds these rows. A bare /queues
+                    landed on whichever tab the page defaulted to, which for an
+                    intake-exception link was the wrong one. */}
+                <Link to="/queues/quarantine" className="text-sm font-medium text-primary underline hover:text-primary/80">
                   view in quarantine queue
                 </Link>
               </>
@@ -82,7 +90,7 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
             {result.flagged > 0 && (
               <>
                 {' '}
-                <Link to="/queues" className="text-sm font-medium text-primary underline hover:text-primary/80">
+                <Link to="/queues/intake" className="text-sm font-medium text-primary underline hover:text-primary/80">
                   view in intake exceptions
                 </Link>
               </>
@@ -112,11 +120,15 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
         </p>
       )}
       {result.duplicateVpa !== undefined && result.duplicateVpa > 0 && (
-        <p className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
-          <span className="font-semibold">{`${result.duplicateVpa} of them`}</span>
-          {' repeat a VPA already seen, in this file or an earlier upload. They were '}
-          <span className="font-semibold">accepted, not held</span>
-          {': a repeat usually means an additional soundbox for a merchant we already have. Worth a look if you were not expecting one.'}
+        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span className="font-semibold">{`${result.duplicateVpa} row(s)`}</span>
+          {' repeat a UPI ID already in the system, from this file or an earlier upload. They were '}
+          <span className="font-semibold">held in quarantine, not committed</span>
+          {', so a repeat cannot reach a print run unreviewed. A repeat is often a genuine additional soundbox for a merchant we already have: '}
+          <Link to="/queues/quarantine" className="font-medium text-primary underline hover:text-primary/80">
+            open Queues
+          </Link>
+          {' to accept or reject each one.'}
         </p>
       )}
       {result.duplicateMobile !== undefined && result.duplicateMobile > 0 && (

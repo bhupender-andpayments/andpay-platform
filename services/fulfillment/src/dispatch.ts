@@ -21,6 +21,19 @@ function artifactTypesFor(e: { soundbox: boolean; standee_count: number; sticker
 
 // The per-type key into imageTemplates JSONB (SOUNDBOX/STANDEE/STICKER) from the
 // artifact type (SOUNDBOX_IMG/...). Reads the per-type sub-object leniently.
+/**
+ * A stored-asset reference out of the (unshaped) per-type template blob.
+ *
+ * Tolerant on purpose, like everything else that reads imageTemplates: a blob
+ * missing the key, or holding a non-string, means "no artwork configured", which
+ * is a supported state rather than an error.
+ */
+function readRef(template: unknown, key: 'plateRef' | 'discRef'): string | null {
+  if (template === null || typeof template !== 'object' || !(key in template)) return null
+  const v = (template as Record<string, unknown>)[key]
+  return typeof v === 'string' && v.trim() !== '' ? v : null
+}
+
 function templateFor(imageTemplates: unknown, artifactType: ArtifactType): unknown {
   const key = artifactType.replace('_IMG', '')
   if (imageTemplates !== null && typeof imageTemplates === 'object' && key in imageTemplates) {
@@ -144,20 +157,35 @@ async function preRenderArtifacts(
   const cfgFor = (bankCode: string, branchCode: string | null): BankConfigRow | null =>
     selectBankConfig(byKey, bankCode, branchCode)
 
-  const logoCache = new Map<string, { bytes: Uint8Array; contentType: string } | null>()
-  async function logoFor(ref: string | null): Promise<{ bytes: Uint8Array; contentType: string } | null> {
-    if (ref === null) return null
-    if (logoCache.has(ref)) return logoCache.get(ref) ?? null
+  // ONE cache for every stored asset a compose needs: the bank logo, and the
+  // approved-artwork background and its QR-centre mark. A 340-row batch resolves
+  // the same handful of references over and over, and each one is a storage round
+  // trip; the background alone is close to a megabyte.
+  const assetCache = new Map<string, { bytes: Uint8Array; contentType: string } | null>()
+  async function assetFor(ref: string | null | undefined): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+    if (ref === null || ref === undefined) return null
+    if (assetCache.has(ref)) return assetCache.get(ref) ?? null
     const rec = await assetStore.getByReference(ref)
     const val = rec === null ? null : { bytes: rec.bytes, contentType: rec.meta.contentType }
-    logoCache.set(ref, val)
+    assetCache.set(ref, val)
     return val
   }
 
   for (const e of entries) {
     const cfg = cfgFor(e.bank_reference_code, e.branch_code)
-    const logo = await logoFor(cfg?.logo_master_ref ?? null)
+    const logo = await assetFor(cfg?.logo_master_ref ?? null)
     for (const artifactType of artifactTypesFor(e)) {
+      // BRD 5.3 FR-03 names "template background" and "bank header strip (per
+      // bank)" as CONFIGURABLE, so the approved artwork is referenced from the
+      // bank's own config row rather than shipped inside this service. Both
+      // references ride in the existing unshaped imageTemplates JSONB, which
+      // needed no migration to carry them.
+      //
+      // Absent references are the normal case for a bank whose artwork has not
+      // been approved yet: renderCollateralPdf falls back to its drawn layout.
+      const template = templateFor(cfg?.image_templates, artifactType)
+      const plate = await assetFor(readRef(template, 'plateRef'))
+      const disc = await assetFor(readRef(template, 'discRef'))
       const pdfBytes = await renderCollateralPdf({
         artifactType,
         qrValue: e.qr_value,
@@ -166,9 +194,12 @@ async function preRenderArtifacts(
         merchantLegalName: e.merchant_legal_name,
         bankName: e.bank_display_name,
         bankCode: e.bank_reference_code,
-        imageTemplate: templateFor(cfg?.image_templates, artifactType),
+        branchCode: e.branch_code,
+        imageTemplate: template,
         brandingParams: cfg?.branding_params,
         logo,
+        plate,
+        disc,
       })
       const assetKey = `artifact/${p.btchId}/${e.asgn_id}/${artifactType}`
       const put = await assetStore.put(assetKey, pdfBytes, {

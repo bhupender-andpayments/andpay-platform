@@ -284,7 +284,7 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
   // BRD 5.1b asks for exactly this ("detect duplicates ... and flag for review")
   // and pairs it with the additional-soundbox rule in one breath, which is the
   // clue that the two cannot be separated by an automatic rule.
-  it('D-2: flags a VPA repeated INSIDE one file, without blocking either row', async () => {
+  it('D-2 (revised 2026-08-11): a VPA repeated INSIDE one file quarantines THE REPEAT, never the first', async () => {
     const clientKey = randomUUID()
     const csv = toCsv(REQUEST_HEADERS, [
       requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'same@gscb' }),
@@ -293,13 +293,17 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     ])
     const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-dup1' })
 
-    // The flag is a NOTICE, not a gate: all three rows still ingest, so an
-    // additional-soundbox order is never stalled waiting for someone to look.
-    expect(r.accepted).toBe(3)
-    expect(r.quarantined).toBe(0)
+    // Ruled 2026-08-11 (product, superseding the flag-only posture): the repeat
+    // row is BLOCKED into quarantine for a human look; the rest of the file is
+    // untouched. resolve-quarantine re-ingests it on acceptance, which is how
+    // the legitimate additional-soundbox case proceeds.
+    expect(r.accepted).toBe(2)
+    expect(r.quarantined).toBe(1)
     // The FIRST sighting is not a repeat; only the second is.
     expect(r.duplicateVpa).toBe(1)
-    expect(await count('pending_row')).toBe(3)
+    expect(await count('pending_row')).toBe(2)
+    const reasons = await db.$queryRaw<{ reason_code: string }[]>`SELECT reason_code FROM quarantine_row`
+    expect(reasons.map((q) => q.reason_code)).toEqual(['duplicate_vpa'])
   })
 
   // "in same upload or RECENT UPLOADS" (BRD 5.1b). A merchant who was ordered
@@ -321,7 +325,9 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
       filename: 'b.csv', clientKey: second, actorId: randomUUID(), traceId: 't-dup2b',
     })
 
-    expect(r.accepted).toBe(2)
+    // The repeat from the earlier upload quarantines; the fresh row ingests.
+    expect(r.accepted).toBe(1)
+    expect(r.quarantined).toBe(1)
     expect(r.duplicateVpa).toBe(1)
   })
 
@@ -375,6 +381,9 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     const r = await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-mob2' })
 
     expect(r.duplicateVpa).toBe(1)
+    // The repeat quarantines (revised D-2), and its mobile is NOT also counted:
+    // one benign situation, one flag.
+    expect(r.quarantined).toBe(1)
     expect(r.duplicateMobile).toBe(0)
   })
 

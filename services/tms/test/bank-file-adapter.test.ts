@@ -219,4 +219,22 @@ describe('parseBankDamageFile (phase 2 task 1, D-C core)', () => {
     expect(result.rows[0]).toMatchObject({ items: { soundbox: false, standeeCount: 0, stickerCount: 4 } })
     expect(result.rows[0]).not.toHaveProperty('deliveryStatus')
   })
+
+  // The bank ships single letters. A request file survives that because
+  // ANNEXURE_B_PROFILE rewrites Y/N before the mapping; damage files have NO
+  // profile, so `Y` went to the shared parseBoolean (true|yes|1 only) and came
+  // back FALSE. The cost is specific and bad: a merchant reports a dead
+  // soundbox, the bank sends soundbox = Y, and the replacement asks for no
+  // soundbox. Both dialects must land on true.
+  it('accepts the bank Y/N dialect for soundbox, not just true/yes/1', async () => {
+    const yRow = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', 'Y', '0', '0', '']
+    const yesRow = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', 'yes', '0', '0', '']
+    const nRow = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', 'N', '1', '0', '']
+    const y = await parseBankDamageFile(toCsv(DAMAGE_HEADERS, [yRow]), 'damage.csv', 'f')
+    const yes = await parseBankDamageFile(toCsv(DAMAGE_HEADERS, [yesRow]), 'damage.csv', 'f')
+    const n = await parseBankDamageFile(toCsv(DAMAGE_HEADERS, [nRow]), 'damage.csv', 'f')
+    expect(y.rows[0]?.items?.soundbox).toBe(true)
+    expect(yes.rows[0]?.items?.soundbox).toBe(true)
+    expect(n.rows[0]?.items?.soundbox).toBe(false)
+  })
 })

@@ -1,4 +1,4 @@
-import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
+import { Navigate, Outlet, Route, Routes, useParams } from 'react-router-dom'
 import { useAuth } from './auth/AuthContext.js'
 import { LoginPage } from './auth/LoginPage.js'
 import { RequireAuth } from './components/RequireAuth.js'
@@ -13,7 +13,7 @@ import { InventoryPage } from './features/inventory/InventoryPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
 import { MerchantsPage } from './features/merchants/MerchantsPage.js'
 import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
-import { BatchDetailPage } from './features/fulfillment/BatchDetailPage.js'
+import { BatchGeneratePage } from './features/fulfillment/generate/BatchGeneratePage.js'
 
 // Router-agnostic route tree (no <BrowserRouter> here) so tests can wrap it
 // in a <MemoryRouter> with a chosen initialEntries, per Task 9's test plan.
@@ -42,6 +42,14 @@ function Shell() {
   )
 }
 
+// /batches/:btchId/generate is now the batch page itself. Kept as a redirect
+// rather than deleted, because that URL is in browser history and in links
+// already handed out, and a 404 on a working link is worse than a hop.
+function RedirectToBatch() {
+  const { btchId } = useParams<{ btchId: string }>()
+  return <Navigate to={`/batches/${btchId ?? ''}`} replace />
+}
+
 export function AppRoutes() {
   return (
     <Routes>
@@ -54,7 +62,19 @@ export function AppRoutes() {
               the breadcrumb reading "Ops Console" on a batch detail page. */}
           <Route path="/command-center" element={<TilesPage />} />
           <Route path="/batches" element={<FulfillmentPage />} />
-          <Route path="/batches/:btchId" element={<BatchDetailPage />} />
+          {/* ONE BATCH PAGE (2026-08-12). There were two, and they were the same
+              page twice: a "detail" page whose whole purpose was a Summary tile
+              plus per-type PDF download buttons, and a "generate" page that
+              previews the cards, renders the print run and hands over the Excel.
+              An operator opening a batch landed on the weaker of the two and had
+              to press Generate to reach the one that does the work, so the batch
+              id was clickable to a dead end. The detail page is deleted; the
+              batch's own URL now renders generation, with the Summary folded in
+              so nothing it reported was lost. */}
+          <Route path="/batches/:btchId" element={<BatchGeneratePage />} />
+          {/* The old generate URL keeps working: it is in browser history and in
+              links already handed out. `replace` so Back does not bounce. */}
+          <Route path="/batches/:btchId/generate" element={<RedirectToBatch />} />
           <Route path="/activation" element={<ActivationPage />} />
           {/* Redesign step 7: the entity the object-first nav was missing. */}
           <Route path="/merchants" element={<MerchantsPage />} />
@@ -69,7 +89,11 @@ export function AppRoutes() {
               want of a read. GET /ops/devices exists now, so the condition
               that kept it out is gone. */}
           <Route path="/inventory" element={<InventoryPage />} />
+          {/* Each queue tab is its own URL, so a link can send an operator to
+              the queue it is actually about. Bare /queues still resolves: the
+              page redirects it to the first tab. */}
           <Route path="/queues" element={<QueuesPage />} />
+          <Route path="/queues/:tab" element={<QueuesPage />} />
           <Route path="/reports" element={<ReportPage />} />
           <Route path="/masterdata" element={<MasterDataPage />} />
 

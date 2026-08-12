@@ -76,6 +76,16 @@ const OPS_PERMISSIONS = [
   // exception, T6). No list permission is needed (no new list route is added
   // by this task).
   'ops:mark-activated',
+  // The ops upload of the print vendor's RETURN sheet, resolving the
+  // escalation in docs/escalations/ops_return_upload.md as its option A. The
+  // corpus grant is the dispatch BRD itself, FR-05 para 322: "In Phase 1,
+  // return file would be sent via email and uploaded into system by
+  // AndPayments team." Same tier and same posture as
+  // ops:upload-device-inventory directly above in spirit: the ops analog of a
+  // vendor-channel file ingest. The VENDOR the sheet is ingested under is
+  // resolved server-side from Batch.printVndr (never the request body, M7 /
+  // S16 / 105c); see ingestReturnSheetOps in return-sheet.ts.
+  'ops:upload-return-file',
 ]
 
 // Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role permission differentiation.

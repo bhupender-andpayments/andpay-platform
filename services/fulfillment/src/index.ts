@@ -74,7 +74,10 @@ export {
   type ReturnRow,
   type ReturnSheet,
   type ReturnResult,
+  type OpsReturnRejection,
+  type OpsReturnResult,
   ingestReturnSheet,
+  ingestReturnSheetOps,
 } from './return-sheet.js'
 export {
   advanceShipmentStatus,

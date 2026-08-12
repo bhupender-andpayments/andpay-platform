@@ -4,7 +4,8 @@ import { render, screen, cleanup, waitFor, within, fireEvent } from '@testing-li
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
-import { BankUploadPage } from '../../src/features/uploads/BankUploadPage.js'
+import { ToastProvider } from '../../src/ui/Toast.js'
+import { BankIngestPage } from '../../src/features/uploads/BankIngestPage.js'
 import { DamageUploadPage } from '../../src/features/uploads/DamageUploadPage.js'
 import { DeviceInventoryUploadPage } from '../../src/features/uploads/DeviceInventoryUploadPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
@@ -178,10 +179,15 @@ function makeOversizedFile(name = 'huge.csv'): File {
   return new File([new Uint8Array(6 * 1024 * 1024)], name, { type: 'text/csv' })
 }
 
+// ToastProvider is here for the same reason App.tsx has it: the collateral store
+// reports what a commit did through the toast channel, so a tree without it cannot
+// mount. Mirrors App's composition rather than inventing a test-only arrangement.
 function renderWithProviders(ui: ReactElement) {
   return render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <AuthProvider>{ui}</AuthProvider>
+      <AuthProvider>
+        <ToastProvider>{ui}</ToastProvider>
+      </AuthProvider>
     </MemoryRouter>,
   )
 }
@@ -214,21 +220,22 @@ describe('uploads', () => {
           commitCallCount += 1
           return jsonResponse({ accepted: 1, quarantined: 1, duplicate: 0, fileId: 'file-1' })
         }
+        // The recent-batches panel reads on mount; an empty list is a real state.
+        if (url.includes('/ops/batches')) return jsonResponse([])
         return jsonResponse({})
       }),
     )
 
-    renderWithProviders(<BankUploadPage />)
+    renderWithProviders(<BankIngestPage />)
 
     const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
     await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'bank.csv'))
 
-    // The preview per-row results render in a table before any commit. Real
-    // per-row data (BMR-1/BMR-2), not decorative rows.
-    expect(await screen.findByText('BMR-1')).toBeTruthy()
-    expect(screen.getByText('BMR-2')).toBeTruthy()
+    // ONE page: the per-row verdicts render right under the drop zone, no
+    // wizard step between the file and its consequences. The layout is
+    // resolved server-side, so no column naming is asked of the operator.
+    expect(await screen.findByText('Acme Store')).toBeTruthy()
     expect(screen.getByText('Missing Contact Name')).toBeTruthy()
-    expect(screen.getByText(/2 row\(s\) previewed/i)).toBeTruthy()
 
     const previewCall = calls.find((c) => c.url.includes('/ops/uploads/bank/preview'))
     expect(previewCall).toBeTruthy()
@@ -239,7 +246,8 @@ describe('uploads', () => {
     expect(previewText).toBe('irrelevant, the server parses this')
 
     // Commit: a fresh Idempotency-Key, the SAME file, and the counts render.
-    await userEvent.click(screen.getByRole('button', { name: /commit bank request file/i }))
+    // Only the VALID rows are offered for commit, and the button says how many.
+    await userEvent.click(screen.getByRole('button', { name: /commit 1 row\(s\)/i }))
     const acceptedDd = (await screen.findByText('Accepted')).nextElementSibling as HTMLElement
     expect(acceptedDd.textContent).toBe('1')
 
@@ -254,20 +262,28 @@ describe('uploads', () => {
     expect(commitCall.init.body).toBeInstanceOf(FormData)
     const commitText = await readFormFileText(commitCall.init.body as FormData)
     expect(commitText).toBe('irrelevant, the server parses this')
+
+    // The page ends by saying where the rows went, not by offering a next step.
+    expect(screen.getByText(/pool toward a batch/i)).toBeTruthy()
   })
 
   it('bank upload: a file over 5 MiB is rejected client-side and never posted', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse(BANK_PREVIEW_RESULT))
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/ops/batches')) return jsonResponse([])
+      return jsonResponse(BANK_PREVIEW_RESULT)
+    })
     vi.stubGlobal('fetch', fetchMock)
 
-    renderWithProviders(<BankUploadPage />)
+    renderWithProviders(<BankIngestPage />)
 
     const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
     await userEvent.upload(input, makeOversizedFile())
 
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toMatch(/5 MiB/i)
-    expect(fetchMock).not.toHaveBeenCalled()
+    // The recent-batches read fires on mount; what must NOT fire is any upload.
+    const uploadCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/ops/uploads'))
+    expect(uploadCalls).toEqual([])
   })
 
   it('bank upload: a structural parse failure surfaces the whole-file errors and renders no table', async () => {
@@ -281,17 +297,19 @@ describe('uploads', () => {
             structuralErrors: [{ code: 'missing_required_column', message: 'missing required column: mobile' }],
           })
         }
+        if (url.includes('/ops/batches')) return jsonResponse([])
         return jsonResponse({})
       }),
     )
 
-    renderWithProviders(<BankUploadPage />)
+    renderWithProviders(<BankIngestPage />)
 
     const input = screen.getByLabelText(/bank request file/i) as HTMLInputElement
     await userEvent.upload(input, makeFile('bad file', 'bank.csv'))
 
     expect(await screen.findByText(/missing required column: mobile/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /commit bank request file/i })).toBeNull()
+    // An unreadable file must not offer a commit.
+    expect(screen.queryByRole('button', { name: /commit/i })).toBeNull()
   })
 
   it('damage upload: picking a file POSTs it multipart to preview (no Idempotency-Key, writes nothing) and renders the real per-row projected outcome, then Commit POSTs with a fresh Idempotency-Key and shows the counts', async () => {
@@ -356,6 +374,11 @@ describe('uploads', () => {
       vi.fn(async (url: string, init: RequestInit) => {
         calls.push({ url, init })
         if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
+        // The page now opens with a "Devices in stock" panel (GET /ops/devices),
+        // so this read has to be answered with a LIST. Left to the catch-all it
+        // returned an object, the panel said so in its own alert, and every
+        // findByRole('alert') here matched two elements.
+        if (url.includes('/ops/devices')) return jsonResponse([])
         if (url.includes('/ops/uploads/device-inventory')) return jsonResponse(DEVICE_INVENTORY_RESULT)
         return jsonResponse({})
       }),
@@ -407,6 +430,7 @@ describe('uploads', () => {
   it('device inventory upload: a file over 5 MiB is rejected client-side and never posted', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
+      if (url.includes('/ops/devices')) return jsonResponse([])
       return jsonResponse(DEVICE_INVENTORY_RESULT)
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -433,6 +457,11 @@ describe('uploads', () => {
       'fetch',
       vi.fn(async (url: string) => {
         if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
+        // The page now opens with a "Devices in stock" panel (GET /ops/devices),
+        // so this read has to be answered with a LIST. Left to the catch-all it
+        // returned an object, the panel said so in its own alert, and every
+        // findByRole('alert') here matched two elements.
+        if (url.includes('/ops/devices')) return jsonResponse([])
         if (url.includes('/ops/uploads/device-inventory')) return jsonResponse(body, status)
         return jsonResponse({})
       }),
@@ -484,6 +513,11 @@ describe('uploads', () => {
       'fetch',
       vi.fn(async (url: string) => {
         if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
+        // The page now opens with a "Devices in stock" panel (GET /ops/devices),
+        // so this read has to be answered with a LIST. Left to the catch-all it
+        // returned an object, the panel said so in its own alert, and every
+        // findByRole('alert') here matched two elements.
+        if (url.includes('/ops/devices')) return jsonResponse([])
         return jsonResponse(DEVICE_INVENTORY_RESULT)
       }),
     )
@@ -518,6 +552,11 @@ describe('uploads', () => {
       'fetch',
       vi.fn(async (url: string) => {
         if (url.includes('/ops/vendors')) return jsonResponse(MANUFACTURERS)
+        // The page now opens with a "Devices in stock" panel (GET /ops/devices),
+        // so this read has to be answered with a LIST. Left to the catch-all it
+        // returned an object, the panel said so in its own alert, and every
+        // findByRole('alert') here matched two elements.
+        if (url.includes('/ops/devices')) return jsonResponse([])
         return jsonResponse(DEVICE_INVENTORY_RESULT)
       }),
     )

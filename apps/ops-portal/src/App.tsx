@@ -1,5 +1,6 @@
 import { BrowserRouter } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext.js'
+import { ToastProvider } from './ui/Toast.js'
 import { AppRoutes } from './routes.js'
 
 // The real app shell (Phase 7 task 3): AuthProvider wraps a real
@@ -13,9 +14,14 @@ import { AppRoutes } from './routes.js'
 export function App() {
   return (
     <AuthProvider>
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AppRoutes />
-      </BrowserRouter>
+      {/* Outside the router so a toast survives the navigation that caused it:
+          committing on one step and landing on the next must not swallow the
+          message about what the commit did. */}
+      <ToastProvider>
+        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <AppRoutes />
+        </BrowserRouter>
+      </ToastProvider>
     </AuthProvider>
   )
 }

@@ -58,20 +58,41 @@ describe('PerRowErrors: the malformed-QR notice (D-8)', () => {
   })
 })
 
-// D-2, the repeat-VPA review flag. Same shape as the notice above and for the
-// same reason: nothing failed, so it must not read as a failure. The wording
-// carries the reason a repeat is usually FINE (an additional soundbox for an
-// existing merchant), because an operator who reads "duplicate" as "problem"
-// will start holding legitimate orders.
+// D-2, the repeat-VPA notice. This notice ASSERTED THE OPPOSITE of the server's
+// behaviour for a while, and these tests held it in place: the 2026-08-11 ruling
+// made a repeat VPA QUARANTINE rather than commit, tms/ops.ts started passing
+// 'duplicate_vpa' to the quarantine writer, and this paragraph went on saying
+// "accepted, not held" with a green test guarding it.
+//
+// The failure that surfaced it: re-upload a committed bank file, every row
+// repeats, so accepted is 0. The operator got a red "Nothing was committed"
+// toast and, right underneath, this notice telling them the rows were accepted.
+//
+// So the assertions now pin the ruling itself. The wording still carries WHY a
+// repeat is often legitimate (an additional soundbox for an existing merchant),
+// because that is what makes Queues a decision and not a dead end, but it must
+// never again claim the rows went through.
 describe('PerRowErrors: the repeat-VPA notice (D-2)', () => {
   afterEach(() => {
     cleanup()
   })
 
-  it('reports the count and says the rows were accepted, not held', () => {
-    renderResult({ accepted: 3, quarantined: 0, duplicate: 0, duplicateVpa: 1 })
-    expect(screen.getByText('1 of them')).toBeTruthy()
-    expect(screen.getByText(/accepted, not held/i)).toBeTruthy()
+  it('reports the count and says the rows were HELD, not committed', () => {
+    renderResult({ accepted: 3, quarantined: 1, duplicate: 0, duplicateVpa: 1 })
+    expect(screen.getByText('1 row(s)')).toBeTruthy()
+    expect(screen.getByText(/held in quarantine, not committed/i)).toBeTruthy()
+  })
+
+  // The regression itself, stated as a test: no phrasing of this notice may tell
+  // an operator a repeat was accepted.
+  it('never says the repeats were accepted', () => {
+    const { container } = renderResult({ accepted: 0, quarantined: 3, duplicate: 0, duplicateVpa: 3 })
+    expect(container.textContent).not.toMatch(/accepted, not held/i)
+  })
+
+  it('routes the operator to Queues, where the row can actually be accepted', () => {
+    renderResult({ accepted: 0, quarantined: 1, duplicate: 0, duplicateVpa: 1 })
+    expect(screen.getByRole('link', { name: /open queues/i })).toBeTruthy()
   })
 
   it('renders nothing when no VPA repeated', () => {
@@ -81,9 +102,9 @@ describe('PerRowErrors: the repeat-VPA notice (D-2)', () => {
 
   // Both notices can be true of one file, and neither should swallow the other.
   it('renders alongside the malformed-QR notice', () => {
-    renderResult({ accepted: 3, quarantined: 0, duplicate: 0, qrMalformed: 2, duplicateVpa: 1 })
+    renderResult({ accepted: 3, quarantined: 1, duplicate: 0, qrMalformed: 2, duplicateVpa: 1 })
     expect(screen.getByText(/malformed QR separator/i)).toBeTruthy()
-    expect(screen.getByText(/accepted, not held/i)).toBeTruthy()
+    expect(screen.getByText(/held in quarantine, not committed/i)).toBeTruthy()
   })
 })
 

@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { FulfillmentPage } from '../../src/features/fulfillment/FulfillmentPage.js'
-import { BatchDetailPage } from '../../src/features/fulfillment/BatchDetailPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
 // P2-2/3/4: the object-spine screens over the P2-1 reads. The confirmed
@@ -75,21 +74,6 @@ function renderFulfillment() {
   )
 }
 
-function renderBatchDetail(btchId: string) {
-  return render(
-    <MemoryRouter
-      initialEntries={[`/batches/${btchId}`]}
-      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-    >
-      <AuthProvider>
-        <Routes>
-          <Route path="/batches/:btchId" element={<BatchDetailPage />} />
-        </Routes>
-      </AuthProvider>
-    </MemoryRouter>,
-  )
-}
-
 beforeEach(() => {
   clearAccessToken()
   setAccessToken('tok-1')
@@ -141,66 +125,89 @@ describe('FulfillmentPage', () => {
   })
 })
 
-describe('BatchDetailPage', () => {
-  it('shows the summary, the records, and only the downloads that exist', async () => {
-    stubFetch(() =>
-      jsonResponse({
-        batch: BATCH_ROW,
-        entries: [
-          {
-            asgnId: 'asgn_1',
-            // Display and legal names deliberately DIFFER: they are separate
-            // columns, and identical values would make a name assertion
-            // ambiguous about which column it proved.
-            merchantDisplayName: 'BRILLIANT PERFUME',
-            merchantLegalName: 'BRILLIANT PERFUME PVT LTD',
-            bankReferenceCode: '1568',
-            bankDisplayName: 'GSC BANK',
-            branchCode: '30',
-            soundbox: true,
-            standeeCount: 1,
-            stickerCount: 2,
-            poolStatus: 'BATCHED',
-            dispatchState: null,
-            shipToSuperseded: false,
-          },
-        ],
-        artifacts: [{ asgnId: 'asgn_1', artifactType: 'STANDEE_IMG', assetReference: 'ref-1', supersededAt: null }],
-      }),
-    )
-    renderBatchDetail('btch_abc')
+// The BatchDetailPage suite is GONE with the page it covered (2026-08-12).
+// That page was a Summary tile plus per-type PDF download buttons, and
+// /batches/:btchId now renders BatchGeneratePage instead: one batch page, the
+// one that actually previews cards, renders the print run and hands over the
+// Excel. Its three Summary facts moved into the generate page's header, and the
+// per-type PDF downloads were deliberately dropped (they were bare QRs with no
+// card design, and they sat below the Excel where the final output belongs).
+// BRD FR-08. A damage replacement is a normal pooled record in every respect
+// that matters to batching (same pool, same trigger, same collateral), which is
+// correct but leaves the records table unable to say WHY a merchant appears
+// twice. The parent linkage already existed server-side on
+// assignment.replacement_of and GET /ops/damage-cases already exposed it; the
+// portal simply never asked.
+describe('FulfillmentPage: damage replacements name the dispatch they replace', () => {
+  const DAMAGE_CASE = {
+    asgnId: 'asgn_pool1', // the same asgnId POOL_ROW carries
+    replacementOf: 'asgn_originaldispatchid0001',
+    merchantDisplayName: 'BRILLIANT PERFUME',
+    bankReferenceCode: '1568',
+    branchCode: '30',
+    damageReason: 'battery issue',
+    bankRemarks: 'will not hold charge',
+    caseStatus: 'Open',
+    billable: false,
+    demandState: 'pooled-for-fulfillment',
+    createdAt: '2026-08-12T00:00:00.000Z',
+    updatedAt: '2026-08-12T00:00:00.000Z',
+  }
+
+  function stubWithDamage(cases: unknown) {
+    return stubFetch((url) => {
+      if (url.includes('/ops/damage-cases')) return jsonResponse(cases)
+      if (url.includes('/ops/batches')) return jsonResponse([])
+      if (url.includes('/ops/pool')) return jsonResponse([POOL_ROW])
+      return jsonResponse([])
+    })
+  }
+
+  it('labels a replacement row and names its parent dispatch and reason', async () => {
+    stubWithDamage([DAMAGE_CASE])
+    renderFulfillment()
     expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
-    expect(screen.getByText('42')).toBeTruthy()
-    // The batch HAS a standee artifact, so that download is offered...
-    expect(screen.getByRole('button', { name: /Standee PDF/ })).toBeTruthy()
-    // ...and the two types it does NOT have are not offered at all.
-    expect(screen.queryByRole('button', { name: /Sticker PDF/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Soundbox PDF/ })).toBeNull()
-    expect(screen.getByRole('button', { name: /Dispatch sheet/ })).toBeTruthy()
+    expect(await screen.findByText(/replacement/i)).toBeTruthy()
+    expect(screen.getByText(/battery issue/)).toBeTruthy()
+    expect(screen.getByText(/non-billable/)).toBeTruthy()
   })
 
-  it('shows a no-such-batch empty state on a 404 rather than a generic error', async () => {
-    stubFetch(() => jsonResponse({ message: 'batch not found' }, 404))
-    renderBatchDetail('btch_missing')
-    expect(await screen.findByText('No such batch')).toBeTruthy()
+  it('leaves an ordinary pooled row completely undecorated', async () => {
+    stubWithDamage([])
+    renderFulfillment()
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(screen.queryByText(/replacement/i)).toBeNull()
   })
 
-  it('offers no collateral downloads when the batch has composed none', async () => {
-    stubFetch(() => jsonResponse({ batch: BATCH_ROW, entries: [], artifacts: [] }))
-    renderBatchDetail('btch_abc')
-    expect(await screen.findByText(/No collateral has been composed/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /PDF/ })).toBeNull()
+  // The decoration must never be able to cost the table. A case row that names
+  // no parent, or a non-array body, has to degrade to the plain merchant name.
+  it('renders the plain name when the damage read is malformed', async () => {
+    stubWithDamage({ code: 'boom' })
+    renderFulfillment()
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(screen.queryByText(/replacement/i)).toBeNull()
+  })
+
+  it('renders the plain name when a case names no parent', async () => {
+    stubWithDamage([{ ...DAMAGE_CASE, replacementOf: undefined }])
+    renderFulfillment()
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(screen.queryByText(/replacement/i)).toBeNull()
   })
 })
 
 describe('FulfillmentPage navigation', () => {
-  it('a batch id in the list links to that batch detail route', async () => {
+  // The row's ONE control. The batch id used to be a button to the same place,
+  // so a row carried two controls leading to one destination, and the id landed
+  // on the weaker of the two batch pages that then existed.
+  it('offers a single explicit control into the batch, not a clickable id', async () => {
     stubFetch((url) => jsonResponse(url.includes('/ops/batches') ? [BATCH_ROW] : [POOL_ROW]))
     renderFulfillment()
     await screen.findByText('BRILLIANT PERFUME')
-    // Two tables on screen now (pool and batches), so the batch link is found
-    // directly rather than by assuming there is only one table.
-    expect(await screen.findByRole('button', { name: 'btch_abc' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: /generate collateral/i })).toBeTruthy()
+    // The id is still ON the row, as text to read and copy, just not a control.
+    expect(screen.getByText('btch_abc')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'btch_abc' })).toBeNull()
   })
 })
 
@@ -228,7 +235,7 @@ describe('Batches: two regions, no tab strip', () => {
   it('has no tab strip', async () => {
     stubBoth()
     renderFulfillment()
-    await screen.findByText(/pending pool/i)
+    await screen.findByText(/2\. Records/i)
     for (const gone of ['Pending Pool', 'Dispatches']) {
       expect(screen.queryByRole('button', { name: gone })).toBeNull()
     }
@@ -238,14 +245,14 @@ describe('Batches: two regions, no tab strip', () => {
     stubBoth()
     renderFulfillment()
     // Both region headings are on screen together.
-    expect(await screen.findByText(/records awaiting batching/i)).toBeTruthy()
-    expect(screen.getByText(/newest first\. select a batch/i)).toBeTruthy()
+    expect(await screen.findByText(/every committed row and where it has reached/i)).toBeTruthy()
+    expect(screen.getByText(/newest first\. generate opens the collateral page/i)).toBeTruthy()
   })
 
   it('no longer carries the shipments list, which moved to /dispatches', async () => {
     stubBoth()
     renderFulfillment()
-    await screen.findByText(/pending pool/i)
+    await screen.findByText(/2\. Records/i)
     expect(screen.queryByLabelText(/carrier status/i)).toBeNull()
   })
 })
@@ -267,10 +274,14 @@ describe('Batches: a constant is not a status', () => {
     expect(screen.queryByRole('columnheader', { name: 'Status' })).toBeNull()
   })
 
-  it('batch detail states when it formed, not a word that never changes', async () => {
-    stubFetch(() => jsonResponse({ batch: BATCH_ROW, entries: [], artifacts: [] }))
-    renderBatchDetail('btch_abc')
-    expect(await screen.findByText(/^Formed /)).toBeTruthy()
+  // The batch LIST's own claim. The companion assertion, that a batch page states
+  // when it formed rather than a status word that never changes, moved with the
+  // detail page it covered: /batches/:btchId is BatchGeneratePage now, and its
+  // header carries Formed alongside Trigger.
+  it('states the trigger, never the never-changing status word', async () => {
+    stubFetch((url) => jsonResponse(url.includes('/ops/batches') ? [BATCH_ROW] : []))
+    renderFulfillment()
+    expect(await screen.findByText('LOT_SIZE')).toBeTruthy()
     expect(screen.queryByText(/BORN/)).toBeNull()
   })
 })

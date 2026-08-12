@@ -21,3 +21,9 @@ infra/aws/cdk.out/
 #docs
 docs/
 evidence/
+
+# Local process logs from infra/dev-pipeline.sh
+.dev-logs/
+
+# Local demo scratch notes, not part of the repo's docs
+DEMO.md

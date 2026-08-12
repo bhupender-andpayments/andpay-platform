@@ -1,5 +1,8 @@
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
-import { BankUploadPage } from './BankUploadPage.js'
+import { BankIngestPage } from './BankIngestPage.js'
+import { ReturnUploadPage } from './ReturnUploadPage.js'
+import { StatusUploadPage } from './StatusUploadPage.js'
+import { ActivationUploadPage } from './ActivationUploadPage.js'
 import { DamageUploadPage } from './DamageUploadPage.js'
 import { DeviceInventoryUploadPage, DEVICE_INVENTORY_COLUMNS } from './DeviceInventoryUploadPage.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -11,12 +14,18 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 // other two existed until they noticed the tab strip. And every upload shared
 // one URL, so there was no way to send someone to "the damage upload".
 //
-// Three equal choices are now three equal cards, each on its own route. Nothing
-// is preselected and each upload is linkable.
+// Equal choices are now equal cards, each on its own route. Nothing is
+// preselected and each upload is linkable.
 //
-// The three upload components themselves are UNCHANGED. This is routing and
-// presentation: the parsing, the preview/commit flow and the per-row error
-// tables are all untouched.
+// EVERY card here is a FILE ARRIVING FROM OUTSIDE. That is the organising idea:
+// the dispatch BRD's Phase-1 exchanges are all files sent by email (bank request,
+// manufacturer inventory, print vendor return, courier statuses, CWD activation
+// results), so the operator's mental model is "I have a file, I go to Uploads".
+// What each file SETS IN MOTION lives on the page that owns it (Batches,
+// Dispatches, Activation), and those pages link back here.
+//
+// The bank card ENDS AT COMMIT. Generation moved to the batch that mints the
+// Dispatch IDs (/batches/:id/generate); see BankIngestPage for why.
 
 interface UploadKind {
   slug: string
@@ -39,7 +48,7 @@ const UPLOAD_KINDS: readonly UploadKind[] = [
     slug: 'bank',
     title: 'Bank requests',
     source: 'From the bank',
-    description: 'New soundbox requests. Preview the per-row outcome, then commit.',
+    description: 'New soundbox requests. Check the per-row verdict, commit; the rows pool toward the next batch.',
   },
   {
     slug: 'damage',
@@ -53,6 +62,30 @@ const UPLOAD_KINDS: readonly UploadKind[] = [
     source: 'From the manufacturer',
     description: 'Devices received into stock, before anything can be printed or shipped.',
     columns: DEVICE_INVENTORY_COLUMNS,
+  },
+  {
+    slug: 'return',
+    title: 'Print vendor return',
+    source: 'From the print vendor',
+    description:
+      'The dispatch sheet returned with Device ID and AWB filled in. Pairs devices and creates the shipments.',
+    columns: ['Dispatch ID', 'Device ID', 'AWB'],
+  },
+  {
+    slug: 'statuses',
+    title: 'Courier statuses',
+    source: 'From the courier',
+    description:
+      'Batch status updates while no webhook is integrated: picked up, in transit, out for delivery, delivered.',
+    columns: ['AWB', 'Status'],
+  },
+  {
+    slug: 'activation',
+    title: 'CWD activation results',
+    source: 'From CWD',
+    description:
+      'The activation outcomes CWD returns by email in Phase 1. Marks delivered dispatches activated.',
+    columns: ['Dispatch ID'],
   },
 ]
 
@@ -112,9 +145,14 @@ export function UploadsPage() {
   return (
     <Routes>
       <Route index element={<UploadsIndex />} />
-      <Route path="bank" element={<UploadFrame><BankUploadPage /></UploadFrame>} />
+      {/* bank/* keeps matching the old wizard's deep links (/uploads/bank/upload
+          etc.), all landing on the one page that replaced them. */}
+      <Route path="bank/*" element={<UploadFrame><BankIngestPage /></UploadFrame>} />
       <Route path="damage" element={<UploadFrame><DamageUploadPage /></UploadFrame>} />
       <Route path="device-inventory" element={<UploadFrame><DeviceInventoryUploadPage /></UploadFrame>} />
+      <Route path="return" element={<UploadFrame><ReturnUploadPage /></UploadFrame>} />
+      <Route path="statuses" element={<UploadFrame><StatusUploadPage /></UploadFrame>} />
+      <Route path="activation" element={<UploadFrame><ActivationUploadPage /></UploadFrame>} />
       {/* An unknown upload slug lands on the choices rather than a dead end. */}
       <Route path="*" element={<Navigate to="/uploads" replace />} />
     </Routes>

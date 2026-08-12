@@ -106,14 +106,16 @@ if (UNGROUPED.length > 0) {
 
 // The real logo asset (public/logo). This previously drew an invented chevron
 // glyph because no logo asset existed in the repo.
-function BrandMark() {
+function BrandMark({ iconOnly = false }: { iconOnly?: boolean }) {
   return (
     <div className="flex items-center gap-2.5">
       <img src="/logo/logo-icon.svg" alt="" aria-hidden="true" className="h-9 w-9 shrink-0" />
-      <span className="leading-tight">
-        <span className="block text-sm font-semibold text-foreground">AndPayments</span>
-        <span className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Ops Console</span>
-      </span>
+      {!iconOnly && (
+        <span className="leading-tight">
+          <span className="block text-sm font-semibold text-foreground">AndPayments</span>
+          <span className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Ops Console</span>
+        </span>
+      )}
     </div>
   )
 }
@@ -122,6 +124,26 @@ function IconMenu(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
       <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+// The collapse control. A panel outline with a chevron, NOT a hamburger: a
+// hamburger means "reveal the menu that is hidden", and at desktop width the
+// menu is already there. This says "narrow the panel that is showing", and the
+// chevron points the way it will move.
+function IconPanelToggle({ collapsed, ...props }: { collapsed: boolean } & SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <rect x="3" y="4" width="18" height="16" rx="2.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M9.5 4v16" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d={collapsed ? 'M13.4 9.6l2.6 2.4-2.6 2.4' : 'M16.6 9.6L14 12l2.6 2.4'}
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   )
 }
@@ -150,19 +172,61 @@ function initials(roleLabel: string | undefined): string {
   return t.slice(0, 2).toUpperCase()
 }
 
-function Sidebar({ className = '' }: { className?: string }) {
+// `collapsed` narrows the fixed column to an icon rail. Labels leave the DOM
+// rather than being clipped, and each link keeps its name via `title` so hover
+// still answers "which icon is this". The drawer variant never collapses: an
+// overlay exists to be read, and an icon rail floating over the page would be
+// the worst of both.
+function Sidebar({
+  className = '',
+  collapsed = false,
+  onToggle,
+}: {
+  className?: string
+  collapsed?: boolean
+  /** Absent in the mobile drawer: an overlay exists to be read, never narrowed. */
+  onToggle?: () => void
+}) {
   const { principal, logout } = useAuth()
   return (
-    <aside className={`h-screen w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground ${className}`}>
-      <div className="px-5 py-5">
-        <BrandMark />
+    <aside
+      className={`h-screen shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-300 ease-in-out ${collapsed ? 'w-[68px]' : 'w-64'} ${className}`}
+    >
+      {/* The collapse control lives WITH the thing it collapses, not up in the
+          top bar: it acts on the sidebar, and a control sitting on its own edge
+          needs no label to explain that. */}
+      <div className={`flex items-center py-5 ${collapsed ? 'flex-col gap-3 px-2' : 'justify-between gap-2 px-5'}`}>
+        <BrandMark iconOnly={collapsed} />
+        {onToggle !== undefined && (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!collapsed}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            // A BORDER AND A GROUND, so it reads as a control. Bare grey-on-grey it
+            // looked like a decorative glyph, and an operator left in the narrow
+            // rail could not tell there was a way back out of it.
+            className="flex size-8 flex-none items-center justify-center rounded-lg border border-sidebar-border bg-background/60 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <IconPanelToggle collapsed={collapsed} width={17} height={17} />
+          </button>
+        )}
       </div>
-      <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 pb-4">
-        {GROUPED_NAV.map((group) => (
+      <nav aria-label="Main" className={`flex-1 overflow-y-auto pb-4 ${collapsed ? 'px-2' : 'px-3'}`}>
+        {GROUPED_NAV.map((group, gi) => (
           <div key={group.title} className="mb-5 last:mb-0">
-            <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-foreground/60">
-              {group.title}
-            </p>
+            {/* Collapsed keeps the GROUPING even without room for its name: a
+                hairline between groups preserves the scan rhythm the titles
+                provided. aria-hidden because it says nothing. Not above the
+                first group; a rule against the brand block reads as clutter. */}
+            {collapsed ? (
+              gi > 0 && <div aria-hidden="true" className="mx-2 mb-2 h-px bg-sidebar-border" />
+            ) : (
+              <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-foreground/60">
+                {group.title}
+              </p>
+            )}
             <ul className="space-y-0.5">
               {group.items.map((s) => {
                 const Icon = s.icon
@@ -171,9 +235,11 @@ function Sidebar({ className = '' }: { className?: string }) {
                     <NavLink
                       to={s.to}
                       data-sidebar="menu-button"
+                      title={collapsed ? s.label : undefined}
                       className={({ isActive }) =>
                         [
-                          'group flex w-full items-center gap-2 overflow-hidden rounded-xl px-3 py-2 text-left text-sm transition-colors',
+                          'group flex w-full items-center gap-2 overflow-hidden rounded-xl text-left text-sm transition-colors',
+                          collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2',
                           isActive
                             ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
                             : 'text-sidebar-foreground/80',
@@ -187,7 +253,10 @@ function Sidebar({ className = '' }: { className?: string }) {
                             height={16}
                             className={isActive ? 'text-sidebar-accent-foreground' : 'text-sidebar-foreground/60'}
                           />
-                          {s.label}
+                          {/* The accessible name survives the collapse: visually
+                              hidden, not removed, so a screen reader's link list
+                              is identical in both widths. */}
+                          <span className={collapsed ? 'sr-only' : undefined}>{s.label}</span>
                         </>
                       )}
                     </NavLink>
@@ -199,21 +268,26 @@ function Sidebar({ className = '' }: { className?: string }) {
         ))}
       </nav>
       <div className="border-t border-border p-3">
-        <div className="flex items-center gap-3 rounded-md px-2 py-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-sidebar-primary text-[12px] font-semibold text-sidebar-primary-foreground">
+        <div className={`flex items-center gap-3 rounded-md py-2 ${collapsed ? 'flex-col gap-2 px-0' : 'px-2'}`}>
+          <span
+            title={collapsed ? roleTitle(principal?.roleLabel) : undefined}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-sidebar-primary text-[12px] font-semibold text-sidebar-primary-foreground"
+          >
             {initials(principal?.roleLabel)}
           </span>
-          <span className="min-w-0 flex-1 leading-tight">
-            <span className="block truncate text-[13px] font-semibold text-foreground">
-              {roleTitle(principal?.roleLabel)}
+          {!collapsed && (
+            <span className="min-w-0 flex-1 leading-tight">
+              <span className="block truncate text-[13px] font-semibold text-foreground">
+                {roleTitle(principal?.roleLabel)}
+              </span>
+              {/* The opaque principal id, shortened. Kept visible because it is
+                  what an operator quotes in a support request, and copyable in
+                  full via the title. */}
+              <span className="num block truncate text-[11px] text-muted-foreground" title={principal?.sub}>
+                {shortId(principal?.sub, 12)}
+              </span>
             </span>
-            {/* The opaque principal id, shortened. Kept visible because it is
-                what an operator quotes in a support request, and copyable in
-                full via the title. */}
-            <span className="num block truncate text-[11px] text-muted-foreground" title={principal?.sub}>
-              {shortId(principal?.sub, 12)}
-            </span>
-          </span>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -268,11 +342,15 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/80 px-4 backdrop-blur lg:px-6">
+      {/* Hamburger ONLY below lg, where the sidebar is genuinely hidden and has
+          to be revealed. At lg+ the sidebar is on screen and its own edge
+          carries the collapse control, so a hamburger up here would be a second
+          control for a menu that is not hidden. */}
       <button
         type="button"
         onClick={onOpenNav}
         aria-label="Open navigation"
-        className="-ml-1 flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground lg:hidden"
+        className="-ml-1 flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground lg:hidden"
       >
         <IconMenu width={20} height={20} />
       </button>
@@ -297,8 +375,28 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
 // column: at 375px the 240px fixed column left no usable content width and the
 // page scrolled sideways. The drawer mounts only while open so its links stay
 // out of the tab order when it is closed.
+// Collapse is a lasting preference about how this operator likes their screen
+// divided, not per-tab state, so it persists. localStorage rather than the
+// server: it is a device-level display choice carrying nothing about the
+// principal, and the D3 token has no profile surface to hang it on anyway.
+// The key carries a VERSION. The first release of this toggle shipped with a
+// hard-to-see control, so anyone who collapsed the rail was stuck in it without an
+// obvious way back and their preference persisted across reloads. Bumping the key
+// retires those stored values, so everyone starts expanded on the fixed build
+// instead of inheriting a state they did not choose on purpose.
+const SIDEBAR_COLLAPSED_KEY = 'ops.sidebar.collapsed.v2'
+
+function readCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const [navOpen, setNavOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(readCollapsed)
   const { pathname } = useLocation()
 
   // Any route change closes the drawer, so following a link never leaves the
@@ -307,26 +405,48 @@ export function AppShell({ children }: { children: ReactNode }) {
     setNavOpen(false)
   }, [pathname])
 
+  function toggleCollapsed(): void {
+    setCollapsed((prev) => {
+      const next = !prev
+      try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? '1' : '0')
+      } catch {
+        // Storage denied (private mode, quota): the toggle still works for the
+        // session, it just will not survive a reload.
+      }
+      return next
+    })
+  }
+
   return (
     <div className="flex h-screen overflow-hidden bg-background">
-      <Sidebar className="hidden lg:flex" />
+      <Sidebar className="hidden lg:flex" collapsed={collapsed} onToggle={toggleCollapsed} />
 
       {navOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
+          {/* Scrim fades, panel slides. Both animate rather than appearing, so
+              the drawer reads as arriving from the edge it lives on instead of
+              flashing over the page. */}
           <button
             type="button"
             aria-label="Close navigation"
-            className="absolute inset-0 h-full w-full bg-foreground/40"
+            className="absolute inset-0 h-full w-full bg-foreground/40 animate-in fade-in duration-200"
             onClick={() => setNavOpen(false)}
           />
-          <Sidebar className="relative z-50 flex shadow-lg" />
+          {/* The drawer never collapses: an overlay exists to be read, so it gets
+              no onToggle. */}
+          <Sidebar className="relative z-50 flex shadow-xl animate-in slide-in-from-left duration-300 ease-out" />
         </div>
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar onOpenNav={() => setNavOpen(true)} />
         <main className="flex-1 overflow-y-auto px-4 py-6 lg:px-6">
-          <div className="mx-auto max-w-[1200px]">{children}</div>
+          {/* Wider once the sidebar is out of the way: collapsing exists to give
+              the content the room, so the container has to actually take it. */}
+          <div className={`mx-auto transition-[max-width] duration-300 ${collapsed ? 'max-w-[1440px]' : 'max-w-[1200px]'}`}>
+            {children}
+          </div>
         </main>
       </div>
     </div>

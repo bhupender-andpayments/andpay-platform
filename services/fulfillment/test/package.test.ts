@@ -347,7 +347,7 @@ describe('dispatchXlsx two-sheet split (D-5 / F9, measured from the real vendor 
     const headersOf = (n: string) =>
       (wb.getWorksheet(n)!.getRow(1).values as unknown[]).slice(1).map(String)
     expect(headersOf('Soundbox')).toEqual(headersOf('Standy'))
-    expect(headersOf('Soundbox')).toContain('Assignment')
+    expect(headersOf('Soundbox')).toContain('Dispatch ID')
   })
 
   it('loses no line overall: every line appears at least once', async () => {

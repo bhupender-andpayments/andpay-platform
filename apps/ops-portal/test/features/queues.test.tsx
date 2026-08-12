@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { QueuesPage } from '../../src/features/queues/QueuesPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
@@ -80,9 +80,19 @@ describe('QueuesPage', () => {
     )
 
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter
+        initialEntries={['/queues/quarantine']}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <AuthProvider>
-          <QueuesPage />
+          {/* The active tab is now a ROUTE PARAM, not local state, so the page
+              has to be mounted under a matching route. Rendered bare it reads an
+              undefined tab and redirects to the canonical first tab, which in a
+              router with no routes renders nothing at all. Clicking a tab
+              navigates, which is exactly what these tests then exercise. */}
+          <Routes>
+            <Route path="/queues/:tab" element={<QueuesPage />} />
+          </Routes>
         </AuthProvider>
       </MemoryRouter>,
     )
@@ -183,9 +193,19 @@ describe('QueuesPage', () => {
     )
 
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter
+        initialEntries={['/queues/quarantine']}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <AuthProvider>
-          <QueuesPage />
+          {/* The active tab is now a ROUTE PARAM, not local state, so the page
+              has to be mounted under a matching route. Rendered bare it reads an
+              undefined tab and redirects to the canonical first tab, which in a
+              router with no routes renders nothing at all. Clicking a tab
+              navigates, which is exactly what these tests then exercise. */}
+          <Routes>
+            <Route path="/queues/:tab" element={<QueuesPage />} />
+          </Routes>
         </AuthProvider>
       </MemoryRouter>,
     )
@@ -254,9 +274,19 @@ describe('QueuesPage', () => {
     )
 
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter
+        initialEntries={['/queues/quarantine']}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <AuthProvider>
-          <QueuesPage />
+          {/* The active tab is now a ROUTE PARAM, not local state, so the page
+              has to be mounted under a matching route. Rendered bare it reads an
+              undefined tab and redirects to the canonical first tab, which in a
+              router with no routes renders nothing at all. Clicking a tab
+              navigates, which is exactly what these tests then exercise. */}
+          <Routes>
+            <Route path="/queues/:tab" element={<QueuesPage />} />
+          </Routes>
         </AuthProvider>
       </MemoryRouter>,
     )
@@ -310,9 +340,19 @@ describe('QueuesPage', () => {
     )
 
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter
+        initialEntries={['/queues/quarantine']}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <AuthProvider>
-          <QueuesPage />
+          {/* The active tab is now a ROUTE PARAM, not local state, so the page
+              has to be mounted under a matching route. Rendered bare it reads an
+              undefined tab and redirects to the canonical first tab, which in a
+              router with no routes renders nothing at all. Clicking a tab
+              navigates, which is exactly what these tests then exercise. */}
+          <Routes>
+            <Route path="/queues/:tab" element={<QueuesPage />} />
+          </Routes>
         </AuthProvider>
       </MemoryRouter>,
     )
