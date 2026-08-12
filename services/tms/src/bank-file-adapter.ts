@@ -375,6 +375,25 @@ async function parseBankFile<T>(
   // from a probe rather than from the data keeps a header-only file correct.
   const effectiveHeader =
     profile === null ? header : [...header, ...Object.keys(profile.toCanonical({}))]
+
+  // The profile's own required SOURCE columns, checked FIRST and separately
+  // (D-4, 12 Aug 2026). This has to run before the canonical check below,
+  // because that check consults the profile's advertised OUTPUT keys and so
+  // cannot see that a source column behind one of them is missing: toCanonical
+  // defaults it to ''. The error names the column by the spelling the bank uses,
+  // which is the only spelling they can act on. See requiredSourceColumns in
+  // bank-source-profile.ts for why this is not simply more signature.
+  const missingSource: StructuralParseError[] =
+    profile === null
+      ? []
+      : (profile.requiredSourceColumns ?? [])
+          .filter((column) => !header.includes(column))
+          .map((column) => ({
+            code: 'missing_required_column' as const,
+            message: `Missing required column "${column}".`,
+          }))
+  if (missingSource.length > 0) return { rows: [], errors: missingSource }
+
   const missing = missingRequiredColumns(effectiveHeader, mapping, requiredFields)
   if (missing.length > 0) return { rows: [], errors: missing }
 

@@ -128,4 +128,52 @@ describe('parseBankRequestFile backward compatibility', () => {
     expect(res.errors).toEqual([])
     expect(res.rows).toEqual([])
   })
+
+  // D-4 (12 Aug 2026): QR String is MANDATORY, because every QR image is
+  // generated from it. Before this, a GSCB export missing the column parsed
+  // happily (toCanonical defaults qrValue to '') and then failed all 360 rows
+  // individually as invalid_qr_vpa_format, so the operator got 360 row rejects
+  // instead of one sentence naming the column the bank has to add.
+  describe('QR String is a required SOURCE column (D-4)', () => {
+    const withoutQrString = ANNEXURE_B_HEADER.split(',')
+      .filter((c) => c !== 'QR String')
+      .join(',')
+    const rowWithoutQr = ANNEXURE_B_ROW.split(',')
+      .filter((_, i) => i !== ANNEXURE_B_HEADER.split(',').indexOf('QR String'))
+      .join(',')
+
+    it('rejects the WHOLE file, naming the column by the spelling the bank uses', async () => {
+      const res = await parseBankRequestFile(csv(withoutQrString, rowWithoutQr), 'gscb.csv', 'file-1')
+      expect(res.rows).toEqual([])
+      expect(res.errors).toEqual([
+        { code: 'missing_required_column', message: 'Missing required column "QR String".' },
+      ])
+    })
+
+    it('and the profile STILL claims that file, which is why the message can be that precise', () => {
+      // The requirement is deliberately not part of the signature. If it were,
+      // this header would match no profile, the canonical mapping would be
+      // applied to GSCB column names it does not share, and the operator would
+      // get a wall of errors naming canonical fields that were never in their
+      // file.
+      expect(selectBankSourceProfile(withoutQrString.split(','))?.name).toBe(ANNEXURE_B_PROFILE.name)
+    })
+
+    it('a file that HAS the column is unaffected', async () => {
+      const res = await parseBankRequestFile(csv(ANNEXURE_B_HEADER, ANNEXURE_B_ROW), 'gscb.csv', 'file-1')
+      expect(res.errors).toEqual([])
+      expect(res.rows).toHaveLength(1)
+      expect(res.rows[0]!.qrValue).toContain('upi://pay')
+    })
+
+    it('the canonical profile is untouched: it declares no required source columns', async () => {
+      expect(ANNEXURE_B_PROFILE.requiredSourceColumns).toEqual(['QR String'])
+      // A canonical file names qrValue directly, so the canonical mapping's own
+      // required-field check already covers it and no extra rule is needed.
+      const header = 'bankMerchantReference,displayName,legalName,mcc,registeredAddress,bankReferenceCode,productType,vpaValue,qrValue,soundbox,standeeCount,stickerCount,shipToAddress,contactName,mobile,branchCode'
+      const row = 'BM-1,Acme,Acme Pvt Ltd,5814,221B Baker St,HDFC,soundbox,acme@hdfcbank,upi://pay?pa=acme@hdfcbank,true,1,2,221B Baker St,Jane,9000000000,BR-1'
+      const res = await parseBankRequestFile(csv(header, row), 'canonical.csv', 'file-1')
+      expect(res.errors).toEqual([])
+    })
+  })
 })

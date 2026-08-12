@@ -44,6 +44,27 @@ export interface BankSourceProfile {
    * both claim the same file.
    */
   readonly signature: readonly string[]
+  /**
+   * Source headers this profile REQUIRES but does not use to identify a file
+   * (D-4 hardening, 12 Aug 2026). Absent means the file is still recognised as
+   * this layout and REJECTED WHOLE, naming this column by its source spelling.
+   *
+   * WHY THIS IS NOT JUST MORE SIGNATURE. A profile's `toCanonical` advertises
+   * every canonical field it can produce, defaulting the absent ones to '', so
+   * the required-column check passes for a field whose source column is simply
+   * not there. For QR String that was measured and bad: a GSCB export missing
+   * the column parsed happily and then failed all 360 rows individually as
+   * invalid_qr_vpa_format, so the operator got 360 row rejects instead of one
+   * "your file has no QR String column".
+   *
+   * Widening the SIGNATURE instead would be worse, not better: the profile
+   * would stop CLAIMING such a file at all, the canonical mapping would then be
+   * applied to GSCB headers it does not match, and the operator would get a
+   * wall of missing-canonical-field errors naming columns that were never in
+   * their file. Keeping the signature narrow and the requirement separate is
+   * what lets the error name the column the bank actually has to add.
+   */
+  readonly requiredSourceColumns?: readonly string[]
   /** Reshape one raw record into canonical-field-keyed form. */
   toCanonical(rec: SourceRecord): SourceRecord
 }
@@ -64,6 +85,11 @@ function joinNonEmpty(parts: readonly string[], separator = ', '): string {
 export const ANNEXURE_B_PROFILE: BankSourceProfile = {
   name: 'annexure-b',
   signature: ['Business Name', 'VPA', 'Bank code', 'Mobile'],
+  // D-4 (12 Aug 2026): QR String is MANDATORY in the bank file, because it is
+  // what every QR image is generated from. It is deliberately NOT in the
+  // signature above (see requiredSourceColumns' own doc): a file missing it is
+  // still recognisably a GSCB export, and saying so precisely is the point.
+  requiredSourceColumns: ['QR String'],
   toCanonical(rec: SourceRecord): SourceRecord {
     const vpa = (rec['VPA'] ?? '').trim()
     const address = joinNonEmpty([
