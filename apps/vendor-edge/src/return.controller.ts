@@ -23,7 +23,7 @@ import {
 } from '@andpay/fulfillment-service'
 import { EdgeCredentialGuard } from './guard.js'
 import { EDGE_DEPS, MAX_SHEET_BYTES, type EdgeDeps } from './deps.js'
-import { parseReturnSheet, EdgeParseError } from './sheet-parse.js'
+import { parseReturnSheetPartial, EdgeParseError } from './sheet-parse.js'
 import type { EdgeRequest } from './request.js'
 
 const RETURN_OPERATION = 'sheet:submit-return'
@@ -41,11 +41,18 @@ function isWorkbook(file: UploadedJson | undefined): boolean {
   return name.endsWith('.xlsx') || name.endsWith('.csv')
 }
 
-// Every rejection here (missing file, invalid JSON, or an S8 shape
-// violation) is a schema-invalid parse failure alike: the caller wraps this
-// in one try/catch and emits the D5.2 schema_invalid DENY audit before the
+// Every rejection here (missing file, invalid JSON, or an ENVELOPE-level S8
+// shape violation) is a schema-invalid parse failure alike: the caller wraps
+// this in one try/catch and emits the D5.2 schema_invalid DENY audit before the
 // 400, regardless of which of the three throws.
-function parseUploadedReturnSheet(file: UploadedJson | undefined): ReturnSheet {
+//
+// Per-ROW failures are no longer among them (D-14): parseReturnSheetPartial
+// returns them as invalidRows so the good rows in the same file still ingest,
+// which is what the workbook path has always done.
+function parseUploadedReturnSheet(file: UploadedJson | undefined): {
+  sheet: ReturnSheet
+  invalidRows: ReturnSheetRowError[]
+} {
   if (!file) throw new EdgeParseError('missing file')
   let parsed: unknown
   try {
@@ -53,7 +60,7 @@ function parseUploadedReturnSheet(file: UploadedJson | undefined): ReturnSheet {
   } catch {
     throw new EdgeParseError('file is not valid JSON')
   }
-  return parseReturnSheet(parsed)
+  return parseReturnSheetPartial(parsed)
 }
 
 // POST /vendor/return: the print/ship vendor return sheet edge (spec 08,
@@ -74,13 +81,13 @@ export class ReturnController {
     // "the return file" singular and a second route would mean a second
     // permission, a second audit path and two things to keep in step.
     //
-    // The JSON path is untouched: the vendor portal parses csv client-side and
-    // posts `<fileId>.json`, and that keeps working byte for byte.
+    // BOTH paths now report per-row failures rather than rejecting the whole
+    // upload on one bad row (D-14, 12 Aug 2026). The JSON shape the vendor
+    // portal posts is otherwise unchanged.
     let sheet: ReturnSheet
     let invalidRows: ReturnSheetRowError[] = []
-    // Set only on the workbook path (Task 7): the JSON path never parses a
-    // sheet, so there is no untouched count to report, exactly like
-    // invalidRows above.
+    // Set only on the workbook path (Task 7): a JSON body has no template rows
+    // the vendor could leave blank, so there is no untouched count to report.
     let untouched: number | undefined
     try {
       if (isWorkbook(file)) {
@@ -108,7 +115,9 @@ export class ReturnController {
           rows: parsed.validRows,
         }
       } else {
-        sheet = parseUploadedReturnSheet(file)
+        const parsed = parseUploadedReturnSheet(file)
+        sheet = parsed.sheet
+        invalidRows = parsed.invalidRows
       }
     } catch (err) {
       if (err instanceof EdgeParseError) {
@@ -127,12 +136,12 @@ export class ReturnController {
     if (!decision.allowed) throw new ForbiddenException()
 
     const result = await ingestReturnSheet(this.deps.fulfillmentDb, req.claim, sheet, traceId)
-    // Rows the WORKBOOK parser quarantined are reported alongside the ingest
-    // result, so a partial file tells the operator which rows to resend rather
-    // than looking like a clean success. Absent on the JSON path, which rejects
-    // a bad row at parse time. `untouched` is threaded the same way: how many
+    // Rows either parser could not read are reported alongside the ingest
+    // result, so a partial file tells the vendor which rows to resend rather
+    // than looking like a clean success. Both the workbook and the JSON path
+    // populate this now (D-14). `untouched` is threaded the same way: how many
     // template rows the vendor left blank, so a partial return still counts up
-    // to the whole sheet the vendor received (Task 7).
+    // to the whole sheet the vendor received (Task 7). Workbook only.
     return {
       ...result,
       ...(invalidRows.length > 0 ? { invalidRows } : {}),

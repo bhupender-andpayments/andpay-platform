@@ -40,7 +40,13 @@ export interface ReturnSheetRowError {
 // can travel under two AWBs, the kit under one and the standee under another).
 // The Device ID COLUMN is still required in the header below, so the round trip
 // with the sheet we send is unchanged; only the VALUE became optional.
-export type ReturnSheetRowErrorCode = 'missing_assignment' | 'missing_awb'
+// `invalid_row_shape` is the JSON path's code (D-14, 12 Aug 2026): the vendor
+// edge now reports a shape-invalid JSON row per row instead of rejecting the
+// whole upload, and its failures are not always a missing field (an unknown
+// key, a non-string courierCode, a control character, a row that is not an
+// object). The WORKBOOK path never emits it: a spreadsheet cell can only be
+// blank or filled, so its two codes still cover it exactly.
+export type ReturnSheetRowErrorCode = 'missing_assignment' | 'missing_awb' | 'invalid_row_shape'
 
 export interface ReturnSheetStructuralError {
   code: 'unsupported_extension' | 'unreadable_file' | 'empty_sheet' | 'missing_column'

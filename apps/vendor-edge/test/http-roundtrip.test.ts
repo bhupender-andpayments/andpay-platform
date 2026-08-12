@@ -314,6 +314,67 @@ describe('POST /vendor/return (multipart file edge fronting the unchanged ingest
     const shptCountAfter = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM shpt`
     expect(Number(shptCountAfter[0]!.n)).toBe(1)
   })
+
+  // D-14 over real HTTP. This is the behavior that changed: the same body used
+  // to return 400 with nothing ingested, so a vendor whose file had one bad row
+  // lost the whole submission and had to resend all of it.
+  it('a JSON file with ONE bad row still ingests the good rows and reports the bad one, instead of a whole-file 400', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const secret = 'apsk_test_print-p3-partial-secret-aaaaaaa'
+    await seedCredential({
+      apiId: newId('api'),
+      secret,
+      vndrId: vndrWire,
+      workQueue: 'wq-print',
+      permissionSetRef: 'vset:vendor_print',
+    })
+
+    const goodSerial = 'SER-EDGE-PARTIAL-OK'
+    await seedUnit(goodSerial)
+    const goodAsgn = newId('asgn')
+    await seedPendingEntry(goodAsgn)
+
+    const sheet = {
+      fileId: 'file-edge-return-partial-1',
+      vndrId: vndrWire,
+      workQueue: 'wq-print',
+      rows: [
+        { deviceSerial: goodSerial, asgnId: goodAsgn, awb: 'AWB-EDGE-PARTIAL-OK' },
+        { deviceSerial: 'SER-EDGE-PARTIAL-BAD', awb: 'AWB-EDGE-PARTIAL-BAD' }, // no asgnId
+      ],
+    }
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(secret))
+      .attach('file', Buffer.from(JSON.stringify(sheet), 'utf8'), 'sheet.json')
+
+    expect(res.status).toBe(200) // NOT a 400
+    expect(res.body.pairedUnitIds).toHaveLength(1) // the good row landed
+    expect(res.body.invalidRows).toEqual([{ rowNo: 2, errors: ['missing_assignment'] }])
+
+    // and the domain effect is real, not just a hopeful response body.
+    const pairing = await unitPairing(goodSerial)
+    expect(pairing.shipment).not.toBeNull()
+  })
+
+  it('an unreadable ENVELOPE is still a whole-file 400: there is no row to keep', async () => {
+    const vndrWire = fromUuid('vndr', toUuid(newId('vndr')))
+    const secret = 'apsk_test_print-p4-envelope-secret-bbbbbb'
+    await seedCredential({
+      apiId: newId('api'),
+      secret,
+      vndrId: vndrWire,
+      workQueue: 'wq-print',
+      permissionSetRef: 'vset:vendor_print',
+    })
+
+    const res = await request(app.getHttpServer())
+      .post('/vendor/return')
+      .set('Authorization', bearer(secret))
+      .attach('file', Buffer.from(JSON.stringify({ nope: true }), 'utf8'), 'sheet.json')
+    expect(res.status).toBe(400)
+  })
 })
 
 describe('oversized multipart at the edge (authenticated-DoS guard on /vendor/intake)', () => {

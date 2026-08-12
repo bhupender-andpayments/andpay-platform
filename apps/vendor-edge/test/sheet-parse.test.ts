@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { parseIntakeSheet, parseReturnSheet, parseWebhookBody, EdgeParseError } from '../src/sheet-parse.js'
+import {
+  parseIntakeSheet,
+  parseReturnSheet,
+  parseReturnSheetPartial,
+  parseWebhookBody,
+  EdgeParseError,
+} from '../src/sheet-parse.js'
 
 // Unit coverage for the S8 edge schema gate (apps/vendor-edge/src/sheet-parse.ts):
 // the strict allow-listed shape checks, and the m1 defense-in-depth control-byte
@@ -202,6 +208,78 @@ describe('parseReturnSheet', () => {
       rows: [{ asgnId: 'a1', awb: 'awb1', courierCode: 'BLUEDART' }],
     })
     expect(parsed.rows[0]).toEqual({ asgnId: 'a1', awb: 'awb1', courierCode: 'BLUEDART' })
+  })
+})
+
+// D-14 (12 Aug 2026): matching is record-by-record, never file-by-file. The
+// workbook path always reported a bad row as invalidRows and ingested the rest;
+// the JSON path threw on the FIRST bad row, so one malformed row cost every
+// correct row in the same upload. parseReturnSheetPartial is that fix, and it
+// keeps the ENVELOPE strict, because an unreadable envelope names no rows at all.
+describe('parseReturnSheetPartial (D-14 per-row rejection on the JSON path)', () => {
+  it('keeps the good rows and reports only the bad one', () => {
+    const { sheet, invalidRows } = parseReturnSheetPartial({
+      ...baseReturn(),
+      rows: [
+        { deviceSerial: 'd1', asgnId: 'a1', awb: 'awb1' },
+        { deviceSerial: 'd2', awb: 'awb2' }, // no asgnId
+        { deviceSerial: 'd3', asgnId: 'a3', awb: 'awb3' },
+      ],
+    })
+    expect(sheet.rows).toHaveLength(2)
+    expect(sheet.rows.map((r) => r.asgnId)).toEqual(['a1', 'a3'])
+    // rowNo is 1-based over the data rows, the SAME convention the workbook
+    // adapter uses, so the field means one thing on both paths.
+    expect(invalidRows).toEqual([{ rowNo: 2, errors: ['missing_assignment'] }])
+  })
+
+  it('classifies a missing awb, and a shape violation that is neither missing field', () => {
+    const { sheet, invalidRows } = parseReturnSheetPartial({
+      ...baseReturn(),
+      rows: [
+        { deviceSerial: 'd1', asgnId: 'a1' }, // no awb
+        { deviceSerial: 'd2', asgnId: 'a2', awb: 'awb2', extraField: 'x' }, // unknown key
+        { deviceSerial: '', asgnId: 'a3', awb: 'awb3' }, // present-but-empty serial
+        { deviceSerial: 'd\x1e4', asgnId: 'a4', awb: 'awb4' }, // control character
+        'not-an-object',
+      ],
+    })
+    expect(sheet.rows).toHaveLength(0)
+    expect(invalidRows).toEqual([
+      { rowNo: 1, errors: ['missing_awb'] },
+      { rowNo: 2, errors: ['invalid_row_shape'] },
+      { rowNo: 3, errors: ['invalid_row_shape'] },
+      { rowNo: 4, errors: ['invalid_row_shape'] },
+      { rowNo: 5, errors: ['invalid_row_shape'] },
+    ])
+  })
+
+  it('still rejects the ENVELOPE whole-file: a bad envelope names no row to keep', () => {
+    // These are the workbook path's structuralErrors by another name, and they
+    // must stay fatal: there is nothing to partially ingest.
+    expect(() => parseReturnSheetPartial(42)).toThrow(EdgeParseError)
+    expect(() => parseReturnSheetPartial({ ...baseReturn(), rows: {} })).toThrow(EdgeParseError)
+    expect(() => parseReturnSheetPartial({ ...baseReturn(), extraTop: 'x' })).toThrow(EdgeParseError)
+    const { fileId: _fileId, ...noFileId } = baseReturn()
+    expect(() => parseReturnSheetPartial({ ...noFileId, rows: [] })).toThrow(EdgeParseError)
+  })
+
+  it('a file whose every row is bad is an EMPTY sheet, not a throw', () => {
+    // The ingest then has nothing to do and the vendor gets its row report,
+    // which is a truer answer than a 400 that says the file was unreadable.
+    const { sheet, invalidRows } = parseReturnSheetPartial({
+      ...baseReturn(),
+      rows: [{ awb: 'awb1' }, { asgnId: 'a2' }],
+    })
+    expect(sheet.rows).toEqual([])
+    expect(invalidRows).toHaveLength(2)
+  })
+
+  it('accepts a wholly valid file with no invalidRows, unchanged from the strict parse', () => {
+    const body = { ...baseReturn(), rows: [{ asgnId: 'a1', awb: 'awb1', courierCode: 'BLUEDART' }] }
+    const { sheet, invalidRows } = parseReturnSheetPartial(body)
+    expect(invalidRows).toEqual([])
+    expect(sheet).toEqual(parseReturnSheet(body))
   })
 })
 

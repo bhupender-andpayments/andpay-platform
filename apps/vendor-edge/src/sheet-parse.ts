@@ -1,4 +1,13 @@
-import type { IntakeRow, IntakeSheet, ReturnRow, ReturnSheet, StatusFile, StatusRow } from '@andpay/fulfillment-service'
+import type {
+  IntakeRow,
+  IntakeSheet,
+  ReturnRow,
+  ReturnSheet,
+  ReturnSheetRowError,
+  ReturnSheetRowErrorCode,
+  StatusFile,
+  StatusRow,
+} from '@andpay/fulfillment-service'
 
 // One typed parse error for every S8 schema-invalid body at the edge (a
 // missing/extra/mistyped field): mapped to HTTP 400 by the caller, never
@@ -125,7 +134,71 @@ function parseReturnRow(row: unknown, index: number): ReturnRow {
   }
 }
 
+// Which row-level code an EdgeParseError from parseReturnRow reports as. The
+// row grammar is NOT duplicated here: the strict parse above stays the single
+// source of truth for what a valid row is, and this only classifies its
+// failure so the caller can name it in the same vocabulary the WORKBOOK path
+// already uses (ReturnSheetRowErrorCode).
+function classifyRowFailure(row: unknown): ReturnSheetRowErrorCode {
+  if (isPlainObject(row)) {
+    if (typeof row.asgnId !== 'string' || row.asgnId.trim() === '') return 'missing_assignment'
+    if (typeof row.awb !== 'string' || row.awb.trim() === '') return 'missing_awb'
+  }
+  // An unknown key, a non-string courierCode, a control character, a
+  // present-but-empty deviceSerial, or a row that is not an object at all.
+  return 'invalid_row_shape'
+}
+
+// PER-ROW REJECTION ON THE JSON PATH (D-14, 12 Aug 2026). Matching is
+// record-by-record, never file-by-file: "if we sent 20 records and the vendor
+// returns 10, we process the 10". The workbook path already worked that way,
+// reporting bad rows as invalidRows while ingesting the good ones. The JSON
+// path did not: parseReturnSheet threw on the FIRST bad row and the controller
+// turned that into a 400 for the WHOLE upload, so one malformed row cost every
+// correct row in the file.
+//
+// The split is the same one the workbook adapter draws, deliberately, so the two
+// surfaces cannot disagree about what is fatal:
+//   * ENVELOPE problems are still whole-file (this function throws): not an
+//     object, an unknown top-level key, a missing or non-string fileId/vndrId/
+//     workQueue, or rows that is not an array. None of those name a row, so
+//     there is nothing to ingest partially.
+//   * ROW problems are per-row: collected as invalidRows and left out of the
+//     sheet, exactly like a workbook row the adapter could not read.
+// S8 strictness is unchanged at the row level: the grammar that accepts a row is
+// byte for byte the one above, and a row that fails it is still never ingested.
+export function parseReturnSheetPartial(json: unknown): {
+  sheet: ReturnSheet
+  invalidRows: ReturnSheetRowError[]
+} {
+  if (!isPlainObject(json)) throw new EdgeParseError('return sheet must be a JSON object')
+  assertOnlyKeys(json, RETURN_SHEET_FIELDS, 'return sheet')
+  const fileId = requireString(json, 'fileId', 'return sheet')
+  const vndrId = requireString(json, 'vndrId', 'return sheet')
+  const workQueue = requireString(json, 'workQueue', 'return sheet')
+  if (!Array.isArray(json.rows)) throw new EdgeParseError('return sheet: "rows" must be an array')
+
+  const rows: ReturnRow[] = []
+  const invalidRows: ReturnSheetRowError[] = []
+  json.rows.forEach((raw: unknown, index: number) => {
+    try {
+      rows.push(parseReturnRow(raw, index))
+    } catch (err) {
+      // A genuine programming or infrastructure fault must still surface; only
+      // the parse's own shape rejection becomes a per-row report.
+      if (!(err instanceof EdgeParseError)) throw err
+      // rowNo is 1-based over the data rows, matching the workbook adapter's
+      // own convention so one field means one thing on both paths.
+      invalidRows.push({ rowNo: index + 1, errors: [classifyRowFailure(raw)] })
+    }
+  })
+  return { sheet: { fileId, vndrId, workQueue, rows }, invalidRows }
+}
+
 // Strict S8, mirrors parseIntakeSheet's grammar for the return sheet's shape.
+// Retained for callers that genuinely want all-or-nothing (and for the tests
+// that pin the row grammar's exact messages); the RETURN ROUTE uses
+// parseReturnSheetPartial above, per D-14.
 export function parseReturnSheet(json: unknown): ReturnSheet {
   if (!isPlainObject(json)) throw new EdgeParseError('return sheet must be a JSON object')
   assertOnlyKeys(json, RETURN_SHEET_FIELDS, 'return sheet')
