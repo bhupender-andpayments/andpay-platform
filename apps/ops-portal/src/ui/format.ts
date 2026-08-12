@@ -22,7 +22,12 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   PICKED_UP: { variant: 'info', label: 'Picked up' },
   IN_TRANSIT: { variant: 'info', label: 'In transit' },
   OUT_FOR_DELIVERY: { variant: 'info', label: 'Out for delivery' },
-  RTO: { variant: 'negative', label: 'RTO' },
+  // RETURNED is the value the writer actually emits (fulfillment's
+  // courier-status.ts KNOWN_STATUS). 'RTO' was mapped here and RETURNED was
+  // not, so a returned parcel fell through to the neutral title-case default
+  // and read as unremarkable rather than as the exception it is (T0b.2). The
+  // label says RTO because that is what an operator calls it.
+  RETURNED: { variant: 'negative', label: 'RTO' },
   FAILED: { variant: 'negative', label: 'Failed' },
   // activation
   ACTIVE: { variant: 'positive', label: 'Active' },

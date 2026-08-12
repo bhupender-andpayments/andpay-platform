@@ -83,15 +83,34 @@ describe('readBatchJourney', () => {
     await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED', courierStatus: 'PICKED_UP' })
     await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED', courierStatus: 'IN_TRANSIT' })
     await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED', courierStatus: 'OUT_FOR_DELIVERY' })
-    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED', courierStatus: 'RTO' })
+    // RETURNED, the value a real writer emits (courier-status.ts KNOWN_STATUS).
+    // This fixture said 'RTO' and so agreed with a filter that matched no
+    // production row, which is exactly how T0b.2 hid: the tile counted zero
+    // returned parcels forever and this test still passed.
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED', courierStatus: 'RETURNED' })
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED', courierStatus: 'FAILED' })
 
     const view = (await readBatchJourney(db, { kind: 'crossTenant' }, BATCH))!
     expect(view.courier.pickedUp).toBe(1)
     expect(view.courier.inTransit).toBe(1)
     expect(view.courier.outForDelivery).toBe(1)
     expect(view.courier.delivered).toBe(0)
-    // Anything terminal-but-not-delivered is an exception the operator must see.
-    expect(view.courier.exception).toBe(1)
+    // Anything terminal-but-not-delivered is an exception the operator must see,
+    // and BOTH spellings of that count: a returned parcel and a failed attempt.
+    expect(view.courier.exception).toBe(2)
+  })
+
+  // The regression guard for T0b.2, stated as the property rather than the
+  // count: a RETURNED row must be visible SOMEWHERE in the courier fan-out. It
+  // was previously in none of the five buckets, so it read as a parcel that had
+  // simply vanished between dispatch and delivery.
+  it('a RETURNED parcel is never invisible: it lands in the exception bucket, not nowhere', async () => {
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED', courierStatus: 'RETURNED' })
+
+    const view = (await readBatchJourney(db, { kind: 'crossTenant' }, BATCH))!
+    const { pickedUp, inTransit, outForDelivery, delivered, exception } = view.courier
+    expect(pickedUp + inTransit + outForDelivery + delivered + exception).toBe(1)
+    expect(exception).toBe(1)
   })
 
   it('lists the delivered-but-not-activated rows so stage 8 has a worklist', async () => {

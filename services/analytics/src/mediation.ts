@@ -774,8 +774,10 @@ export interface BatchJourneyView {
   /**
    * The courier fan-out. A batch's records are at different courier stages at
    * once, so one status for the batch would be a fiction. `exception` is any
-   * terminal-but-not-delivered status (RTO, FAILED), which is the only part of
-   * this the operator must act on.
+   * terminal-but-not-delivered status (RETURNED, FAILED), which is the only
+   * part of this the operator must act on. Those two strings are the writer's
+   * own vocabulary (courier-status.ts KNOWN_STATUS); do not spell either of
+   * them 'RTO' here, which is prose for RETURNED and matches no row.
    */
   courier: {
     pickedUp: number
@@ -864,7 +866,16 @@ export async function readBatchJourney(
     inTransit: rows.filter((r) => r.courier_status === 'IN_TRANSIT').length,
     outForDelivery: rows.filter((r) => r.courier_status === 'OUT_FOR_DELIVERY').length,
     delivered: rows.filter((r) => r.courier_status === 'DELIVERED').length,
-    exception: rows.filter((r) => r.courier_status === 'RTO' || r.courier_status === 'FAILED').length,
+    // RETURNED, not 'RTO' (fixed 12 Aug 2026, PLAN.md T0b.2). courier_status is
+    // written verbatim from shpt.status, whose vocabulary is
+    // fulfillment/src/courier-status.ts's KNOWN_STATUS: the ladder plus FAILED
+    // and RETURNED. NOTHING has ever written 'RTO', so this filter matched no
+    // row and a returned parcel appeared in NONE of the five courier counts
+    // below, neither delivered nor in transit nor an exception. It read as a
+    // vanished shipment on the journey view, and the bug survived because the
+    // test fixture inserted the wrong value directly (batch-journey.test.ts)
+    // instead of going through a writer.
+    exception: rows.filter((r) => r.courier_status === 'RETURNED' || r.courier_status === 'FAILED').length,
   }
 
   // The activate route enforces TWO gates (ops.controller.ts): delivery_date
