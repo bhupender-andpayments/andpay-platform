@@ -119,9 +119,13 @@ export async function ingestOpsDeviceInventory(
     // internal shape for device_qr (it is opaque, sensitive-by-default
     // storage, never emitted on a fact or any read surface). Wrapping the
     // raw value under a single `raw` key satisfies the object shape without
-    // inventing any unratified internal schema.
+    // inventing any unratified internal schema. Since the 12 Aug 2026
+    // walkthrough both cells are OPTIONAL pass-through: the adapter hands
+    // back '' for an absent column or blank cell, and an empty simNo must
+    // become undefined here because SerializedIntakeRow models "no SIM" as
+    // absence (isStructurallyValid rejects an empty string).
     deviceQr: { raw: r.deviceQr },
-    simNo: r.simNo,
+    simNo: r.simNo === '' ? undefined : r.simNo,
   }))
 
   let result: { createdUnitIds: string[]; quarantined: number } = { createdUnitIds: [], quarantined: 0 }

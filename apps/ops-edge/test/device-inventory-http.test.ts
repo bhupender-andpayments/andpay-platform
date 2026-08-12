@@ -237,12 +237,12 @@ describe('ops-edge uploads: device inventory (multipart, D-G)', () => {
     // names the offending columns so the portal can tell the operator WHICH
     // column was wrong, but carries nothing caller-influenced: no uploaded
     // filename, no cell value, and not the domain error's own message (S4/5c,
-    // OpsErrorFilter). Every required column is missing from this file, so all
-    // three are reported.
+    // OpsErrorFilter). Since the 12 Aug 2026 walkthrough Device ID is the
+    // ONLY required column, so it is the only one reported.
     expect(res.body.code).toBe('invalid')
     expect(res.body.message).toBe('invalid request')
     const columns = (res.body.reasons as { code: string; column?: string }[]).map((r) => r.column).sort()
-    expect(columns).toEqual(['Device ID', 'Device QR', 'Sim No'])
+    expect(columns).toEqual(['Device ID'])
     for (const r of res.body.reasons as { code: string }[]) {
       expect(r.code).toBe('missing_required_column')
     }

@@ -11,24 +11,30 @@ import ExcelJS from 'exceljs'
 // additionally be a cross-context code dependency this repo avoids. Pure: no
 // DB, no network, no filesystem writes, and it never logs row content.
 //
-// FR-01a mandates Device ID, SIM No, AND Device QR ALL be present on every
-// row. This is STRICTER than the vendor-channel intake's isStructurallyValid
-// (intake.ts), which treats simNo as optional: a row here missing any of the
-// three is an INVALID row, reported per-row (rowNo plus which field(s) were
-// missing) and NOT ingested, WITHOUT failing the whole file. A missing
-// REQUIRED COLUMN in the header, by contrast, IS a whole-file structural
-// failure (structuralErrors), the same policy the bank adapter applies.
+// Validation contract, RULED at the 12 Aug 2026 product walkthrough (Workflow
+// A, FROZEN): the ONLY row validation is that Device ID is PRESENT. The
+// duplicate check (a serial already in inventory, or repeated within the
+// file) lives downstream in the shared ingest (intake.ts), which is the other
+// half of the same ruling. Sim No and Device QR are OPTIONAL PASS-THROUGH
+// columns: parsed and carried when present, empty strings when absent, and
+// NEVER a reason to reject a row or a file. This supersedes FR-01a's
+// all-three-mandatory reading and the 2026-08-09 format lock that used to
+// live in this file (see the note above parseDeviceInventoryFile).
+//
+// A missing Device ID COLUMN in the header is still a whole-file structural
+// failure (structuralErrors), the same policy the bank adapter applies: the
+// walkthrough's rule speaks to row validation, and a file with no Device ID
+// column cannot satisfy it for any row, so one structural error beats N
+// identical row errors.
 
 // Canonical column names follow BRD Annexure E exactly. Matching is NORMALIZED
 // (case-folded, surrounding and repeated whitespace collapsed) because the same
 // column is spelled "Sim No" in the BRD and "SIM No" by some senders, and a
-// difference of case is never a meaningful distinction between two required
-// columns here. This adapter previously required the literal "SIM No", so a
-// file matching the BRD was rejected whole with zero rows ingested.
-//
-// Leniency stops at case and whitespace: a genuinely absent column still fails
-// the whole file, and the error still names the column by its BRD spelling.
-const HEADERS = { deviceId: 'Device ID', simNo: 'Sim No', deviceQr: 'Device QR' } as const
+// difference of case is never a meaningful distinction between two columns
+// here. This adapter previously required the literal "SIM No", so a file
+// matching the BRD was rejected whole with zero rows ingested.
+const REQUIRED_HEADERS = { deviceId: 'Device ID' } as const
+const OPTIONAL_HEADERS = { simNo: 'Sim No', deviceQr: 'Device QR' } as const
 
 function normalizeHeader(h: string): string {
   return h.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -54,70 +60,32 @@ export interface DeviceInventoryRow {
   deviceQr: string
 }
 
-export type DeviceInventoryRowErrorCode =
-  | 'missing_device_id'
-  | 'missing_sim_no'
-  | 'missing_device_qr'
-  | 'malformed_device_id'
-  | 'malformed_sim_no'
+export type DeviceInventoryRowErrorCode = 'missing_device_id'
 
 /**
- * A-2 / D12. LOCKED BY BHUPENDER 2026-08-09: the format below is the accepted
- * one and validation stays MINIMAL. Revisit only if a real file disagrees.
+ * SUPERSEDED FORMAT LOCK, kept as history so nobody re-tightens by reflex.
  *
- * THIS IS A DECISION, NOT AN OVERSIGHT. Do not "improve" it. If you are here
- * because these bounds look lax next to the rest of this codebase, that is the
- * intent: ingestion must bend to whatever the partners actually send, and the
- * cost of wrongly rejecting a real file is far higher than the cost of letting
- * an odd value through to a queue where an operator can see it. Tightening
- * needs a real CWD inventory file AND Bhupender, in that order.
+ * This spot used to hold the A-2 / D12 format bands (a 10-to-20 digit Device
+ * ID pattern and a charset-plus-length Sim No pattern), LOCKED BY BHUPENDER
+ * 2026-08-09 with the instruction not to improve them without a real CWD file
+ * and a decision. The 12 Aug 2026 product walkthrough is that decision, and
+ * it went the OTHER way: Workflow A is FROZEN with Device ID presence as the
+ * ONLY row validation, no format rule at all, because ingestion must bend to
+ * whatever the partners actually send and the duplicate check downstream is
+ * the real gate. So the patterns are GONE, not widened.
  *
- * Before this, the ONLY row check was non-empty, so `Device ID = ABCDEF` was
- * accepted and became a real unit. These bounds close that without pretending
- * to know a format we have not seen.
- *
- * WHY SO WIDE, measured 2026-08-09 against `docs/demo_files/`:
- *  - The CWD `sample_150` file is MOCK data (confirmed by Bhupender, and
- *    independently: its ICCIDs fail the Luhn check that real ICCIDs carry, and
- *    its 150 IMEIs have 150 DIFFERENT TACs, which real hardware of one model
- *    cannot). So its VALUES cannot found a rule, only its column shape.
- *  - The only real device ids we hold are the 98 in
- *    `Device id file from printer .xls`, and they are **12 OR 13 digits**, with
- *    no fixed prefix and no check digit.
- *  - A rule read off the mock file would have been `^784\d{10}$` (rejects 100%
- *    of the real file) or `^\d{13}$` (rejects 6% of it). Hence a wide band, not
- *    an exact length.
- *  - Sim No and Device QR have NO real-world evidence at all: the real file has
- *    neither column. Sim No is therefore charset-and-range only, and Device QR
- *    stays non-empty ONLY. Validating an unseen payload shape is exactly the
- *    mistake above.
- *  - HONEST NOTE ON THE ONE WEAK BOUND: Sim No's 10-to-30 LENGTH is the only
- *    rule here with zero supporting evidence, real or mock-independent (the
- *    mock's 20 characters is all we have, and the mock is not trustworthy at
- *    value level). It is kept only because it costs nothing plausible: a real
- *    ICCID is 19 to 20 digits, so the band has roughly a 10-character margin on
- *    each side. If a real file ever trips it, DELETE THE LENGTH and keep the
- *    charset; do not narrow it.
- *
- * THE QR'S `DI` MIRRORS THE `Device ID` COLUMN. That is a BRD requirement
- * (Annexure E shows one row with `Device QR = {"DI":7846237843772,...}` beside
- * `Device ID = 7846237843772`), not an observation, so it is settled. Two
- * consequences:
- *  - The device id is taken from the `Device ID` COLUMN of the original file,
- *    never parsed back out of the QR blob. That is what this adapter does.
- *  - A cross-check (column must equal `DI`) is therefore AVAILABLE as a future
- *    tightening, and is the single highest-value one, because it catches a file
- *    whose two halves disagree. It is NOT applied yet, deliberately: the brief
- *    is to keep ingestion adaptable until real CWD files have been seen.
- *    Note the BRD's own example spells one key `" DOM"` WITH A LEADING SPACE
- *    where the mock file spells it `DOM`, so any future parse of this payload
- *    must be lenient about key spelling.
- *
- * These are per-ROW errors, so a bad row is reported and quarantined while the
- * rest of the file still ingests. Only a missing COLUMN fails the whole file.
+ * What survives from the old note, because it is still true and still useful:
+ *  - The device id is taken from the `Device ID` COLUMN, never parsed back
+ *    out of the Device QR blob (whose `DI` key mirrors it per BRD Annexure E,
+ *    and whose key spelling is unreliable, e.g. `" DOM"` with a leading
+ *    space).
+ *  - The only per-ROW error is a blank Device ID; a bad row is reported and
+ *    skipped while the rest of the file still ingests. Only a missing Device
+ *    ID COLUMN fails the whole file.
+ *  - Any future tightening (format bands, the QR DI cross-check) needs a NEW
+ *    ruling that supersedes the 12 Aug walkthrough; do not reintroduce it
+ *    quietly here.
  */
-const DEVICE_ID_PATTERN = /^[0-9]{10,20}$/
-const SIM_NO_PATTERN = /^[0-9A-Za-z]{10,30}$/
 
 export interface DeviceInventoryRowError {
   rowNo: number
@@ -261,20 +229,21 @@ async function parseGrid(file: Uint8Array, filename: string): Promise<ParsedGrid
   return { header, dataRows }
 }
 
-// Parses one device-inventory file (.csv or .xlsx) into per-row Device ID/SIM
-// No/Device QR strings, splitting rows into validRows (all three mandatory
-// fields present) and invalidRows (missing at least one, reported by rowNo
-// plus which field(s) were missing; NOT ingested). A missing required COLUMN
-// in the header is a whole-file structural failure (structuralErrors) - this
-// check runs BEFORE the zero-data-row check (fix round 1, Finding A: it
-// previously ran after, so a headerless or no-data file returned a silent
-// empty success instead of a rejection; a wholly blank file parses to
-// `header: []` from parseGrid, which now also fails this check, all three
-// columns reported missing). A file with a CORRECT header but zero data rows
-// is a DELIBERATE, DIFFERENT case (an operator uploads the template with no
-// rows yet): it is a legitimate empty upload, not a client error, so it
-// returns empty validRows/invalidRows with NO structural error and the
-// caller processes it as a genuine 0-row upload.
+// Parses one device-inventory file (.csv or .xlsx) into per-row Device ID/Sim
+// No/Device QR strings. Per the 12 Aug 2026 walkthrough (Workflow A, FROZEN):
+// a row is invalid ONLY when its Device ID is blank (reported by rowNo, NOT
+// ingested, without failing the file); Sim No and Device QR are optional
+// pass-through values, empty strings when their column or cell is absent. A
+// missing Device ID COLUMN in the header is a whole-file structural failure
+// (structuralErrors) - this check runs BEFORE the zero-data-row check (fix
+// round 1, Finding A: it previously ran after, so a headerless or no-data
+// file returned a silent empty success instead of a rejection; a wholly blank
+// file parses to `header: []` from parseGrid, which also fails this check). A
+// file with a CORRECT header but zero data rows is a DELIBERATE, DIFFERENT
+// case (an operator uploads the template with no rows yet): it is a
+// legitimate empty upload, not a client error, so it returns empty
+// validRows/invalidRows with NO structural error and the caller processes it
+// as a genuine 0-row upload.
 export async function parseDeviceInventoryFile(file: Uint8Array, filename: string): Promise<DeviceInventoryParseResult> {
   const parsed = await parseGrid(file, filename)
   if ('code' in parsed) return { validRows: [], invalidRows: [], structuralErrors: [parsed] }
@@ -284,23 +253,24 @@ export async function parseDeviceInventoryFile(file: Uint8Array, filename: strin
   // Both the presence check and the column lookup run on the SAME normalized
   // comparison, so a header that is accepted is always also locatable.
   const normalized = header.map(normalizeHeader)
-  const indexOfHeader = (field: keyof typeof HEADERS): number =>
-    normalized.indexOf(normalizeHeader(HEADERS[field]))
+  const indexOfHeader = (name: string): number => normalized.indexOf(normalizeHeader(name))
 
-  const missing = (Object.keys(HEADERS) as (keyof typeof HEADERS)[])
-    .filter((field) => indexOfHeader(field) === -1)
+  const missing = (Object.keys(REQUIRED_HEADERS) as (keyof typeof REQUIRED_HEADERS)[])
+    .filter((field) => indexOfHeader(REQUIRED_HEADERS[field]) === -1)
     .map((field) => ({
       code: 'missing_required_column' as const,
-      message: `Missing required column "${HEADERS[field]}".`,
-      column: HEADERS[field],
+      message: `Missing required column "${REQUIRED_HEADERS[field]}".`,
+      column: REQUIRED_HEADERS[field],
     }))
   if (missing.length > 0) return { validRows: [], invalidRows: [], structuralErrors: missing }
 
   if (dataRows.length === 0) return { validRows: [], invalidRows: [], structuralErrors: [] }
 
-  const deviceIdIdx = indexOfHeader('deviceId')
-  const simNoIdx = indexOfHeader('simNo')
-  const deviceQrIdx = indexOfHeader('deviceQr')
+  const deviceIdIdx = indexOfHeader(REQUIRED_HEADERS.deviceId)
+  // Optional columns: -1 when absent, and `cells[-1] ?? ''` reads as '', so an
+  // absent column and a blank cell land on the same empty-string value.
+  const simNoIdx = indexOfHeader(OPTIONAL_HEADERS.simNo)
+  const deviceQrIdx = indexOfHeader(OPTIONAL_HEADERS.deviceQr)
 
   const validRows: DeviceInventoryRow[] = []
   const invalidRows: DeviceInventoryRowError[] = []
@@ -310,22 +280,10 @@ export async function parseDeviceInventoryFile(file: Uint8Array, filename: strin
     const simNo = (cells[simNoIdx] ?? '').trim()
     const deviceQr = (cells[deviceQrIdx] ?? '').trim()
 
-    const errors: DeviceInventoryRowErrorCode[] = []
-    // Absent and malformed are DISTINCT codes, never collapsed: "the column was
-    // blank" and "the value is not a device id" are different corrections for
-    // the operator, and only the second suggests the file came from the wrong
-    // source. Malformed is reported only when something IS present, so a blank
-    // cell never produces both.
-    if (deviceId === '') errors.push('missing_device_id')
-    else if (!DEVICE_ID_PATTERN.test(deviceId)) errors.push('malformed_device_id')
-    if (simNo === '') errors.push('missing_sim_no')
-    else if (!SIM_NO_PATTERN.test(simNo)) errors.push('malformed_sim_no')
-    // Device QR stays non-empty ONLY, on purpose. See the note above the
-    // patterns: we have never seen a real one.
-    if (deviceQr === '') errors.push('missing_device_qr')
-
-    if (errors.length > 0) {
-      invalidRows.push({ rowNo, errors })
+    // The one row check the walkthrough grants. No format rule: see the
+    // superseded-lock note above.
+    if (deviceId === '') {
+      invalidRows.push({ rowNo, errors: ['missing_device_id'] })
       return
     }
     validRows.push({ rowNo, deviceId, simNo, deviceQr })

@@ -43,18 +43,20 @@ import { UploadHelperCards } from './UploadHelperCards.js'
 // still called with whatever is submitted; nothing here decides
 // authorization.
 //
-// FR-01a mandates the sheet carry all three columns (Device ID, SIM No,
-// Device QR) on every row; a row missing any of them is reported per-row
-// (invalidRows, rowNo + which field(s) were missing) by the edge and is
-// NEVER ingested, without failing the whole file. Flagged rows (a
-// duplicate serial/ICCID) land in the intake exceptions queue (task 11's
-// /queues route); invalid rows land nowhere and are shown directly here.
+// Since the 12 Aug 2026 walkthrough (Workflow A, FROZEN) the only row
+// validation is Device ID presence; Sim No and Device QR are optional
+// pass-through columns. A row with a blank Device ID is reported per-row
+// (invalidRows, rowNo) by the edge and is NEVER ingested, without failing
+// the whole file. Flagged rows (a duplicate serial) land in the intake
+// exceptions queue (task 11's /queues route); invalid rows land nowhere and
+// are shown directly here.
 
-// The three columns FR-01a mandates, in sheet order. Shown when a file is
-// rejected structurally, because knowing what was expected is most of what an
-// operator needs to fix the file. The constant itself lives in uploadKinds.ts
-// now (see the WHY comment there): re-exported here under its original name
-// so every existing caller of THIS module keeps working unchanged.
+// The required column contract (Device ID only, see uploadKinds.ts). Shown
+// when a file is rejected structurally, because knowing what was expected is
+// most of what an operator needs to fix the file. The constant itself lives
+// in uploadKinds.ts (see the WHY comment there): re-exported here under its
+// original name so every existing caller of THIS module keeps working
+// unchanged.
 export { DEVICE_INVENTORY_COLUMNS } from './uploadKinds.js'
 const EXPECTED_COLUMN_LIST = DEVICE_INVENTORY_COLUMNS
 const EXPECTED_COLUMNS = EXPECTED_COLUMN_LIST.join(', ')

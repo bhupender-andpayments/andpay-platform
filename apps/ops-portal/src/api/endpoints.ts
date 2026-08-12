@@ -821,8 +821,9 @@ export interface DamagePreviewResult {
 // uploadDeviceInventory, grounded against services/fulfillment/src/ops-device-inventory.ts):
 //   POST /ops/uploads/device-inventory   multipart `file` + a `manufacturerVndrId`
 //     form field, Idempotency-Key required -> OpsDeviceInventoryResult
-// FR-01a mandates ALL THREE sheet columns (Device ID, SIM No, Device QR) be
-// present on every row; a row missing any of them is reported per-row here
+// Since the 12 Aug 2026 walkthrough (Workflow A, FROZEN) the ONLY row
+// validation is Device ID presence; Sim No and Device QR are optional
+// pass-through columns. A row with a blank Device ID is reported per-row here
 // (invalidRows) and never ingested, WITHOUT failing the whole file.
 // manufacturerVndrId is a WIRE vndr id (B_edge_contracts.md item 4), the SAME
 // shape GET /ops/vendors emits, so the SPA sources it from getVendors filtered
@@ -831,15 +832,10 @@ export interface DamagePreviewResult {
 
 /**
  * services/fulfillment/src/device-inventory-adapter.ts DeviceInventoryRowErrorCode.
- * The `malformed_*` pair is A-2/D12's deliberately loose format check; the
- * screen needs no label map for them because StatusPill humanises the code.
+ * One code since the 12 Aug 2026 walkthrough; the screen needs no label map
+ * because StatusPill humanises the code.
  */
-export type DeviceInventoryRowErrorCode =
-  | 'missing_device_id'
-  | 'missing_sim_no'
-  | 'missing_device_qr'
-  | 'malformed_device_id'
-  | 'malformed_sim_no'
+export type DeviceInventoryRowErrorCode = 'missing_device_id'
 
 export interface DeviceInventoryRowError {
   rowNo: number

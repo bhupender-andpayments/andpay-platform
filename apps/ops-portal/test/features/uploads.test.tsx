@@ -119,7 +119,7 @@ const DEVICE_INVENTORY_RESULT = {
   flagged: 1,
   invalid: 1,
   createdUnitIds: ['unit-1', 'unit-2'],
-  invalidRows: [{ rowNo: 4, errors: ['missing_sim_no'] }],
+  invalidRows: [{ rowNo: 4, errors: ['missing_device_id'] }],
   deduped: false,
 }
 
@@ -373,13 +373,14 @@ describe('uploads', () => {
     expect(fileText).toBe('irrelevant, the server parses this')
 
     // Real per-row invalid breakdown from the mocked response: no decorative
-    // rows, exactly what the server reported (row 4, missing_sim_no). The
-    // "2" also matches the rail's own done-step digit, so the Accepted count
+    // rows, exactly what the server reported (row 4, missing_device_id, the
+    // one row error code left since the 12 Aug 2026 walkthrough). The "2"
+    // also matches the rail's own done-step digit, so the Accepted count
     // is read off its own definition-list value rather than a bare text
     // match, the same idiom the bank/damage tests use.
     const acceptedDd = (await screen.findByText('Accepted')).nextElementSibling as HTMLElement
     expect(acceptedDd.textContent).toBe('2')
-    expect(screen.getByText('Missing Sim No')).toBeTruthy()
+    expect(screen.getByText('Missing Device Id')).toBeTruthy()
     const rowCell = screen.getByText('4')
     expect(rowCell).toBeTruthy()
   })
@@ -427,15 +428,17 @@ describe('uploads', () => {
   }
 
   it('device inventory upload: names the offending column when the header is wrong', async () => {
+    // Device ID is the only column the server can report missing since the
+    // 12 Aug 2026 walkthrough made the other two optional.
     await submitInventory(400, {
       code: 'invalid',
       message: 'invalid request',
-      reasons: [{ code: 'missing_required_column', column: 'Sim No' }],
+      reasons: [{ code: 'missing_required_column', column: 'Device ID' }],
     })
-    expect(await screen.findByText(/Missing required column "Sim No"/)).toBeTruthy()
+    expect(await screen.findByText(/Missing required column "Device ID"/)).toBeTruthy()
     // The operator is also told what a valid file looks like, and that the
     // whole file was rejected rather than partially ingested.
-    expect(screen.getByText(/Expected columns: Device ID, Sim No, Device QR/)).toBeTruthy()
+    expect(screen.getByText(/Expected columns: Device ID/)).toBeTruthy()
     expect(screen.getByText(/No rows were ingested/)).toBeTruthy()
     // The useless raw message must be gone.
     expect(screen.queryByText(/api 400/)).toBeNull()
@@ -532,20 +535,20 @@ describe('uploads', () => {
     await submitInventory(400, {
       code: 'invalid',
       message: 'invalid request',
-      reasons: [{ code: 'missing_required_column', column: 'Sim No' }],
+      reasons: [{ code: 'missing_required_column', column: 'Device ID' }],
     })
-    expect(await screen.findByText(/Missing required column "Sim No"/)).toBeTruthy()
+    expect(await screen.findByText(/Missing required column "Device ID"/)).toBeTruthy()
 
     const railPill = (label: string) => new RegExp(`^\\d\\s*${label}$`, 'i')
     fireEvent.click(screen.getByRole('button', { name: railPill('upload') }))
 
     // Back at Upload: the stale rejection must not still be standing.
-    expect(screen.queryByText(/Missing required column "Sim No"/)).toBeNull()
+    expect(screen.queryByText(/Missing required column "Device ID"/)).toBeNull()
 
     // Continue again without picking a new file: still no stale rejection,
     // only the fresh confirm line.
     await userEvent.click(screen.getByRole('button', { name: /continue to submit/i }))
-    expect(screen.queryByText(/Missing required column "Sim No"/)).toBeNull()
+    expect(screen.queryByText(/Missing required column "Device ID"/)).toBeNull()
     expect(screen.getByText(/the file will be ingested/i)).toBeTruthy()
   })
 })

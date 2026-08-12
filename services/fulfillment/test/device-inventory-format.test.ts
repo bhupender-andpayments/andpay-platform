@@ -1,27 +1,22 @@
 import { describe, it, expect } from 'vitest'
 import { parseDeviceInventoryFile } from '../src/device-inventory-adapter.js'
 
-// A-2 / D12: the deliberately LOOSE per-row format check.
+// Workflow A (12 Aug 2026 walkthrough, FROZEN): the ONLY row validation is
+// that Device ID is present. This file used to pin the A-2 format bands
+// (device id and sim regexes, locked 2026-08-09); the walkthrough superseded
+// that lock the other way, so these tests now pin the ABSENCE of every format
+// rule, for the same reason the old lock test existed: a quiet "improvement"
+// that starts rejecting a partner's real file must fail loudly here first.
 //
-// Before it, the only row check was non-empty, so `Device ID = ABCDEF` was
-// accepted and became a real unit. The bounds are wide on purpose and the
-// reasoning is measured, not assumed (see the note above the patterns in
-// device-inventory-adapter.ts):
-//
-//   - The CWD sample_150 file is MOCK data. Its ICCIDs fail the Luhn check that
-//     real ICCIDs carry, and its 150 IMEIs carry 150 different TACs, which real
-//     hardware of one model cannot. So its values cannot found a rule.
-//   - The only REAL device ids we hold are 12 OR 13 digits, no fixed prefix, no
-//     check digit.
-//   - A rule read off the mock file would have been /^784\d{10}$/, which rejects
-//     100% of the real file, or /^\d{13}$/, which rejects 6% of it.
-//
-// So these tests pin the BAND and the failure mode, deliberately NOT an exact
-// length. Values here are representative shapes, never copied from the real
-// merchant-linked file.
+// The duplicate check (the second half of the frozen rule) is not this
+// file's subject: it lives in the shared ingest and is pinned by
+// intake.test.ts and ops-device-inventory.test.ts.
 
 function csv(rows: Array<[string, string, string]>): Uint8Array {
-  const body = rows.map(([qr, sim, id]) => `1,"${qr}",${sim},${id}`).join('\n')
+  // Real CSV quoting: inner quotes are doubled, so the QR JSON round-trips
+  // byte for byte (these tests assert deviceQr content, which the previous
+  // count-only tests never did).
+  const body = rows.map(([qr, sim, id]) => `1,"${qr.replace(/"/g, '""')}",${sim},${id}`).join('\n')
   return new TextEncoder().encode(`Sl. No.,Device QR,Sim No,Device ID\n${body}\n`)
 }
 
@@ -34,109 +29,83 @@ async function parseOne(qr: string, sim: string, id: string) {
   return r
 }
 
-describe('device inventory row format (A-2, deliberately loose)', () => {
-  it('rejects the value that motivated this: a non-numeric device id', async () => {
-    const r = await parseOne(QR, SIM, 'ABCDEF')
-    expect(r.validRows).toHaveLength(0)
-    expect(r.invalidRows).toEqual([{ rowNo: 1, errors: ['malformed_device_id'] }])
-  })
-
-  it('accepts BOTH real-world device id lengths, 12 and 13 digits', async () => {
-    // The whole point of a band. 13 is the common case; 12 occurs in the real
-    // printer file and an exact-13 rule would have quarantined those rows.
-    for (const id of ['123456789012', '1234567890123']) {
-      const r = await parseOne(QR, SIM, id)
-      expect(r.invalidRows, `device id of length ${String(id.length)} must be accepted`).toEqual([])
+describe('device inventory row validation (Workflow A frozen rule)', () => {
+  it('THE FREEZE: values every earlier format rule rejected are all accepted now', async () => {
+    // Each of these was a per-row reject under the superseded A-2 bands. The
+    // walkthrough rules Device ID presence as the ONLY check, so all of them
+    // must ingest. If one of these starts failing, someone re-added a format
+    // rule without a ruling that supersedes 12 Aug 2026.
+    const nowAccepted: Array<[string, string, string]> = [
+      // non-numeric device id (the value that motivated the old bands)
+      [QR, SIM, 'ABCDEF'],
+      // shorter than the old 10-digit floor
+      [QR, SIM, '123456789'],
+      // longer than the old 20-digit ceiling
+      [QR, SIM, '123456789012345678901'],
+      // sim no carrying punctuation (old charset rule)
+      [QR, '8991-8678-2562', '1234567890123'],
+      // sim no shorter than the old 10-character floor
+      [QR, '89910', '1234567890123'],
+      // a QR that is not JSON (never validated, still not)
+      ['plain-qr-value', SIM, '1234567890123'],
+    ]
+    for (const [qr, sim, id] of nowAccepted) {
+      const r = await parseOne(qr, sim, id)
+      expect(r.invalidRows, `must be accepted under the frozen rule: ${id} / ${sim} / ${qr.slice(0, 24)}`).toEqual([])
       expect(r.validRows).toHaveLength(1)
     }
   })
 
-  it('does not impose the mock file\'s prefix', async () => {
-    // Real device ids start with anything from 1 to 9. A prefix rule taken from
-    // the mock file (all 150 start 784) would reject every real row.
-    for (const id of ['1846202138056', '9846202138056', '2846202138056']) {
-      const r = await parseOne(QR, SIM, id)
-      expect(r.invalidRows).toEqual([])
-    }
-  })
-
-  it('keeps headroom on both sides of the observed lengths', async () => {
-    // Tightening later is cheap; wrongly quarantining a real file is not. The
-    // band is 10 to 20, so it fails only well outside anything plausible.
-    const tooShort = await parseOne(QR, SIM, '123456789')
-    expect(tooShort.invalidRows).toEqual([{ rowNo: 1, errors: ['malformed_device_id'] }])
-    const wide = await parseOne(QR, SIM, '12345678901234567890')
-    expect(wide.invalidRows).toEqual([])
-  })
-
-  it('accepts the sim no shape we have seen, digits plus a trailing letter', async () => {
-    const r = await parseOne(QR, '8991867825623397596U', '1234567890123')
+  it('a blank Sim No or Device QR CELL is a valid row carrying empty strings', async () => {
+    const r = await parseOne(QR, '', '1234567890123')
     expect(r.invalidRows).toEqual([])
+    expect(r.validRows).toEqual([{ rowNo: 1, deviceId: '1234567890123', simNo: '', deviceQr: QR }])
+
+    const r2 = await parseOne('', '', '1234567890123')
+    expect(r2.invalidRows).toEqual([])
+    expect(r2.validRows).toEqual([{ rowNo: 1, deviceId: '1234567890123', simNo: '', deviceQr: '' }])
   })
 
-  it('rejects a sim no carrying punctuation, but nothing narrower', async () => {
-    // Charset only. There is NO real-world evidence for sim no length (the real
-    // file has no such column), so length stays a wide band.
-    const r = await parseOne(QR, '8991-8678-2562', '1234567890123')
-    expect(r.invalidRows).toEqual([{ rowNo: 1, errors: ['malformed_sim_no'] }])
-  })
-
-  it('leaves Device QR non-empty-only, because no real one has ever been seen', async () => {
-    // Deliberately NOT validated as JSON or against a key set. The mock file is
-    // the only source for that shape and it is untrustworthy at value level.
-    const r = await parseOne('not json at all', SIM, '1234567890123')
+  it('an entirely ABSENT Sim No / Device QR column is fine: rows pass through with empty strings', async () => {
+    const bare = new TextEncoder().encode('Device ID\n1234567890123\nABCDEF\n')
+    const r = await parseDeviceInventoryFile(bare, 'cwd.csv')
+    expect(r.structuralErrors).toEqual([])
     expect(r.invalidRows).toEqual([])
-    expect(r.validRows).toHaveLength(1)
+    expect(r.validRows).toEqual([
+      { rowNo: 1, deviceId: '1234567890123', simNo: '', deviceQr: '' },
+      { rowNo: 2, deviceId: 'ABCDEF', simNo: '', deviceQr: '' },
+    ])
   })
 
-  it('reports absent and malformed as DISTINCT codes, never both for one field', async () => {
-    // Different corrections for the operator: a blank column is a mapping
-    // problem, a malformed value suggests the wrong source file entirely.
+  it('the ONE row check: a blank Device ID is invalid, and it is the only error code', async () => {
     const blank = await parseOne(QR, SIM, '')
+    expect(blank.validRows).toHaveLength(0)
     expect(blank.invalidRows).toEqual([{ rowNo: 1, errors: ['missing_device_id'] }])
   })
 
-  it('STAYS LOOSE: values that a stricter rule would reject are still accepted', async () => {
-    // THE LOCK (Bhupender, 2026-08-09: keep the current format, validation
-    // stays minimal). This test exists to FAIL if someone tightens these rules
-    // without a real CWD file and a decision, so a quiet "improvement" cannot
-    // slide in. Every value below is one that an obvious tightening would kill:
-    const stillAccepted: Array<[string, string, string]> = [
-      // a 12-digit id, which an exact-13 rule would reject (six exist in the
-      // real printer file)
-      [QR, SIM, '123456789012'],
-      // an id outside the mock file's 784 prefix, which a prefix rule would kill
-      [QR, SIM, '1234567890123'],
-      // an id that fails Luhn, which a check-digit rule would kill (real device
-      // ids carry no check digit: only 8 of 98 pass, i.e. chance)
-      [QR, SIM, '1234567890124'],
-      // a sim no that is not 20 characters, which an exact-length rule would kill
-      [QR, '89910000000000001', '1234567890123'],
-      // a QR that is not JSON, which a payload-shape rule would kill
-      ['plain-qr-value', SIM, '1234567890123'],
-      // a QR whose key is spelled with a leading space, exactly as BRD
-      // Annexure E itself spells " DOM"
-      ['{"DI":1234567890123," DOM":1771218817}', SIM, '1234567890123'],
-    ]
-    for (const [qr, sim, id] of stillAccepted) {
-      const r = await parseOne(qr, sim, id)
-      expect(r.invalidRows, `must stay accepted under the lock: ${id} / ${sim} / ${qr.slice(0, 24)}`).toEqual([])
-      expect(r.validRows).toHaveLength(1)
-    }
+  it('a missing Device ID COLUMN is still a whole-file structural reject naming the column', async () => {
+    // The frozen rule speaks to rows; a file with no Device ID column cannot
+    // satisfy it for any row, so one structural error beats N row errors.
+    const noIdColumn = new TextEncoder().encode('Sim No,Device QR\n8991867825623397596U,{"DI":1}\n')
+    const r = await parseDeviceInventoryFile(noIdColumn, 'cwd.csv')
+    expect(r.validRows).toHaveLength(0)
+    expect(r.structuralErrors).toHaveLength(1)
+    expect(r.structuralErrors[0]!.code).toBe('missing_required_column')
+    expect(r.structuralErrors[0]!.column).toBe('Device ID')
   })
 
-  it('quarantines only the bad row and still ingests the good ones', async () => {
-    // The property that makes a loose-then-tighten policy safe: a row we reject
-    // must never cost the rest of the file.
+  it('skips only the blank-id row and still ingests the good ones', async () => {
+    // The property that makes per-row rejection safe: a row we skip must
+    // never cost the rest of the file.
     const r = await parseDeviceInventoryFile(
       csv([
         [QR, SIM, '1234567890123'],
+        [QR, SIM, ''],
         [QR, SIM, 'ABCDEF'],
-        [QR, SIM, '123456789012'],
       ]),
       'cwd.csv',
     )
     expect(r.validRows).toHaveLength(2)
-    expect(r.invalidRows).toEqual([{ rowNo: 2, errors: ['malformed_device_id'] }])
+    expect(r.invalidRows).toEqual([{ rowNo: 2, errors: ['missing_device_id'] }])
   })
 })

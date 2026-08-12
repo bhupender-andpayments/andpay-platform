@@ -58,22 +58,31 @@ describe('device inventory, BRD Annexure E shape', () => {
   })
 
   it('still accepts the legacy "SIM No" spelling', async () => {
-    // This test's subject is the HEADER spelling, not the row values. Its
-    // original fixture used the toy values D1/S1, which passed only because the
-    // sole row check was non-empty; A-2's loose format check now rejects them.
-    // Real-shaped values keep the test measuring the thing it is named for.
+    // This test's subject is the HEADER spelling, not the row values: the
+    // normalized match must locate the optional column under either casing so
+    // the value passes through instead of silently landing on ''.
     const csv = 'Device ID,SIM No,Device QR\n1234567890123,8991867825623397596U,{"DI":1}\n'
     const r = await parseDeviceInventoryFile(new TextEncoder().encode(csv), 'legacy.csv')
     expect(r.structuralErrors).toEqual([])
     expect(r.validRows).toHaveLength(1)
+    expect(r.validRows[0]!.simNo).toBe('8991867825623397596U')
   })
 
-  it('still reports a genuinely missing column by its canonical name', async () => {
-    const csv = 'Device ID,Device QR\nD1,{"DI":1}\n'
+  it('a file WITHOUT the Sim No column is accepted since the 12 Aug 2026 walkthrough', async () => {
+    // Workflow A frozen rule: Device ID is the only required column. The old
+    // FR-01a reading made this exact file a whole-file reject.
+    const csv = 'Device ID,Device QR\nD1,"{""DI"":1}"\n'
+    const r = await parseDeviceInventoryFile(new TextEncoder().encode(csv), 'no-sim.csv')
+    expect(r.structuralErrors).toEqual([])
+    expect(r.validRows).toEqual([{ rowNo: 1, deviceId: 'D1', simNo: '', deviceQr: '{"DI":1}' }])
+  })
+
+  it('still reports a genuinely missing Device ID column by its canonical name', async () => {
+    const csv = 'Serial,Sim No,Device QR\nD1,S1,{"DI":1}\n'
     const r = await parseDeviceInventoryFile(new TextEncoder().encode(csv), 'missing.csv')
     expect(r.structuralErrors).toHaveLength(1)
     expect(r.structuralErrors[0]!.code).toBe('missing_required_column')
-    expect(r.structuralErrors[0]!.message).toContain('Sim No')
+    expect(r.structuralErrors[0]!.message).toContain('Device ID')
   })
 })
 
@@ -141,11 +150,13 @@ describe('device inventory, BRD shape end to end through the service function', 
     for (const s of serials) expect(s.deviceSerial).toMatch(/^\d{13}$/)
   })
 
-  it('rejects the whole file when a required column is missing (no partial ingest)', async () => {
+  it('rejects the whole file when the Device ID column is missing (no partial ingest)', async () => {
     // A structural failure must burn nothing: no units, no audit row, and the
-    // clientKey stays unused so a corrected re-upload is not a replay.
+    // clientKey stays unused so a corrected re-upload is not a replay. The
+    // fixture is missing Device ID specifically: since the 12 Aug 2026
+    // walkthrough that is the only column whose absence is structural.
     const manufacturerVndrId = await seedManufacturer()
-    const csv = new TextEncoder().encode('Device ID,Device QR\nD1,{"DI":1}\n')
+    const csv = new TextEncoder().encode('Serial,Sim No,Device QR\nD1,S1,{"DI":1}\n')
     await expect(
       ingestOpsDeviceInventory(db, {
         fileBytes: csv,

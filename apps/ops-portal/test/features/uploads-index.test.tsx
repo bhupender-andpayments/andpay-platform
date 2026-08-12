@@ -70,9 +70,11 @@ describe('Uploads step 1: two equal choices, none preselected', () => {
     expect(screen.getByText(/from the manufacturer/i)).toBeTruthy()
   })
 
-  it('states the device inventory columns up front, and no other columns', () => {
+  it('states the device inventory required column up front, and no other columns', () => {
     renderAt('/uploads')
-    expect(screen.getByText(/device id, sim no, device qr/i)).toBeTruthy()
+    // Device ID is the only required column since the 12 Aug 2026 walkthrough
+    // (Workflow A frozen rule); Sim No and Device QR are optional.
+    expect(screen.getByText(/required columns:/i).textContent).toMatch(/required columns: device id$/i)
     expect(screen.getAllByText(/required columns/i).length).toBe(1)
   })
 })

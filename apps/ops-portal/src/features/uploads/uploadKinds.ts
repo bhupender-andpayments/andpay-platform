@@ -57,15 +57,18 @@ const SHARED_GOOD_TO_KNOW = [
   'The file is parsed on the server; what you see is the server verdict.',
 ] as const
 
-// The FR-01a column contract, in sheet order. Lives HERE rather than on
-// DeviceInventoryUploadPage.tsx, which re-exports the same NAME for its own
-// module's callers: this descriptor module is dereferenced at module
-// evaluation time (inside the UPLOAD_KINDS literal below), and a page that
-// imports kindBySlug back from here would otherwise close a circular import,
-// where whichever module the cycle is entered through first wins and the
-// other sees an undefined value. Keeping the constant on the descriptor side
-// of that edge removes the cycle instead of relying on import order.
-export const DEVICE_INVENTORY_COLUMNS = ['Device ID', 'Sim No', 'Device QR'] as const
+// The REQUIRED column contract. Since the 12 Aug 2026 walkthrough (Workflow
+// A, FROZEN) Device ID is the only required column; Sim No and Device QR are
+// optional pass-through columns the server stores when present. Lives HERE
+// rather than on DeviceInventoryUploadPage.tsx, which re-exports the same
+// NAME for its own module's callers: this descriptor module is dereferenced
+// at module evaluation time (inside the UPLOAD_KINDS literal below), and a
+// page that imports kindBySlug back from here would otherwise close a
+// circular import, where whichever module the cycle is entered through first
+// wins and the other sees an undefined value. Keeping the constant on the
+// descriptor side of that edge removes the cycle instead of relying on
+// import order.
+export const DEVICE_INVENTORY_COLUMNS = ['Device ID'] as const
 
 // The bank descriptor that used to open this list moved into the workflow
 // workspace (2026-08-11 ruling): it is now stages 1 and 2 of one continuous
@@ -106,7 +109,8 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
     goodToKnow: [
       ...SHARED_GOOD_TO_KNOW,
       `Required columns: ${DEVICE_INVENTORY_COLUMNS.join(', ')}. Names are matched ignoring case and extra spaces.`,
-      'A missing column rejects the whole file; individual bad rows are skipped, not fatal.',
+      'Sim No and Device QR are optional and stored when present; they never reject a row.',
+      'A missing Device ID column rejects the whole file; a row with a blank Device ID is skipped, not fatal.',
     ],
     guidanceByStep: {
       upload: 'Submit unlocks once a manufacturer and a file are set.',
