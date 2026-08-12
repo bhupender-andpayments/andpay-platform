@@ -71,17 +71,16 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
     expect(Number(ledger[0]!.n)).toBe(0)
   })
 
-  it('ingests valid rows at IN_STOCK (reusing the SAME dedup: duplicate serial + duplicate ICCID -> intake_exception), reports a mandatory-field-missing row as invalid (not ingested), writes the ledger row, and co-commits ONE ALLOW 6e; a same-clientKey replay is a no-op', async () => {
+  it('ingests valid rows at IN_STOCK (duplicate serial -> intake_exception; a duplicate ICCID is stored as sent, NOT flagged), reports a mandatory-field-missing row as invalid (not ingested), writes the ledger row, and co-commits ONE ALLOW 6e; a same-clientKey replay is a no-op', async () => {
     const manufacturerVndr = await seedVendor('MANUFACTURER')
-    // A pre-existing unit already carrying the ...009U ICCID, to prove the
-    // cross-unit ICCID-conflict path (Confirm 3, intake.ts) is reused
-    // unmodified: the conflicting device is still CREATED (a different real
-    // device), with its sim_no stored NULL and the conflict flagged separately.
+    // A pre-existing unit already carrying the ...009U ICCID. Under the 12 Aug
+    // 2026 walkthrough (Workflow A frozen rule) the OPS upload runs NO SIM
+    // validation: the row that repeats this ICCID is created with its sim_no
+    // stored AS SENT and no intake_exception is raised. The ICCID-conflict
+    // detection survives only on the vendor intake door (intake.test.ts).
     //
     // The values here are device-id and ICCID SHAPED rather than the old toy
-    // DEV-1/SIM-1, because A-2's loose row format check now rejects those. The
-    // subject of this test is dedup and the ledger, not formats, so the shapes
-    // changed and every assertion stayed.
+    // DEV-1/SIM-1; the subject of this test is dedup and the ledger.
     const existingUuid = toUuid(newId('unit'))
     await db.$executeRaw`
       INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, sim_no, updated_at)
@@ -91,7 +90,7 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
     const csv = toCsv([
       ['1234567890001', '8991000000000000101U', 'QR-1'], // valid, accepted
       ['1234567890001', '8991000000000000102U', 'QR-2'], // duplicate device serial IN-FILE -> flagged, not created
-      ['1234567890003', '8991000000000000009U', 'QR-3'], // duplicate ICCID vs an EXISTING unit -> flagged, still created (sim_no null)
+      ['1234567890003', '8991000000000000009U', 'QR-3'], // duplicate ICCID vs an EXISTING unit -> created, sim_no kept, NOT flagged
       ['', '8991000000000000104U', 'QR-4'], // missing Device ID -> invalid row, not ingested at all
     ])
     const clientKey = randomUUID()
@@ -108,7 +107,7 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
 
     expect(res.deduped).toBe(false)
     expect(res.accepted).toBe(2)
-    expect(res.flagged).toBe(2)
+    expect(res.flagged).toBe(1)
     expect(res.invalid).toBe(1)
     expect(res.invalidRows).toEqual([{ rowNo: 4, errors: ['missing_device_id'] }])
     expect(res.createdUnitIds).toHaveLength(2)
@@ -118,13 +117,13 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
     >`SELECT device_serial, status, product_type, sim_no FROM unit WHERE device_serial IN ('1234567890001', '1234567890003') ORDER BY device_serial`
     expect(units).toEqual([
       { device_serial: '1234567890001', status: 'IN_STOCK', product_type: 'SOUNDBOX', sim_no: '8991000000000000101U' },
-      { device_serial: '1234567890003', status: 'IN_STOCK', product_type: 'SOUNDBOX', sim_no: null },
+      { device_serial: '1234567890003', status: 'IN_STOCK', product_type: 'SOUNDBOX', sim_no: '8991000000000000009U' },
     ])
 
     const exceptions = await db.$queryRaw<{ reason_code: string }[]>`
       SELECT reason_code FROM intake_exception ORDER BY reason_code
     `
-    expect(exceptions.map((e) => e.reason_code)).toEqual(['duplicate_device_serial_in_file', 'duplicate_sim_no_existing_unit'])
+    expect(exceptions.map((e) => e.reason_code)).toEqual(['duplicate_device_serial_in_file'])
 
     const ledger = await db.$queryRaw<
       {
@@ -145,7 +144,7 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
       manufacturer_vndr: toUuid(manufacturerVndr),
       row_total: 4,
       row_accepted: 2,
-      row_flagged: 2,
+      row_flagged: 1,
       row_invalid: 1,
       status: 'processed',
     })

@@ -111,15 +111,23 @@ export async function ingestIntakeSheetWithinTx(
   tx: Tx,
   sheet: IntakeSheet,
   traceId: string,
-  // Path separation (SIM No fast-follow, R2): the manufacturer-intake path
-  // passes flagDuplicates:true, so a repeat serial or a duplicate ICCID is
-  // FLAGGED for review (BRD). The ops correction path (resolveIntakeException)
-  // and any other caller omit it, keeping the legacy silent-no-op semantics
-  // byte-for-byte. Optional with a default so the correction call site is
-  // unchanged.
-  opts: { flagDuplicates?: boolean } = {},
+  // Path separation, in two independent switches:
+  //  - flagDuplicates (SIM No fast-follow, R2): a repeat serial is FLAGGED
+  //    for review rather than silently no-oped. The ops correction path
+  //    (resolveIntakeException) omits it, keeping the legacy semantics
+  //    byte-for-byte. This is the duplicate check the 12 Aug 2026
+  //    walkthrough's Workflow A frozen rule names, so it stays on for BOTH
+  //    upload doors.
+  //  - flagSimNoDuplicates: the ICCID-conflict detection (Confirm 3). The
+  //    VENDOR door keeps it pending the Q5 single-door ruling; the OPS
+  //    device-inventory upload does NOT pass it, because the frozen rule
+  //    grants Device ID presence plus the duplicate check as the ONLY
+  //    validations, so a duplicate ICCID on that path is stored as sent and
+  //    never raises review-queue noise.
+  // Optional with defaults so the correction call site is unchanged.
+  opts: { flagDuplicates?: boolean; flagSimNoDuplicates?: boolean } = {},
 ): Promise<IntakeResult> {
-  const { flagDuplicates = false } = opts
+  const { flagDuplicates = false, flagSimNoDuplicates = false } = opts
   const vndrUuid = toUuid(sheet.vndrId)
   const createdUnitIds: string[] = []
   let quarantined = 0
@@ -139,9 +147,9 @@ export async function ingestIntakeSheetWithinTx(
       // extensibility concern and is explicitly named in the task brief).
       const seenSerials = new Set<string>()
       // Fast-follow (SIM No capture): within-file duplicate-ICCID detection,
-      // sibling of seenSerials. Populated ONLY on the manufacturer-intake path
-      // (flagDuplicates); the ops correction path leaves it empty and keeps its
-      // legacy semantics untouched.
+      // sibling of seenSerials. Populated ONLY when flagSimNoDuplicates is on
+      // (the vendor intake door); the ops device-inventory upload and the ops
+      // correction path leave it empty.
       const seenSimNos = new Set<string>()
 
       // Quarantine one row to intake_exception (D103d), same shape as the
@@ -174,7 +182,9 @@ export async function ingestIntakeSheetWithinTx(
           // deferred), so blocking a real device on a not-yet-used field
           // over-couples the device lifecycle to the SIM conflict. The unit is
           // CREATED with sim_no NULL and the ICCID conflict is flagged
-          // SEPARATELY. Two flavors, detected on the intake path only:
+          // SEPARATELY. Two flavors, detected on the VENDOR intake door only
+          // (flagSimNoDuplicates; the 12 Aug 2026 walkthrough removed every
+          // SIM check from the ops upload):
           //   - within-file: the ICCID was already stored by an earlier row
           //     (keep the first occurrence's ICCID);
           //   - cross-unit: the ICCID is already bound to a prior unit. The
@@ -184,7 +194,7 @@ export async function ingestIntakeSheetWithinTx(
           //     value is compared, never surfaced), consistent with S7.
           let iccidDupReason: string | null = null
           let simNoForInsert: string | null = row.simNo ?? null
-          if (flagDuplicates && row.simNo !== undefined) {
+          if (flagSimNoDuplicates && row.simNo !== undefined) {
             if (seenSimNos.has(row.simNo)) {
               iccidDupReason = 'duplicate_sim_no_in_file'
               simNoForInsert = null
@@ -329,8 +339,11 @@ export async function ingestIntakeSheet(
   // body is left untouched.
   return db.$transaction(async (tx: Tx) => {
     await enterWriteRole(tx, 'fulfillment_write')
-    // Manufacturer-intake path: duplicates (repeat serial or duplicate ICCID)
-    // are FLAGGED for review, not silently dropped (BRD, R2 path separation).
-    return ingestIntakeSheetWithinTx(tx, sheet, traceId, { flagDuplicates: true })
+    // Vendor intake door: duplicates (repeat serial AND duplicate ICCID) are
+    // FLAGGED for review, not silently dropped (BRD, R2 path separation).
+    // The ICCID half stays on THIS door only, pending the Q5 single-door
+    // ruling; the ops upload passes flagDuplicates alone (12 Aug 2026
+    // walkthrough, Workflow A frozen rule).
+    return ingestIntakeSheetWithinTx(tx, sheet, traceId, { flagDuplicates: true, flagSimNoDuplicates: true })
   })
 }

@@ -11,12 +11,16 @@ import { OpsClientError } from './ops.js'
 
 // Phase 5 Task 1 (D-G, FR-01a): the class-3 ops device-inventory upload, the
 // ops analog of the vendor-channel manufacturer intake (intake.ts). Reuses
-// ingestIntakeSheetWithinTx (flagDuplicates:true) for the SAME dedup (repeat
-// serial / duplicate ICCID, in-file AND against an existing unit) and Unit
-// insert the vendor channel runs; this adds NO new dedup logic and NO new
-// device state machine (units enter at IN_STOCK, per the ratified brief; the
-// rejected plan-text "warehouse->assigned->printed->live" state machine does
-// not exist here).
+// ingestIntakeSheetWithinTx (flagDuplicates:true) for the SAME duplicate
+// SERIAL dedup (in-file AND against an existing unit) and Unit insert the
+// vendor channel runs; this adds NO new dedup logic and NO new device state
+// machine (units enter at IN_STOCK, per the ratified brief; the rejected
+// plan-text "warehouse->assigned->printed->live" state machine does not
+// exist here). Deliberately NOT passed: flagSimNoDuplicates. The 12 Aug 2026
+// walkthrough froze Workflow A with Device ID presence plus the duplicate
+// check as the ONLY validations on this upload, so a duplicate ICCID here is
+// stored as sent and raises no review-queue noise (the vendor door keeps its
+// ICCID detection pending the Q5 single-door ruling).
 //
 // manufacturerVndrId is a RATIFIED VALIDATED BODY REFERENCE: a class-3
 // all-programs ops principal carries no vendor scope of its own to pin
@@ -169,15 +173,12 @@ export async function ingestOpsDeviceInventory(
       // context (held_by_actor, released_by_actor, resolved_by_actor,
       // triggered_by_actor all cast the raw actor id directly, no toUuid).
       //
-      // Fix round 1, Finding C: row_accepted and row_flagged are NOT a
-      // partition of row_total. A row can be BOTH created and flagged (the
-      // duplicate-ICCID-vs-existing-unit case, Confirm 3 in intake.ts: the
-      // conflicting device is still created with sim_no null AND a
-      // duplicate_sim_no_existing_unit intake_exception is raised for the
-      // SAME row), so row_accepted + row_flagged can exceed row_total minus
-      // row_invalid. This is accurate to the domain, not a bug: do not
-      // "fix" these counts to sum cleanly, and do not assume elsewhere that
-      // they do.
+      // Fix round 1, Finding C, narrowed by the 12 Aug 2026 walkthrough:
+      // row_accepted and row_flagged are STILL not defined as a partition of
+      // row_total. On this path the only flag left is a duplicate serial
+      // (never created, so the counts happen to sum cleanly today), but the
+      // ledger columns are independent tallies by contract: do not assume
+      // elsewhere that they partition, and do not "fix" them to.
       await tx.$executeRaw`
         INSERT INTO device_inventory_upload
           (id, file_id, uploader, manufacturer_vndr, row_total, row_accepted, row_flagged, row_invalid, status, created_at)
