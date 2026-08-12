@@ -232,6 +232,15 @@ model QuarantineRow {
   // Spec 10c: additive class-3 ops resolution stamp (nullable, expand-contract).
   resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz(6)
   resolvedByActor String?   @map("resolved_by_actor") @db.Uuid
+  /// WHICH of D-8's two actions retired this row: 'cured' (an ingest was
+  /// re-driven with a corrected row) or 'closed' (a genuine duplicate,
+  /// archived untouched). Not a second resolved flag; resolved_at still answers
+  /// whether the row is retired at all. NULL on rows resolved before the
+  /// distinction existed, deliberately NOT backfilled, since inventing a
+  /// resolution nobody recorded would put a fabricated operator claim in the
+  /// archive. Constrained to those two values by a CHECK in migration
+  /// 20260812140000.
+  resolution      String?   @map("resolution")
   /// Per-reason structured evidence (2026-08-10 soundbox duplicate-VPA ruling).
   /// Today only `duplicate_vpa_soundbox` writes it, as
   /// {"duplicateOf":{"kind","reference","merchantDisplayName"}}, so the ops

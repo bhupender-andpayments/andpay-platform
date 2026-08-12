@@ -242,6 +242,57 @@ describe('ops-edge FR08-2 damage case-status routes (wiring + gate)', () => {
   })
 })
 
+// D-8's Close action (12 Aug 2026), the review queue's second action. These
+// prove the route is MOUNTED and its gate is wired, which is what an edge suite
+// owns; the domain behavior (the resolution stamp, the archive, the race with
+// cure) is pinned in services/tms/test/ops.test.ts.
+describe('ops-edge review-queue Close route (D-8)', () => {
+  it('POST quarantine close without an Idempotency-Key -> 400 (authz passed, the action-key gate rejects)', async () => {
+    // A 400 rather than a 403 is the load-bearing part: it proves
+    // ops:close-quarantine IS granted to role:ops_portal, so the new permission
+    // actually reached the shared ops bundle, and that the gate runs before any
+    // domain write.
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .post(`/ops/quarantine/${randomUUID()}/close`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({})
+    expect(res.status).toBe(400)
+  })
+
+  it('POST quarantine close on a real held row -> 200, closed, and the row leaves the open queue', async () => {
+    const seeded = await tmsDb.$queryRaw<{ id: string }[]>`
+      INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+      VALUES ('edge-close-file', 1, ${'redacted:bank_request'}, 'duplicate_vpa_soundbox')
+      RETURNING id
+    `
+    const id = seeded[0]!.id
+    // A uuid `sub`, like the other tests here that reach a domain write which
+    // records the actor: quarantine_row.resolved_by_actor is a uuid column and
+    // the real class-3 claim's sub IS a principal uuid, so the file's default
+    // 'user_ops_1' fixture is the wrong shape for this route rather than a
+    // finding about it.
+    const token = await mint({ sub: randomUUID() })
+    const res = await request(app.getHttpServer())
+      .post(`/ops/quarantine/${id}/close`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({})
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ deduped: false, closed: true })
+
+    const row = await tmsDb.$queryRaw<{ resolution: string | null }[]>`
+      SELECT resolution FROM quarantine_row WHERE id = ${id}::uuid
+    `
+    expect(row[0]!.resolution).toBe('closed')
+
+    const open = await request(app.getHttpServer()).get('/ops/quarantine').set('Authorization', `Bearer ${token}`)
+    expect(open.status).toBe(200)
+    expect((open.body as { id: string }[]).find((q) => q.id === id)).toBeUndefined()
+  })
+})
+
 describe('ops-edge actions: the per-action step-up gate (check 1)', () => {
   it('POST override with a STALE auth_time -> 403 + one step-up-required 6e DENY, no domain op', async () => {
     const now = Math.floor(Date.now() / 1000)

@@ -35,6 +35,11 @@ const OPS_PERMISSIONS = [
   'ops:vendor-suspend',
   'ops:vendor-edit',
   'ops:resolve-quarantine',
+  // D-8 (12 Aug 2026): the OTHER of the review queue's two actions. Its own
+  // operation string, not a flag on resolve, because the co-committed 6e
+  // carries the operation and "I archived a real order unfilled" is a
+  // different claim from "I corrected and reprocessed it".
+  'ops:close-quarantine',
   'ops:resolve-intake-exception',
   'ops:resolve-status-exception',
   'ops:damage-reason-create',

@@ -8,6 +8,7 @@ import {
   commitBankFile,
   commitDamageFile,
   resolveQuarantineRow,
+  closeQuarantineRow,
   updateDamageCaseStatusOps,
   OpsClientError,
   BankFileParseError,
@@ -653,6 +654,42 @@ describe('soundbox duplicate-VPA hold (ruling 2026-08-10): commitBankFile', () =
     expect(q!.detail).toBeNull()
   })
 
+  // W-5 left an operator-facing wart: one bank row mints TWO assignments, a
+  // SOUNDBOX leg and a COLLATERAL leg, both carrying the same VPA and both
+  // inserted in one transaction, so `created_at` ties exactly. Whichever the
+  // plan emitted first won the tie, which could be the COLLATERAL leg: the
+  // operator was then told their soundbox row duplicates the STANDEE
+  // consignment. True, and useless.
+  it('names the SOUNDBOX sibling as the original, not the collateral one', async () => {
+    const sourceEventId = `ops-seed|siblings@gscb`
+    const ids: Record<string, string> = {}
+    // Deliberately inserted COLLATERAL FIRST, so a test that passes cannot be
+    // passing by insertion luck.
+    for (const group of ['COLLATERAL', 'SOUNDBOX']) {
+      const asgnUuid = toUuid(newId('asgn'))
+      ids[group] = fromUuid('asgn', asgnUuid)
+      await db.$executeRaw`INSERT INTO assignment (
+        id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
+        bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count,
+        billable, demand_state, source_event_id, dispatch_group, updated_at
+      ) VALUES (
+        ${asgnUuid}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
+        'Acme', 'Acme Pvt Ltd', '5814', '3', 'HDFC Bank', 'Old Addr', 'upi://pay', 'siblings@gscb',
+        ${group === 'SOUNDBOX'}, 1, 2,
+        true, 'pooled-for-fulfillment', ${sourceEventId}, ${group}, now()
+      )`
+    }
+
+    const clientKey = randomUUID()
+    const csv = toCsv(REQUEST_HEADERS, [requestCells({ bankMerchantReference: 'BM-1', vpaValue: 'siblings@gscb' })])
+    await commitBankFile(db, { fileBytes: csv, filename: 'r.csv', clientKey, actorId: randomUUID(), traceId: 't-sib' })
+
+    const q = await quarantineDetail(clientKey, 1)
+    expect(q!.reason_code).toBe('duplicate_vpa_soundbox')
+    expect(q!.detail!.duplicateOf!.reference).toBe(ids.SOUNDBOX)
+    expect(q!.detail!.duplicateOf!.reference).not.toBe(ids.COLLATERAL)
+  })
+
   it('readQuarantineQueue exposes the detail, so the ops queue can name the original', async () => {
     const asgnId = await seedOriginalAssignment('queue@gscb', '3')
     const clientKey = randomUUID()
@@ -702,6 +739,117 @@ describe('soundbox duplicate-VPA hold (ruling 2026-08-10): commitBankFile', () =
     expect(q[0]!.detail!.duplicateOf!.reference).toBe(asgnId)
     // No pending_row was created for it: a held row does not ingest.
     expect(await count('pending_row')).toBe(0)
+  })
+
+  // D-8's SECOND action, which did not exist: "Close: it was a genuine
+  // duplicate. Record is closed and removed from the queue (retained in
+  // archive)." Before this, the only action re-drove an ingest, so an operator
+  // holding a genuine duplicate had to either invent a correction or leave the
+  // row in the queue forever, and D-8's target state is an EMPTY queue.
+  describe('closeQuarantineRow (D-8 Close)', () => {
+    async function seedHeld(fileId: string): Promise<string> {
+      const seeded = await db.$queryRaw<{ id: string }[]>`
+        INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+        VALUES (${fileId}, 1, ${'redacted:bank_request'}, 'duplicate_vpa_soundbox')
+        RETURNING id
+      `
+      return seeded[0]!.id
+    }
+
+    it('archives the row as closed, ingests NOTHING, and co-commits one ALLOW 6e', async () => {
+      const id = await seedHeld('close-file-1')
+      const actorId = randomUUID()
+      const res = await closeQuarantineRow(db, { quarantineId: id, clientKey: randomUUID(), actorId, traceId: 't-close-1' })
+
+      expect(res).toEqual({ deduped: false, closed: true })
+
+      const row = await db.$queryRaw<{ resolved_at: Date | null; resolved_by_actor: string | null; resolution: string | null }[]>`
+        SELECT resolved_at, resolved_by_actor, resolution FROM quarantine_row WHERE id = ${id}::uuid
+      `
+      expect(row[0]!.resolved_at).not.toBeNull()
+      expect(row[0]!.resolved_by_actor).toBe(actorId)
+      // The discriminator is the point: a closed row must not read as a cure
+      // that happened to do nothing.
+      expect(row[0]!.resolution).toBe('closed')
+
+      // NOTHING was ingested. This is what separates Close from Cure.
+      expect(await count('pending_row')).toBe(0)
+
+      const audit = await db.$queryRaw<{ payload: { operation: string; decision: string; resourceIds: string[] } }[]>`
+        SELECT payload FROM outbox WHERE event_type = 'authz.audit'
+      `
+      expect(audit).toHaveLength(1)
+      expect(audit[0]!.payload).toMatchObject({
+        operation: 'ops:close-quarantine',
+        decision: 'ALLOW',
+        resourceIds: [id],
+      })
+    })
+
+    it('leaves the queue: a closed row is gone from the open list but still in the archive', async () => {
+      const id = await seedHeld('close-file-2')
+      await closeQuarantineRow(db, { quarantineId: id, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-close-2' })
+
+      const open = await readQuarantineQueue(db, { includeResolved: false })
+      expect(open.find((q) => q.id === id)).toBeUndefined()
+
+      const archived = await readQuarantineQueue(db, { includeResolved: true })
+      const found = archived.find((q) => q.id === id)
+      expect(found).toBeDefined()
+      expect(found!.resolution).toBe('closed')
+    })
+
+    it('a client-key replay is a no-op, not a second stamp or a second 6e', async () => {
+      const id = await seedHeld('close-file-3')
+      const clientKey = randomUUID()
+      const first = await closeQuarantineRow(db, { quarantineId: id, clientKey, actorId: randomUUID(), traceId: 't-close-3a' })
+      expect(first.closed).toBe(true)
+
+      const replay = await closeQuarantineRow(db, { quarantineId: id, clientKey, actorId: randomUUID(), traceId: 't-close-3b' })
+      expect(replay.deduped).toBe(true)
+
+      const audit = await db.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM outbox WHERE event_type = 'authz.audit'
+      `
+      expect(Number(audit[0]!.n)).toBe(1)
+    })
+
+    it('does NOT overwrite a row someone already cured, and says so', async () => {
+      // The race that matters: two operators looking at the same queue. The
+      // UPDATE's `resolved_at IS NULL` predicate is what protects the earlier
+      // resolution, and `closed: false` is how the caller learns it lost.
+      const id = await seedHeld('close-file-4')
+      await resolveQuarantineRow(db, {
+        quarantineId: id,
+        correctedRow: validRow({ fileId: 'close-cured', rowNo: 1, vpaValue: 'fresh@gscb', qrValue: 'upi://pay?pa=fresh@gscb' }),
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-close-4a',
+      })
+
+      const res = await closeQuarantineRow(db, { quarantineId: id, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-close-4b' })
+      expect(res).toEqual({ deduped: false, closed: false })
+
+      const row = await db.$queryRaw<{ resolution: string | null }[]>`
+        SELECT resolution FROM quarantine_row WHERE id = ${id}::uuid
+      `
+      expect(row[0]!.resolution).toBe('cured') // the cure stands
+    })
+
+    it('curing stamps the OTHER resolution, so the two are told apart in the archive', async () => {
+      const id = await seedHeld('close-file-5')
+      await resolveQuarantineRow(db, {
+        quarantineId: id,
+        correctedRow: validRow({ fileId: 'cured-file-5', rowNo: 1, vpaValue: 'cured5@gscb', qrValue: 'upi://pay?pa=cured5@gscb' }),
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-close-5',
+      })
+      const row = await db.$queryRaw<{ resolution: string | null }[]>`
+        SELECT resolution FROM quarantine_row WHERE id = ${id}::uuid
+      `
+      expect(row[0]!.resolution).toBe('cured')
+    })
   })
 })
 

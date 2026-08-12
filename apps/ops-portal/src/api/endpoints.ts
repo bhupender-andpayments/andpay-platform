@@ -219,6 +219,14 @@ export interface QuarantineRowView {
   createdAt: string
   resolvedAt: string | null
   resolvedByActor: string | null
+  /**
+   * WHICH of D-8's two actions retired the row: 'cured' (an ingest was
+   * re-driven with a corrected row) or 'closed' (archived as a genuine
+   * duplicate). Null while the row is open, and also null on rows resolved
+   * before the distinction existed. Optional so an older server that predates
+   * the column still parses.
+   */
+  resolution?: 'cured' | 'closed' | null
 }
 
 /** services/fulfillment/src/ops-read.ts IntakeExceptionView. */
@@ -344,6 +352,17 @@ export function resolveQuarantine(c: Client, id: string, correctedRow: BankReque
     method: 'POST',
     path: `/ops/quarantine/${id}/resolve`,
     body: { correctedRow },
+    idempotencyKey,
+  })
+}
+
+// D-8's other action: archive the held row with no ingest. No body, because
+// closing is a decision about the record as it stands, not a correction to it.
+export function closeQuarantine(c: Client, id: string, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; closed: boolean }>({
+    method: 'POST',
+    path: `/ops/quarantine/${id}/close`,
+    body: {},
     idempotencyKey,
   })
 }

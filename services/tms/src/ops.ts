@@ -546,7 +546,7 @@ export async function resolveQuarantineRow(
       outcome = await ingestRequestRowWithinTx(tx, args.correctedRow, args.traceId)
       await tx.$executeRaw`
         UPDATE quarantine_row
-        SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid
+        SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid, resolution = ${'cured'}
         WHERE id = ${args.quarantineId}::uuid AND resolved_at IS NULL
       `
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the re-ingest
@@ -565,6 +565,67 @@ export async function resolveQuarantineRow(
     })
   })
   return { deduped: !ran, outcome }
+}
+
+/**
+ * CLOSE a held row: D-8's OTHER action, and the one that did not exist.
+ *
+ * "Close: it was a genuine duplicate (e.g. the bank typo'd Soundbox=Yes).
+ * Record is closed and removed from the queue (retained in archive)." So this
+ * ingests NOTHING. It is deliberately not resolveQuarantineRow with an empty
+ * or synthetic row: re-driving an ingest to retire a record would either mint
+ * an order nobody asked for or depend on a corrected row the operator does not
+ * have, and both put a fabrication in the archive. The row is stamped resolved
+ * with `resolution = 'closed'`, which is what keeps a closed record legible as
+ * a decision rather than as a cure that happened to do nothing.
+ *
+ * WHY A SEPARATE PERMISSION AND OPERATION, not a flag on the existing one:
+ * the co-committed 6e carries the operation, and "I archived a real order
+ * unfilled" is a different claim from "I corrected and reprocessed it". One
+ * operation string for both would make the audit trail unable to tell them
+ * apart, which is precisely the distinction the new column exists to preserve.
+ *
+ * IDEMPOTENT AND SAFE AGAINST A RACE with cure, by the same means the rest of
+ * this file uses: the client-key `onceWithin` makes a replay a no-op, and
+ * `AND resolved_at IS NULL` in the UPDATE means a row someone else has already
+ * cured is NOT re-stamped as closed. `closed: false` reports exactly that, so
+ * the caller can tell "I closed it" from "it was already resolved" instead of
+ * reading a bare success.
+ */
+export async function closeQuarantineRow(
+  db: TmsDb,
+  args: { quarantineId: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean; closed: boolean }> {
+  let closed = false
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:close-quarantine'), async () => {
+      const stamped = await tx.$queryRaw<{ id: string }[]>`
+        UPDATE quarantine_row
+        SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid, resolution = ${'closed'}
+        WHERE id = ${args.quarantineId}::uuid AND resolved_at IS NULL
+        RETURNING id::text AS id
+      `
+      closed = stamped.length > 0
+      // Co-commit the ALLOW 6e in the SAME tx as the stamp (spec 10c CC-1),
+      // whether or not the stamp won: the operator DID perform an authorized
+      // close attempt against this resource, and an audit that recorded only
+      // the winning attempts would under-report what was tried. IDs and enum
+      // tokens only, no row content (S7/S10.5).
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:close-quarantine',
+            principalId: args.actorId,
+            resourceIds: [args.quarantineId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+  return { deduped: !ran, closed }
 }
 
 // Phase 3 Task 1 (BRD FR-08, FR-11) admin CRUD on the damage_reason master,

@@ -53,6 +53,7 @@ export {
   previewDamageFile,
   commitDamageFile,
   resolveQuarantineRow,
+  closeQuarantineRow,
   createDamageReasonOps,
   activateDamageReasonOps,
   deactivateDamageReasonOps,

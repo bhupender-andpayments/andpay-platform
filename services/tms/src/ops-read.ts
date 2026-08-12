@@ -37,6 +37,13 @@ export interface QuarantineRowView {
   createdAt: Date
   resolvedAt: Date | null
   resolvedByActor: string | null
+  /**
+   * WHICH of D-8's two actions retired this row: 'cured' (an ingest was
+   * re-driven) or 'closed' (archived as a genuine duplicate). Null while the
+   * row is still open, and also null on rows resolved before the distinction
+   * existed, which are deliberately not backfilled.
+   */
+  resolution: 'cured' | 'closed' | null
 }
 
 // The exact (aliased) snake_case shape of the SELECT below, typed directly
@@ -52,6 +59,7 @@ interface QuarantineRowDbRow {
   created_at: Date
   resolved_at: Date | null
   resolved_by_actor: string | null
+  resolution: 'cured' | 'closed' | null
 }
 
 function toDto(r: QuarantineRowDbRow): QuarantineRowView {
@@ -64,6 +72,7 @@ function toDto(r: QuarantineRowDbRow): QuarantineRowView {
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
     resolvedByActor: r.resolved_by_actor,
+    resolution: r.resolution,
   }
 }
 
@@ -274,12 +283,14 @@ export async function readQuarantineQueue(
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
     return args.includeResolved
       ? await tx.$queryRaw<QuarantineRowDbRow[]>`
-          SELECT id, file_id, row_no, reason_code, detail, created_at, resolved_at, resolved_by_actor
+          SELECT id, file_id, row_no, reason_code, detail, created_at, resolved_at, resolved_by_actor,
+                 resolution
           FROM quarantine_row
           ORDER BY created_at
         `
       : await tx.$queryRaw<QuarantineRowDbRow[]>`
-          SELECT id, file_id, row_no, reason_code, detail, created_at, resolved_at, resolved_by_actor
+          SELECT id, file_id, row_no, reason_code, detail, created_at, resolved_at, resolved_by_actor,
+                 resolution
           FROM quarantine_row
           WHERE resolved_at IS NULL
           ORDER BY created_at

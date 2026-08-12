@@ -102,7 +102,7 @@ describe('QueuesPage', () => {
     // Resolve: fill every correction field including the now-mandatory branch
     // code, submit, and assert the real BankRequestRow shape (with branchCode)
     // rode the POST body, not a bare id.
-    await userEvent.click(screen.getByRole('button', { name: /resolve quarantine row qr-1/i }))
+    await userEvent.click(screen.getByRole('button', { name: /cure and reprocess quarantine row qr-1/i }))
     await userEvent.type(screen.getByLabelText(/bank merchant reference/i), 'BMR-1')
     await userEvent.type(screen.getByLabelText(/display name/i), 'Acme Store')
     await userEvent.type(screen.getByLabelText(/legal name/i), 'Acme Pvt Ltd')
@@ -153,6 +153,109 @@ describe('QueuesPage', () => {
       const after = calls.filter((c) => c.url.includes('/ops/quarantine') && !c.url.includes('resolve')).length
       expect(after).toBeGreaterThan(getCallsBeforeResolve)
     })
+  })
+
+  // D-8's second action. The queue offers exactly two, and Close must not be a
+  // cure that happens to ingest nothing: it posts to its own route with no body
+  // and asks for confirmation first, because it archives a real order unfilled.
+  it('offers Close alongside Cure, confirms first, and posts to the close route with no corrected row', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init })
+        if (url.includes('/ops/quarantine/qr-dup/close')) {
+          return jsonResponse({ deduped: false, closed: true })
+        }
+        if (url.includes('/ops/quarantine')) {
+          return jsonResponse([
+            {
+              id: 'qr-dup',
+              fileId: 'file-dup',
+              rowNo: 7,
+              reasonCode: 'duplicate_vpa_soundbox',
+              detail: { duplicateOf: { kind: 'assignment', reference: 'asgn_01hzzz', merchantDisplayName: 'Acme' } },
+              createdAt: '2026-08-12T00:00:00.000Z',
+              resolvedAt: null,
+              resolvedByActor: null,
+              resolution: null,
+            },
+          ])
+        }
+        return jsonResponse([])
+      }),
+    )
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <QueuesPage />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('file-dup')).toBeTruthy()
+    // Both actions are present; neither is hidden behind the other.
+    expect(screen.getByRole('button', { name: /cure and reprocess quarantine row qr-dup/i })).toBeTruthy()
+
+    // First click only ARMS the close: nothing is posted yet.
+    await userEvent.click(screen.getByRole('button', { name: /^close quarantine row qr-dup$/i }))
+    expect(calls.some((c) => c.url.includes('/close'))).toBe(false)
+    expect(screen.getByText(/archived as closed and nothing is ingested/i)).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: /confirm close quarantine row qr-dup/i }))
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/quarantine/qr-dup/close'))).toBe(true)
+    })
+    const closeCall = calls.find((c) => c.url.includes('/ops/quarantine/qr-dup/close'))!
+    expect(headerValue(closeCall, 'Idempotency-Key')).toBeTruthy()
+    // No corrected row rides a close: there is nothing to correct.
+    expect(parseBody(closeCall).correctedRow).toBeUndefined()
+  })
+
+  it('shows HOW a resolved row was retired, and a dash when the server does not say', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/quarantine')) {
+          return jsonResponse([
+            {
+              id: 'qr-closed', fileId: 'file-a', rowNo: 1, reasonCode: 'duplicate_vpa_soundbox',
+              createdAt: '2026-08-12T00:00:00.000Z', resolvedAt: '2026-08-12T01:00:00.000Z',
+              resolvedByActor: 'actor-1', resolution: 'closed',
+            },
+            {
+              id: 'qr-cured', fileId: 'file-b', rowNo: 2, reasonCode: 'missing_branch_code',
+              createdAt: '2026-08-12T00:00:00.000Z', resolvedAt: '2026-08-12T02:00:00.000Z',
+              resolvedByActor: 'actor-1', resolution: 'cured',
+            },
+            {
+              // Resolved before the two actions were distinguishable. Shown as
+              // unknown rather than guessed at.
+              id: 'qr-legacy', fileId: 'file-c', rowNo: 3, reasonCode: 'missing_branch_code',
+              createdAt: '2026-08-12T00:00:00.000Z', resolvedAt: '2026-08-12T03:00:00.000Z',
+              resolvedByActor: 'actor-1', resolution: null,
+            },
+          ])
+        }
+        return jsonResponse([])
+      }),
+    )
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <QueuesPage />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('file-a')).toBeTruthy()
+    expect(screen.getByText('Closed')).toBeTruthy()
+    expect(screen.getByText('Cured')).toBeTruthy()
+    // Already-resolved rows offer neither action.
+    expect((screen.getByRole('button', { name: /^close quarantine row qr-closed$/i }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: /cure and reprocess quarantine row qr-closed/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('renders intake exceptions and resolves with a correctedSheet including a dynamically added row (raw exceptionId, unblocked)', async () => {

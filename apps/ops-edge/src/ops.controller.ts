@@ -44,6 +44,7 @@ import {
   previewDamageFile,
   commitDamageFile,
   resolveQuarantineRow,
+  closeQuarantineRow,
   createDamageReasonOps,
   activateDamageReasonOps,
   deactivateDamageReasonOps,
@@ -881,6 +882,26 @@ export class OpsController {
       traceId: g.traceId,
     })
     return result
+  }
+
+  // D-8's OTHER action. It takes NO body, deliberately: closing a record is a
+  // decision about the record as it stands, not a correction to it, so there is
+  // nothing for the operator to supply and nothing for a caller to get wrong.
+  // The gate still requires an Idempotency-Key like every other write here.
+  @Post('quarantine/:id/close')
+  @HttpCode(200)
+  async closeQuarantine(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; closed: boolean }> {
+    const g = await this.gate(req, 'ops:close-quarantine', idem, [id])
+    return closeQuarantineRow(this.deps.tmsDb, {
+      quarantineId: id,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
   }
 
   @Post('intake-exceptions/:id/resolve')

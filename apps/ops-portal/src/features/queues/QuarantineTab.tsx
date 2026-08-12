@@ -8,6 +8,7 @@ import { orDash, IncludeResolvedToggle } from './shared.js'
 import {
   getQuarantine,
   resolveQuarantine,
+  closeQuarantine,
   type QuarantineRowView,
 } from '../../api/endpoints.js'
 import { emptyBankRequestRowForm, toBankRequestRow, type BankRequestRowForm } from './resolve.js'
@@ -55,6 +56,11 @@ export function QuarantineTab() {
   const [resolvingId, setResolvingId] = useState<string | null>(null)
   const [form, setForm] = useState<BankRequestRowForm | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  // The row awaiting a Close confirmation, and any error from the attempt.
+  // Closing archives a real order unfilled and cannot be undone here, so it is
+  // confirmed rather than fired straight off the button.
+  const [closingId, setClosingId] = useState<string | null>(null)
+  const [closeError, setCloseError] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setError(null)
@@ -101,6 +107,25 @@ export function QuarantineTab() {
     }
   }
 
+  async function submitClose(): Promise<void> {
+    if (closingId === null) return
+    setCloseError(null)
+    try {
+      const res = await closeQuarantine(client, closingId, newIdempotencyKey())
+      // `closed: false` means the row was already resolved by someone else
+      // between the list load and this click. Saying so is more useful than a
+      // silent success that leaves the operator believing they closed it.
+      if (!res.closed && !res.deduped) {
+        setCloseError('That row was already resolved by someone else. Reloading the queue.')
+      } else {
+        setClosingId(null)
+      }
+      await load()
+    } catch (err) {
+      setCloseError(err instanceof Error ? err.message : 'Failed to close the row.')
+    }
+  }
+
   const columns: DataTableColumn<QuarantineRowView>[] = [
     { key: 'id', header: 'ID', cell: (r) => <CodeChip>{shortId(r.id)}</CodeChip> },
     { key: 'fileId', header: 'File ID', cell: (r) => r.fileId },
@@ -126,21 +151,52 @@ export function QuarantineTab() {
     },
     { key: 'createdAt', header: 'Created', cell: (r) => fmtDateTime(r.createdAt) },
     { key: 'resolvedAt', header: 'Resolved', cell: (r) => fmtDateTime(r.resolvedAt) },
+    // WHICH action retired the row (D-8). A resolved row that says nothing here
+    // was resolved before the two actions were distinguishable, and that is
+    // shown as a dash rather than guessed at.
+    {
+      key: 'resolution',
+      header: 'How',
+      // `?? null` covers both an open row and a server that predates the
+      // column, which are the same thing to look at: nothing to say yet.
+      cell: (r) => {
+        const how = r.resolution ?? null
+        return how === null ? orDash(null) : <StatusPill value={how} />
+      },
+    },
     { key: 'resolvedByActor', header: 'Resolved by', cell: (r) => orDash(r.resolvedByActor) },
     {
+      // D-8 gives the operator EXACTLY two actions, so both are offered here and
+      // neither is hidden behind the other. Cure opens the correction form;
+      // Close archives the record with no ingest, for the case the ruling names
+      // (a genuine duplicate, e.g. the bank typo'd Soundbox=Yes). Close is the
+      // destructive-in-spirit one, so it asks first: it retires a real order
+      // unfilled, and it cannot be undone from this screen.
       key: 'actions',
       header: 'Actions',
       cell: (r) => (
-        <Button
-          type="button"
-          size="sm"
-          variant="secondary"
-          disabled={r.resolvedAt !== null}
-          aria-label={`Resolve quarantine row ${r.id}`}
-          onClick={() => startResolve(r)}
-        >
-          Resolve
-        </Button>
+        <span className="flex gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={r.resolvedAt !== null}
+            aria-label={`Cure and reprocess quarantine row ${r.id}`}
+            onClick={() => startResolve(r)}
+          >
+            Cure
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={r.resolvedAt !== null || closingId === r.id}
+            aria-label={`Close quarantine row ${r.id}`}
+            onClick={() => setClosingId(r.id)}
+          >
+            Close
+          </Button>
+        </span>
       ),
     },
   ]
@@ -156,6 +212,41 @@ export function QuarantineTab() {
         )}
         <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No quarantined rows." />
       </Card>
+
+      {closingId !== null && (
+        <Card className="p-5">
+          <h2 className="mb-2 text-sm font-semibold text-foreground">Close this row without reprocessing it</h2>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Use this when the row was a genuine duplicate, for example the bank marked Soundbox as Yes by
+            mistake. The record is archived as closed and nothing is ingested. If the row should have been
+            ordered, cure it instead.
+          </p>
+          {closeError !== null && <ErrorNote>{closeError}</ErrorNote>}
+          <div className="mt-4 flex gap-2">
+            <Button
+              type="button"
+              size="sm"
+              aria-label={`Confirm close quarantine row ${closingId}`}
+              onClick={() => {
+                void submitClose()
+              }}
+            >
+              Close the row
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setClosingId(null)
+                setCloseError(null)
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {resolvingId !== null && form !== null && (
         <Card className="p-5">
