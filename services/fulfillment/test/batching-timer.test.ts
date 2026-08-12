@@ -277,6 +277,95 @@ describe('runDueBatchTimers: concurrency proof, FOR UPDATE SKIP LOCKED exclusivi
   })
 })
 
+// T0b.1 (PLAN.md, fixed 12 Aug 2026). The comment on the N-pools test above
+// described this exact hole without ever asserting recovery from it: a MAX_WAIT
+// timer coming due on an EMPTY pool was consumed (the engine marks it fired the
+// moment the effect resolves) while triggerBatchWithinTx returned before its
+// supersede-and-re-arm, and ensurePool arms a timer only when it CREATES the
+// pool. That pool then held zero pending max_wait timers forever, so max-wait
+// silently stopped existing for it. A low-volume tenant whose pool idles past
+// one window is the ordinary way to reach it.
+describe('runDueBatchTimers: a MAX_WAIT fire on an EMPTY pool must not disarm max-wait (T0b.1)', () => {
+  it('fires with no batch, yet leaves exactly one pending max_wait timer armed', async () => {
+    const anchor = await seedPoolAnchor()
+    const timerId = await seedDueTimer(anchor.pmInstanceId)
+    // No seedPooled: the pool is empty, which is the whole point.
+
+    const fired = await runDueBatchTimers(db, new Date())
+    expect(fired).toEqual([timerId]) // the timer WAS consumed
+
+    const batches = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM batch`
+    expect(Number(batches[0]!.n)).toBe(0) // and correctly created no empty batch
+
+    const timers = await db.$queryRaw<{ id: string; status: string }[]>`
+      SELECT id::text AS id, status FROM saga_timer WHERE instance_id = ${anchor.pmInstanceId}::uuid
+    `
+    expect(timers.find((t) => t.id === timerId)?.status).toBe('fired')
+    // THE FIX: a replacement is armed. Before it this was zero, and the pool
+    // could never sweep again.
+    const pending = timers.filter((t) => t.status === 'pending')
+    expect(pending).toHaveLength(1)
+    expect(pending[0]!.id).not.toBe(timerId)
+  })
+
+  it('and max-wait still works afterwards: an entry pooled later is swept by the re-armed timer', async () => {
+    // The assertion above is structural (a pending row exists). This one is the
+    // behavioral proof that the recovery is real, which is what actually
+    // regressed: work arriving after the empty sweep must still get batched by
+    // max-wait, with no LOT_SIZE or MANUAL trigger involved.
+    const anchor = await seedPoolAnchor()
+    await seedDueTimer(anchor.pmInstanceId)
+    await runDueBatchTimers(db, new Date()) // the empty sweep
+
+    // Work arrives only now.
+    await seedPooled(anchor.tenantUuid, anchor.programUuid, 'trace-after-empty-sweep', BASE)
+
+    // Advance past the re-armed timer's own window rather than rewriting its
+    // fire_at, so the timer under test is exactly the one the fix armed, at the
+    // fire_at the fix chose.
+    const { maxWaitSeconds } = poolConfig(anchor.tenantWire, anchor.programWire)
+    const afterWindow = new Date(Date.now() + maxWaitSeconds * 1000 + 60_000)
+    const firedAgain = await runDueBatchTimers(db, afterWindow)
+    expect(firedAgain).toHaveLength(1)
+
+    const batches = await db.$queryRaw<{ trigger_reason: string; unit_count: number }[]>`
+      SELECT trigger_reason, unit_count FROM batch
+      WHERE tenant_id = ${anchor.tenantUuid}::uuid AND program_id = ${anchor.programUuid}::uuid
+    `
+    expect(batches).toEqual([{ trigger_reason: 'MAX_WAIT', unit_count: 1 }])
+  })
+
+  it('but a LOT_SIZE trigger that finds an empty pool still touches NO timer', async () => {
+    // The asymmetry is deliberate and worth pinning, because "always re-arm"
+    // looks like the simpler rule and is wrong. Only a MAX_WAIT fire CONSUMES a
+    // timer, so only it owes a replacement. A LOT_SIZE (or MANUAL) trigger that
+    // finds nothing POOLED leaves the pool's existing pending timer untouched,
+    // and re-arming there would leave TWO pending timers, breaking the
+    // exactly-one invariant and letting a stale timer sweep the next window
+    // early.
+    const anchor = await seedPoolAnchor()
+    const timerId = await seedDueTimer(anchor.pmInstanceId)
+
+    // onDemandAccrued on an empty pool: the POOLED count is zero, below
+    // minLotSize, so it never reaches triggerBatch at all. ensurePool runs
+    // first but the pool already exists, so it arms nothing either.
+    await onDemandAccrued(
+      db,
+      anchor.tenantWire,
+      anchor.programWire,
+      `epoch-empty-${newId('asgn')}`,
+      'trace-empty-lotsize',
+    )
+
+    const timers = await db.$queryRaw<{ id: string; status: string }[]>`
+      SELECT id::text AS id, status FROM saga_timer WHERE instance_id = ${anchor.pmInstanceId}::uuid
+    `
+    expect(timers).toHaveLength(1) // no second timer armed
+    expect(timers[0]!.id).toBe(timerId)
+    expect(timers[0]!.status).toBe('pending') // and the original is still the live one
+  })
+})
+
 describe('runDueBatchTimers: deterministic multi-pool split proof (fix wave 1, load-bearing)', () => {
   // The test above proves exclusivity (no double-fire, no skip) but NOT a genuine two-worker
   // partition: with the default batchSize (100 > N), a purely sequential pair of calls (no

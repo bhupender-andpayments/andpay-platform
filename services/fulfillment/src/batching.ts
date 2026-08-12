@@ -139,6 +139,61 @@ export async function ensurePool(
   }
 }
 
+/**
+ * SUPERSEDE + RE-ARM (critique fix C2): every other pending max_wait timer on
+ * this pool is superseded (the currently-firing MAX_WAIT timer,
+ * `firingTimerId`, Task 9, is deliberately left alone so claimAndFireDueTimers
+ * can mark it fired without a self-conflict), and exactly one fresh max_wait
+ * timer is armed. At most one pending timer per pool survives, so a stale
+ * timer never prematurely sweeps the next window. Scoped to
+ * purpose = 'max_wait' so the "exactly one pending max_wait timer per pool"
+ * invariant is explicit: a future non-max_wait timer purpose on the same saga
+ * instance is never wrongly superseded here.
+ *
+ * FOR UPDATE SKIP LOCKED (fix wave 1, cross-transaction deadlock): a plain
+ * UPDATE ... WHERE here would try to lock EVERY matching pending max_wait row,
+ * including one an in-flight claimAndFireDueTimers MAX_WAIT fire already holds
+ * FOR UPDATE (packages/engine's own claim SELECT, Decision 77). That fire's own
+ * effect is this very triggerBatch call, opened on a SEPARATE
+ * transaction/connection, so this UPDATE and that FOR UPDATE claim can deadlock
+ * AB-BA: a concurrent same-pool trigger WITHOUT firingTimerId (LOT_SIZE via
+ * onDemandAccrued, or MANUAL) blocks waiting on the row the claim holds, while
+ * the claim's own transaction is awaiting (via a JS await) this effect to finish
+ * before it can ever release that lock. Postgres cannot detect this cycle (one
+ * edge is a JS await, not a DB wait), so it only resolves via Prisma's 5s
+ * transaction timeout. The inner subquery locks only the rows it can acquire
+ * immediately and skips any already locked by a concurrent fire; a skipped row
+ * is safe either way: it is about to be marked 'fired' by its own firing
+ * transaction, or it will be superseded on the next trigger. In the
+ * single-trigger, no-concurrency case nothing is locked by anyone else, so SKIP
+ * LOCKED skips nothing and behavior is unchanged.
+ *
+ * Extracted into a function because BOTH exits of triggerBatchWithinTx now need
+ * it: the batch-created path, and the nothing-POOLED path of a MAX_WAIT fire
+ * (see the defect note at that call site). Sharing it is what makes the
+ * post-condition identical on both, namely exactly one pending max_wait timer
+ * per pool.
+ */
+async function supersedeAndRearmMaxWait(
+  tx: Tx,
+  pmInstanceId: string,
+  tenantWire: string,
+  programWire: string,
+  firingTimerId: string | undefined,
+): Promise<void> {
+  await tx.$executeRaw`
+    UPDATE saga_timer SET status = 'superseded'
+    WHERE id IN (
+      SELECT id FROM saga_timer
+      WHERE instance_id = ${pmInstanceId}::uuid AND status = 'pending' AND purpose = 'max_wait'
+      AND (${firingTimerId ?? null}::uuid IS NULL OR id <> ${firingTimerId ?? null}::uuid)
+      FOR UPDATE SKIP LOCKED
+    )
+  `
+  const cfg = await resolvePoolConfig(tx, tenantWire, programWire)
+  await setTimer(tx, pmInstanceId, new Date(Date.now() + cfg.maxWaitSeconds * 1000), 'max_wait')
+}
+
 export interface TriggerBatchOpts {
   /** The onceWithin idempotency epoch, scoped by `{tenant}|{program}|{reason}`. */
   epoch: string
@@ -186,8 +241,10 @@ export interface TriggerBatchOpts {
  *    serializes EVERY trigger reason on this pool (critical fix C4): LOT_SIZE
  *    and MAX_WAIT can never both claim the same POOLED rows.
  *  - the pending_pool_entry mark-BATCHED UPDATE's RETURNING row count IS the
- *    gate: an empty return (nothing POOLED) creates no batch and touches no
- *    timer (C4 fix). Postgres does not support ORDER BY on an
+ *    gate: an empty return (nothing POOLED) creates no batch (C4 fix), and
+ *    touches no timer EXCEPT on a MAX_WAIT fire, which must re-arm the timer
+ *    it is consuming or the pool loses max-wait permanently (T0b.1, see that
+ *    call site). Postgres does not support ORDER BY on an
  *    UPDATE ... RETURNING, so the deterministic-oldest ordering (by
  *    created_at, then id) is done in JS over the returned rows.
  *  - the batch fact's traceId is the deterministically-oldest claimed entry's
@@ -246,7 +303,38 @@ export async function triggerBatchWithinTx(
           WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid AND pool_status = 'POOLED'
           RETURNING id::text AS id, asgn_id::text AS asgn_id, trace_id, created_at
         `
-        if (claimed.length === 0) return // nothing POOLED: no batch, no timer churn
+        if (claimed.length === 0) {
+          // NOTHING POOLED. No batch is created, which is correct for every
+          // trigger reason (no empty batch, and a LOT_SIZE or MANUAL trigger
+          // that found no work must not churn the pool's timer: its pending
+          // max_wait timer is untouched above, so max-wait stays armed and
+          // re-arming here would leave TWO pending timers).
+          //
+          // A MAX_WAIT FIRE IS THE EXCEPTION, and missing it was a real defect
+          // (fixed 12 Aug 2026, PLAN.md T0b.1). This path used to return
+          // unconditionally, before the supersede-and-re-arm below. But the
+          // engine's claimAndFireDueTimers marks the firing timer 'fired'
+          // as soon as this effect resolves, whatever it did, and ensurePool
+          // arms a max_wait timer ONLY when it creates the pool. So a MAX_WAIT
+          // timer that came due on an empty pool was CONSUMED and never
+          // replaced: that pool was left with zero pending max_wait timers
+          // permanently, and every entry arriving afterwards could only ever
+          // be batched by LOT_SIZE or a MANUAL trigger. A low-volume tenant
+          // whose pool simply idles past one max-wait window silently lost
+          // max-wait forever. batching-timer.test.ts already described this in
+          // a comment ("this pool's timer would fire with no batch and no
+          // re-arm") without asserting recovery.
+          //
+          // Re-arming keeps the timer alive across idle windows, which is the
+          // point: on a quiet pool it costs one row per max-wait window. The
+          // alternative, arming on the first entry into an empty pool instead,
+          // spreads the invariant across every path that can pool an entry and
+          // re-opens this same bug class the moment one of them forgets.
+          if (opts.firingTimerId !== undefined) {
+            await supersedeAndRearmMaxWait(tx, pmInstanceId, tenantWire, programWire, opts.firingTimerId)
+          }
+          return
+        }
 
         const sorted = [...claimed].sort((a, b) => {
           const byCreatedAt = a.created_at.getTime() - b.created_at.getTime()
@@ -283,52 +371,11 @@ export async function triggerBatchWithinTx(
           }),
         })
 
-        // SUPERSEDE + RE-ARM (critique fix C2): every other pending max_wait
-        // timer on this pool is superseded (the currently-firing MAX_WAIT
-        // timer, opts.firingTimerId, Task 9, is deliberately left alone here
-        // so claimAndFireDueTimers can mark it fired without a self-conflict),
-        // and exactly one fresh max_wait timer is armed. At most one pending
-        // timer per pool survives, so a stale timer never prematurely sweeps
-        // the next window. Scoped to purpose = 'max_wait' so the "exactly one
-        // pending max_wait timer per pool" invariant is explicit: a future
-        // non-max_wait timer purpose on the same saga instance is never
-        // wrongly superseded here.
-        //
-        // FOR UPDATE SKIP LOCKED (fix wave 1, cross-transaction deadlock): a
-        // plain UPDATE ... WHERE here would try to lock EVERY matching pending
-        // max_wait row, including one an in-flight claimAndFireDueTimers MAX_WAIT
-        // fire already holds FOR UPDATE (packages/engine's own claim SELECT,
-        // Decision 77). That fire's own effect is this very triggerBatch call,
-        // opened on a SEPARATE transaction/connection, so this UPDATE and that
-        // FOR UPDATE claim can deadlock AB-BA: a concurrent same-pool trigger
-        // WITHOUT firingTimerId (LOT_SIZE via onDemandAccrued, or MANUAL) blocks
-        // waiting on the row the claim holds, while the claim's own transaction
-        // is awaiting (via a JS await) this effect to finish before it can ever
-        // release that lock. Postgres cannot detect this cycle (one edge is a
-        // JS await, not a DB wait), so it only resolves via Prisma's 5s
-        // transaction timeout. The inner subquery locks only the rows it can
-        // acquire immediately and skips any already locked by a concurrent
-        // fire; a skipped row is safe either way: it is about to be marked
-        // 'fired' by its own firing transaction, or it will be superseded on
-        // the next trigger. In the single-trigger, no-concurrency case nothing
-        // is locked by anyone else, so SKIP LOCKED skips nothing and behavior
-        // is unchanged.
-        await tx.$executeRaw`
-          UPDATE saga_timer SET status = 'superseded'
-          WHERE id IN (
-            SELECT id FROM saga_timer
-            WHERE instance_id = ${pmInstanceId}::uuid AND status = 'pending' AND purpose = 'max_wait'
-            AND (${opts.firingTimerId ?? null}::uuid IS NULL OR id <> ${opts.firingTimerId ?? null}::uuid)
-            FOR UPDATE SKIP LOCKED
-          )
-        `
-        const cfg = await resolvePoolConfig(tx, tenantWire, programWire)
-        await setTimer(
-          tx,
-          pmInstanceId,
-          new Date(Date.now() + cfg.maxWaitSeconds * 1000),
-          'max_wait',
-        )
+        // Supersede every other pending max_wait timer on this pool and arm
+        // exactly one fresh one (critique fix C2). See the function's own doc
+        // comment for the full reasoning, including why the sweep uses
+        // FOR UPDATE SKIP LOCKED.
+        await supersedeAndRearmMaxWait(tx, pmInstanceId, tenantWire, programWire, opts.firingTimerId)
 
         result = { btchId: btchWire, unitCount: claimed.length }
       },
