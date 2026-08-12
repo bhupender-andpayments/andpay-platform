@@ -122,6 +122,27 @@ export function IntakeExceptionsTab() {
     { key: 'fileId', header: 'File ID', cell: (r) => r.fileId },
     { key: 'rowRef', header: 'Row ref', cell: (r) => r.rowRef },
     { key: 'reasonCode', header: 'Reason', cell: (r) => <StatusPill value={r.reasonCode} /> },
+    {
+      // D-15 asks that a queued record show what it collided with, so the
+      // operator can tell a vendor correction from a genuine second parcel
+      // without leaving the screen. Only some reason codes carry a detail, so
+      // this reads as a dash for the rest rather than pretending every row has
+      // an answer. The AWB is the useful half (it is what the operator
+      // recognises); the shpt id rides as the precise reference.
+      key: 'collidedWith',
+      header: 'Already shipped as',
+      cell: (r) =>
+        r.detail?.existingAwb === undefined || r.detail.existingAwb === null ? (
+          <span className="text-muted-foreground">-</span>
+        ) : (
+          <span className="flex flex-col">
+            <CodeChip>{r.detail.existingAwb}</CodeChip>
+            {r.detail.existingShptId !== null && (
+              <span className="text-xs text-muted-foreground">{shortId(r.detail.existingShptId)}</span>
+            )}
+          </span>
+        ),
+    },
     { key: 'createdAt', header: 'Created', cell: (r) => fmtDateTime(r.createdAt) },
     { key: 'resolvedAt', header: 'Resolved', cell: (r) => fmtDateTime(r.resolvedAt) },
     { key: 'resolvedByActor', header: 'Resolved by', cell: (r) => orDash(r.resolvedByActor) },

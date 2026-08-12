@@ -1,0 +1,41 @@
+-- A quarantined return row can name what it collided with.
+--
+-- WHY. The 12 Aug 2026 walkthrough (D-15) rules that a duplicate return record
+-- lands in the review queue and that each queued record "shows context ... so
+-- Ops can verify". Today an intake_exception carries a reason_code and a
+-- row_ref and nothing else, so a duplicate-return exception could say only
+-- THAT the dispatch id was already served, never BY WHAT. The operator's next
+-- question ("already shipped under which AWB?") had no answer on the screen.
+--
+-- The bank-side review queue already solved this exact problem the same way:
+-- tms.quarantine_row carries a `detail` jsonb whose duplicate_vpa_soundbox
+-- writer names the colliding original. This column is that precedent applied
+-- to the fulfillment queue, deliberately NOT a new mechanism.
+--
+-- WHAT GOES IN IT, and what must not. IDs and operational references only:
+-- the existing shpt_ wire id and its AWB. NOT the device serial, even though
+-- the writer has it in hand. intake.ts's own flag helper states the rule this
+-- table has always followed ("NO device_serial and NO ICCID are stored here.
+-- Sensitive-by-default holds even in the flag path; the operator resolves via
+-- file_id + row_ref against the file"), and a new column is not a licence to
+-- weaken it. The AWB is an operational reference ops already reads on every
+-- dispatch report, and intake_exception has no vendor read path at all (the
+-- only reader is fulfillment_ops_read, via readIntakeExceptions), so naming it
+-- here discloses nothing to the vendor that submitted the colliding row.
+--
+-- jsonb, not a set of typed columns, for the same reason quarantine_row.detail
+-- is: the shape differs per reason_code, and most reasons carry no detail at
+-- all. Nullable, and it stays nullable: every existing reason writes NULL and
+-- keeps its current behavior byte for byte.
+--
+-- NO GRANT IS NEEDED, checked rather than assumed (same reasoning as
+-- 20260810120000). This schema has no ALTER DEFAULT PRIVILEGES, so a newly
+-- READ TABLE needs an explicit grant, but a new COLUMN on an already-granted
+-- table does not: every grant reaching intake_exception is TABLE-level.
+--   * fulfillment_write: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
+--     IN SCHEMA fulfillment (20260727000100).
+--   * fulfillment_ops_read: table level GRANT SELECT on
+--     fulfillment.intake_exception (20260727010000).
+-- Additive only (S23 expand-contract): one nullable column, no DROP, no ALTER
+-- of an existing column, no RLS change, no money surface.
+ALTER TABLE "intake_exception" ADD COLUMN IF NOT EXISTS "detail" jsonb;

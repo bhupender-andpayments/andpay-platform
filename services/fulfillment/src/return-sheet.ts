@@ -22,13 +22,34 @@ import {
 // schema BEFORE any state change; an unverifiable or schema-invalid sheet is
 // rejected whole, exactly like intake.ts.
 //
-// ONE DISPATCH ID CAN TRAVEL UNDER TWO AWBs. The soundbox and its stickers go
-// under one AWB, the standee under another, and the sheet had one AWB column
-// and one Device ID column per row, so the second consignment could not be
-// reported at all. The mechanism (ruled 2026-08-10) is the sheet we already
-// publish: the Device ID VALUE becomes optional. A row carrying Dispatch ID and
-// AWB with NO serial reports a COLLATERAL consignment for that dispatch id. The
-// Device ID COLUMN stays required in the header, so the round trip is unchanged.
+// ONE AWB PER DISPATCH ID (D-13, ruled 12 Aug 2026). This SUPERSEDES the
+// 2026-08-10 ruling that one dispatch id may travel under two AWBs: that
+// allowance existed because a single assignment could order a soundbox AND a
+// standee which the vendor ships as two parcels, and W-5 then gave those two
+// legs SEPARATE dispatch ids of their own, so each parcel now has its own id to
+// be reported against and the two-AWB shape is no longer needed to express it.
+//
+// Where the cap is enforced, one guard per leg, both below:
+//   * the device leg, (2d): a second serial against a dispatch id that already
+//     has a paired unit is quarantined (dispatch_already_has_device). This is
+//     the guard D-13 added; without it a second AWB simply attached.
+//   * the collateral leg, (2c-ii): at most one collateral shipment per dispatch
+//     id (collateral_already_linked), which predates D-13 and already capped
+//     its own side.
+// Together with the two W-5 shape gates (a SOUNDBOX group needs a serial, a
+// COLLATERAL group must not carry one) that gives every GROUP-BEARING dispatch
+// id exactly one AWB.
+//
+// THE LEGACY EXCEPTION, and it is the only one: a pre-split row whose
+// dispatch_group is NULL covers both product kinds under one id, so it can still
+// hold a device AWB plus one collateral AWB. Those rows were created under the
+// old ruling and are grandfathered pending a decision on whether D-13 binds them
+// retroactively (PLAN.md Q15). Nothing new creates them.
+//
+// The sheet shape is unchanged either way: the Device ID VALUE is optional and a
+// row carrying Dispatch ID and AWB with NO serial reports a collateral
+// consignment, while the Device ID COLUMN stays required in the header, so the
+// published round trip still parses.
 export interface ReturnRow {
   // OPTIONAL. Absent means this row reports a collateral-only consignment (see
   // the collateral branch in the loop below), never "the vendor forgot": a
@@ -393,6 +414,53 @@ export async function ingestReturnSheet(
             await tx.$executeRaw`
               INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
               VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'collateral_already_linked'})
+            `
+            quarantined++
+            continue
+          }
+        }
+
+        // (2d) THE DEVICE-LEG CAP: exactly ONE AWB per dispatch id (D-13,
+        // 12 Aug 2026). This is the twin of the collateral cap directly above,
+        // and its absence was a real hole: the guard at (1) asks "is THIS unit
+        // already paired", which catches the same serial arriving twice, but
+        // NOTHING asked "does this DISPATCH already have a device". So a second
+        // row naming a DIFFERENT, unpaired serial against a dispatch id that
+        // had already shipped was accepted: it born a second shpt, pointed the
+        // new unit at the same assignment, emitted a second print_for fact, and
+        // reported success. Two AWBs then hung off one soundbox dispatch id,
+        // which is exactly what D-13 voids now that the soundbox and collateral
+        // legs carry separate dispatch ids of their own (W-5).
+        //
+        // D-15 sends the loser to the review queue rather than dropping it, and
+        // the detail names what it collided with so an operator can tell a
+        // vendor correction from a genuine second parcel. Reading the PERSISTED
+        // unit row (not an in-process set) catches the repeat whether it is a
+        // later row in THIS file, whose UPDATE has already committed inside this
+        // transaction and is therefore visible here, or a row in a later file.
+        // The concurrency backstop is the per-unit `|print_for` onceWithin plus
+        // this read, in the same style as the collateral cap.
+        //
+        // The device serial of the INCUMBENT is deliberately not put in the
+        // detail: this table stores no serials (see src/intake.ts's flag
+        // helper), and the shpt id plus AWB already answer the operator's
+        // question and lead to the device on the inventory screen.
+        if (device !== null) {
+          const incumbent = await tx.$queryRaw<{ shipment: string | null; awb: string | null }[]>`
+            SELECT u.shipment::text AS shipment, s.awb AS awb
+            FROM unit u LEFT JOIN shpt s ON s.id = u.shipment
+            WHERE u.asgn_id = ${asgnUuid}::uuid AND u.id <> ${device.unitUuid}::uuid
+            LIMIT 1
+          `
+          if (incumbent.length > 0) {
+            const held = incumbent[0]!
+            const detail = JSON.stringify({
+              existingShptId: held.shipment === null ? null : fromUuid('shpt', held.shipment),
+              existingAwb: held.awb,
+            })
+            await tx.$executeRaw`
+              INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code, detail)
+              VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${'dispatch_already_has_device'}, ${detail}::jsonb)
             `
             quarantined++
             continue

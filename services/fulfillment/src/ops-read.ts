@@ -75,6 +75,14 @@ export interface IntakeExceptionView {
   createdAt: Date
   resolvedAt: Date | null
   resolvedByActor: string | null
+  /**
+   * D-15 context: what this row collided with, when the reason code has an
+   * answer for that. Null for every reason that carries none, which is most of
+   * them. Today only `dispatch_already_has_device` writes it, as
+   * `{ existingShptId, existingAwb }`. IDs and operational references only, no
+   * serials (see the column comment in schema.prisma).
+   */
+  detail: unknown
 }
 
 interface IntakeExceptionDbRow {
@@ -86,6 +94,7 @@ interface IntakeExceptionDbRow {
   created_at: Date
   resolved_at: Date | null
   resolved_by_actor: string | null
+  detail: unknown
 }
 
 function toIntakeExceptionDto(r: IntakeExceptionDbRow): IntakeExceptionView {
@@ -98,6 +107,7 @@ function toIntakeExceptionDto(r: IntakeExceptionDbRow): IntakeExceptionView {
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
     resolvedByActor: r.resolved_by_actor,
+    detail: r.detail ?? null,
   }
 }
 
@@ -110,14 +120,14 @@ export async function readIntakeExceptions(
     if (includeResolved) {
       return tx.$queryRaw<IntakeExceptionDbRow[]>`
         SELECT id::text AS id, vndr_id::text AS vndr_id, file_id, row_ref, reason_code, created_at,
-               resolved_at, resolved_by_actor::text AS resolved_by_actor
+               resolved_at, resolved_by_actor::text AS resolved_by_actor, detail
         FROM intake_exception
         ORDER BY created_at
       `
     }
     return tx.$queryRaw<IntakeExceptionDbRow[]>`
       SELECT id::text AS id, vndr_id::text AS vndr_id, file_id, row_ref, reason_code, created_at,
-             resolved_at, resolved_by_actor::text AS resolved_by_actor
+             resolved_at, resolved_by_actor::text AS resolved_by_actor, detail
       FROM intake_exception
       WHERE resolved_at IS NULL
       ORDER BY created_at

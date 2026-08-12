@@ -1042,8 +1042,158 @@ async function shptCount(): Promise<number> {
   const r = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM shpt`
   return Number(r[0]!.n)
 }
+async function exceptionRowsOf(
+  fileId: string,
+): Promise<{ row_ref: string; reason_code: string; detail: { existingShptId: string | null; existingAwb: string | null } | null }[]> {
+  return db.$queryRaw`
+    SELECT row_ref, reason_code, detail FROM intake_exception WHERE file_id = ${fileId} ORDER BY row_ref
+  `
+}
 
-describe('ingestReturnSheet collateral rows (one dispatch id, two AWBs)', () => {
+// D-13 (12 Aug 2026): exactly ONE AWB per dispatch id. The collateral leg was
+// already capped (test (o) below); the DEVICE leg was not, and that was the
+// hole. The guard at (1) in return-sheet.ts asks "is THIS unit already paired",
+// which catches one serial arriving twice, but nothing asked "does this DISPATCH
+// already have a device". So a second row naming a DIFFERENT, unpaired serial
+// against a dispatch id that had already shipped was ACCEPTED: a second shpt was
+// born, a second print_for fact fired, and two AWBs ended up on one soundbox
+// dispatch id. D-15 routes the loser to the review queue with context.
+describe('ingestReturnSheet device leg: one AWB per dispatch id (D-13, D-15)', () => {
+  it('(q) a SECOND device for a dispatch id that already has one is quarantined dispatch_already_has_device, and births no orphan shpt', async () => {
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-dev-q'
+    const claim = classSixClaim(vndrId, workQueue)
+    const fx = await seedAssignment({ traceId: 'trace-dev-q' })
+    await seedUnit('SER-Q-1')
+    await seedUnit('SER-Q-2')
+
+    const sheet: ReturnSheet = {
+      fileId: 'return-file-dev-q',
+      vndrId,
+      workQueue,
+      rows: [
+        { deviceSerial: 'SER-Q-1', asgnId: fx.asgnWire, awb: 'AWB-Q-1' },
+        // The same dispatch id, a DIFFERENT unpaired device, a second AWB. This
+        // is the row that used to be accepted.
+        { deviceSerial: 'SER-Q-2', asgnId: fx.asgnWire, awb: 'AWB-Q-2' },
+      ],
+    }
+    const res = await ingestReturnSheet(db, claim, sheet, 'trace-ingest-dev-q')
+    expect(res.rejected).toBeUndefined()
+    expect(res.pairedUnitIds).toHaveLength(1) // only the first
+    expect(res.quarantined).toBe(1)
+    expect(res.shptIds).toHaveLength(1)
+    // No orphan shpt for the rejected AWB: the guard sits BEFORE the birth,
+    // the same ordering the collateral cap relies on.
+    expect(await shptCount()).toBe(1)
+    const shpts = await db.$queryRaw<{ awb: string }[]>`SELECT awb FROM shpt`
+    expect(shpts).toEqual([{ awb: 'AWB-Q-1' }])
+
+    // The loser is in the queue, naming what it collided with (D-15 context).
+    const exc = await exceptionRowsOf('return-file-dev-q')
+    expect(exc).toHaveLength(1)
+    expect(exc[0]!.row_ref).toBe('row-1')
+    expect(exc[0]!.reason_code).toBe('dispatch_already_has_device')
+    expect(exc[0]!.detail).toEqual({ existingShptId: res.shptIds[0]!, existingAwb: 'AWB-Q-1' })
+
+    // The second device is untouched: not paired, still IN_STOCK, so it stays
+    // available for the dispatch it really belongs to.
+    const loser = await db.$queryRaw<{ shipment: string | null; asgn_id: string | null; status: string }[]>`
+      SELECT shipment::text AS shipment, asgn_id::text AS asgn_id, status FROM unit WHERE device_serial = 'SER-Q-2'
+    `
+    expect(loser).toEqual([{ shipment: null, asgn_id: null, status: 'IN_STOCK' }])
+
+    // and exactly ONE print_for fact, not two.
+    const printFor = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = ${PRINT_FOR_TOPIC}
+    `
+    expect(Number(printFor[0]!.n)).toBe(1)
+  })
+
+  it('(r) the cap holds ACROSS files, and the detail names the AWB from the earlier file', async () => {
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-dev-r'
+    const claim = classSixClaim(vndrId, workQueue)
+    const fx = await seedAssignment({ traceId: 'trace-dev-r' })
+    await seedUnit('SER-R-1')
+    await seedUnit('SER-R-2')
+
+    const first: ReturnSheet = {
+      fileId: 'return-file-dev-r-1',
+      vndrId,
+      workQueue,
+      rows: [{ deviceSerial: 'SER-R-1', asgnId: fx.asgnWire, awb: 'AWB-R-1' }],
+    }
+    const res1 = await ingestReturnSheet(db, claim, first, 'trace-ingest-dev-r-1')
+    expect(res1.pairedUnitIds).toHaveLength(1)
+
+    // A genuinely new file (so the inbox does not dedup it) reporting a second
+    // device for the same dispatch id. The read is of the PERSISTED unit row, so
+    // it sees the earlier file's pairing.
+    const later: ReturnSheet = {
+      fileId: 'return-file-dev-r-2',
+      vndrId,
+      workQueue,
+      rows: [{ deviceSerial: 'SER-R-2', asgnId: fx.asgnWire, awb: 'AWB-R-2' }],
+    }
+    const res2 = await ingestReturnSheet(db, claim, later, 'trace-ingest-dev-r-2')
+    expect(res2.deduped).toBe(false)
+    expect(res2.pairedUnitIds).toHaveLength(0)
+    expect(res2.quarantined).toBe(1)
+    expect(await shptCount()).toBe(1) // still just AWB-R-1
+
+    const exc = await exceptionRowsOf('return-file-dev-r-2')
+    expect(exc).toHaveLength(1)
+    expect(exc[0]!.reason_code).toBe('dispatch_already_has_device')
+    expect(exc[0]!.detail).toEqual({ existingShptId: res1.shptIds[0]!, existingAwb: 'AWB-R-1' })
+  })
+
+  it('(s) the detail carries IDs and the AWB only: no device serial reaches intake_exception', async () => {
+    // This table has never stored serials (see the flag helper in src/intake.ts:
+    // "NO device_serial and NO ICCID are stored here"), and adding a detail
+    // column is not a licence to weaken that. The operator gets the shpt id and
+    // the AWB, which lead to the device on the inventory screen.
+    const vndrId = await seedPrintVendor()
+    const workQueue = 'wq-dev-s'
+    const claim = classSixClaim(vndrId, workQueue)
+    const fx = await seedAssignment({ traceId: 'trace-dev-s' })
+    await seedUnit('SER-S-INCUMBENT')
+    await seedUnit('SER-S-LOSER')
+
+    await ingestReturnSheet(
+      db,
+      claim,
+      {
+        fileId: 'return-file-dev-s',
+        vndrId,
+        workQueue,
+        rows: [
+          { deviceSerial: 'SER-S-INCUMBENT', asgnId: fx.asgnWire, awb: 'AWB-S-1' },
+          { deviceSerial: 'SER-S-LOSER', asgnId: fx.asgnWire, awb: 'AWB-S-2' },
+        ],
+      },
+      'trace-ingest-dev-s',
+    )
+
+    const raw = await db.$queryRaw<Record<string, unknown>[]>`
+      SELECT * FROM intake_exception WHERE file_id = 'return-file-dev-s'
+    `
+    expect(raw).toHaveLength(1)
+    // NEITHER serial appears in ANY column of the row, incumbent or loser.
+    const serialized = JSON.stringify(raw[0])
+    expect(serialized).not.toContain('SER-S-INCUMBENT')
+    expect(serialized).not.toContain('SER-S-LOSER')
+  })
+})
+
+// The COLLATERAL leg, which caps itself at one AWB per dispatch id and always
+// did. These fixtures seed pending_pool_entry with NO dispatch_group, i.e. the
+// LEGACY pre-W-5 grain, where one dispatch id covers both product kinds and can
+// therefore still hold a device AWB plus one collateral AWB. That two-AWB shape
+// is grandfathered, not the current rule: D-13 caps every group-bearing dispatch
+// id at one AWB (see the device-leg block above), and whether it binds these
+// legacy rows retroactively is PLAN.md Q15.
+describe('ingestReturnSheet collateral rows (legacy null-group dispatch id, up to two AWBs)', () => {
   it('(k) a serial-less row births the shpt, links it to the dispatch id, births NO unit, leaves dispatch_state alone, and emits the collateral fact', async () => {
     const vndrId = await seedPrintVendor()
     const workQueue = 'wq-coll-k'

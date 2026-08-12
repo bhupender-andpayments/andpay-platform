@@ -263,6 +263,14 @@ model IntakeException {
   // Spec 10c: additive class-3 ops resolution stamp (nullable, expand-contract).
   resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz(6)
   resolvedByActor String?   @map("resolved_by_actor") @db.Uuid
+  /// D-15 (12 Aug 2026): what this row collided with, so the queue can show
+  /// context instead of a bare reason code. IDs and operational references
+  /// ONLY (an existing shpt_ id and its AWB); never a device serial or an
+  /// ICCID, per this table's standing sensitive-by-default rule (see the flag
+  /// helper in src/intake.ts). Shape varies by reason_code and most reasons
+  /// write NULL, which is why it is jsonb and nullable, mirroring
+  /// tms.quarantine_row.detail. Migration 20260812100000.
+  detail Json? @db.JsonB
 
   @@map("intake_exception")
 }

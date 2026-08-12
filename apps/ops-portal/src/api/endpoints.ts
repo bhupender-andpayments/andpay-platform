@@ -231,6 +231,14 @@ export interface IntakeExceptionView {
   createdAt: string
   resolvedAt: string | null
   resolvedByActor: string | null
+  /**
+   * D-15 context: what this row collided with. Null for every reason code that
+   * has no answer for that, which is most of them. Today only
+   * `dispatch_already_has_device` writes it. Typed as the one shape that exists
+   * rather than `unknown`, so the screen can render it without a cast, and
+   * OPTIONAL so an older server that predates the column still parses.
+   */
+  detail?: { existingShptId: string | null; existingAwb: string | null } | null
 }
 
 // services/fulfillment/src/ops-read.ts CourierStatusExceptionView: fileId and

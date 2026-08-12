@@ -222,6 +222,61 @@ describe('QueuesPage', () => {
     ])
   })
 
+  // D-15: a duplicate-return exception carries the context the operator needs to
+  // judge it, and the queue must actually show it. A reason code alone cannot
+  // distinguish a vendor resending a correction from a genuine second parcel.
+  it('shows what a dispatch_already_has_device row collided with, and a dash for reasons that carry no detail', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/exceptions/intake')) {
+          return jsonResponse([
+            {
+              id: 'ie-dup',
+              vndrId: 'vndr-1',
+              fileId: 'file-9',
+              rowRef: 'row-1',
+              reasonCode: 'dispatch_already_has_device',
+              createdAt: '2026-08-12T00:00:00.000Z',
+              resolvedAt: null,
+              resolvedByActor: null,
+              detail: { existingShptId: 'shpt_01hzzz', existingAwb: 'AWB-INCUMBENT' },
+            },
+            {
+              // A reason with no detail: the column must read as absent rather
+              // than borrowing the row above's answer.
+              id: 'ie-plain',
+              vndrId: 'vndr-1',
+              fileId: 'file-9',
+              rowRef: 'row-2',
+              reasonCode: 'device_not_in_inventory',
+              createdAt: '2026-08-12T00:00:01.000Z',
+              resolvedAt: null,
+              resolvedByActor: null,
+              detail: null,
+            },
+          ])
+        }
+        return jsonResponse([])
+      }),
+    )
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <QueuesPage />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /intake exceptions/i }))
+    expect(await screen.findByText('AWB-INCUMBENT')).toBeTruthy()
+    expect(screen.getByText(/already shipped as/i)).toBeTruthy()
+    // The no-detail row still renders, and contributes no AWB of its own.
+    expect(screen.getByText('row-2')).toBeTruthy()
+    expect(screen.queryAllByText('AWB-INCUMBENT')).toHaveLength(1)
+  })
+
   it('renders status exceptions with an unknown_awb row (null shptId) GATED: no matching shipment, so it never sends a resolve request', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
