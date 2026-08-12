@@ -7,9 +7,33 @@ import { enterWriteRole } from './write-context.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 import { unitFactEnvelope, UNIT_TOPIC } from './events.js'
 
-// The manufacturer intake sheet (103a/103c/103d): the ONLY Unit-creating
-// channel. S8-untrusted: verified class-6 identity and schema BEFORE any state
-// change; an unverifiable or schema-invalid sheet is rejected whole.
+// The manufacturer intake sheet (103a/103c/103d). S8-untrusted: verified
+// class-6 identity and schema BEFORE any state change; an unverifiable or
+// schema-invalid sheet is rejected whole.
+//
+// TWO SANCTIONED DOORS INTO THE POOL (Q5, ruled 12 Aug 2026). Units are born
+// only by the logic in THIS module (D103d), but it now has two callers, and
+// that is deliberate rather than a leftover:
+//   1. this file's `ingestIntakeSheet`, the class-6 VENDOR door (a JSON sheet
+//      submitted by the manufacturer against its own vendor scope);
+//   2. `ops-device-inventory.ts`, the class-3 OPS door (the CWD manifest file
+//      an operator uploads), which is the channel Workflow A describes.
+//
+// THEIR VALIDATION IS DELIBERATELY ASYMMETRIC, and the asymmetry is the whole
+// reason this note exists. The 12 Aug 2026 walkthrough froze the OPS door at
+// Device ID presence plus the duplicate check. It did NOT speak to the vendor
+// door, which carries its own class-6 API contract (D103b whole-file schema
+// validation, and the Confirm 3 ICCID-conflict detection via
+// flagSimNoDuplicates below), so that contract is unchanged: loosening a
+// verified partner API on the strength of a ruling about a different channel
+// would be improvising, and tightening the ops door back would break the
+// freeze. If the two ever need to converge, that is a new ruling, not a
+// cleanup someone does here.
+//
+// What both doors share, and must keep sharing, is the part Workflow A
+// actually depends on: one `unit` row per device_serial ever (the UNIQUE plus
+// ON CONFLICT below), so the pool cannot be entered twice through either door
+// (D-2).
 export interface SerializedIntakeRow {
   kind: 'SERIALIZED'
   deviceSerial: string

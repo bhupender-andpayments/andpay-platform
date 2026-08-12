@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { newId, toUuid } from '@andpay/ids'
+import type { LeanClaim } from '@andpay/authz'
 import { PrismaClient } from '../generated/client/index.js'
 import { ingestOpsDeviceInventory } from '../src/ops-device-inventory.js'
+import { ingestIntakeSheet, type IntakeSheet } from '../src/intake.js'
 
 // Phase 5 Task 1 (D-G, FR-01a): the class-3 ops device-inventory upload
 // service function. Covers what the ops-edge http suite cannot exercise as
@@ -256,6 +258,63 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
 
     const allow = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = 'authz.audit'`
     expect(Number(allow[0]!.n)).toBe(1)
+  })
+
+  // Q5, ruled 12 Aug 2026: the class-6 VENDOR intake door stays open as a
+  // second sanctioned channel alongside this class-3 ops upload. That makes
+  // the "a device enters the pool exactly once" rule (D-2) a CROSS-DOOR
+  // property, not a per-door one, and nothing pinned it across the two before.
+  // This is the test that fails if the doors ever drift into each minting its
+  // own unit for one physical device.
+  it('D-2 across BOTH sanctioned doors: a serial already in the pool via the ops upload is NOT re-created by the vendor intake door', async () => {
+    const manufacturerVndr = await seedVendor('MANUFACTURER')
+    const serial = '1234567890777'
+
+    const opsUpload = await ingestOpsDeviceInventory(db, {
+      fileBytes: toCsv([[serial, '8991000000000000777U', 'QR-7']]),
+      filename: 'inv.csv',
+      manufacturerVndrId: manufacturerVndr,
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 'trace-door-1',
+    })
+    expect(opsUpload.accepted).toBe(1)
+
+    // The SAME physical device now arrives through the vendor door. Its own
+    // class-6 contract is untouched by the walkthrough (see intake.ts's
+    // two-doors note), so it validates its sheet its own way, but it must land
+    // on the SAME unit row rather than a second one.
+    const workQueue = 'wq-door'
+    const claim: LeanClaim = {
+      iss: 'andpay-auth',
+      sub: newId('api'),
+      aud: 'andpay:vendor',
+      iat: 1000,
+      exp: 2000,
+      nbf: 1000,
+      jti: 'jti-door-1',
+      cls: 6,
+      mode: 'test',
+      scope: { vndr: manufacturerVndr, wq: workQueue },
+      psr: 'vset:vendor_manufacturer',
+      epoch: 1,
+    }
+    const sheet: IntakeSheet = {
+      fileId: 'file-door-1',
+      vndrId: manufacturerVndr,
+      workQueue,
+      rows: [{ kind: 'SERIALIZED', deviceSerial: serial, productType: 'SOUNDBOX', deviceQr: { raw: 'QR-7' } }],
+    }
+    const vendorIntake = await ingestIntakeSheet(db, claim, sheet, 'trace-door-2')
+
+    expect(vendorIntake.rejected).toBeUndefined()
+    expect(vendorIntake.createdUnitIds).toHaveLength(0) // no second unit for one device
+    expect(vendorIntake.quarantined).toBe(1) // flagged for review instead
+
+    const units = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM unit WHERE device_serial = ${serial}
+    `
+    expect(Number(units[0]!.n)).toBe(1) // the pool was entered exactly once (D-2)
   })
 
   // Fix round 1, Finding B: a malformed manufacturerVndrId must be a client

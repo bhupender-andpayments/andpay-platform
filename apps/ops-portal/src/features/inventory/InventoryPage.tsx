@@ -87,8 +87,21 @@ export function InventoryPage() {
     }
   }, [client])
 
+  // THE SOUNDBOX ID IS THE `unit_` WIRE ID (Q4, ruled 12 Aug 2026). Workflow A
+  // step 4 asks that a registered device carry a system-generated Soundbox ID.
+  // The `unit_` id already IS that: minted server-side at registration, typed
+  // and prefixed through @andpay/ids, and stable for the device's whole life.
+  // So no new identifier was invented (a new id kind would be a corpus I4
+  // decision), and nothing was migrated: the column below only SHOWS what the
+  // read already returned.
+  //
+  // Both ids are listed, deliberately, because they answer different
+  // questions: the Soundbox ID is ours and is what an internal reference
+  // means, while the Device ID is the manufacturer's serial an operator reads
+  // off the box and searches by. Device ID stays FIRST for that reason.
   const columns: DataTableColumn<UnitInventoryRow>[] = [
     { key: 'deviceSerial', header: 'Device ID', cell: (r) => r.deviceSerial ?? '-' },
+    { key: 'id', header: 'Soundbox ID', cell: (r) => <CodeChip>{r.id}</CodeChip> },
     { key: 'status', header: 'Status', cell: (r) => r.status },
     { key: 'productType', header: 'Product', cell: (r) => r.productType },
     {

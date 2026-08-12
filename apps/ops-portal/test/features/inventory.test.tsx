@@ -68,6 +68,21 @@ describe('InventoryPage', () => {
     expect(calls.some((c) => c.url.includes('/ops/devices'))).toBe(true)
   })
 
+  // Q4, ruled 12 Aug 2026: the `unit_` wire id IS the system-generated Soundbox
+  // ID (Workflow A step 4), so the screen must show it rather than keeping it
+  // internal. Both ids are shown because they answer different questions: ours
+  // and the manufacturer's serial.
+  it('shows the Soundbox ID (the unit wire id) alongside the manufacturer Device ID', async () => {
+    stub()
+    renderPage()
+    expect(await screen.findByText('unit_1')).toBeTruthy()
+    expect(screen.getByText('unit_2')).toBeTruthy()
+    const headers = screen.getAllByRole('columnheader').map((h) => h.textContent)
+    expect(headers).toContain('Soundbox ID')
+    // Device ID stays first: it is what an operator reads off the box.
+    expect(headers.indexOf('Device ID')).toBeLessThan(headers.indexOf('Soundbox ID'))
+  })
+
   it('says how many are in stock, which is the question the warehouse asks', async () => {
     stub()
     renderPage()
