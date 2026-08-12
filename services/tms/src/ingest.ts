@@ -241,17 +241,43 @@ export async function seedKnownVpaOriginals(
 
   // IS DISTINCT FROM rather than <>, so a null exclusion excludes nothing: both
   // columns are NOT NULL, and `x IS DISTINCT FROM NULL` is true for every x.
+  // THE ORDERING IS PER REQUEST, THEN PER LEG. W-5 made one bank row mint up to
+  // TWO assignments, a SOUNDBOX leg and a COLLATERAL leg, both carrying the same
+  // vpa_value. Before this the winner was simply the earliest row, which could
+  // be the COLLATERAL leg: the operator was then told their soundbox row
+  // duplicates `asgn_<the standee consignment>`, which is true and useless.
+  //
+  // So the sort key is (1) the REQUEST's own age, taken as the earliest
+  // created_at across the sibling set that shares a source_event_id, then (2)
+  // the leg, SOUNDBOX first. Ranking by the request rather than by the row is
+  // what keeps "the original is the first sighting" intact: a LATER request's
+  // soundbox leg must never outrank an EARLIER request, which is exactly what a
+  // bare `group_rank` ahead of the timestamp would have done.
+  //
+  // The window function is deliberate rather than relying on the two siblings
+  // sharing a timestamp. They DO share one today (both are inserted in one
+  // transaction and created_at defaults to transaction time), so a plain tiebreak
+  // would pass its tests, and would then silently stop working the day anything
+  // splits that transaction or switches to clock_timestamp(). Partitioning says
+  // what is meant instead of depending on a coincidence.
+  //
+  // pending_row has no legs, so it ranks 1 and partitions over nothing; legacy
+  // pre-split assignments have a null dispatch_group and no sibling, so they also
+  // rank 1 and nothing about them changes.
   const rows = await tx.$queryRaw<{ kind: string; ref: string; display_name: string | null; vpa_key: string }[]>`
     SELECT 0 AS kind_rank, 'assignment' AS kind, id::text AS ref, merchant_display_name AS display_name,
-           lower(vpa_value) AS vpa_key, created_at AS origin_created_at
+           lower(vpa_value) AS vpa_key,
+           MIN(created_at) OVER (PARTITION BY source_event_id) AS origin_created_at,
+           CASE WHEN dispatch_group = 'SOUNDBOX' THEN 0 ELSE 1 END AS group_rank
       FROM assignment
       WHERE lower(vpa_value) = ANY(${keys}::text[]) AND source_event_id IS DISTINCT FROM ${excludeSourceRef}
     UNION ALL
     SELECT 1 AS kind_rank, 'pending_row' AS kind, correlation_id AS ref, NULL::text AS display_name,
-           lower(vpa_value) AS vpa_key, created_at AS origin_created_at
+           lower(vpa_value) AS vpa_key, created_at AS origin_created_at,
+           1 AS group_rank
       FROM pending_row
       WHERE lower(vpa_value) = ANY(${keys}::text[]) AND correlation_id IS DISTINCT FROM ${excludeSourceRef}
-    ORDER BY kind_rank ASC, origin_created_at ASC
+    ORDER BY kind_rank ASC, origin_created_at ASC, group_rank ASC
   `
   for (const r of rows) {
     if (found.has(r.vpa_key)) continue
