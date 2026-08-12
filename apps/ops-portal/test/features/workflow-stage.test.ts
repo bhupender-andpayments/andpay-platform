@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { deriveWorkflow, type WorkflowSnapshot } from '../../src/features/workflow/workflowStage.js'
+import {
+  deriveWorkflow,
+  EXTERNAL_WAIT_FAST_MS,
+  GENERATE_STALL_MS,
+  type WorkflowSnapshot,
+} from '../../src/features/workflow/workflowStage.js'
 import type { BatchJourneyView } from '../../src/api/endpoints.js'
 
 // Pure derivation, no DOM. This is the module that decides what the rail claims,
@@ -205,6 +210,31 @@ describe('deriveWorkflow: honesty rule 2, current is the LOWEST incomplete stage
     expect(d.completed).not.toContain('delivery')
     expect(d.completed).not.toContain('activation')
     expect(d.isComplete).toBe(false)
+    // And it is FLAGGED as such, so stage 8 can say the work does not exist
+    // rather than rendering "awaiting 0, activated 0", which reads as work
+    // outstanding on a batch that has none and never will.
+    expect(d.facts.deliverableSubsetEmpty).toBe(true)
+  })
+
+  it('does NOT flag a mixed batch whose deliverable rows simply are not delivered yet', () => {
+    const d = deriveWorkflow(
+      batchMode({
+        journey: journey({
+          counts: { total: 10, deliverableAndActivatable: 5, sentToVendor: 10, dispatched: 0, delivered: 0, activated: 0 },
+        }),
+      }),
+    )
+    // A real zero on a batch that does carry deliverable rows. The work exists
+    // and is outstanding, which is the opposite claim.
+    expect(d.facts.deliverableSubsetEmpty).toBe(false)
+  })
+
+  it('does NOT flag not-applicable when the journey read has not answered', () => {
+    // An absence is not a not-applicable. Honesty rule 3 applies to this flag
+    // exactly as it applies to the counts it guards.
+    const d = deriveWorkflow(batchMode({ journey: null }))
+    expect(d.facts.journeyAvailable).toBe(false)
+    expect(d.facts.deliverableSubsetEmpty).toBe(false)
   })
 })
 
@@ -339,6 +369,50 @@ describe('deriveWorkflow: the poll speed follows who is being waited on', () => 
     expect(d.current).toBe('batch')
     // Batching a pool early is a person's decision, so there is nothing left to
     // watch at three-second intervals.
+    expect(d.pollSpeed).toBe('slow')
+  })
+
+  // Print, Dispatch and Delivery wait on the print vendor and on the courier, not
+  // on the rail and not on the reader. They polled at the three-second cadence
+  // regardless, so a workspace parked on a batch out for delivery asked the edge
+  // for a journey roughly thirty thousand times a day for a fact that would land
+  // days later. Fast for a bounded window (somebody has just opened the stage, and
+  // is usually driving the counterparty), then slow.
+  const atStage = (over: Partial<BatchJourneyView['counts']>, elapsedMsInStage: number) =>
+    deriveWorkflow(
+      batchMode({
+        elapsedMsInStage,
+        batchDetail: {
+          ...batchMode().batchDetail!,
+          artifacts: [{ asgnId: 'asgn_1', artifactType: 'SOUNDBOX_IMG', assetReference: 'ref', supersededAt: null }],
+        },
+        journey: journey({
+          counts: { total: 10, deliverableAndActivatable: 10, sentToVendor: 10, dispatched: 0, delivered: 0, activated: 0, ...over },
+        }),
+      }),
+    )
+
+  it('polls fast on a counterparty stage while somebody has just arrived on it', () => {
+    const d = atStage({}, 0)
+    expect(d.current).toBe('print')
+    expect(d.pollSpeed).toBe('fast')
+  })
+
+  it('drops a counterparty stage to slow once the window has passed', () => {
+    expect(atStage({}, EXTERNAL_WAIT_FAST_MS).pollSpeed).toBe('slow')
+    // Delivery is the one that would otherwise sit fast for days.
+    const delivery = atStage({ dispatched: 10 }, EXTERNAL_WAIT_FAST_MS + 1)
+    expect(delivery.current).toBe('delivery')
+    expect(delivery.pollSpeed).toBe('slow')
+  })
+
+  // A stalled Generate is the machine having demonstrably stopped, and the stall
+  // note is already on screen saying so. Nothing is going to arrive in the next
+  // three seconds that did not arrive in the last ninety.
+  it('drops Generate to slow once it has stalled', () => {
+    const d = deriveWorkflow(batchMode({ elapsedMsInStage: GENERATE_STALL_MS + 1 }))
+    expect(d.current).toBe('generate')
+    expect(d.facts.generateStalled).toBe(true)
     expect(d.pollSpeed).toBe('slow')
   })
 

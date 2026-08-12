@@ -563,7 +563,14 @@ function Workspace({
   const shown = viewing ?? derived.current
   const help = STAGE_HELP[shown]
   const total = WORKFLOW_STAGES.length
-  const position = `Step ${String(stageIndex(shown) + 1)} of ${String(total)}`
+  // MEASURED ON THE CURRENT STAGE, NEVER ON THE ONE BEING LOOKED AT, and the two
+  // are different the moment somebody clicks a completed pill to look back.
+  // `position` used to be computed from `shown`, so clicking the Upload pill on a
+  // batch sitting at Delivery produced "Step 1 of 8: the earliest stage still
+  // holding a record". Step 1 was not holding anything: it was finished, which is
+  // exactly why it was clickable. The sentence contradicted the checkmark the
+  // operator had just clicked.
+  const position = `Step ${String(stageIndex(derived.current) + 1)} of ${String(total)}`
   // "EVERY RECORD THAT CAN BE", not "every record". Completion is measured against
   // the deliverable and activatable subset, so a mixed batch finishes with its
   // COLLATERAL rows deliberately unactivated: paper does not activate (W-5). The
@@ -571,11 +578,17 @@ function Workspace({
   // overclaiming the moment stages 7 and 8 got their own. Observed on the running
   // system: a batch reported done with 5 of its 10 rows activated, which is
   // correct, and the sentence said all 10 were.
-  const guidance = derived.isComplete
+  const flowGuidance = derived.isComplete
     ? 'All eight stages are done: every record that can be activated is activated.'
     : mode === 'batch'
       ? `${position}: the earliest stage still holding a record, so later stages may already hold some of them.`
       : `${position}: the first three stages are live work, and a batch then forms on its own.`
+  // Looking back at a finished stage is its own state and it says so, rather than
+  // letting the flow's sentence be read as a description of what is on screen.
+  const guidance =
+    viewing !== null && viewing !== derived.current
+      ? `Looking back at ${WORKFLOW_STAGES[stageIndex(viewing)]!.label}, which is complete. ${flowGuidance}`
+      : flowGuidance
 
   function stageBody(): JSX.Element {
     if (shown === 'upload' || shown === 'validate') {

@@ -352,6 +352,40 @@ describe('ActivationStage', () => {
     wrap(<ActivationStage derived={deriveWorkflow(snapshot({ batchDetail: detail, journey }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
     expect(screen.getByText(/not available yet/i)).toBeTruthy()
   })
+
+  // NOT APPLICABLE IS NOT ZERO, and the same rule that keeps SIM activation off
+  // the numeral treatment applies to the counts themselves on a batch that has no
+  // activatable rows at all. "Awaiting 0, Activated 0" is true and reads as work
+  // outstanding. Nobody is ever going to do it: paper does not activate (W-5).
+  const collateralOnly = {
+    ...journey,
+    counts: { total: 3, deliverableAndActivatable: 0, sentToVendor: 3, dispatched: 3, delivered: 0, activated: 0 },
+    activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null as null },
+    awaitingActivation: [],
+  }
+
+  it('says a COLLATERAL-only batch has no activatable work, rather than showing two zeros', () => {
+    wrap(<ActivationStage derived={deriveWorkflow(snapshot({ batchDetail: detail, journey: collateralOnly }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
+    expect(screen.getByText(/nothing in this batch can be activated/i)).toBeTruthy()
+    // The counts are GONE, not zeroed. Their labels are what carried the false
+    // reading, so neither may be on screen.
+    expect(screen.queryByText(/awaiting activation/i)).toBeNull()
+    expect(screen.queryByText(/^activated$/i)).toBeNull()
+  })
+
+  it('still shows the counts when the batch DOES carry activatable rows that are merely not done', () => {
+    const notYet = {
+      ...journey,
+      counts: { total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 0, activated: 0 },
+      activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null as null },
+      awaitingActivation: [],
+    }
+    wrap(<ActivationStage derived={deriveWorkflow(snapshot({ batchDetail: detail, journey: notYet }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
+    // A real zero on real outstanding work. The opposite claim, and it must still
+    // be made.
+    expect(screen.getByText(/awaiting activation/i)).toBeTruthy()
+    expect(screen.queryByText(/nothing in this batch can be activated/i)).toBeNull()
+  })
 })
 
 describe('NeedsYouBlock', () => {

@@ -65,16 +65,34 @@ export function groupBatchablePools(entries: readonly PoolEntryRow[]): Batchable
 }
 
 /**
- * How close a pool is to batching itself, for a caller that resolved the
- * configured lot size. Says the lot size is not configured rather than printing
- * one: the domain's ultimate fallback is a code default inside the fulfillment
- * service, and restating it here would make the portal a second source of truth
- * for it.
+ * When this pool will batch itself without anybody here, for a caller that
+ * resolved the configured lot size. Says the lot size is not configured rather
+ * than printing one: the domain's ultimate fallback is a code default inside the
+ * fulfillment service, and restating it here would make the portal a second
+ * source of truth for it.
+ *
+ * IT DELIBERATELY RENDERS NO RATIO, and that is a correction rather than a
+ * simplification. It used to read "N of M ready" with N being `pool.records`,
+ * the number of pending_pool_entry ROWS. The gate it was claiming to track
+ * counts something else entirely: batching.ts:382 evaluates
+ * `count(DISTINCT source_event_id) >= minLotSize`, so the lot size is measured
+ * in BANK REQUESTS while the numerator was measured in dispatch records. One
+ * bank request becomes up to two records, a SOUNDBOX and a COLLATERAL, so the
+ * ratio overstated progress by up to a factor of two and told an operator the
+ * pool was about to batch itself when it was nowhere near. That is the one
+ * defect on this screen that misleads somebody about when the machine will act.
+ *
+ * The ratio cannot be repaired here: source_event_id is not in
+ * POOL_ENTRY_COLUMNS and therefore not on PoolEntryRow, so the browser cannot
+ * count distinct requests, and an aggregate in ops-read.ts is forbidden by
+ * test/architecture.test.ts. Exposing the number properly is an analytics-rail
+ * question, so until it is answered this line states the threshold and names its
+ * unit rather than asserting a position against it.
  */
-function lotProgress(records: number, lot: number | null): string {
+function lotProgress(lot: number | null): string {
   return lot === null
-    ? `${fmtNumber(records)} ready, lot size not configured`
-    : `${fmtNumber(records)} of ${fmtNumber(lot)} ready`
+    ? 'No lot size configured, so this pool will not batch itself on size.'
+    : `Batches itself at ${fmtNumber(lot)} bank requests. The count above is dispatch records, and one request becomes up to two of them, so the two are not the same number.`
 }
 
 function ageInDays(iso: string): number {
@@ -265,7 +283,7 @@ export function BatchablePools({
                       the fulfillment service owns. */}
                   {lotSizeFor !== undefined && (
                     <span className="num text-sm text-muted-foreground">
-                      {lotProgress(pool.records, lotSizeFor(pool.tenantId, pool.programId))}
+                      {lotProgress(lotSizeFor(pool.tenantId, pool.programId))}
                     </span>
                   )}
                   {/* A STOCK WARNING, NOT A BLOCK, and the distinction is the

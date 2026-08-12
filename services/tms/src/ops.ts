@@ -95,11 +95,16 @@ export interface PreviewRowResult {
    * the record this row collides with, so the preview can say "VPA -> original"
    * instead of just "invalid".
    *
-   * A SIBLING of `row` and never a field inside it, deliberately: the ops portal
-   * derives its preview table columns reflectively from
-   * `Object.keys(rows[0].row)` (BankUploadPage.tsx), so anything added to `row`
-   * would silently become a new column of the bank-file table, and this is not a
-   * bank-file column.
+   * A SIBLING of `row` and never a field inside it, deliberately: the ops
+   * portal's bank-file preview table derives its columns reflectively from
+   * `Object.keys(rows[0].row)`, so anything added to `row` would silently become
+   * a new column of that table, and this is not a bank-file column.
+   *
+   * Named as a surface rather than as a file path on purpose. This comment used
+   * to cite BankUploadPage.tsx, which the workflow-workspace branch deleted when
+   * the bank upload became stages 1 and 2 of the workflow rail, so the pointer
+   * outlived the file by a whole branch. The contract is with whatever screen
+   * renders that preview, not with a filename.
    */
   duplicateOf?: DuplicateVpaOriginal
 }

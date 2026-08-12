@@ -342,13 +342,32 @@ describe('WorkflowPage: the landing view', () => {
     expect(await screen.findByRole('heading', { name: /^workflow$/i })).toBeTruthy()
   })
 
-  it('the landing view lists each pool with its ready count, lot size and oldest age', async () => {
+  it('the landing view lists each pool with its record count, lot size and oldest age', async () => {
     stub()
     renderAt('/workflow')
     // Two POOLED rows in one (tenant, program) pool, whose TENANT_PROGRAM
     // batching config sets the lot size to 6.
-    expect(await screen.findByText(/2 of 6 ready/i)).toBeTruthy()
+    expect(await screen.findByText(/2 records across/i)).toBeTruthy()
+    expect(screen.getByText(/batches itself at 6 bank requests/i)).toBeTruthy()
     expect(screen.getByText(/oldest/i)).toBeTruthy()
+  })
+
+  // THE RATIO THIS REPLACES WAS A GRAIN ERROR, and it is pinned here so nobody
+  // reinstates it as a readability improvement. The card used to read "2 of 6
+  // ready", counting pending_pool_entry ROWS against a lot size the domain
+  // evaluates as `count(DISTINCT source_event_id) >= minLotSize`
+  // (services/fulfillment/src/batching.ts:382). The threshold is measured in bank
+  // requests and the numerator was measured in dispatch records, and one request
+  // becomes up to two records, so the line overstated how close the pool was to
+  // batching itself by up to a factor of two.
+  it('states the lot size WITHOUT a position against it, because the two are different units', async () => {
+    stub()
+    renderAt('/workflow')
+    expect(await screen.findByText(/batches itself at 6 bank requests/i)).toBeTruthy()
+    expect(screen.queryByText(/2 of 6/i)).toBeNull()
+    // And it names the unit it is not, so the count above it is not read as the
+    // numerator of a ratio that is deliberately absent.
+    expect(screen.getByText(/one request becomes up to two of them/i)).toBeTruthy()
   })
 
   // Counts and ages on the LANDING surface go through the shared formatters. This
@@ -479,6 +498,29 @@ describe('WorkflowPage: batch mode', () => {
     expect(document.querySelector('input[type="file"]')).toBeNull()
     // And the help beside it is Upload's, because that is the stage on screen.
     expect(screen.getByText(/nothing is written yet/i)).toBeTruthy()
+  })
+
+  // THE GUIDANCE LINE DESCRIBES THE FLOW, NEVER THE STAGE BEING LOOKED AT, and
+  // conflating them made the sentence contradict the checkmark that had just been
+  // clicked. `position` was computed from the SHOWN stage, so clicking the Upload
+  // pill on a batch parked at Print produced "Step 1 of 8: the earliest stage
+  // still holding a record". Step 1 was not holding anything. It was finished,
+  // which is precisely why it was clickable at all.
+  it('does not renumber the flow when a completed pill is clicked, and says which stage is being revisited', async () => {
+    stub({ artifacts: [ARTIFACT] })
+    renderAt('/workflow/btch_aaa')
+    const rail = await screen.findByRole('navigation', { name: /workflow stages/i })
+    // The flow's own position, before anything is clicked.
+    const before = await screen.findByText(/step 5 of 8/i)
+    expect(before).toBeTruthy()
+
+    await userEvent.click(within(rail).getByRole('button', { name: /upload/i }))
+
+    // Unchanged: the flow has not moved just because somebody looked backwards.
+    expect(await screen.findByText(/step 5 of 8/i)).toBeTruthy()
+    expect(screen.queryByText(/step 1 of 8/i)).toBeNull()
+    // And the line says what is actually on screen.
+    expect(screen.getByText(/looking back at upload, which is complete/i)).toBeTruthy()
   })
 
   // The "no such batch" branch, which /workflow/nonsense reaches. An unknown batch

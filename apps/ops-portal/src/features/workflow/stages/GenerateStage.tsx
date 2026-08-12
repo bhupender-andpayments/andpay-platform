@@ -85,13 +85,28 @@ export function GenerateStage({
             {/* An INDETERMINATE track: it pulses, it has no width, and there is
                 no percentage anywhere near it. See the header. */}
             <div className="h-1.5 w-full animate-pulse rounded-full bg-primary/15" aria-hidden="true" />
+            {/* LABELLED FOR WHAT IT ACTUALLY MEASURES. `elapsedMsInStage` is
+                time since this stage became current ON THIS SCREEN, and the
+                clock starts at mount, so opening a batch that has been stuck
+                since yesterday reads a few seconds. Under the old "Waiting"
+                label that was a claim about how long composition had been
+                running, and it was wrong by however long the batch had been
+                sitting there. The measurement is real and worth showing, so it
+                is the label that changed rather than the number. There is no
+                honest alternative in the data: the batch carries createdAt, but
+                that is when the batch FORMED, which is a different fact and
+                earlier than when composition started. */}
             <div>
-              <div className="text-xs text-muted-foreground">Waiting</div>
+              <div className="text-xs text-muted-foreground">Watching for artifacts</div>
               <div className="num text-[26px] font-semibold leading-none text-foreground">{elapsedLabel}</div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Measured from when this screen opened, not from when the batch formed.
+              </p>
             </div>
             {generateStalled ? (
               <ErrorNote>
-                Nothing has been composed after {elapsedLabel}, which is longer than this normally takes. There are two
+                Nothing has been composed in the {elapsedLabel} this screen has been watching, which is longer than this
+                normally takes. There are two
                 causes: the batch fact has not been consumed yet, or the vendor roster does not hold exactly one ACTIVE
                 print vendor, which composition requires and refuses to guess at. Check the print vendors in{' '}
                 <Link to="/masterdata" className="underline">

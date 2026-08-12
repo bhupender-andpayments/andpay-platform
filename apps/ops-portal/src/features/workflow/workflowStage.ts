@@ -28,6 +28,27 @@ import { WORKFLOW_STAGES, type WorkflowStageKey } from './workflowKinds.js'
 /** How long Generate may run with nothing to show before the screen stops pretending. */
 export const GENERATE_STALL_MS = 90_000
 
+/**
+ * How long a stage that waits on an EXTERNAL COUNTERPARTY keeps the fast cadence
+ * before falling back to the slow one.
+ *
+ * Print, Dispatch and Delivery are not the machine working and they are not a
+ * person on this screen either: they wait on the print vendor and on the
+ * courier, whose answers arrive as facts on the bus days later. They were
+ * polling at the three-second cadence regardless, so a workspace left open on a
+ * batch out for delivery asked the edge for a journey around thirty thousand
+ * times a day for a fact that was never going to land that afternoon. The tab
+ * being hidden was the only thing that ever stopped it.
+ *
+ * The window rather than a flat slow cadence, because the moment somebody is
+ * actually watching one of these stages is usually the moment the counterparty
+ * is being driven, and a thirty-second lag there reads as a dead screen. Same
+ * shape as the commit-to-pool window in pool mode, and measured off the same
+ * `elapsedMsInStage`, so landing on a stage fresh always buys the fast cadence
+ * and sitting on it does not.
+ */
+export const EXTERNAL_WAIT_FAST_MS = 120_000
+
 export interface WorkflowSnapshot {
   /**
    * `pool` is feeding the pool (stages 1 to 3 are live work). `batch` is
@@ -81,6 +102,23 @@ export interface DerivedWorkflow {
     simActivationAvailable: boolean
     /** Generate has run past GENERATE_STALL_MS with no artifacts. */
     generateStalled: boolean
+    /**
+     * This batch holds rows, and NONE of them can be delivered to a merchant or
+     * activated: the deliverable-and-activatable subset is empty. A
+     * COLLATERAL-only batch, in other words, where every row is a sticker or a
+     * standee and paper does not activate (W-5).
+     *
+     * It exists so stages 7 and 8 can say NOT APPLICABLE rather than render
+     * "awaiting 0, activated 0". Those zeros are true and they read as "none of
+     * them have been done yet", which is a claim about work outstanding for a
+     * batch that has no such work and never will. Distinct from
+     * `journeyAvailable === false`, which is "we cannot know", and from a real
+     * zero on a batch that does carry deliverable rows.
+     *
+     * False whenever the journey read has not answered, for the same reason: an
+     * absence must not be reported as a not-applicable.
+     */
+    deliverableSubsetEmpty: boolean
     artifactCount: number
     counts: BatchJourneyView['counts'] | null
     courier: BatchJourneyView['courier'] | null
@@ -153,6 +191,8 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
         journeyAvailable: false,
         simActivationAvailable: false,
         generateStalled: false,
+        // Pool mode has no journey read, so nothing is known about any subset.
+        deliverableSubsetEmpty: false,
         artifactCount: 0,
         counts: null,
         courier: null,
@@ -218,9 +258,36 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
 
   const generateStalled = current === 'generate' && artifactCount === 0 && s.elapsedMsInStage > GENERATE_STALL_MS
 
-  // Activation waits on a person, one record at a time. Everything else in batch
-  // mode waits on the machine.
-  const pollSpeed: DerivedWorkflow['pollSpeed'] = isComplete ? 'off' : current === 'activation' ? 'slow' : 'fast'
+  // A batch that holds rows, none of which can ever reach a merchant's hands or
+  // be activated. See the field's own note.
+  const deliverableSubsetEmpty = journeyAvailable && total > 0 && activatable === 0
+
+  // WHO IS BEING WAITED ON DECIDES THE CADENCE, and there are four answers here,
+  // not two.
+  //
+  //   nothing      the batch is done. Stop.
+  //   a person     Activation is marked one record at a time, by whoever is
+  //                reading this screen. Nothing arrives on its own.
+  //   the machine  Generate. The rail composes in one transaction and it lands in
+  //                seconds, so this is the cadence that pays for itself. Once
+  //                Generate has STALLED the machine has demonstrably stopped
+  //                working, so the fast cadence stops buying anything and the
+  //                stall note is already on screen saying so.
+  //   somebody else Print, Dispatch and Delivery wait on the print vendor and on
+  //                the courier. Fast for a bounded window, then slow. See
+  //                EXTERNAL_WAIT_FAST_MS.
+  const waitsOnCounterparty = current === 'print' || current === 'dispatch' || current === 'delivery'
+  const pollSpeed: DerivedWorkflow['pollSpeed'] = isComplete
+    ? 'off'
+    : current === 'activation'
+      ? 'slow'
+      : waitsOnCounterparty
+        ? s.elapsedMsInStage < EXTERNAL_WAIT_FAST_MS
+          ? 'fast'
+          : 'slow'
+        : generateStalled
+          ? 'slow'
+          : 'fast'
 
   return {
     current,
@@ -234,6 +301,7 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
       // Honesty rule 3: no write path exists, so never available.
       simActivationAvailable: false,
       generateStalled,
+      deliverableSubsetEmpty,
       artifactCount,
       counts: c,
       courier: s.journey?.courier ?? null,

@@ -98,6 +98,19 @@ export function ActivationStage({
           <InfoNote>
             The batch journey read has not answered for this batch, so the activation counts are not available yet.
           </InfoNote>
+        ) : /* NOT APPLICABLE IS NOT ZERO, and the two zeros this replaces were
+              indistinguishable on screen. A batch holding only COLLATERAL has
+              nothing that can ever be activated, and rendering "Awaiting 0,
+              Activated 0" invited the reading that none of them had been done
+              yet. Nobody is ever going to do them: paper does not activate
+              (W-5), and the edge 409s the write. Same rule the SIM marker below
+              follows, applied to the counts themselves. */
+        derived.facts.deliverableSubsetEmpty ? (
+          <InfoNote>
+            Nothing in this batch can be activated. Every record in it is collateral, a sticker or a standee, and paper
+            does not activate: there is no device to bring online, and the edge refuses the write rather than the screen
+            hiding the button. This stage has no work for this batch and never will.
+          </InfoNote>
         ) : (
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
             <div className="min-w-0">
