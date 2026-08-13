@@ -34,9 +34,13 @@ const TILES_FIXTURE = {
   pendingQrAwaitingBatch: { count: 0, oldestAgeDays: null },
   pendingPrintVendorPickup: 0,
   dispatchedNotDelivered: 0,
-  deliveredNotActivated: null,
+  // D-16 (T4.2): real numbers, which is what TileSet always declared. These two
+  // carried `null` while the page refused to render them, so the fixture drifted
+  // from the wire contract unnoticed; the moment the tiles started reading their
+  // values, a null took the whole dashboard down.
+  deliveredNotActivated: 0,
   damagedReplacementOpen: 0,
-  activatedSuccessfully: null,
+  activatedSuccessfully: 0,
 }
 
 // A single fetch stub that answers every mount-time read the 11 sections'

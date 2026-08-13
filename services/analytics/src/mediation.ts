@@ -276,19 +276,19 @@ function computeTiles(rows: DispatchDbRow[], filters: ReportFilters): TileSet {
     (r) => r.dispatched_at !== null && r.delivery_date === null,
   ).length
 
-  // ACTIVATION-EMPTY (build decision 3): activation_status is null everywhere
-  // in live v1 data (no activation write path exists), so this counts
-  // everything delivered. W-5: filtered to soundbox-or-legacy, because a
-  // COLLATERAL group's lifecycle ends at DELIVERED and it must never appear
-  // on the activation worklist.
+  // W-5: filtered to soundbox-or-legacy, because a COLLATERAL group's lifecycle
+  // ends at DELIVERED and it must never appear on the activation worklist.
+  //
+  // This tile keeps BOTH halves of its name (D-16, T4.2), unlike the worklist
+  // below. The write no longer waits on delivery, but "delivered and still not
+  // activated" is a real question with a real answer, and widening it to every
+  // un-activated row would silently rename the metric.
   const deliveredNotActivated = narrowed.filter(
     (r) => isSoundboxOrLegacy(r) && r.delivery_date !== null && r.activation_status === null,
   ).length
 
   const damagedReplacementOpen = narrowed.filter((r) => r.replacement_status === 'RAISED').length
 
-  // ACTIVATION-EMPTY: reads 0 under live v1 data; the predicate itself is the
-  // real, general aggregate (correct once an activation write path exists).
   // W-5: filtered to soundbox-or-legacy, mirroring deliveredNotActivated.
   const activatedSuccessfully = narrowed.filter(
     (r) => isSoundboxOrLegacy(r) && r.activation_status === 'ACTIVATED',
@@ -470,10 +470,7 @@ function soundboxDeliveryRow(r: DispatchDbRow): ReportRow {
   }
 }
 
-// The FR-07 Phase-1 delivered-not-activated worklist. Activation columns
-// render null under ACTIVATION-EMPTY (no activation write path exists yet in
-// live v1 data); the predicate itself is the real, general worklist
-// definition (correct once an activation write path exists). deviceIds
+// The FR-07 awaiting-activation worklist row. deviceIds
 // mirrors the same generic device_ids exposure toReportRow already uses
 // (raw hardware serials, no encode/decode; @andpay/ids has no registered
 // device id kind), added per the BRD FR-10 Activation Report column set.
@@ -578,16 +575,27 @@ function computeReport(report: ReportName, rows: DispatchDbRow[], filters: Repor
         .filter((r) => r.dispatched_at !== null && withinReportWindow(r.dispatch_date, filters))
         .map(soundboxDeliveryRow)
     case 'activation':
-      // W-5: filtered to soundbox-or-legacy, mirroring the deliveredNotActivated
-      // tile. A COLLATERAL group's lifecycle ends at DELIVERED and must never
-      // appear on the activation worklist.
+      // W-5: filtered to soundbox-or-legacy. A COLLATERAL group's lifecycle ends
+      // at DELIVERED and must never appear on the activation worklist.
+      //
+      // D-16 (T4.2): the delivery gate is GONE from this worklist, because it is
+      // gone from the write. An undelivered soundbox is activatable now, so
+      // hiding it here would offer an operator a shorter list than the one they
+      // are allowed to act on. This is no longer "delivered and not activated";
+      // it is every soundbox awaiting activation, which is the question the
+      // screen is actually asking.
+      //
+      // The date window anchors on the delivery date when there is one and the
+      // received date otherwise. It cannot keep anchoring on delivery alone:
+      // withinReportWindow rejects a null, so a windowed report would have
+      // silently dropped exactly the rows this change exists to surface. For a
+      // delivered row the behaviour is unchanged.
       return rows
         .filter(
           (r) =>
             isSoundboxOrLegacy(r) &&
-            r.delivery_date !== null &&
             r.activation_status === null &&
-            withinReportWindow(r.delivery_date, filters),
+            withinReportWindow(r.delivery_date ?? r.received_at, filters),
         )
         .map(activationRow)
     case 'damaged-replacement':
@@ -893,14 +901,19 @@ export async function readBatchJourney(
     exception: rows.filter((r) => r.courier_status === 'RETURNED' || r.courier_status === 'FAILED').length,
   }
 
-  // The activate route enforces TWO gates (ops.controller.ts): delivery_date
-  // not null, AND dispatch_group is not COLLATERAL (W-5, "paper does not
-  // activate"). Both are mirrored here via isSoundboxOrLegacy, the same
-  // predicate the deliveredNotActivated/activatedSuccessfully tiles already
-  // use, so a delivered COLLATERAL row (physical paper that ships and
-  // delivers but never activates) never reaches this worklist. Offering a
-  // record the write would 409 is worse than omitting it.
-  const awaiting = rows.filter((r) => isSoundboxOrLegacy(r) && r.delivery_date !== null && !isActivated(r))
+  // The activate route enforces ONE gate now (ops.controller.ts): dispatch_group
+  // is not COLLATERAL (W-5, "paper does not activate"). It is mirrored here via
+  // isSoundboxOrLegacy, the same predicate the
+  // deliveredNotActivated/activatedSuccessfully tiles already use, so a
+  // COLLATERAL row (physical paper that ships and delivers but never activates)
+  // never reaches this worklist. Offering a record the write would 409 is worse
+  // than omitting it.
+  //
+  // D-16 (T4.2): the delivery gate that used to be the second half of this
+  // predicate is gone, because it is gone from the write. This worklist mirrors
+  // what the edge will accept, and that is now every un-activated soundbox in
+  // the batch rather than only the delivered ones.
+  const awaiting = rows.filter((r) => isSoundboxOrLegacy(r) && !isActivated(r))
 
   const activation = {
     awaiting: awaiting.length,

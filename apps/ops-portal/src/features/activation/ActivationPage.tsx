@@ -13,19 +13,20 @@ import { fmtDateTime } from '../../ui/format.js'
 // The list is the real `activation` report (services/analytics/src/
 // mediation.ts's activationRow via GET /ops/reports/activation, the same
 // read Task 5's Reports screen already exposes): server-filtered to
-// `delivery_date IS NOT NULL AND activation_status IS NULL`, i.e. the
-// delivered, not-yet-activated worklist. This IS the "local dispatch
-// projection" the DELIVERED gate is grounded on - no new cross-context read
-// is added here.
+// soundbox-or-legacy rows with `activation_status IS NULL`, i.e. every row
+// awaiting activation. No new cross-context read is added here.
 //
-// The DELIVERED gate is enforced AUTHORITATIVELY at the edge
-// (apps/ops-edge/src/ops.controller.ts's activateAssignmentRoute reads its
-// own local analyticsDb projection before calling into TMS; a non-delivered
-// row 409s there). This page's own per-row `deliveryDate !== null` check
-// below is defense-in-depth only (same pattern as StatusCorrectionForm/
-// TerminalOverrideForm, Task 9/10): it disables the control so the SPA can
-// never even attempt to send an ineligible id, but the edge is the actual
-// authority (S24/T14: no client-side authz/business-rule shortcut).
+// THE DELIVERED GATE IS GONE (D-16, T4.2, 13 Aug 2026). Both this page and the
+// edge used to refuse a row with no delivery date, and that encoded the linear
+// lifecycle D-16 retires: delivery and activation are independent, and the CWD
+// routinely confirms an activation before the courier's file reaches us. An
+// operator faced with a disabled button and "activation is gated on delivery"
+// could do nothing but wait for a file that had no bearing on whether the
+// device was live. The delivery column survives as INFORMATION, and the one
+// remaining rule (paper does not activate, W-5) is enforced by the edge and
+// mirrored by the report's own filter, so an ineligible row never reaches this
+// table at all. The edge stays the authority either way (S24/T14: no
+// client-side authz or business-rule shortcut).
 //
 // C3 FENCE (hard constraint): SUCCESS path only. No failure-mark button, no
 // failure-reason input, no distinct SIM-activation control anywhere on this
@@ -93,7 +94,9 @@ export function ActivationPage() {
 
   async function handleActivate(row: ReportRow): Promise<void> {
     const dispatchId = stringField(row, 'dispatchId')
-    if (dispatchId === null || !isDelivered(row)) return
+    // D-16 (T4.2): no delivery check. The only thing that stops a click here is
+    // a row with no dispatch id, which is not a row.
+    if (dispatchId === null) return
     setActionError(null)
     setActionNote(null)
     setBusyId(dispatchId)
@@ -130,7 +133,16 @@ export function ActivationPage() {
       // Was the raw ISO string, so this column read "2026-08-09T06:30:00.000Z".
       // fmtDateTime already existed and is what every other table on the portal
       // uses; there was no reason for this one to show the wire format.
-      cell: (row) => fmtDateTime(stringField(row, 'deliveryDate')),
+      //
+      // D-16 (T4.2): this column is now INFORMATION rather than a precondition.
+      // An undelivered row is activatable and says so plainly, because a blank
+      // cell next to an enabled button would read as missing data.
+      cell: (row) =>
+        isDelivered(row) ? (
+          fmtDateTime(stringField(row, 'deliveryDate'))
+        ) : (
+          <span className="text-muted-foreground">not yet delivered</span>
+        ),
     },
     {
       key: 'simActivationStatus',
@@ -147,15 +159,18 @@ export function ActivationPage() {
       header: 'Actions',
       cell: (row) => {
         const dispatchId = stringField(row, 'dispatchId')
-        const delivered = isDelivered(row)
         const busy = dispatchId !== null && busyId === dispatchId
+        // D-16 (T4.2): no delivery precondition. The control used to be disabled
+        // on an undelivered row and explained itself with "activation is gated
+        // on delivery", which is the rule that has gone away: the CWD routinely
+        // confirms before the courier's file arrives, and the operator could do
+        // nothing about it but wait.
         return (
           <Button
             size="sm"
             variant="secondary"
-            disabled={dispatchId === null || !delivered || busy}
+            disabled={dispatchId === null || busy}
             loading={busy}
-            title={delivered ? undefined : 'Not yet delivered; activation is gated on delivery.'}
             onClick={() => {
               void handleActivate(row)
             }}

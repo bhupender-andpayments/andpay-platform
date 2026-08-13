@@ -164,21 +164,47 @@ describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
       deliveryDate: now,
       activationStatus: 'ACTIVATED',
     })
-    // not yet delivered: excluded
-    await insertRow({ dispatchId: newId('asgn'), programId: p1, pipelineState: 'DISPATCHED', receivedAt: now, dispatchedAt: now })
+    // D-16 (T4.2): not yet delivered, and now INCLUDED. The delivery gate is
+    // gone from the write, so a worklist that still hid these rows would offer
+    // an operator a shorter list than the one they are allowed to act on.
+    const undeliveredId = newId('asgn')
+    await insertRow({ dispatchId: undeliveredId, programId: p1, pipelineState: 'DISPATCHED', receivedAt: now, dispatchedAt: now })
 
     const scope: ReadScope = { kind: 'own', programIds: [p1] }
     const { rows } = await readReport(db, scope, 'activation', {})
 
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.dispatchId).toBe(worklistId)
+    expect(rows.map((r) => r.dispatchId).sort()).toEqual([worklistId, undeliveredId].sort())
+    const worklistRow = rows.find((r) => r.dispatchId === worklistId)!
+    expect(worklistRow.deliveryDate).not.toBeNull()
+    expect(rows.find((r) => r.dispatchId === undeliveredId)!.deliveryDate).toBeNull()
     // Device ID(s), Task 4 (D-H.2/FR-10): insertRow seeds every row's
     // device_ids as ARRAY['DEV1'], so the activation row must carry it too.
-    expect(rows[0]!.deviceIds).toEqual(['DEV1'])
-    expect(rows[0]!.activationStatus).toBeNull()
-    expect(rows[0]!.simActivationStatus).toBeNull()
-    expect(rows[0]!.activationDate).toBeNull()
-    expect(rows[0]!.activationFailureReason).toBeNull()
+    expect(worklistRow.deviceIds).toEqual(['DEV1'])
+    expect(worklistRow.activationStatus).toBeNull()
+    expect(worklistRow.simActivationStatus).toBeNull()
+    expect(worklistRow.activationDate).toBeNull()
+    expect(worklistRow.activationFailureReason).toBeNull()
+  })
+
+  // The window used to anchor on delivery_date alone, and withinReportWindow
+  // rejects a null, so a windowed report silently dropped exactly the rows T4.2
+  // exists to surface.
+  it('activation: a DATE-WINDOWED read still reaches an undelivered row, via its received date', async () => {
+    const p1 = toUuid(newId('prog'))
+    const inWindow = new Date('2026-08-10T00:00:00.000Z')
+    const outOfWindow = new Date('2026-06-01T00:00:00.000Z')
+    const wanted = newId('asgn')
+    await insertRow({ dispatchId: wanted, programId: p1, pipelineState: 'DISPATCHED', receivedAt: inWindow, dispatchedAt: inWindow })
+    await insertRow({ dispatchId: newId('asgn'), programId: p1, pipelineState: 'DISPATCHED', receivedAt: outOfWindow, dispatchedAt: outOfWindow })
+
+    const scope: ReadScope = { kind: 'own', programIds: [p1] }
+    const { rows } = await readReport(db, scope, 'activation', {
+      from: '2026-08-01T00:00:00.000Z',
+      to: '2026-08-31T00:00:00.000Z',
+    })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.dispatchId).toBe(wanted)
   })
 
   it('damaged-replacement: rows with is_replacement or replacement_status populated', async () => {

@@ -114,8 +114,12 @@ async function insertRow(dispatchId: string, programId: string, bankCode: string
 
 // Task 4 (D-H.2/FR-10): a DELIVERED, not-yet-activated row carrying multiple
 // device ids, so the activation report route can be asserted against a row
-// that actually exercises the Device ID(s) column (the shared seed() rows are
-// all RECEIVED and never enter the activation worklist).
+// that actually exercises the Device ID(s) column.
+//
+// D-16 (T4.2): the shared seed() rows now DO appear on this worklist. They are
+// RECEIVED with no delivery date, and the worklist stopped requiring one when
+// the write did. So these tests pick their row out of the response instead of
+// assuming they own it; the column is what they are about, not the row count.
 async function insertDeliveredRow(dispatchId: string, programId: string, bankCode: string): Promise<void> {
   await analyticsDb.$executeRaw`
     INSERT INTO dispatch_row
@@ -255,10 +259,10 @@ describe('ops reports edge: GET /ops/reports/activation carries Device ID(s) (Ta
       .get('/ops/reports/activation')
       .set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
-    expect(res.body.rows).toHaveLength(1)
-    expect(res.body.rows[0].dispatchId).toBe(worklistId)
-    expect(res.body.rows[0].deviceIds).toEqual(['SB-DEV-1', 'SB-DEV-2'])
-    expect(res.body.rows[0].activationStatus).toBeNull()
+    const row = res.body.rows.find((r: { dispatchId: string }) => r.dispatchId === worklistId)
+    expect(row).toBeTruthy()
+    expect(row.deviceIds).toEqual(['SB-DEV-1', 'SB-DEV-2'])
+    expect(row.activationStatus).toBeNull()
 
     // Pattern B (Decision-2, RULED): still exactly the two unconditional
     // accounting 6e rows, no new permission, no DENY branch.
@@ -282,8 +286,7 @@ describe('ops reports edge: GET /ops/reports/activation carries Device ID(s) (Ta
     expect(res.headers['content-type']).toContain('text/csv')
     const lines = res.text.trim().split('\r\n')
     expect(lines[0]).toContain('deviceIds')
-    expect(lines).toHaveLength(2)
-    expect(lines[1]).toContain('SB-DEV-1;SB-DEV-2')
+    expect(lines.filter((l) => l.includes('SB-DEV-1;SB-DEV-2'))).toHaveLength(1)
 
     const auditRows = await analyticsAuditRows()
     expect(auditRows).toHaveLength(2)

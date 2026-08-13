@@ -50,12 +50,17 @@ describe('TilesPage', () => {
     pendingQrAwaitingBatch: { count: 2, oldestAgeDays: 1.5 },
     pendingPrintVendorPickup: 3,
     dispatchedNotDelivered: 4,
-    deliveredNotActivated: 9, // backend may return a number: must NOT be rendered as-is
+    deliveredNotActivated: 9,
     damagedReplacementOpen: 1,
-    activatedSuccessfully: 7, // same
+    activatedSuccessfully: 7,
   }
 
-  it('renders the eight tiles from the real analytics aggregate; the two activation-empty tiles show the neutral marker, never a fabricated count', async () => {
+  // D-16 (T4.2): this used to assert that the two activation tiles rendered
+  // "Not available yet" instead of their backend values, and that was right
+  // while nothing wrote activation_status: one tile equalled the whole delivered
+  // set and the other was always zero. Both have real data behind them now, so
+  // hiding them would suppress the numbers an operator came here for.
+  it('renders every tile from the real analytics aggregate, activation included', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -83,11 +88,10 @@ describe('TilesPage', () => {
     expect(within(grid).getByText('3')).toBeTruthy()
     expect(within(grid).getByText('4')).toBeTruthy()
     expect(within(grid).getByText('1')).toBeTruthy()
-    // The fabricated activation counts must never appear anywhere on the page.
-    expect(screen.queryByText('9')).toBeNull()
-    expect(screen.queryByText('7')).toBeNull()
-    // Both activation-dependent tiles show the neutral empty marker instead.
-    expect(within(grid).getAllByText(/not available/i)).toHaveLength(2)
+    // The two activation tiles now render their real values.
+    expect(within(grid).getAllByText('9').length).toBeGreaterThan(0)
+    expect(within(grid).getByText('7')).toBeTruthy()
+    expect(screen.queryByText(/not available/i)).toBeNull()
     // The watermark badge reflects the body's watermark.asOf, not a header.
     // The badge renders the instant in the reader's locale rather than as a raw
     // ISO string, and keeps the exact instant on the title attribute. Asserting

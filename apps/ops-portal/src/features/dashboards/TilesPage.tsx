@@ -24,19 +24,14 @@ import { fmtNumber, fmtDays } from '../../ui/format.js'
 // per-tile drilldown). Every value below is read straight off the mocked/real
 // TileSet response; nothing here invents a number.
 //
-// FR-07 phase-1: no activation write path exists yet in live v1 data, so
-// activation_status is always null (services/analytics/src/mediation.ts,
-// activationRow's comment). That makes `deliveredNotActivated` equal the
-// whole delivered set and `activatedSuccessfully` always zero: both are real
-// numbers the backend can return, but neither reflects a meaningful
-// activation state yet. These two tiles render a neutral marker instead of
-// the backend value until FR-07 lands a real activation write path (C3,
-// fenced); every other tile renders the backend value faithfully.
-const ACTIVATION_EMPTY_TILES: ReadonlySet<TileName> = new Set<TileName>([
-  'deliveredNotActivated',
-  'activatedSuccessfully',
-])
-const ACTIVATION_EMPTY_MARKER = 'Not available yet'
+// THE ACTIVATION FENCE IS DOWN (D-16, T4.2, 13 Aug 2026). deliveredNotActivated
+// and activatedSuccessfully used to render "Not available yet" instead of their
+// backend values, because activation_status was null everywhere in live data:
+// there was no write path, so one tile equalled the whole delivered set and the
+// other was always zero, and showing either would have been a number that meant
+// nothing. Both now have real data behind them, so both render faithfully like
+// every other tile. Continuing to hide them would be the opposite failure:
+// suppressing the numbers an operator came to the dashboard for.
 
 // The one emphasized tile (E design cue: "ONE tile emphasized with a filled
 // accent; the rest neutral"). requestsReceived is the top-of-funnel volume
@@ -107,30 +102,37 @@ const TILE_DEFS: readonly TileDef[] = [
   { key: 'activatedSuccessfully', label: 'Activated successfully', hint: 'Live in the field', tone: 'positive', icon: IconCheck },
 ]
 
-// The pending-pipeline funnel: a real-data-only lifecycle summary limited to
-// the three stages that are actually meaningful in live v1 data (activation
-// is fenced/empty, so it is deliberately left out of this rail; it still
-// renders faithfully in the full tile grid above via ACTIVATION_EMPTY_TILES).
+// The pending-pipeline funnel: what is WAITING at each stage, which is why
+// every entry is a pending count rather than a completed one. Activation joins
+// it now that the fence is down (D-16, T4.2): "delivered, not yet activated" is
+// a queue somebody has to work, and it was the one stage of the funnel an
+// operator could not see.
 const RAIL: ReadonlyArray<{ label: string; key: TileName }> = [
   { label: 'Awaiting batch', key: 'pendingQrAwaitingBatch' },
   { label: 'Vendor pickup', key: 'pendingPrintVendorPickup' },
   { label: 'In transit', key: 'dispatchedNotDelivered' },
+  { label: 'Awaiting activation', key: 'deliveredNotActivated' },
 ]
 
 function tileCount(tiles: TileSet, key: TileName): number {
   const v = tiles[key]
-  return typeof v === 'number' ? v : v.count
+  if (typeof v === 'number') return v
+  // A malformed or partial body degrades to zero rather than taking the whole
+  // dashboard down on `null.count`. TileSet declares every tile as a number or
+  // a {count} object, so this branch should be unreachable against a real
+  // backend; it exists because one bad field on a seven-tile page should cost
+  // that field, not the page. Same posture as the device list surviving a
+  // non-array body.
+  return typeof v === 'object' && v !== null ? v.count : 0
 }
 
 function tileDisplay(tiles: TileSet, key: TileName): string {
-  if (ACTIVATION_EMPTY_TILES.has(key)) return ACTIVATION_EMPTY_MARKER
   return fmtNumber(tileCount(tiles, key))
 }
 
 function TileCard({ def, tiles }: { def: TileDef; tiles: TileSet }) {
   const Icon = def.icon
   const emphasized = def.key === EMPHASIZED_TILE
-  const isActivationEmpty = ACTIVATION_EMPTY_TILES.has(def.key)
   const oldest =
     def.key === 'pendingQrAwaitingBatch' && typeof tiles.pendingQrAwaitingBatch !== 'number'
       ? tiles.pendingQrAwaitingBatch.oldestAgeDays
@@ -155,17 +157,9 @@ function TileCard({ def, tiles }: { def: TileDef; tiles: TileSet }) {
         </span>
       </div>
       <div className="mt-3">
-        {/* The activation-empty marker is prose, not a measurement, so it must
-            not borrow the numeral treatment: at 30px mono it wrapped to three
-            lines and read louder than the real counts beside it. It renders as
-            quiet body text at the same optical position instead. */}
-        {isActivationEmpty ? (
-          <p className="text-[15px] leading-tight text-muted-foreground">{ACTIVATION_EMPTY_MARKER}</p>
-        ) : (
-          <p className="num text-[30px] font-semibold leading-none tracking-[-0.02em] text-foreground">
-            {tileDisplay(tiles, def.key)}
-          </p>
-        )}
+        <p className="num text-[30px] font-semibold leading-none tracking-[-0.02em] text-foreground">
+          {tileDisplay(tiles, def.key)}
+        </p>
         <p className="mt-2 flex items-center gap-1 text-[12px] text-muted-foreground">
           {oldest !== null ? `Oldest ${fmtDays(oldest)} in queue` : def.hint}
           <IconChevron

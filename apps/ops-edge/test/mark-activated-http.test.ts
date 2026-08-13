@@ -214,7 +214,12 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
     expect(await fulfillmentAuditRows()).toHaveLength(0)
   })
 
-  it('a NOT-delivered assignment (null delivery_date) -> 409, no activation, no activated fact, no 6e ALLOW', async () => {
+  // THE RE-PIN (D-16, T4.2, 13 Aug 2026). This used to assert a 409 and no
+  // effect, which pinned the delivered-gate as a rule. The gate is gone:
+  // delivery and activation are independent axes and the CWD routinely confirms
+  // before the courier's file lands, so an undelivered soundbox is an ordinary
+  // activation rather than a conflict.
+  it('an UNDELIVERED soundbox (null delivery_date) -> 200 and a real activation', async () => {
     const asgnId = newId('asgn')
     await seedTmsAssignment(asgnId)
     await seedDispatchRow(asgnId, false)
@@ -226,16 +231,17 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
       .set('Idempotency-Key', randomUUID())
       .send({ dispatchId: asgnId })
 
-    expect(res.status).toBe(409)
+    expect(res.status).toBe(200)
+    expect(res.body.activated).toBe(true)
 
-    const row = await tmsDb.$queryRaw<{ activated_at: Date | null; demand_state: string }[]>`
-      SELECT activated_at, demand_state FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
-    expect(row[0]!.activated_at).toBeNull()
-    expect(row[0]!.demand_state).toBe('pooled-for-fulfillment')
+    const row = await tmsDb.$queryRaw<{ activated_at: Date | null; demand_state: string; activation_status: string | null }[]>`
+      SELECT activated_at, demand_state, activation_status FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+    expect(row[0]!.activated_at).not.toBeNull()
+    expect(row[0]!.demand_state).toBe('activated')
+    expect(row[0]!.activation_status).toBe('ACTIVATED')
 
-    expect(await tmsActivatedFactCount()).toBe(0)
-    expect(await tmsAuditRows()).toHaveLength(0)
-    expect(await fulfillmentAuditRows()).toHaveLength(0)
+    expect(await tmsActivatedFactCount()).toBe(1)
+    expect(await tmsAuditRows()).toHaveLength(1)
   })
 
   // W-5: a DELIVERED COLLATERAL group must never activate by hand. Paper's
@@ -266,7 +272,10 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
     expect(await fulfillmentAuditRows()).toHaveLength(0)
   })
 
-  it('a missing dispatch_row (never projected) -> 409, no activation, no writes at all', async () => {
+  // Still refused, and deliberately: the ONE remaining gate (not COLLATERAL)
+  // cannot be evaluated without a projected row, and guessing a dispatch group
+  // is how a standee gets activated. Fail closed.
+  it('a missing dispatch_row (never projected) -> 409 unknown-dispatch, no writes at all', async () => {
     const asgnId = newId('asgn')
     await seedTmsAssignment(asgnId)
     // Deliberately no seedDispatchRow call.
@@ -279,6 +288,7 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
       .send({ dispatchId: asgnId })
 
     expect(res.status).toBe(409)
+    expect(res.body.message).toBe('unknown-dispatch')
     expect(await tmsActivatedFactCount()).toBe(0)
     expect(await tmsAuditRows()).toHaveLength(0)
   })

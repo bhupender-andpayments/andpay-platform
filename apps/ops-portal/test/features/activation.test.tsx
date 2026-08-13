@@ -11,9 +11,10 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 // activateAssignmentRoute + services/analytics/src/mediation.ts's
 // activationRow, docs/plan/phase7_grounding/B_edge_contracts.md row #11):
 //   GET  /ops/reports/activation   -> { rows: ReportRow[], watermark }
-//     (server-filtered to delivery_date IS NOT NULL AND activation_status
-//     IS NULL: the delivered, not-yet-activated worklist. Row shape copied
-//     verbatim from mediation.ts's activationRow, never invented here.)
+//     (server-filtered to soundbox-or-legacy rows with activation_status
+//     IS NULL: every row awaiting activation. The delivery half of that
+//     filter went away with D-16 / T4.2. Row shape copied verbatim from
+//     mediation.ts's activationRow, never invented here.)
 //   POST /ops/assignments/activate  body { dispatchId } -> { activated }
 //     (dispatchId IS the wire asgn id; NOT step-up-gated.)
 // C3 fence: SUCCESS path only. No failure-mark control, no distinct
@@ -137,7 +138,12 @@ describe('ActivationPage', () => {
     expect(headerValue(call, 'Idempotency-Key')).toBeTruthy()
   })
 
-  it('a non-DELIVERED assignment (null deliveryDate) is NOT markable: its control is disabled and no write fires', async () => {
+  // THE RE-PIN (D-16, T4.2). This used to assert the control was disabled,
+  // which pinned the delivered-gate as a rule. Activation no longer waits on
+  // delivery, so an undelivered row is markable and the cell says plainly that
+  // delivery has not happened yet rather than leaving a blank that would read
+  // as missing data.
+  it('an UNDELIVERED assignment IS markable, and its delivery cell says so rather than sitting blank', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
@@ -164,12 +170,15 @@ describe('ActivationPage', () => {
     renderActivationPage()
 
     const row = (await screen.findByText('asgn_not_delivered')).closest('tr')!
+    expect(within(row).getByText(/not yet delivered/i)).toBeTruthy()
     const button = within(row).getByRole('button', { name: /mark activated/i }) as HTMLButtonElement
-    expect(button.disabled).toBe(true)
+    expect(button.disabled).toBe(false)
 
     await userEvent.click(button)
 
-    expect(calls.some((c) => c.url.includes('/ops/assignments/activate'))).toBe(false)
+    const write = calls.find((c) => c.url.includes('/ops/assignments/activate'))
+    expect(write).toBeTruthy()
+    expect(JSON.parse(String(write!.init.body)).dispatchId).toBe('asgn_not_delivered')
   })
 
   it('has NO failure-mark control and NO distinct SIM-activation control anywhere on the page (C3 fence)', async () => {

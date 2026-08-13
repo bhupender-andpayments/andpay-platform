@@ -689,18 +689,32 @@ export class OpsController {
   }
 
   // Phase 5 Task 2 (D-H.1, BRD Phase-1 MANUAL activation flow): CWD activates
-  // the device+SIM out of band; ops marks it here. The DELIVERED gate READ
-  // happens HERE, at the edge (this.deps.analyticsDb, the LOCAL projection),
-  // never inside TMS (no cross-context DB read, C4). Gate predicate is
-  // deliveryDate IS NOT NULL, not a pipelineState equality check
-  // (pipelineState advances to 'ACTIVATED' once the fact this triggers folds,
-  // so an equality check would wrongly reject a second activation attempt).
-  // A missing or not-yet-delivered row is a normal business-rule 409, not an
-  // authz DENY: the D2 authorize already ALLOWed inside gate() above, and
-  // since the domain op never runs, no 6e (ALLOW or DENY) is emitted for this
-  // rejection. Only on a delivered row does this call activateAssignmentOps
-  // with a fresh ManualDevicePort (R4: Phase-1 has no CWD-API adapter wired,
-  // C6/T11 seam preserved).
+  // the device+SIM out of band; ops marks it here.
+  //
+  // THE DELIVERED GATE IS GONE (D-16, T4.2, 13 Aug 2026). It used to reject any
+  // assignment whose projected row carried no delivery date, and that encoded
+  // the linear lifecycle D-16 retires: delivery and activation are independent
+  // axes, and the CWD routinely confirms an activation before the courier's
+  // morning file reaches us. The gate turned that ordinary sequence into a
+  // conflict an operator could do nothing about except wait for a file that had
+  // no bearing on whether the device was live. It was also a gate on an
+  // EVENTUALLY CONSISTENT read: the projection lagging made a delivered device
+  // un-activatable for as long as the lag lasted.
+  //
+  // ONE GATE REMAINS, and it is about the thing itself rather than its
+  // schedule: paper does not activate (W-5). A COLLATERAL group's lifecycle
+  // ends at DELIVERED, so activating it by hand must be impossible, not merely
+  // absent from the worklist.
+  //
+  // A row with no projection at all is still refused, and deliberately: the
+  // remaining gate cannot be evaluated without it, and guessing a dispatch group
+  // is how a standee gets activated. Fail closed.
+  //
+  // Both refusals are normal business-rule 409s, not authz DENYs: the D2
+  // authorize already ALLOWed inside gate() above, and since the domain op never
+  // runs, no 6e (ALLOW or DENY) is emitted for the rejection. The activation
+  // itself goes through a fresh ManualDevicePort (R4: Phase-1 has no CWD-API
+  // adapter wired, C6/T11 seam preserved).
   @Post('assignments/activate')
   @HttpCode(200)
   async activateAssignmentRoute(
@@ -710,12 +724,9 @@ export class OpsController {
   ): Promise<{ activated: boolean }> {
     const g = await this.gate(req, 'ops:mark-activated', idem, [])
     const status = await readDispatchActivationStatus(this.deps.analyticsDb, body.dispatchId)
-    if (status === null || status.deliveryDate === null) {
-      throw new ConflictException('not-delivered')
+    if (status === null) {
+      throw new ConflictException('unknown-dispatch')
     }
-    // W-5: paper does not activate. A COLLATERAL group's lifecycle ends at
-    // DELIVERED; activating it by hand must be impossible, not merely absent
-    // from the worklist.
     if (status.dispatchGroup === 'COLLATERAL') {
       throw new ConflictException('not-activatable')
     }
