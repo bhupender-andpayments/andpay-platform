@@ -1,0 +1,22 @@
+-- Fix: the ops device inventory could not be read at all after T4.4.
+--
+-- 20260813110000 added unit.activated_at and the ops inventory read started
+-- selecting it. The grant in 20260810020000 is COLUMN-SCOPED, deliberately, and
+-- a column-scoped grant does not extend to columns added later. So every
+-- GET /ops/devices failed with "permission denied for table unit", which is what
+-- Postgres reports when a SELECT names an ungranted column. Not a narrow
+-- failure: the whole screen, not just the new column.
+--
+-- It reached the gate because NOTHING exercised listDeviceInventory against the
+-- real role. The portal suite mocks fetch and no integration test called it, so
+-- the only check on that grant was the migration file agreeing with itself. A
+-- test that runs the real query under fulfillment_ops_read lands with this fix.
+--
+-- activated_at is granted, and it carries none of the sensitivity that keeps
+-- sim_no and device_qr out of this list: it is a timestamp saying the CWD
+-- activated the device, not an identifier for a subscriber or a handset. The two
+-- EXCLUSIONS ARE UNCHANGED and stay excluded for exactly the reasons
+-- 20260810020000 gives (S7, and an open architecture question about the
+-- permission surface), so this widens what ops can see about a device by one
+-- timestamp and by nothing else.
+GRANT SELECT (activated_at) ON fulfillment.unit TO fulfillment_ops_read;
