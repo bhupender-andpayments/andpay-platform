@@ -5,8 +5,7 @@ import {
   readCourierStatusExceptions,
   listBankCompositionConfigs,
   listBatchingConfigs,
-  buildDispatchPackage,
-  dispatchGroupXlsx,
+  buildDispatchGroupXlsx,
   resolveCollateralGroup,
   assembleGroupPdf,
   listBatches,
@@ -216,8 +215,11 @@ export class OpsReadController {
       res.status(404).send(Buffer.from(''))
       return
     }
-    const lines = await buildDispatchPackage(this.deps.fulfillmentDb, btchId, 'ship')
-    const xlsx = await dispatchGroupXlsx(lines, group)
+    // D-11 exception (13 Aug 2026): the sheet's count columns are worded for the
+    // bound vendor's press, so an operator downloading it sees exactly what the
+    // vendor's own pull produces. Both doors go through buildDispatchGroupXlsx
+    // precisely so neither can resolve the press differently, or forget to.
+    const xlsx = await buildDispatchGroupXlsx(this.deps.fulfillmentDb, btchId, group, 'ship')
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename="dispatch-${group}-${btchId}.xlsx"`)
     res.status(200).send(xlsx)

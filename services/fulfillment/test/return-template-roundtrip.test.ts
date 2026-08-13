@@ -57,6 +57,31 @@ describe('dispatch Excel is its own return template (Task 7)', () => {
     expect(headers.slice(-4)).toEqual(['Artifact Refs', 'Device ID', 'AWB', 'Courier'])
   })
 
+  // D-11 exception (T7.1, 13 Aug 2026): a grid batch's sheet says the copies are
+  // already imposed, and THAT WORDING MUST NOT COST THE ROUND TRIP. The return
+  // adapter reads Dispatch ID, Device ID, AWB and Courier by name and ignores
+  // every other column, so this pins the property the rename relies on rather
+  // than trusting it.
+  it('the grid wording of the count columns still round-trips through the return parser', async () => {
+    const lines = [line({ asgnId: 'asgn_1', soundbox: false, standeeCount: 2, stickerCount: 1 })]
+    const buf = await dispatchGroupXlsx(lines, 'COLLATERAL', 'GRID_3X2')
+    const { headers } = await loadHeaders(buf)
+    expect(headers).toContain('Standee Count (already imposed)')
+    expect(headers).toContain('Sticker Count (already imposed)')
+    // The four columns the adapter actually reads are untouched, and the three
+    // vendor-fill cells are still the last three.
+    expect(headers).toContain('Dispatch ID')
+    expect(headers.slice(-4)).toEqual(['Artifact Refs', 'Device ID', 'AWB', 'Courier'])
+  })
+
+  it('leaves the count columns BARE under ONE_PER_PAGE, where the vendor really does own the count', async () => {
+    const buf = await dispatchGroupXlsx([line({ asgnId: 'asgn_1', soundbox: false, standeeCount: 2 })], 'COLLATERAL')
+    const { headers } = await loadHeaders(buf)
+    expect(headers).toContain('Standee Count')
+    expect(headers).toContain('Sticker Count')
+    expect(headers.join('|')).not.toContain('already imposed')
+  })
+
   it('accepts "Shipment Number" as an AWB synonym, case-insensitively', async () => {
     const csv = 'Dispatch ID,Device ID,shipment number\nasgn_1,SER-1,AWB-1\n'
     const r = await parseReturnWorkbook(new TextEncoder().encode(csv), 'return.csv')
@@ -137,5 +162,33 @@ describe('dispatch Excel is its own return template (Task 7)', () => {
     expect(r.validRows).toHaveLength(1)
     expect(r.validRows[0]).toEqual({ deviceSerial: 'SER-RT-1', asgnId: 'asgn_1', awb: 'AWB-RT-1' })
     expect(r.untouchedRows).toBe(2)
+  })
+
+  // The same round trip on a GRID batch's sheet (T7.1). The two count headers
+  // are reworded there, and W-5 says the file we send IS the file that comes
+  // back, so the reworded file has to come back too. Asserting the headers
+  // alone would not prove that.
+  it('round trip: a GRID-worded sheet is still the sheet that returns', async () => {
+    const lines: PackageLine[] = [
+      line({ asgnId: 'asgn_g1', bankReferenceCode: 'A', soundbox: false, standeeCount: 2, stickerCount: 1 }),
+      line({ asgnId: 'asgn_g2', bankReferenceCode: 'B', soundbox: false, standeeCount: 1, stickerCount: 0 }),
+    ]
+    const buf = await dispatchGroupXlsx(lines, 'COLLATERAL', 'GRID_3X2')
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
+    const ws = wb.worksheets[0]!
+    const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
+    const col = (h: string): number => headers.indexOf(h) + 1
+
+    // A COLLATERAL line takes an AWB and no Device ID (the serial-less rule),
+    // which is the shape a collateral sheet comes back in.
+    ws.getRow(2).getCell(col('AWB')).value = 'AWB-GRID-1'
+    const filledBuf = Buffer.from(await wb.xlsx.writeBuffer())
+
+    const r = await parseReturnWorkbook(new Uint8Array(filledBuf), 'return.xlsx')
+    expect(r.structuralErrors).toEqual([])
+    expect(r.invalidRows).toEqual([])
+    expect(r.validRows).toEqual([{ asgnId: 'asgn_g1', awb: 'AWB-GRID-1' }])
+    expect(r.untouchedRows).toBe(1)
   })
 })

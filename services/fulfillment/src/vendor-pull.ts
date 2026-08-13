@@ -2,7 +2,7 @@ import { toUuid, fromUuid } from '@andpay/ids'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { enterVendorReadScope } from './vendor-read-context.js'
-import { buildDispatchPackage, dispatchGroupXlsx, assembleGroupPdf, resolveCollateralGroup } from './package.js'
+import { buildDispatchGroupXlsx, assembleGroupPdf, resolveCollateralGroup } from './package.js'
 import type { AssetStore } from './storage/asset-store.js'
 import { emitVendorAuthzAudit } from './vendor-audit.js'
 import { loadFulfillmentConfig } from './authz-config.js'
@@ -111,8 +111,11 @@ export async function pullDispatchPackageXlsx(
   // Phase 4 (P4-D5): the ship view, now returned bank+branch-sorted, serialized
   // by the shared dispatchGroupXlsx builder (same sheet the ops download
   // produces, for the SAME delivery group).
-  const lines = await buildDispatchPackage(db, btchIdWire, 'ship')
-  const xlsx = await dispatchGroupXlsx(lines, group)
+  // D-11 exception (13 Aug 2026): the count columns are worded for THIS vendor's
+  // own press, so a grid vendor is not handed a pre-imposed run and a bare copy
+  // count at once. buildDispatchGroupXlsx is the ops download's builder too, so
+  // the two doors cannot word the same batch's sheet differently.
+  const xlsx = await buildDispatchGroupXlsx(db, btchIdWire, group, 'ship')
   return { xlsx, btchId: btchIdWire }
 }
 

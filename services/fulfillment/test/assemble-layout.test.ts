@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import { PDFDocument, PDFDict, PDFName } from 'pdf-lib'
-import { assembleGroupPdf, buildDispatchPackage, AssetResolutionError } from '../src/package.js'
+import ExcelJS from 'exceljs'
+import {
+  assembleGroupPdf,
+  buildDispatchPackage,
+  buildDispatchGroupXlsx,
+  readBatchPrintLayout,
+  AssetResolutionError,
+} from '../src/package.js'
 import { SHEET } from '../src/impose.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 import type { AssetStore, AssetMeta, AssetRecord, PutResult, StoredAsset } from '../src/storage/asset-store.js'
@@ -387,5 +394,108 @@ describe('assembleGroupPdf: AssetResolutionError, ONE_PER_PAGE', () => {
     await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'SOUNDBOX_IMG', 'dev-asset:never-put:v1')
 
     await expect(assembleGroupPdf(db, store, btchWire, 'SOUNDBOX')).rejects.toBeInstanceOf(AssetResolutionError)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T7.1 (13 Aug 2026): D-11 ruled. GRID_3X2 is a SANCTIONED EXCEPTION to "the
+// vendor prints it N times", for presses that cannot impose.
+//
+// The exception is only safe if the sheet and the sheets of paper agree on who
+// owns the copy count. Before this, a grid batch shipped pre-imposed cells AND
+// a bare "Standee Count" column, so a vendor honoring both instructions would
+// have printed the run N times over. The count headers now say it outright.
+//
+// readBatchPrintLayout is the ONE resolver both the merged PDF and the Excel go
+// through, and buildDispatchGroupXlsx is the ONE builder both DOORS go through
+// (the ops download and the vendor pull), so there is no per-door layout
+// argument left to forget.
+// ---------------------------------------------------------------------------
+
+async function headersOf(buf: Buffer): Promise<string[]> {
+  const wb = new ExcelJS.Workbook()
+  await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
+  return (wb.worksheets[0]!.getRow(1).values as unknown[]).slice(1).map(String)
+}
+
+describe('readBatchPrintLayout: one resolver for the sheet and the sheets of paper', () => {
+  it('a batch bound to a grid press resolves GRID_3X2', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('GRID_3X2')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+    expect(await readBatchPrintLayout(db, btchWire)).toBe('GRID_3X2')
+  })
+
+  it('no bound vendor at all falls back to ONE_PER_PAGE, the original behavior', async () => {
+    const { btchWire } = ids()
+    // No batch row seeded whatsoever, which is the shape a pre-binding batch and
+    // most of this repo's fixtures have.
+    expect(await readBatchPrintLayout(db, btchWire)).toBe('ONE_PER_PAGE')
+  })
+
+  it('a bound vendor with an unrecognized print_layout falls back rather than trusting the column', async () => {
+    // Fail-closed on the SAFE side: an unknown value must not be read as "grid",
+    // because claiming copies are already imposed when they are not is the one
+    // error that produces a short print run rather than a long one.
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('SOMETHING_ELSE')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+    expect(await readBatchPrintLayout(db, btchWire)).toBe('ONE_PER_PAGE')
+  })
+})
+
+describe('buildDispatchGroupXlsx: the sheet is worded for the bound press (D-11 exception)', () => {
+  it('a grid batch sheet says the copies are already imposed', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('GRID_3X2')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+    await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', standeeCount: 2, stickerCount: 1 })
+
+    const headers = await headersOf(await buildDispatchGroupXlsx(db, btchWire, 'COLLATERAL', 'ship'))
+    expect(headers).toContain('Standee Count (already imposed)')
+    expect(headers).toContain('Sticker Count (already imposed)')
+  })
+
+  it('a ONE_PER_PAGE batch keeps the bare count columns, where the vendor really does own the count', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const vndrUuid = await seedVendor('ONE_PER_PAGE')
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, vndrUuid)
+    await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', standeeCount: 2, stickerCount: 1 })
+
+    const headers = await headersOf(await buildDispatchGroupXlsx(db, btchWire, 'COLLATERAL', 'ship'))
+    expect(headers).toContain('Standee Count')
+    expect(headers.join('|')).not.toContain('already imposed')
+  })
+
+  it('the wording is the ONLY difference: same columns, same order, same row count', async () => {
+    // Guards the narrowness of the change. The sheet is also the W-5 return
+    // template, so a grid batch quietly gaining or losing a column would break
+    // the file coming back, and the round trip is pinned separately in
+    // return-template-roundtrip.test.ts.
+    const grid = ids()
+    const gridVndr = await seedVendor('GRID_3X2')
+    await seedBatchRow(grid.tenantUuid, grid.programUuid, grid.btchUuid, gridVndr)
+    await seedGroupEntry(grid.tenantUuid, grid.programUuid, grid.btchUuid, { bankCode: 'B1', standeeCount: 1 })
+
+    const plain = ids()
+    await seedBatchRow(plain.tenantUuid, plain.programUuid, plain.btchUuid, null)
+    await seedGroupEntry(plain.tenantUuid, plain.programUuid, plain.btchUuid, { bankCode: 'B1', standeeCount: 1 })
+
+    const gridHeaders = await headersOf(await buildDispatchGroupXlsx(db, grid.btchWire, 'COLLATERAL', 'ship'))
+    const plainHeaders = await headersOf(await buildDispatchGroupXlsx(db, plain.btchWire, 'COLLATERAL', 'ship'))
+
+    expect(gridHeaders).toHaveLength(plainHeaders.length)
+    const differing = gridHeaders.filter((h, i) => h !== plainHeaders[i])
+    expect(differing).toEqual(['Standee Count (already imposed)', 'Sticker Count (already imposed)'])
+  })
+
+  it('carries the ship-view recipient block through, so the shared builder did not narrow the entitlement', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, null)
+    await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', standeeCount: 1 })
+
+    const headers = await headersOf(await buildDispatchGroupXlsx(db, btchWire, 'COLLATERAL', 'ship'))
+    expect(headers).toContain('Ship To')
+    expect(headers).toContain('Dispatch ID')
   })
 })

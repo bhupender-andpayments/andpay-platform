@@ -7,6 +7,19 @@ import { PDFDocument } from 'pdf-lib'
 // mode the PDF is the exact print run and the Excel counts are
 // reconciliation. The rotated Dispatch ID on every card keeps cut-apart
 // cells traceable; nothing further is printed per cell.
+//
+// D-11 RULED 13 Aug 2026. That count expansion is a real conflict with D-11's
+// "the vendor prints it N times", and the ruling is that GRID_3X2 is a
+// SANCTIONED EXCEPTION rather than a defect: this mode exists because the press
+// cannot impose, which is a capability fact and not a preference, so the
+// alternative to pre-imposing is not compliance but a vendor who cannot run the
+// job. The reconciliation reading above is therefore now a ruling and not this
+// file's own assumption, and package.ts states it ON THE SHEET the vendor reads
+// (COUNT_HEADERS) rather than only here, because a count column that says
+// nothing about who owns it is how the run gets printed N times over.
+//
+// The exception is owed to the corpus as an explicit D-11 carve-out; see
+// PLAN.md section 7.
 export const GRID = { cols: 3, rows: 2, cellWidthPt: 283.44, cellHeightPt: 510.24 } as const
 export const SHEET = { widthPt: 850.32, heightPt: 1020.48 } as const // 300 x 360 mm
 

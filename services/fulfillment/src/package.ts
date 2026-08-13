@@ -163,7 +163,46 @@ export async function buildDispatchPackage(
   return lines
 }
 
-const DISPATCH_COLUMNS = [
+// W-6: the two press capabilities. GRID_3X2 exists because some presses cannot
+// impose; it is not a preference.
+export type PrintLayout = 'ONE_PER_PAGE' | 'GRID_3X2'
+
+/**
+ * The bound print vendor's press layout for a batch, resolved at DOWNLOAD time.
+ *
+ * ONE function, because the merged PDF and the dispatch Excel must never
+ * disagree about which layout a batch is in: the PDF decides whether copies are
+ * pre-imposed and the sheet decides whether its count columns read as an
+ * instruction or as reconciliation, and a batch where those two answers differ
+ * would tell the vendor to print the run twice.
+ *
+ * No bound vendor (print_vndr NULL, or a batch row a test database never seeds
+ * at all) falls back to ONE_PER_PAGE, the original behavior.
+ */
+export async function readBatchPrintLayout(db: FulfillmentDb, btchId: string): Promise<PrintLayout> {
+  const rows = await db.$queryRaw<{ print_layout: string }[]>`
+    SELECT v.print_layout FROM batch b JOIN vndr v ON v.id = b.print_vndr
+    WHERE b.id = ${toUuid(btchId)}::uuid
+  `
+  return rows[0]?.print_layout === 'GRID_3X2' ? 'GRID_3X2' : 'ONE_PER_PAGE'
+}
+
+// D-11 RULED 13 Aug 2026: GRID_3X2 is a SANCTIONED EXCEPTION to "the vendor
+// prints it N times", for presses that cannot impose. The exception is only
+// safe if the sheet and the sheets-of-paper agree on who owns the copy count,
+// so on a grid batch these two headers say outright that the run is already
+// built. Before this, a grid batch shipped pre-imposed cells AND a bare count
+// column, and a vendor honoring both would have printed the run N times over.
+//
+// Renaming is safe against the W-5 return round trip by construction: the
+// return adapter reads Dispatch ID, Device ID, AWB and Courier by name and
+// ignores every other column, so these two headers are ours to word.
+const COUNT_HEADERS: Record<PrintLayout, { standee: string; sticker: string }> = {
+  ONE_PER_PAGE: { standee: 'Standee Count', sticker: 'Sticker Count' },
+  GRID_3X2: { standee: 'Standee Count (already imposed)', sticker: 'Sticker Count (already imposed)' },
+}
+
+const dispatchColumns = (layout: PrintLayout): { header: string; key: string }[] => [
   { header: 'Bank', key: 'bank' },
   { header: 'Branch', key: 'branch' },
   // Ruled 2026-08-10 (spec section 2): the column the BRD, the walkthrough,
@@ -175,8 +214,10 @@ const DISPATCH_COLUMNS = [
   { header: 'Merchant', key: 'labelDisplayName' },
   { header: 'Legal Name', key: 'merchantLegalName' },
   { header: 'Soundbox', key: 'soundbox' },
-  { header: 'Standee Count', key: 'standeeCount' },
-  { header: 'Sticker Count', key: 'stickerCount' },
+  // A soundbox has no quantity of its own (one per merchant in either layout),
+  // so only these two carry a copy count and only these two need qualifying.
+  { header: COUNT_HEADERS[layout].standee, key: 'standeeCount' },
+  { header: COUNT_HEADERS[layout].sticker, key: 'stickerCount' },
   { header: 'QR', key: 'labelQr' },
   { header: 'Ship To', key: 'shipToAddress' },
   { header: 'Contact', key: 'contactName' },
@@ -239,13 +280,46 @@ const GROUP_SHEET_NAMES: Record<CollateralGroup, string> = {
 // own working file is built. The spec describes these as soundboxXlsx and
 // collateralXlsx; it is one group-keyed builder because the HTTP routes are
 // group-keyed, and one builder cannot drift into two column sets.
-export async function dispatchGroupXlsx(lines: PackageLine[], group: CollateralGroup): Promise<Buffer> {
+//
+// `layout` is the bound print vendor's press (readBatchPrintLayout), and it
+// changes ONLY the wording of the two count headers, never the column set, the
+// order, or any cell. It defaults to ONE_PER_PAGE so this stays a pure function
+// a test can call without a batch, and so a caller that has no batch context
+// gets the original sheet rather than a wrong claim about imposition.
+export async function dispatchGroupXlsx(
+  lines: PackageLine[],
+  group: CollateralGroup,
+  layout: PrintLayout = 'ONE_PER_PAGE',
+): Promise<Buffer> {
   const wb = new ExcelJS.Workbook()
   const ws = wb.addWorksheet(GROUP_SHEET_NAMES[group])
-  ws.columns = DISPATCH_COLUMNS
+  ws.columns = dispatchColumns(layout)
   writeRows(ws, excelLinesFor(lines, group))
   const arrayBuf = await wb.xlsx.writeBuffer()
   return Buffer.from(arrayBuf)
+}
+
+/**
+ * The dispatch Excel for one delivery group, resolved end to end from the batch.
+ *
+ * ONE function for BOTH doors, the ops download and the vendor pull, because the
+ * count-column wording depends on the bound vendor's press and a per-door layout
+ * argument is a per-door chance to forget it. A door that forgot would hand a
+ * grid press a pre-imposed run AND a bare copy count, which is the exact defect
+ * the D-11 exception ruling closes. There is now no layout argument at a door to
+ * get wrong.
+ *
+ * `dispatchGroupXlsx` stays exported and pure for the tests that build sheets
+ * from hand-made lines with no batch behind them.
+ */
+export async function buildDispatchGroupXlsx(
+  db: FulfillmentDb,
+  btchId: string,
+  group: CollateralGroup,
+  fn: AdapterFunction,
+): Promise<Buffer> {
+  const lines = await buildDispatchPackage(db, btchId, fn)
+  return await dispatchGroupXlsx(lines, group, await readBatchPrintLayout(db, btchId))
 }
 
 // Phase 4 (P4-D5): serialize the (already bank+branch-sorted) package lines.
@@ -388,13 +462,9 @@ export async function assembleGroupPdf(
   // W-6: the layout is the BOUND print vendor's press capability, read at
   // assembly time. Stored artifacts are 1-up and never re-rendered for a
   // layout change: flipping the vendor's setting changes the next download.
-  // No bound vendor (print_vndr NULL, or a batch row this test database never
-  // seeds at all) falls back to ONE_PER_PAGE, today's only behavior.
-  const layoutRows = await db.$queryRaw<{ print_layout: string }[]>`
-    SELECT v.print_layout FROM batch b JOIN vndr v ON v.id = b.print_vndr
-    WHERE b.id = ${toUuid(btchId)}::uuid
-  `
-  const layout = layoutRows[0]?.print_layout ?? 'ONE_PER_PAGE'
+  // Shared with the Excel builder through readBatchPrintLayout, so the sheet
+  // and the sheets of paper cannot disagree about who owns the copy count.
+  const layout = await readBatchPrintLayout(db, btchId)
 
   if (layout === 'GRID_3X2') {
     return await assembleGridGroupPdf(merged, assetStore, btchId, group, lines)

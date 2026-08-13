@@ -237,6 +237,49 @@ describe('pullDispatchPackageXlsx (spec 14b task 5, FR-04 D104 disclosure surfac
   })
 })
 
+// D-11 exception (T7.1, 13 Aug 2026): GRID_3X2 is a sanctioned exception to
+// "the vendor prints it N times", and the exception is only safe if the SHEET
+// agrees with the sheets of paper about who owns the copy count. A grid batch
+// used to ship pre-imposed cells AND a bare "Standee Count" column, so a vendor
+// honoring both would have printed the run N times over.
+//
+// This is the VENDOR door. It matters that it is tested here and not only
+// against the builder: the pull is where a forgotten layout argument would
+// silently hand a grid press the wrong instruction, and the wording is the only
+// thing standing between that and a wasted print run.
+describe('the dispatch sheet is worded for the bound vendor own press (D-11 exception)', () => {
+  it('a GRID_3X2 vendor pulls a sheet whose count columns say the copies are already imposed', async () => {
+    const { btchV1Wire, v1Wire } = await seed()
+    // seed() binds the batch to v1 but inserts no vndr row, so the JOIN finds
+    // nothing and the layout falls back to ONE_PER_PAGE. Give v1 a real row
+    // with a grid press, which is what a print vendor that cannot impose is.
+    await db.$executeRaw`
+      INSERT INTO vndr (id, type, display_name, status, print_layout, updated_at)
+      VALUES (${toUuid(v1Wire)}::uuid, 'PRINT', 'Grid Press', 'ACTIVE', 'GRID_3X2', now())
+    `
+    const res = await pullDispatchPackageXlsx(db, mkClaim7(v1Wire), btchV1Wire, 'SOUNDBOX', 'trace-grid-1')
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(res.xlsx! as unknown as Parameters<typeof wb.xlsx.load>[0])
+    const headers = (wb.worksheets[0]!.getRow(1).values as unknown[]).slice(1).map(String)
+    expect(headers).toContain('Standee Count (already imposed)')
+    expect(headers).toContain('Sticker Count (already imposed)')
+  })
+
+  it('a vendor with no grid press pulls the ORIGINAL bare count columns, because there it really does own the count', async () => {
+    const { btchV1Wire, v1Wire } = await seed()
+    await db.$executeRaw`
+      INSERT INTO vndr (id, type, display_name, status, print_layout, updated_at)
+      VALUES (${toUuid(v1Wire)}::uuid, 'PRINT', 'Plain Press', 'ACTIVE', 'ONE_PER_PAGE', now())
+    `
+    const res = await pullDispatchPackageXlsx(db, mkClaim7(v1Wire), btchV1Wire, 'SOUNDBOX', 'trace-grid-2')
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(res.xlsx! as unknown as Parameters<typeof wb.xlsx.load>[0])
+    const headers = (wb.worksheets[0]!.getRow(1).values as unknown[]).slice(1).map(String)
+    expect(headers).toContain('Standee Count')
+    expect(headers.join('|')).not.toContain('already imposed')
+  })
+})
+
 // D-9b: the CLASS-6 pull, which had never once been exercised.
 //
 // Both test layers for this route minted class 7, where the work-queue axis is

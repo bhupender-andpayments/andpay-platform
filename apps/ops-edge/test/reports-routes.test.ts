@@ -9,7 +9,7 @@ import { PrismaClient as TmsClient } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { buildOpsEdgeApp, type OpsEdgeDeps } from '../src/index.js'
-import { newId } from '@andpay/ids'
+import { newId, toUuid } from '@andpay/ids'
 
 // The REAL app, real in-process HTTP via supertest, no bound port. This suite
 // exercises the Task-8 class-3 reporting routes: the class-3 ops actor derived
@@ -323,6 +323,40 @@ describe('ops-edge FR-03/FR-04 dispatch-package download (Phase 4 Task 4a, P4-D6
       .get(`/ops/batches/${newId('btch')}/excel/NOT_A_GROUP`)
       .set('Authorization', `Bearer ${token}`)
     expect(unknown.status).toBe(404)
+  })
+
+  // D-11 exception (T7.1, 13 Aug 2026): this route now resolves the bound
+  // vendor's press so the sheet's count columns can say whether the copies are
+  // already imposed. The WORDING is pinned in the fulfillment suite, which is
+  // where exceljs is a declared dependency and where both doors share one
+  // builder. What is pinned here is the route surviving the JOIN's HIT path: the
+  // other cases above all use unseeded batch ids, so before this test the query
+  // had only ever missed at this door.
+  it('GET excel/:group still serves a batch bound to a grid press', async () => {
+    const token = await mint()
+    const btchWire = newId('btch')
+    const vndrUuid = toUuid(newId('vndr'))
+    await fulfillmentDb.$executeRaw`
+      INSERT INTO fulfillment.vndr (id, type, display_name, status, print_layout, updated_at)
+      VALUES (${vndrUuid}::uuid, 'PRINT', 'Ops Door Grid Press', 'ACTIVE', 'GRID_3X2', now())
+    `
+    await fulfillmentDb.$executeRaw`
+      INSERT INTO fulfillment.batch (id, tenant_id, program_id, print_vndr, trigger_reason, unit_count, updated_at)
+      VALUES (${toUuid(btchWire)}::uuid, ${toUuid(newId('tnnt'))}::uuid, ${toUuid(newId('prog'))}::uuid,
+              ${vndrUuid}::uuid, 'LOT_SIZE', 1, now())
+    `
+
+    const res = await request(app.getHttpServer())
+      .get(`/ops/batches/${btchWire}/excel/COLLATERAL`)
+      .set('Authorization', `Bearer ${token}`)
+      .buffer(true)
+      .parse((response, callback) => {
+        const chunks: Buffer[] = []
+        response.on('data', (chunk: Buffer) => chunks.push(chunk))
+        response.on('end', () => callback(null, Buffer.concat(chunks)))
+      })
+    expect(res.status).toBe(200)
+    expect((res.body as Buffer).subarray(0, 2).toString('latin1')).toBe('PK')
   })
 
   it('GET collateral/:type for a batch with no such artifact -> 404', async () => {
