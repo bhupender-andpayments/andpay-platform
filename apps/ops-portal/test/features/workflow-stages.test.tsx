@@ -299,6 +299,39 @@ describe('DeliveryStage', () => {
   })
 })
 
+// D-16 (T4.3): Delivery and Activation are parallel stages counted off two
+// independent axes, so "activated but not yet delivered" is an ordinary state of
+// the rail rather than an impossible one.
+describe('deriveWorkflow: the two stages are parallel (D-16)', () => {
+  const journeyWith = (delivered: number, activated: number) => ({
+    batchId: 'btch_1',
+    counts: { total: 2, deliverableAndActivatable: 2, sentToVendor: 2, dispatched: 2, delivered, activated },
+    courier: { pickedUp: 0, inTransit: 2, outForDelivery: 0, delivered, exception: 0 },
+    activation: { awaiting: 0, activated, failed: 0, simActivated: null as null },
+    awaitingActivation: [],
+    sentToVendorAt: null,
+    watermark: { asOf: '2026-08-11T09:00:00.000Z', perTopic: {} },
+  })
+  const detail = { ...BATCH_DETAIL, artifacts: [{ asgnId: 'a', artifactType: 'SOUNDBOX_IMG', assetReference: 'r', supersededAt: null }] }
+
+  it('marks Activation complete while Delivery is still outstanding, and points back at Delivery', () => {
+    const d = deriveWorkflow(snapshot({ batchDetail: detail, journey: journeyWith(0, 2) }))
+    expect(d.completed).toContain('activation')
+    expect(d.completed).not.toContain('delivery')
+    // The rail names the earliest stage still waiting, which is the honest
+    // answer when a later one finished first.
+    expect(d.current).toBe('delivery')
+    expect(d.isComplete).toBe(false)
+  })
+
+  it('the ordinary order still reads the same way', () => {
+    const d = deriveWorkflow(snapshot({ batchDetail: detail, journey: journeyWith(2, 0) }))
+    expect(d.completed).toContain('delivery')
+    expect(d.completed).not.toContain('activation')
+    expect(d.current).toBe('activation')
+  })
+})
+
 describe('ActivationStage', () => {
   beforeEach(() => { clearAccessToken(); setAccessToken('tok-1'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup() })

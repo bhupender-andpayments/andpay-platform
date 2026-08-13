@@ -61,9 +61,14 @@ describe('readBatchJourney', () => {
       dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DELIVERED',
       courierStatus: 'DELIVERED', deliveryDate: new Date('2026-08-10T10:00:00.000Z'), awb: 'AWB2',
     })
+    // D-16 (T4.3): an activated row's pipeline_state is DELIVERED, because that
+    // rollup now carries the fulfillment axis only, and its activation lives in
+    // activation_status. The value here is 'ACTIVATED', the vocabulary the
+    // WRITER uses (project.ts): this fixture said 'ACTIVE', which nothing emits,
+    // and got away with it only while stage 8 was counted off pipeline_state.
     await insertRow({
-      dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'ACTIVATED',
-      courierStatus: 'DELIVERED', deliveryDate: new Date('2026-08-10T10:00:00.000Z'), activationStatus: 'ACTIVE', awb: 'AWB3',
+      dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DELIVERED',
+      courierStatus: 'DELIVERED', deliveryDate: new Date('2026-08-10T10:00:00.000Z'), activationStatus: 'ACTIVATED', awb: 'AWB3',
     })
     // A different batch, and an unbatched row: neither may leak into the rollup.
     await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: OTHER_BATCH, pipelineState: 'DELIVERED' })
@@ -76,7 +81,26 @@ describe('readBatchJourney', () => {
     expect(view.counts.sentToVendor).toBe(4)
     expect(view.counts.dispatched).toBe(3)
     expect(view.counts.delivered).toBe(2)
+    // NOT cumulative and not off the same column: stage 8 is the parallel
+    // activation axis (D-16, T4.3).
     expect(view.counts.activated).toBe(1)
+  })
+
+  // The defect D-16 names, at the journey grain.
+  it('a row activated BEFORE delivery counts as activated and NOT as delivered', async () => {
+    await insertRow({
+      dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED',
+      courierStatus: 'IN_TRANSIT', activationStatus: 'ACTIVATED', awb: 'AWB-EARLY',
+    })
+
+    const view = (await readBatchJourney(db, { kind: 'crossTenant' }, BATCH))!
+    expect(view.counts.activated).toBe(1)
+    // Before T4.3 the rollup said ACTIVATED, which outranked DELIVERED, so this
+    // parcel was counted delivered while it was still in transit.
+    expect(view.counts.delivered).toBe(0)
+    expect(view.counts.dispatched).toBe(1)
+    // It is not awaiting activation either: it already happened.
+    expect(view.activation.awaiting).toBe(0)
   })
 
   it('fans the courier statuses out rather than reporting one status for the batch', async () => {
@@ -120,8 +144,8 @@ describe('readBatchJourney', () => {
       courierStatus: 'DELIVERED', deliveryDate: new Date('2026-08-10T10:00:00.000Z'), awb: 'AWB9',
     })
     await insertRow({
-      dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'ACTIVATED',
-      courierStatus: 'DELIVERED', deliveryDate: new Date('2026-08-10T10:00:00.000Z'), activationStatus: 'ACTIVE',
+      dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DELIVERED',
+      courierStatus: 'DELIVERED', deliveryDate: new Date('2026-08-10T10:00:00.000Z'), activationStatus: 'ACTIVATED',
     })
 
     const view = (await readBatchJourney(db, { kind: 'crossTenant' }, BATCH))!
@@ -154,7 +178,7 @@ describe('readBatchJourney', () => {
   })
 
   it('reports simActivated as null, never 0, because no write path exists for it', async () => {
-    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'ACTIVATED', activationStatus: 'ACTIVE' })
+    await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: BATCH, pipelineState: 'DELIVERED', activationStatus: 'ACTIVATED' })
     const view = (await readBatchJourney(db, { kind: 'crossTenant' }, BATCH))!
     // A zero would read as "none activated their SIM". null reads as "we do not know",
     // which is the truth, and is what makes the portal render "Not available yet".

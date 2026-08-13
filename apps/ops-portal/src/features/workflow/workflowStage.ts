@@ -244,6 +244,14 @@ export function deriveWorkflow(s: WorkflowSnapshot): DerivedWorkflow {
   // choice is to stay silent rather than assert completion. Consequence, logged as
   // a known residual: a collateral-only batch never completes Delivery. That case
   // needs a ruling, and inventing a claim here would hide it.
+  //
+  // D-16 (T4.3): these two are PARALLEL, and since the delivered-gate on
+  // activation went away the out-of-order case is ordinary rather than a race.
+  // Activation can complete while Delivery has not, and the rail says exactly
+  // that: `order` sorts what is done without truncating at the first gap, so
+  // Activation stays marked complete and `current` correctly points back at
+  // Delivery, the earliest stage still waiting. Nothing here needs to prefer one
+  // axis over the other, which is the point of counting them separately.
   if (journeyAvailable && activatable > 0 && c!.delivered === activatable) done.push('delivery')
   if (journeyAvailable && activatable > 0 && c!.activated === activatable) done.push('activation')
 

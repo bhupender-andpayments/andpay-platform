@@ -1,0 +1,27 @@
+-- D-16 two-axis fold (T4.3, 13 Aug 2026), the projected-row side.
+--
+-- pipeline_state is a computed rollup and ACTIVATED has left its vocabulary:
+-- one ordinal cannot answer two independent questions, and while it tried, a
+-- record activated before its delivery fact landed rolled up to ACTIVATED and
+-- the later DELIVERED could not advance past it. That row then read as delivered
+-- to every "at least DELIVERED" caller while its delivery_date stayed null, so
+-- the same row gave two different answers depending on which column you asked.
+--
+-- Activation was never actually lost by this: it has its own columns,
+-- activation_status and activation_date, and they are untouched here. Only the
+-- rollup is being narrowed back to the fulfillment axis it can actually express.
+--
+-- Rows still carrying the retired value are moved to DELIVERED. Same STATED
+-- assumption as the unit-side migration (fulfillment 20260813110000): the only
+-- wired door to activation was the ops edge, which refused any assignment whose
+-- projected row had no delivery date, so a row that reached ACTIVATED had been
+-- delivered. This is also self-healing in a way the unit table is not: analytics
+-- is a projection, so a full rebuild recomputes pipeline_state from the facts
+-- under the new rank and reaches the same answer without this statement.
+--
+-- Left alone deliberately: rows that were activated but NOT delivered cannot be
+-- distinguished here, because under the old rollup they look identical to rows
+-- that were both. That is the shape of the defect, not something this migration
+-- can undo. Their activation_status is intact either way, and a rebuild is the
+-- honest repair.
+UPDATE "dispatch_row" SET "pipeline_state" = 'DELIVERED' WHERE "pipeline_state" = 'ACTIVATED';

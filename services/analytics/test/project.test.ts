@@ -469,9 +469,8 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
     expect(collateral.pipelineState).toBe(shipped.pipelineState)
   })
 
-  it('applyFact activated path sets ACTIVATED (exercised in tests only; the fact is never emitted in v1)', async () => {
-    // Pure-reducer assertion: the activated branch is dead code in production
-    // (build decision 3) but must be correct for future surfaces.
+  it('applyFact activated path sets the ACTIVATION axis and leaves the fulfillment rollup alone (D-16, T4.3)', async () => {
+    // Pure-reducer assertion.
     const base: DispatchRowState = applyFact(null, 'fct.tms.assignment.v1', {
       asgnId: 'asgn_x', progId: newId('prog'), bankReferenceCode: 'HDFC', bankDisplayName: 'HDFC Bank',
       merchantDisplayName: 'Acme', billable: true,
@@ -484,6 +483,28 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
     // so sim_activation_status mirrors activation_status (distinct SIM signal is Phase-2).
     expect(activated.simActivationStatus).toBe('ACTIVATED')
     expect(activated.activationDate).toEqual(new Date('2026-07-05T00:00:00Z'))
-    expect(activated.pipelineState).toBe('ACTIVATED')
+    // D-16: the rollup carries the FULFILLMENT axis only. This row was received
+    // and never dispatched, so it stays exactly where the delivery facts left
+    // it. Before T4.3 this read 'ACTIVATED'.
+    expect(activated.pipelineState).toBe('RECEIVED')
+  })
+
+  it('THE DEFECT D-16 NAMES: an early activation no longer masks the later delivery', async () => {
+    const base: DispatchRowState = applyFact(null, 'fct.tms.assignment.v1', {
+      asgnId: 'asgn_y', progId: newId('prog'), bankReferenceCode: 'HDFC', bankDisplayName: 'HDFC Bank',
+      merchantDisplayName: 'Acme', billable: true,
+    }, new Date('2026-07-01T00:00:00Z'))
+    // The CWD confirms before the courier's file arrives.
+    const activated = applyFact(base, 'fct.tms.assignment.activated.v1', { asgnId: 'asgn_y', activatedAt: '2026-07-05T00:00:00Z' }, new Date('2026-07-05T00:00:00Z'))
+    const delivered = applyFact(activated, 'fct.fulfillment.shipment.v1', {
+      shptId: 'shpt_y', awb: 'AWB-Y', status: 'DELIVERED', courierTimestamp: '2026-07-06T00:00:00Z',
+    }, new Date('2026-07-06T00:00:00Z'))
+    // Under the old rank ACTIVATED was 6 and DELIVERED 5, so this stayed
+    // 'ACTIVATED' and the row read as delivered to a rank check while its
+    // delivery_date told a different story.
+    expect(delivered.pipelineState).toBe('DELIVERED')
+    expect(delivered.deliveryDate).toEqual(new Date('2026-07-06T00:00:00Z'))
+    // Both axes survive, which is the whole point.
+    expect(delivered.activationStatus).toBe('ACTIVATED')
   })
 })

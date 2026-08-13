@@ -85,10 +85,23 @@ export interface DispatchRowState {
   dispatchedAt: Date | null
 }
 
-// pipeline_state is a computed rollup: the MAX lifecycle stage reached across
-// the facts folded so far (T2/T12, never written back to an owning context).
-// QR_GENERATED has no distinct stage in the authoritative derivation map, so it
-// does not advance the rollup.
+// pipeline_state is a computed rollup: the MAX stage reached across the facts
+// folded so far (T2/T12, never written back to an owning context). QR_GENERATED
+// has no distinct stage in the authoritative derivation map, so it does not
+// advance the rollup.
+//
+// IT CARRIES THE FULFILLMENT AXIS ONLY (D-16, T4.3, 13 Aug 2026). ACTIVATED used
+// to sit on top of it at rank 6, and that made one ordinal try to answer two
+// independent questions. A row activated before its delivery fact landed rolled
+// up to ACTIVATED, and the later DELIVERED could not advance past it, so the row
+// counted as delivered in every "at least DELIVERED" reading while its
+// delivery_date stayed null and every "delivered" tile that keyed off the date
+// disagreed. The two readings of the same row contradicted each other, and which
+// one you got depended on which column the caller happened to reach for.
+//
+// The activation axis has its own columns and always did: activation_status and
+// activation_date, fed by the activation fact. Nothing needs a rank for them,
+// because that axis has one transition and no order to get wrong.
 const PIPELINE_RANK: Record<string, number> = {
   '': 0,
   RECEIVED: 1,
@@ -96,7 +109,6 @@ const PIPELINE_RANK: Record<string, number> = {
   SENT_TO_VENDOR: 3,
   DISPATCHED: 4,
   DELIVERED: 5,
-  ACTIVATED: 6,
 }
 
 function advance(current: string, candidate: string): string {
@@ -213,7 +225,9 @@ export function applyFact(
       // the deferred Phase-2 contract.
       s.simActivationStatus = 'ACTIVATED'
       s.activationDate = new Date(p.activatedAt)
-      s.pipelineState = advance(s.pipelineState, 'ACTIVATED')
+      // D-16 (T4.3): NO pipeline_state advance. Activation is the other axis,
+      // and writing it here is what used to let an early activation mask a
+      // later delivery. The columns set just above are the whole record of it.
       return s
     }
     case T.UNIT:

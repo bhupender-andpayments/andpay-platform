@@ -669,13 +669,15 @@ export interface DispatchActivationStatus {
  * (ops-edge never constructs an 'own' scope, guardrail G1), so this returns
  * the row regardless of program.
  *
- * The gate predicate is `deliveryDate IS NOT NULL`, NOT a `pipelineState`
- * equality check (pipelineState advances past 'DELIVERED' to 'ACTIVATED' once
- * the SAME fct.tms.assignment.activated.v1 fact this task emits is folded, so
- * an equality check would wrongly reject a second activation attempt after
- * the first already succeeded). deliveryDate is set once when DELIVERED is
- * folded (project.ts) and never cleared afterward, so the caller compares it
- * directly; this function does no gating itself, it only surfaces the signal.
+ * The gate predicate is `deliveryDate IS NOT NULL` and never a `pipelineState`
+ * check. That was originally because pipelineState rolled up past 'DELIVERED'
+ * to 'ACTIVATED' once the activation fact folded, so an equality check would
+ * have wrongly rejected a second activation attempt after the first succeeded.
+ * As of D-16 (T4.3) pipelineState no longer carries activation at all, and the
+ * reason has become the stronger one: activation is a different axis and this
+ * column cannot speak for it. deliveryDate is set once when DELIVERED is folded
+ * (project.ts) and never cleared afterward, so the caller compares it directly;
+ * this function does no gating itself, it only surfaces the signal.
  *
  * Returns null when no dispatch_row exists yet for this id (the assignment
  * has not yet been projected, or was never dispatched at all).
@@ -822,18 +824,27 @@ export interface BatchJourneyView {
   watermark: Watermark
 }
 
+// The FULFILLMENT axis, mirroring project.ts's PIPELINE_RANK, which is the
+// column this reads. ACTIVATED left both of them together (D-16, T4.3): one
+// ordinal cannot answer two independent questions, and while it tried, an
+// activation that arrived before its delivery fact made the row read as
+// delivered here while its delivery_date said otherwise.
 const JOURNEY_RANK: Record<string, number> = {
   RECEIVED: 1,
   BATCHED: 2,
   SENT_TO_VENDOR: 3,
   DISPATCHED: 4,
   DELIVERED: 5,
-  ACTIVATED: 6,
 }
 
 function atLeast(state: string, floor: string): boolean {
   return (JOURNEY_RANK[state] ?? 0) >= (JOURNEY_RANK[floor] ?? 0)
 }
+
+// The activation axis, read from its own column. A free function rather than an
+// inline comparison so that stage 8 and the awaiting-activation worklist below
+// cannot drift apart: they are the two halves of one question.
+const isActivated = (r: DispatchDbRow): boolean => r.activation_status === 'ACTIVATED'
 
 export async function readBatchJourney(
   db: AnalyticsDb,
@@ -858,7 +869,11 @@ export async function readBatchJourney(
     sentToVendor: rows.filter((r) => atLeast(r.pipeline_state, 'SENT_TO_VENDOR')).length,
     dispatched: rows.filter((r) => atLeast(r.pipeline_state, 'DISPATCHED')).length,
     delivered: rows.filter((r) => atLeast(r.pipeline_state, 'DELIVERED')).length,
-    activated: rows.filter((r) => atLeast(r.pipeline_state, 'ACTIVATED')).length,
+    // STAGE 8 IS PARALLEL TO STAGE 7, not after it (D-16, T4.3). It is counted
+    // off the activation axis, so a record the CWD activated while the parcel
+    // was still in transit is counted here and is NOT counted as delivered,
+    // which is the truth about that record rather than a rollup's guess.
+    activated: rows.filter(isActivated).length,
   }
 
   const courier = {
@@ -885,9 +900,7 @@ export async function readBatchJourney(
   // use, so a delivered COLLATERAL row (physical paper that ships and
   // delivers but never activates) never reaches this worklist. Offering a
   // record the write would 409 is worse than omitting it.
-  const awaiting = rows.filter(
-    (r) => isSoundboxOrLegacy(r) && r.delivery_date !== null && !atLeast(r.pipeline_state, 'ACTIVATED'),
-  )
+  const awaiting = rows.filter((r) => isSoundboxOrLegacy(r) && r.delivery_date !== null && !isActivated(r))
 
   const activation = {
     awaiting: awaiting.length,

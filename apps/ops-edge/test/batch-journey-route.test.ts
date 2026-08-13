@@ -137,7 +137,7 @@ describe('GET /ops/reports/batch-journey/:btchId', () => {
     await insertRow(prog, BATCH, 'DELIVERED')
     await insertRow(prog, BATCH, 'SENT_TO_VENDOR')
     // A different batch must never leak in.
-    await insertRow(prog, `btch_${randomUUID().replace(/-/g, '')}`, 'ACTIVATED')
+    await insertRow(prog, `btch_${randomUUID().replace(/-/g, '')}`, 'DELIVERED')
 
     const token = await mint()
     const res = await request(app.getHttpServer())
@@ -154,7 +154,10 @@ describe('GET /ops/reports/batch-journey/:btchId', () => {
 
   it('reports simActivated as null on the wire, never 0', async () => {
     const prog = randomUUID()
-    await insertRow(prog, BATCH, 'ACTIVATED')
+    // D-16 (T4.3): 'ACTIVATED' is no longer a pipeline_state. This route only
+    // needs a row in the batch at all, so it uses the fulfillment axis value it
+    // would really carry.
+    await insertRow(prog, BATCH, 'DELIVERED')
     const token = await mint()
     const res = await request(app.getHttpServer())
       .get(`/ops/reports/batch-journey/${BATCH}`)
