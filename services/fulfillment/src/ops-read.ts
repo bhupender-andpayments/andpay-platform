@@ -767,9 +767,15 @@ export async function listDispatches(db: FulfillmentDb, { status }: { status?: s
 // The portal already resolves that name from GET /ops/merchants, the same way
 // batch detail resolves a vendor name.
 //
-// sim_no and device_qr are absent BY GRANT, not by omission here: the ICCID is
-// never exposed to a read role (S7), so selecting it would raise a
-// permission-denied rather than leak. See migration 20260810020000.
+// sim_no rides the LIST in full. Grant widened by migration 20260812150000
+// under the 2026-08-12 product ruling; that ruling first shipped the SIM
+// masked with a per-device Reveal, then was overturned the same day (this is
+// an internal admin console, not a merchant-facing surface, so masking a
+// value the operator needs to cross-check against the source Excel just cost
+// them a click). The device_qr payload is still on-demand only
+// (readDeviceDetail below): it is a raw manufacturer blob, not a value an
+// operator verifies by eye the way a SIM number is. The ICCID still never
+// rides a fact (S7) and is never logged.
 export interface UnitInventoryRow {
   id: string
   deviceSerial: string | null
@@ -787,8 +793,15 @@ export interface UnitInventoryRow {
   printedForMerchant: string | null
   asgnId: string | null
   location: string | null
+  simNo: string | null
   createdAt: Date
   updatedAt: Date
+}
+
+// The per-device detail: the list row PLUS the on-demand device_qr payload.
+// Served one device at a time, never as a list.
+export interface UnitDetailView extends UnitInventoryRow {
+  deviceQr: unknown
 }
 
 interface UnitInventoryDbRow {
@@ -803,6 +816,7 @@ interface UnitInventoryDbRow {
   printed_for_merchant: string | null
   asgn_id: string | null
   location: string | null
+  sim_no: string | null
   created_at: Date
   updated_at: Date
 }
@@ -820,6 +834,7 @@ function toUnitInventoryDto(r: UnitInventoryDbRow): UnitInventoryRow {
     printedForMerchant: r.printed_for_merchant === null ? null : fromUuid('mrch', r.printed_for_merchant),
     asgnId: r.asgn_id === null ? null : fromUuid('asgn', r.asgn_id),
     location: r.location,
+    simNo: r.sim_no,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -836,7 +851,7 @@ export async function listDeviceInventory(
         SELECT id::text AS id, device_serial, status, activated_at, product_type,
                manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
                shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
-               asgn_id::text AS asgn_id, location, created_at, updated_at
+               asgn_id::text AS asgn_id, location, sim_no, created_at, updated_at
         FROM unit WHERE status = ${status}
         ORDER BY device_serial
       `
@@ -845,7 +860,7 @@ export async function listDeviceInventory(
       SELECT id::text AS id, device_serial, status, activated_at, product_type,
                manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
                shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
-               asgn_id::text AS asgn_id, location, created_at, updated_at
+               asgn_id::text AS asgn_id, location, sim_no, created_at, updated_at
       FROM unit
       ORDER BY device_serial
     `
@@ -930,4 +945,25 @@ export async function resolveAssignmentsByDeviceSerial(
     if (r.device_serial !== null && r.asgn_id !== null) out.set(r.device_serial, fromUuid('asgn', r.asgn_id))
   }
   return out
+}
+
+// One device, by wire unit id, with the on-demand device_qr payload. Null when
+// the id decodes but no such unit exists; the edge maps that to a 404. An
+// undecodable id is the caller's error and throws InvalidIdError for the edge
+// to map to a 400.
+export async function readDeviceDetail(db: FulfillmentDb, unitId: string): Promise<UnitDetailView | null> {
+  const unitUuid = toUuid(unitId)
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<(UnitInventoryDbRow & { device_qr: unknown })[]>`
+      SELECT id::text AS id, device_serial, status, product_type,
+             manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
+             shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
+             asgn_id::text AS asgn_id, location, sim_no, device_qr, created_at, updated_at
+      FROM unit WHERE id = ${unitUuid}::uuid
+    `
+  })
+  const r = rows[0]
+  if (r === undefined) return null
+  return { ...toUnitInventoryDto(r), deviceQr: r.device_qr }
 }

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { type GridColumn } from '../../ui/DataGrid.js'
+import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { Card, CardHeader, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
-import { fmtDateTime, shortId } from '../../ui/format.js'
-import { orDash, IncludeResolvedToggle } from './shared.js'
+import { Card, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { fmtDateTime, fmtRelative, shortId } from '../../ui/format.js'
+import { orDash } from './shared.js'
 import {
   getQuarantine,
   resolveQuarantine,
@@ -56,9 +57,9 @@ export function QuarantineTab() {
   const [resolvingId, setResolvingId] = useState<string | null>(null)
   const [form, setForm] = useState<BankRequestRowForm | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
-  // The row awaiting a Close confirmation, and any error from the attempt.
-  // Closing archives a real order unfilled and cannot be undone here, so it is
-  // confirmed rather than fired straight off the button.
+  // D-8 (T2.2a): the queue's SECOND action. Held separately from the resolve
+  // form's state because closing is not a correction: there is nothing to edit,
+  // so it opens a confirm rather than a form.
   const [closingId, setClosingId] = useState<string | null>(null)
   const [closeError, setCloseError] = useState<string | null>(null)
 
@@ -107,14 +108,17 @@ export function QuarantineTab() {
     }
   }
 
+  // D-8: a held row an operator judges to be legitimately unfixable is CLOSED,
+  // not corrected. Without this the only way out of the queue was to invent a
+  // correction for a row that did not need one.
   async function submitClose(): Promise<void> {
     if (closingId === null) return
     setCloseError(null)
     try {
       const res = await closeQuarantine(client, closingId, newIdempotencyKey())
-      // `closed: false` means the row was already resolved by someone else
-      // between the list load and this click. Saying so is more useful than a
-      // silent success that leaves the operator believing they closed it.
+      // `closed: false` means somebody else resolved the row between this list
+      // load and this click. Saying so beats a silent success that leaves the
+      // operator believing they closed it.
       if (!res.closed && !res.deduped) {
         setCloseError('That row was already resolved by someone else. Reloading the queue.')
       } else {
@@ -126,11 +130,19 @@ export function QuarantineTab() {
     }
   }
 
-  const columns: DataTableColumn<QuarantineRowView>[] = [
-    { key: 'id', header: 'ID', cell: (r) => <CodeChip>{shortId(r.id)}</CodeChip> },
-    { key: 'fileId', header: 'File ID', cell: (r) => r.fileId },
-    { key: 'rowNo', header: 'Row', cell: (r) => <span className="num">{r.rowNo}</span> },
-    { key: 'reasonCode', header: 'Reason', cell: (r) => <StatusPill value={r.reasonCode} /> },
+  const columns: GridColumn<QuarantineRowView>[] = [
+    {
+      key: 'rowNo',
+      header: 'Row',
+      sortValue: (r) => r.rowNo,
+      cell: (r) => (
+        <span className="min-w-0">
+          <span className="num block font-semibold text-foreground">{r.rowNo}</span>
+          <span className="block text-[11px] text-muted-foreground">{shortId(r.id)}</span>
+        </span>
+      ),
+    },
+    { key: 'reasonCode', header: 'Reason', sortValue: (r) => r.reasonCode, cell: (r) => <StatusPill value={r.reasonCode} /> },
     // Ruling 2026-08-10: a duplicate_vpa_soundbox hold NAMES the record it
     // collides with, so the operator can judge it from the queue instead of
     // going to look the VPA up. Every other reason carries no detail, so this
@@ -138,9 +150,10 @@ export function QuarantineTab() {
     {
       key: 'duplicateOf',
       header: 'Original',
+      sortValue: (r) => r.detail?.duplicateOf?.reference ?? '',
       cell: (r) => {
         const original = r.detail?.duplicateOf
-        if (original === undefined) return orDash(null)
+        if (original === undefined) return <span className="text-muted-foreground">-</span>
         return (
           <span>
             {original.reference}
@@ -149,50 +162,66 @@ export function QuarantineTab() {
         )
       },
     },
-    { key: 'createdAt', header: 'Created', cell: (r) => fmtDateTime(r.createdAt) },
-    { key: 'resolvedAt', header: 'Resolved', cell: (r) => fmtDateTime(r.resolvedAt) },
-    // WHICH action retired the row (D-8). A resolved row that says nothing here
-    // was resolved before the two actions were distinguishable, and that is
-    // shown as a dash rather than guessed at.
+    { key: 'fileId', header: 'File', sortValue: (r) => r.fileId, cell: (r) => <CodeChip>{shortId(r.fileId)}</CodeChip> },
     {
-      key: 'resolution',
-      header: 'How',
-      // `?? null` covers both an open row and a server that predates the
-      // column, which are the same thing to look at: nothing to say yet.
-      cell: (r) => {
-        const how = r.resolution ?? null
-        return how === null ? orDash(null) : <StatusPill value={how} />
-      },
+      key: 'createdAt',
+      header: 'Created',
+      sortValue: (r) => r.createdAt,
+      cell: (r) => (
+        <span title={fmtDateTime(r.createdAt)} className="text-muted-foreground">
+          {fmtRelative(r.createdAt)}
+        </span>
+      ),
     },
-    { key: 'resolvedByActor', header: 'Resolved by', cell: (r) => orDash(r.resolvedByActor) },
     {
-      // D-8 gives the operator EXACTLY two actions, so both are offered here and
-      // neither is hidden behind the other. Cure opens the correction form;
-      // Close archives the record with no ingest, for the case the ruling names
-      // (a genuine duplicate, e.g. the bank typo'd Soundbox=Yes). Close is the
-      // destructive-in-spirit one, so it asks first: it retires a real order
-      // unfilled, and it cannot be undone from this screen.
+      key: 'resolvedAt',
+      header: 'Resolved',
+      sortValue: (r) => r.resolvedAt ?? '',
+      cell: (r) =>
+        r.resolvedAt === null ? (
+          <span className="text-muted-foreground">-</span>
+        ) : (
+          <span title={fmtDateTime(r.resolvedAt)}>
+            {fmtRelative(r.resolvedAt)}
+            {/* D-8: HOW it was retired, not just when and by whom. Closing and
+                curing are different outcomes for the same row, and a queue that
+                only said "resolved" could not tell them apart afterwards. A row
+                retired before the two actions were distinguishable reads as
+                unknown rather than being guessed at. */}
+            <span className="block text-[11px] text-muted-foreground">
+              <span>{r.resolution === 'closed' ? 'Closed' : r.resolution === 'cured' ? 'Cured' : 'unknown'}</span>
+              {` by ${orDash(r.resolvedByActor)}`}
+            </span>
+          </span>
+        ),
+    },
+    {
       key: 'actions',
       header: 'Actions',
       cell: (r) => (
-        <span className="flex gap-2">
+        <span className="flex gap-1.5">
           <Button
             type="button"
             size="sm"
             variant="secondary"
             disabled={r.resolvedAt !== null}
-            aria-label={`Cure and reprocess quarantine row ${r.id}`}
+            aria-label={`Resolve quarantine row ${r.id}`}
             onClick={() => startResolve(r)}
           >
-            Cure
+            Resolve
           </Button>
+          {/* D-8: the second way out. Same disabled rule as Resolve, because a
+              resolved row is out of the queue by either route. */}
           <Button
             type="button"
             size="sm"
-            variant="secondary"
-            disabled={r.resolvedAt !== null || closingId === r.id}
+            variant="ghost"
+            disabled={r.resolvedAt !== null}
             aria-label={`Close quarantine row ${r.id}`}
-            onClick={() => setClosingId(r.id)}
+            onClick={() => {
+              setClosingId(r.id)
+              setCloseError(null)
+            }}
           >
             Close
           </Button>
@@ -203,26 +232,28 @@ export function QuarantineTab() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader title="Quarantine" subtitle={`${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`} actions={<IncludeResolvedToggle checked={includeResolved} onChange={setIncludeResolved} />} />
-        {error !== null && (
-          <div className="p-4">
-            <ErrorNote>{error}</ErrorNote>
-          </div>
-        )}
-        <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No quarantined rows." />
-      </Card>
+      <QueueTable
+        title="Quarantine"
+        rows={rows}
+        columns={columns}
+        error={error}
+        emptyMessage="No quarantined rows."
+        includeResolved={includeResolved}
+        onIncludeResolvedChange={setIncludeResolved}
+        searchPlaceholder="Row, file or reason…"
+        searchText={(r) => `${r.rowNo} ${r.fileId} ${r.reasonCode} ${r.detail?.duplicateOf?.reference ?? ''}`}
+      />
+
+      {closeError !== null && <ErrorNote>{closeError}</ErrorNote>}
 
       {closingId !== null && (
         <Card className="p-5">
-          <h2 className="mb-2 text-sm font-semibold text-foreground">Close this row without reprocessing it</h2>
-          <p className="mb-4 text-sm text-muted-foreground">
-            Use this when the row was a genuine duplicate, for example the bank marked Soundbox as Yes by
-            mistake. The record is archived as closed and nothing is ingested. If the row should have been
-            ordered, cure it instead.
+          <h2 className="mb-2 text-sm font-semibold text-foreground">Close this row without correcting it</h2>
+          <p className="mb-4 text-[13px] text-muted-foreground">
+            Closing records that the row was judged and needs no correction. It is archived as closed and nothing is
+            ingested.
           </p>
-          {closeError !== null && <ErrorNote>{closeError}</ErrorNote>}
-          <div className="mt-4 flex gap-2">
+          <div className="flex gap-2">
             <Button
               type="button"
               size="sm"
@@ -233,15 +264,7 @@ export function QuarantineTab() {
             >
               Close the row
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                setClosingId(null)
-                setCloseError(null)
-              }}
-            >
+            <Button type="button" size="sm" variant="secondary" onClick={() => setClosingId(null)}>
               Cancel
             </Button>
           </div>

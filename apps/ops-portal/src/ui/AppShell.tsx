@@ -118,14 +118,16 @@ if (UNGROUPED.length > 0) {
 
 // The real logo asset (public/logo). This previously drew an invented chevron
 // glyph because no logo asset existed in the repo.
-function BrandMark() {
+function BrandMark({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <div className="flex items-center gap-2.5">
       <img src="/logo/logo-icon.svg" alt="" aria-hidden="true" className="h-9 w-9 shrink-0" />
-      <span className="leading-tight">
-        <span className="block text-sm font-semibold text-foreground">AndPayments</span>
-        <span className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Ops Console</span>
-      </span>
+      {!collapsed && (
+        <span className="min-w-0 truncate leading-tight">
+          <span className="block text-sm font-semibold text-foreground">AndPayments</span>
+          <span className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Ops Console</span>
+        </span>
+      )}
     </div>
   )
 }
@@ -137,6 +139,18 @@ function IconMenu(props: SVGProps<SVGSVGElement>) {
     </svg>
   )
 }
+
+// A double-chevron "collapse panel" glyph, rotated 180 to point the other way
+// when expanded vs collapsed, rather than swapping in a second icon.
+function IconChevronsLeft(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M11 17l-5-5 5-5M18 17l-5-5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+const SIDEBAR_COLLAPSED_KEY = 'ops-portal:sidebar-collapsed'
 
 // The D3 access token carries an opaque principal id (`sub`) and a permission
 // set (`psr`); it carries NO human name, so the portal has none to show. A raw
@@ -162,19 +176,46 @@ function initials(roleLabel: string | undefined): string {
   return t.slice(0, 2).toUpperCase()
 }
 
-function Sidebar({ className = '' }: { className?: string }) {
+// `onToggleCollapse` is only passed for the fixed desktop instance: the mobile
+// drawer (a temporary overlay you dismiss by picking a link or tapping the
+// backdrop) has no business persisting a rail state, so it renders without a
+// toggle and always at full width.
+function Sidebar({
+  className = '',
+  collapsed = false,
+  onToggleCollapse,
+}: {
+  className?: string
+  collapsed?: boolean
+  onToggleCollapse?: () => void
+}) {
   const { principal, logout } = useAuth()
   return (
-    <aside className={`h-screen w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground ${className}`}>
-      <div className="px-5 py-5">
-        <BrandMark />
+    <aside
+      className={`h-screen shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-300 ease-in-out ${collapsed ? 'w-20' : 'w-64'} ${className}`}
+    >
+      <div className={`flex items-center gap-2 px-5 py-5 ${collapsed ? 'justify-center px-3' : 'justify-between'}`}>
+        <BrandMark collapsed={collapsed} />
+        {onToggleCollapse && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          >
+            <IconChevronsLeft width={15} height={15} className={collapsed ? 'rotate-180' : ''} />
+          </button>
+        )}
       </div>
-      <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 pb-4">
+      <nav aria-label="Main" className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-4">
         {GROUPED_NAV.map((group) => (
           <div key={group.title} className="mb-5 last:mb-0">
-            <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-foreground/60">
-              {group.title}
-            </p>
+            {!collapsed && (
+              <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-foreground/60">
+                {group.title}
+              </p>
+            )}
             <ul className="space-y-0.5">
               {group.items.map((s) => {
                 const Icon = s.icon
@@ -183,9 +224,11 @@ function Sidebar({ className = '' }: { className?: string }) {
                     <NavLink
                       to={s.to}
                       data-sidebar="menu-button"
+                      title={collapsed ? s.label : undefined}
                       className={({ isActive }) =>
                         [
                           'group flex w-full items-center gap-2 overflow-hidden rounded-xl px-3 py-2 text-left text-sm transition-colors',
+                          collapsed ? 'justify-center px-0' : '',
                           isActive
                             ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
                             : 'text-sidebar-foreground/80',
@@ -197,9 +240,9 @@ function Sidebar({ className = '' }: { className?: string }) {
                           <Icon
                             width={16}
                             height={16}
-                            className={isActive ? 'text-sidebar-accent-foreground' : 'text-sidebar-foreground/60'}
+                            className={`shrink-0 ${isActive ? 'text-sidebar-accent-foreground' : 'text-sidebar-foreground/60'}`}
                           />
-                          {s.label}
+                          {!collapsed && s.label}
                         </>
                       )}
                     </NavLink>
@@ -211,33 +254,58 @@ function Sidebar({ className = '' }: { className?: string }) {
         ))}
       </nav>
       <div className="border-t border-border p-3">
-        <div className="flex items-center gap-3 rounded-md px-2 py-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-sidebar-primary text-[12px] font-semibold text-sidebar-primary-foreground">
-            {initials(principal?.roleLabel)}
-          </span>
-          <span className="min-w-0 flex-1 leading-tight">
-            <span className="block truncate text-[13px] font-semibold text-foreground">
-              {roleTitle(principal?.roleLabel)}
+        {collapsed ? (
+          // Collapsed rail: no room for the name/id block (avatar + logout
+          // alone already fill the 80px width), so it drops and the avatar
+          // itself carries a title tooltip instead.
+          <div className="flex flex-col items-center gap-2">
+            <span
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sidebar-primary text-[12px] font-semibold text-sidebar-primary-foreground"
+              title={roleTitle(principal?.roleLabel)}
+            >
+              {initials(principal?.roleLabel)}
             </span>
-            {/* The opaque principal id, shortened. Kept visible because it is
-                what an operator quotes in a support request, and copyable in
-                full via the title. */}
-            <span className="num block truncate text-[11px] text-muted-foreground" title={principal?.sub}>
-              {shortId(principal?.sub, 12)}
+            <button
+              type="button"
+              onClick={() => {
+                void logout()
+              }}
+              title="Logout"
+              aria-label="Logout"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <IconLogout width={17} height={17} />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 rounded-md px-2 py-2">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sidebar-primary text-[12px] font-semibold text-sidebar-primary-foreground">
+              {initials(principal?.roleLabel)}
             </span>
-          </span>
-          <button
-            type="button"
-            onClick={() => {
-              void logout()
-            }}
-            title="Logout"
-            aria-label="Logout"
-            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <IconLogout width={17} height={17} />
-          </button>
-        </div>
+            <span className="min-w-0 flex-1 leading-tight">
+              <span className="block truncate text-[13px] font-semibold text-foreground">
+                {roleTitle(principal?.roleLabel)}
+              </span>
+              {/* The opaque principal id, shortened. Kept visible because it is
+                  what an operator quotes in a support request, and copyable in
+                  full via the title. */}
+              <span className="num block truncate text-[11px] text-muted-foreground" title={principal?.sub}>
+                {shortId(principal?.sub, 12)}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                void logout()
+              }}
+              title="Logout"
+              aria-label="Logout"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <IconLogout width={17} height={17} />
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   )
@@ -311,6 +379,9 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
 // out of the tab order when it is closed.
 export function AppShell({ children }: { children: ReactNode }) {
   const [navOpen, setNavOpen] = useState(false)
+  // Desktop-only rail state, remembered across reloads so a collapsed sidebar
+  // stays collapsed. The mobile drawer ignores this entirely (see Sidebar).
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1')
   const { pathname } = useLocation()
 
   // Any route change closes the drawer, so following a link never leaves the
@@ -319,9 +390,17 @@ export function AppShell({ children }: { children: ReactNode }) {
     setNavOpen(false)
   }, [pathname])
 
+  const toggleCollapsed = () => {
+    setCollapsed((c) => {
+      const next = !c
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? '1' : '0')
+      return next
+    })
+  }
+
   return (
     <div className="flex h-screen overflow-hidden bg-background">
-      <Sidebar className="hidden lg:flex" />
+      <Sidebar className="hidden lg:flex" collapsed={collapsed} onToggleCollapse={toggleCollapsed} />
 
       {navOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { UploadStepper } from '../../src/features/uploads/UploadStepper.js'
-import { UPLOAD_KINDS, kindBySlug } from '../../src/features/uploads/uploadKinds.js'
+import { UPLOAD_KINDS, DEVICE_INVENTORY_KIND, kindBySlug } from '../../src/features/uploads/uploadKinds.js'
 
 afterEach(() => { cleanup() })
 
@@ -52,6 +52,17 @@ describe('uploadKinds: the step honesty rules', () => {
   // portal cannot check.
   it('states columns ONLY where the portal shares a real constant with the parser', () => {
     const withColumns = UPLOAD_KINDS.filter((k) => k.columns !== undefined).map((k) => k.slug)
-    expect(withColumns.sort()).toEqual(['activation', 'courier-status', 'device-inventory'])
+    // device-inventory is absent because it is no longer IN this index: it moved
+    // to its own section on 2026-08-12 and is exported as DEVICE_INVENTORY_KIND.
+    // It still states its column; it just does not state it from here.
+    expect(withColumns.sort()).toEqual(['activation', 'courier-status'])
+  })
+
+  it('device inventory still states its one required column, from its own descriptor', () => {
+    // The frozen rule left Device ID as the only required column, and the kind
+    // that owns that claim moved out of the index rather than losing it.
+    // The SHEET still carries three columns; only Device ID is required.
+    expect(DEVICE_INVENTORY_KIND.columns).toEqual(['Device ID', 'Sim No', 'Device QR'])
+    expect(DEVICE_INVENTORY_KIND.goodToKnow.some((g) => /required columns: device id/i.test(g))).toBe(true)
   })
 })

@@ -57,4 +57,32 @@ describe('401 interceptor', () => {
     expect(calls.length).toBe(2) // original + refresh, NO third retry
     expect(onSessionLost).toHaveBeenCalledOnce()
   })
+
+  // Reproduces the real lockout: several ops calls expire at once (one page,
+  // several widgets). The refresh token is one-time-use with family-wide
+  // revocation on reuse, so if each 401 fired its own /session/refresh, only
+  // the first would succeed and the rest would look like replay and revoke
+  // the session out from under a user who just got a valid token. Both 401s
+  // here must collapse onto ONE refresh call.
+  it('two concurrent 401s share a single refresh and both succeed', async () => {
+    setAccessToken('stale')
+    const { calls } = seqFetch([
+      { status: 401 },                                 // call A, original
+      { status: 401 },                                 // call B, original
+      { status: 200, body: { accessToken: 'fresh' } },  // the one shared refresh
+      { status: 200, body: { rows: ['a'] } },           // call A retry
+      { status: 200, body: { rows: ['b'] } },           // call B retry
+    ])
+    const onSessionLost = vi.fn()
+    const c = createApiClient({ opsBase: 'http://ops', authBase: 'http://auth', onSessionLost, promptStepUpTotp: vi.fn() })
+    const [a, b] = await Promise.all([
+      c.request<{ rows: unknown[] }>({ method: 'GET', path: '/ops/a' }),
+      c.request<{ rows: unknown[] }>({ method: 'GET', path: '/ops/b' }),
+    ])
+    expect(a).toEqual({ rows: ['a'] })
+    expect(b).toEqual({ rows: ['b'] })
+    expect(calls.filter((c) => c.url === 'http://auth/session/refresh').length).toBe(1)
+    expect(getAccessToken()).toBe('fresh')
+    expect(onSessionLost).not.toHaveBeenCalled()
+  })
 })

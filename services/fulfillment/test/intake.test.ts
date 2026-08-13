@@ -540,6 +540,53 @@ describe('ingestIntakeSheet (manufacturer intake, the only Unit-creating channel
     expect(preserved[0]!.sim_no).toBe(iccid)
   })
 
+  // (h3) RE-POINTED 13 Aug 2026. The inventory-ownership branch added a
+  // persistDuplicateExceptions switch and this test proved a duplicate could be
+  // reported without being written. That switch is not carried: the ruling is
+  // that the Workflow A frozen rule governs the ops door, which suppresses ICCID
+  // noise by not CHECKING rather than by checking and discarding.
+  //
+  // What SURVIVES from that branch, and is what this test now covers, is
+  // `flaggedRows`. Before it, a caller learned only a COUNT of quarantined rows,
+  // so an upload screen could say "3 skipped" and never say which three. That is
+  // worth keeping whether or not the row also lands in a queue, and nothing else
+  // pinned it.
+  it('(h3) flaggedRows names WHICH row was flagged and why, alongside the intake_exception write', async () => {
+    const vndrId = newId('vndr')
+    const claim = classSixClaim(vndrId, 'wq-A')
+
+    const sheetA: IntakeSheet = {
+      fileId: 'file-h3-a',
+      vndrId,
+      workQueue: 'wq-A',
+      rows: [serializedRow('SER-H3-X')],
+    }
+    const resA = await ingestIntakeSheet(db, claim, sheetA, 'trace-h3-a')
+    expect(resA.createdUnitIds).toHaveLength(1)
+
+    const sheetB: IntakeSheet = {
+      fileId: 'file-h3-b',
+      vndrId,
+      workQueue: 'wq-A',
+      rows: [serializedRow('SER-H3-X')],
+    }
+    const resB = await db.$transaction((tx) =>
+      ingestIntakeSheetWithinTx(tx, sheetB, 'trace-h3-b', { flagDuplicates: true }),
+    )
+    expect(resB.createdUnitIds).toHaveLength(0) // no second unit, same as (h)
+    expect(resB.quarantined).toBe(1)
+    // The count alone cannot tell an operator which row to look at. This can.
+    expect(resB.flaggedRows).toEqual([{ rowRef: 'row-0', reason: 'duplicate_device_serial_existing_unit' }])
+
+    // And it is IN ADDITION to the queue write, not instead of it: the row_ref
+    // reported here is the row_ref persisted, so the screen and the queue name
+    // the same row.
+    const exc = await db.$queryRaw<{ row_ref: string; reason_code: string }[]>`
+      SELECT row_ref, reason_code FROM intake_exception
+    `
+    expect(exc).toEqual([{ row_ref: 'row-0', reason_code: 'duplicate_device_serial_existing_unit' }])
+  })
+
   it('(i) a QUANTITY_LINE row with a missing/non-positive count is schema_invalid (D103b): the WHOLE sheet is rejected, ZERO Units, ZERO intake_exception', async () => {
     const vndrId = newId('vndr')
     const workQueue = 'wq-A'

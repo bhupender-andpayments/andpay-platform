@@ -13,11 +13,13 @@ import {
   listPoolEntries,
   listDispatches,
   listDeviceInventory,
+  readDeviceDetail,
   type BatchRow,
   type BatchDetailView,
   type PoolEntryRow,
   type DispatchRow,
   type UnitInventoryRow,
+  type UnitDetailView,
   type VendorRow,
   type IntakeExceptionView,
   type CourierStatusExceptionView,
@@ -184,6 +186,19 @@ export class OpsReadController {
   @HttpCode(200)
   async devices(@Query('status') status?: string): Promise<UnitInventoryRow[]> {
     return listDeviceInventory(this.deps.fulfillmentDb, status !== undefined ? { status } : {})
+  }
+
+  // One device, on demand. This is the ONLY route that serves the full ICCID
+  // and the raw manufacturer QR payload (2026-08-12 product ruling; the list
+  // above carries a masked SIM only). Same guard-only posture as the list; a
+  // 404 on an unknown unit mirrors batchDetail. A malformed id throws out of
+  // toUuid inside readDeviceDetail and is mapped by the ops error filter.
+  @Get('devices/:unitId')
+  @HttpCode(200)
+  async deviceDetail(@Param('unitId') unitId: string): Promise<UnitDetailView> {
+    const detail = await readDeviceDetail(this.deps.fulfillmentDb, unitId)
+    if (detail === null) throw new NotFoundException('device not found')
+    return detail
   }
 
   // 404 on an unknown batch rather than an empty-but-valid-looking detail, so

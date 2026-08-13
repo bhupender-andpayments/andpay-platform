@@ -99,6 +99,17 @@ const OPS_PERMISSIONS = [
   // and an operator entitled to load stock is not thereby entitled to move
   // parcels through the delivery ladder.
   'ops:upload-courier-status',
+  // Merged from the inventory-ownership branch, 13 Aug 2026. A union, not a
+  // choice: these four name four different operator actions and none subsumes
+  // another.
+  //
+  // 2026-08-13 ruling: a manual unit-status correction, one device at a time
+  // from the device page. Same tier as every other ops mutation here; the
+  // forward-only guard (unit-lifecycle.ts) is what limits this, not the role.
+  'ops:unit-status-correction',
+  // The bulk sheet-upload sibling of the above: many devices, one file. Same
+  // tier, same guard, per-row tolerant like every other upload in this bundle.
+  'ops:upload-unit-status',
 ]
 
 // Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role permission differentiation.

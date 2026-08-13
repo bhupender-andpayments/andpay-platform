@@ -57,18 +57,30 @@ const SHARED_GOOD_TO_KNOW = [
   'The file is parsed on the server; what you see is the server verdict.',
 ] as const
 
-// The REQUIRED column contract. Since the 12 Aug 2026 walkthrough (Workflow
-// A, FROZEN) Device ID is the only required column; Sim No and Device QR are
-// optional pass-through columns the server stores when present. Lives HERE
-// rather than on DeviceInventoryUploadPage.tsx, which re-exports the same
-// NAME for its own module's callers: this descriptor module is dereferenced
-// at module evaluation time (inside the UPLOAD_KINDS literal below), and a
-// page that imports kindBySlug back from here would otherwise close a
-// circular import, where whichever module the cycle is entered through first
-// wins and the other sees an undefined value. Keeping the constant on the
-// descriptor side of that edge removes the cycle instead of relying on
-// import order.
-export const DEVICE_INVENTORY_COLUMNS = ['Device ID'] as const
+// TWO DIFFERENT CLAIMS, split on merge (13 Aug 2026) after being collapsed into
+// one constant and then read as one by two surfaces that meant different things.
+//
+// SHEET SHAPE (DEVICE_INVENTORY_COLUMNS): the file carries all three columns,
+// and Sim No and Device QR are stored when present. This is what the upload page
+// shows an operator as expected.
+//
+// REQUIRED (DEVICE_INVENTORY_REQUIRED_COLUMNS): Device ID alone, since the
+// Workflow A frozen rule (12 Aug 2026 walkthrough, TA.1) made the other two
+// optional pass-throughs. This is what a missing-column rejection is about.
+//
+// Collapsed, the page told an operator "Expected Device ID", which implies the
+// other two columns do not belong in the file. The opposite is true.
+//
+// Both live HERE rather than on DeviceInventoryUploadPage.tsx, which re-exports
+// the same NAME for its own module's callers: this descriptor module is
+// dereferenced at module evaluation time (inside the UPLOAD_KINDS literal
+// below), and a page that imports kindBySlug back from here would otherwise
+// close a circular import, where whichever module the cycle is entered through
+// first wins and the other sees an undefined value. Keeping the constants on the
+// descriptor side of that edge removes the cycle instead of relying on import
+// order.
+export const DEVICE_INVENTORY_COLUMNS = ['Device ID', 'Sim No', 'Device QR'] as const
+export const DEVICE_INVENTORY_REQUIRED_COLUMNS = ['Device ID'] as const
 
 // D-17 (T5.1): all three are REQUIRED, unlike the device-inventory sheet's one.
 // There is no useful partial row here: a status update with no AWB names
@@ -84,7 +96,12 @@ export const ACTIVATION_COLUMNS = ['Device ID', 'Status'] as const
 // The bank descriptor that used to open this list moved into the workflow
 // workspace (2026-08-11 ruling): it is now stages 1 and 2 of one continuous
 // lifecycle (features/workflow/workflowKinds.ts's STAGE_HELP), not a
-// standalone upload with its own choice card here.
+// standalone upload with its own choice card here. Device inventory moved out
+// on 2026-08-12 for the same reason in the other direction: the inventory
+// team owns its own insertion, so its upload lives INSIDE the Inventory
+// section (/inventory/upload) and is no longer a choice card here. Its
+// descriptor stays in this module (DEVICE_INVENTORY_KIND below) because the
+// page still renders the shared rail and helper cards.
 export const UPLOAD_KINDS: readonly UploadKind[] = [
   {
     slug: 'damage',
@@ -106,27 +123,10 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
       upload: 'Review and Commit unlock once the file previews cleanly.',
     },
   },
-  {
-    slug: 'device-inventory',
-    title: 'Device inventory',
-    source: 'From the manufacturer',
-    description: 'Devices received into stock, before anything can be printed or shipped.',
-    columns: DEVICE_INVENTORY_COLUMNS,
-    steps: [CHOOSE, UPLOAD, SUBMIT],
-    nextByStep: {
-      upload: ['Pick the manufacturer and drop the file.', 'Submit ingests the rows in one step; there is no separate preview for this file.'],
-      submit: ['Submitting writes the devices into stock.', 'Rows missing a required value are skipped and listed; duplicates land in the intake exceptions queue.'],
-    },
-    goodToKnow: [
-      ...SHARED_GOOD_TO_KNOW,
-      `Required columns: ${DEVICE_INVENTORY_COLUMNS.join(', ')}. Names are matched ignoring case and extra spaces.`,
-      'Sim No and Device QR are optional and stored when present; they never reject a row.',
-      'A missing Device ID column rejects the whole file; a row with a blank Device ID is skipped, not fatal.',
-    ],
-    guidanceByStep: {
-      upload: 'Submit unlocks once a manufacturer and a file are set.',
-    },
-  },
+  // Device inventory is deliberately ABSENT from this index: it moved to its own
+  // section on 2026-08-12 (DEVICE_INVENTORY_KIND below) because the inventory
+  // team owns its own insertion. The two kinds that follow are not inventory
+  // insertion and no other section claims them, so they stay here.
   {
     slug: 'courier-status',
     title: 'Courier status',
@@ -177,7 +177,42 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
   },
 ]
 
+// The device-inventory descriptor, addressed directly by its page at
+// /inventory/upload rather than through the UPLOAD_KINDS index. Its first
+// rail step is labelled "Inventory" because that is where the step now
+// navigates: back to the section that owns this flow, not to a central
+// chooser it no longer appears on.
+export const DEVICE_INVENTORY_KIND: UploadKind = {
+  slug: 'device-inventory',
+  title: 'Device inventory',
+  source: 'From the manufacturer',
+  description: 'Devices received into stock, before anything can be printed or shipped.',
+  columns: DEVICE_INVENTORY_COLUMNS,
+  steps: [{ key: 'choose', label: 'Inventory' }, UPLOAD, SUBMIT],
+  nextByStep: {
+    upload: ['Pick the manufacturer and drop the file.', 'Submit ingests the rows in one step; there is no separate preview for this file.'],
+    submit: ['Submitting writes the devices into stock.', 'Rows missing a required value are skipped and listed; duplicates land in the intake exceptions queue.'],
+  },
+  goodToKnow: [
+    ...SHARED_GOOD_TO_KNOW,
+    `Required columns: ${DEVICE_INVENTORY_REQUIRED_COLUMNS.join(', ')}. Names are matched ignoring case and extra spaces.`,
+    // CORRECTED 13 Aug 2026 on merge. These two lines described the validation
+    // as it stood before the Workflow A frozen rule (TA.1/TA.2, 12 Aug
+    // walkthrough), and help text is a factual claim about behaviour rather than
+    // a design choice, so it follows the code. What changed: only a missing
+    // DEVICE ID column is fatal now, and a repeated SIM number no longer nulls
+    // the SIM, because this door runs no SIM validation at all.
+    'Sim No and Device QR are optional and stored when present; they never reject a row.',
+    'A missing Device ID column rejects the whole file; a row with a blank Device ID is skipped, not fatal.',
+    'A Device ID already in stock is never added twice, and lands in the intake exceptions queue.',
+  ],
+  guidanceByStep: {
+    upload: 'Submit unlocks once a manufacturer and a file are set.',
+  },
+}
+
 export function kindBySlug(slug: string): UploadKind | undefined {
+  if (slug === DEVICE_INVENTORY_KIND.slug) return DEVICE_INVENTORY_KIND
   return UPLOAD_KINDS.find((k) => k.slug === slug)
 }
 

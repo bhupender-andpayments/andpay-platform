@@ -9,8 +9,10 @@ import { ingestIntakeSheet, type IntakeSheet } from '../src/intake.js'
 // Phase 5 Task 1 (D-G, FR-01a): the class-3 ops device-inventory upload
 // service function. Covers what the ops-edge http suite cannot exercise as
 // directly: the manufacturer-vndr validation, the reused dedup flagging
-// (duplicate serial / duplicate ICCID -> intake_exception), the IN_STOCK
-// insert, the upload-audit ledger row counts, and idempotent replay.
+// (duplicate serial / duplicate ICCID - reported via res.flagged, but NOT
+// persisted to intake_exception as of 2026-08-13, see
+// docs/escalations/duplicate_rows_not_quarantined.md), the IN_STOCK insert,
+// the upload-audit ledger row counts, and idempotent replay.
 
 const url =
   process.env.FULFILLMENT_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
@@ -122,10 +124,18 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
       { device_serial: '1234567890003', status: 'IN_STOCK', product_type: 'SOUNDBOX', sim_no: '8991000000000000009U' },
     ])
 
+    // 2026-08-13 ruling (docs/escalations/duplicate_rows_not_quarantined.md):
+    // BOTH classes land here after the 13 Aug 2026 merge, and for two different
+    // reasons that arrived from two different branches. The duplicate serial is
+    // persisted because the Workflow A frozen rule governs this door (that
+    // branch's non-persist switch was not carried). The format-invalid row is
+    // persisted because the inventory-ownership branch added that: before it, a
+    // malformed row simply vanished once the response was dismissed, so an
+    // operator who navigated away lost the chance to fix it.
     const exceptions = await db.$queryRaw<{ reason_code: string }[]>`
       SELECT reason_code FROM intake_exception ORDER BY reason_code
     `
-    expect(exceptions.map((e) => e.reason_code)).toEqual(['duplicate_device_serial_in_file'])
+    expect(exceptions.map((e) => e.reason_code)).toEqual(['duplicate_device_serial_in_file', 'missing_device_id'])
 
     const ledger = await db.$queryRaw<
       {
@@ -260,6 +270,7 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
     expect(Number(allow[0]!.n)).toBe(1)
   })
 
+
   // Q5, ruled 12 Aug 2026: the class-6 VENDOR intake door stays open as a
   // second sanctioned channel alongside this class-3 ops upload. That makes
   // the "a device enters the pool exactly once" rule (D-2) a CROSS-DOOR
@@ -315,6 +326,80 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
       SELECT count(*) AS n FROM unit WHERE device_serial = ${serial}
     `
     expect(Number(units[0]!.n)).toBe(1) // the pool was entered exactly once (D-2)
+  })
+
+  // The worked example from the inventory-ownership branch, RE-POINTED at the
+  // 13 Aug 2026 ruling that the Workflow A frozen rule governs this door.
+  //
+  // Kept because the case it covers is worth covering: a 12-row file with 5 new
+  // devices, 5 already in stock, and 2 with a format problem, where all three
+  // classes get a different fate. What changed is the fate of the middle class.
+  // That branch had duplicates leave no trace in intake_exception; under the
+  // ruling they are flagged and persisted like any other duplicate serial, and
+  // only the ICCID check is off on this door. The counts are unchanged.
+  it('a mixed file adds the new rows, flags the duplicates, and quarantines the format-invalid rows', async () => {
+    const manufacturerVndr = await seedVendor('MANUFACTURER')
+
+    // 5 pre-existing units, so 5 rows in the new file collide with real stock.
+    for (let i = 0; i < 5; i += 1) {
+      const uuid = toUuid(newId('unit'))
+      await db.$executeRaw`
+        INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, sim_no, updated_at)
+        VALUES (${uuid}::uuid, 'SERIALIZED', 'SOUNDBOX', ${toUuid(manufacturerVndr)}::uuid, 'IN_STOCK', ${`900000000000${i}`}, '{}'::jsonb, ${`8991000000000000${i}00X`}, now())
+      `
+    }
+
+    const rows: string[][] = []
+    for (let i = 0; i < 5; i += 1) rows.push([`910000000000${i}`, `8991000000000001${i}00X`, `QR-new-${i}`]) // 5 new
+    for (let i = 0; i < 5; i += 1) rows.push([`900000000000${i}`, `8991000000000000${i}00X`, `QR-dup-${i}`]) // 5 already in inventory
+    // ONE format-invalid row, not two. The original worked example also had a
+    // Device ID containing a letter, counted as malformed_device_id. The Workflow
+    // A frozen rule checks PRESENCE only (TA.1), so a letter is a perfectly valid
+    // Device ID now and that row is accepted like any other. Keeping it as an
+    // "invalid" row would have been the fixture asserting a check that no longer
+    // exists, which is how a passing test starts lying.
+    rows.push(['', '8991000000000002000X', 'QR-bad-1']) // missing Device ID: the only fatal row shape left
+
+    const clientKey = randomUUID()
+    const res = await ingestOpsDeviceInventory(db, {
+      fileBytes: toCsv(rows),
+      filename: 'mixed.csv',
+      manufacturerVndrId: manufacturerVndr,
+      clientKey,
+      actorId: randomUUID(),
+      traceId: 'trace-mixed',
+    })
+
+    expect(res.deduped).toBe(false)
+    expect(res.accepted).toBe(5)
+    expect(res.flagged).toBe(5)
+    expect(res.invalid).toBe(1)
+    expect(res.queuedForReview).toBe(1)
+
+    const unitCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
+    expect(Number(unitCount[0]!.n)).toBe(10) // 5 seeded + 5 newly created
+
+    const exceptions = await db.$queryRaw<{ reason_code: string }[]>`
+      SELECT reason_code FROM intake_exception ORDER BY reason_code
+    `
+    // The five duplicates DO land in intake_exception under the ruling, next to
+    // the two format rejects. This is the assertion that inverted.
+    expect(exceptions.map((e) => e.reason_code).sort()).toEqual([
+      'duplicate_device_serial_existing_unit',
+      'duplicate_device_serial_existing_unit',
+      'duplicate_device_serial_existing_unit',
+      'duplicate_device_serial_existing_unit',
+      'duplicate_device_serial_existing_unit',
+      'missing_device_id',
+    ])
+
+    // queuedForReview counts only the FORMAT rejects (parsed.invalidRows), which
+    // is why it stays 1 while intake_exception holds 6. The two numbers measure
+    // different things and this pins that they are not confused for each other.
+    const dupCount = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM intake_exception WHERE reason_code LIKE 'duplicate_%'
+    `
+    expect(Number(dupCount[0]!.n)).toBe(5)
   })
 
   // Fix round 1, Finding B: a malformed manufacturerVndrId must be a client

@@ -71,6 +71,9 @@ describe('ops-portal smoke', () => {
     // link, and the routed feature heading, not a brand-text literal.
     expect(await screen.findByRole('navigation', { name: /main/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /queues/i })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: /^queues$/i })).toBeTruthy()
+    // findBy, not getBy: a bare /queues now REDIRECTS to /queues/quarantine
+    // (the tab moved into the url on 2026-08-12), so the heading arrives one
+    // navigation later rather than on the first render.
+    expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 })

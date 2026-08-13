@@ -38,10 +38,19 @@ import {
   ingestOpsCourierStatus,
   parseActivationFile,
   resolveAssignmentsByDeviceSerial,
+  previewOpsDeviceInventory,
+  correctUnitStatus,
+  previewOpsUnitStatus,
+  ingestOpsUnitStatus,
+  UNIT_STATUS_ORDER,
+  UNIT_TERMINAL_STATUSES,
   type ActivationFileRowError,
   type IntakeSheet,
   type OpsDeviceInventoryResult,
+  type OpsDeviceInventoryPreview,
   type OpsCourierStatusResult,
+  type OpsUnitStatusPreview,
+  type OpsUnitStatusResult,
 } from '@andpay/fulfillment-service'
 import {
   previewBankFile,
@@ -85,6 +94,13 @@ interface CorrectBody {
   status: string
   courierTimestamp: string
 }
+// The manual unit-status correction body (2026-08-13 ruling): a target status
+// only. Unlike CorrectBody there is no courierTimestamp - a unit has no
+// separate event-time column, only status + updated_at.
+interface UnitStatusBody {
+  status: string
+}
+const KNOWN_UNIT_STATUSES: readonly string[] = [...UNIT_STATUS_ORDER, ...UNIT_TERMINAL_STATUSES]
 interface OverrideBody {
   status: string
   courierTimestamp: string
@@ -566,6 +582,24 @@ export class OpsController {
   // structural parse failure or an invalid/missing manufacturerVndrId surfaces
   // as the fulfillment domain's OpsClientError, which the app-wide
   // OpsErrorFilter maps to a 4xx.
+  // PREVIEW: parses and compares against stock, writes nothing, so it takes NO
+  // Idempotency-Key (there is nothing to make idempotent) and runs no gate
+  // beyond the controller guard, exactly like the bank and damage previews.
+  // Added 2026-08-13: this upload was the only one an operator had to commit
+  // blind.
+  @Post('uploads/device-inventory/preview')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async previewDeviceInventory(
+    @UploadedFile() file: UploadedSheet | undefined,
+  ): Promise<OpsDeviceInventoryPreview> {
+    if (!file) throw new BadRequestException('missing file')
+    return previewOpsDeviceInventory(this.deps.fulfillmentDb, {
+      fileBytes: file.buffer,
+      filename: file.originalname,
+    })
+  }
+
   @Post('uploads/device-inventory')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   @HttpCode(200)
@@ -615,6 +649,36 @@ export class OpsController {
     })
   }
 
+  // Bulk unit-status correction, the sheet-upload sibling of PATCH-by-hand
+  // above. PREVIEW writes nothing, same posture as the device-inventory
+  // preview: no Idempotency-Key, no gate beyond the controller guard.
+  @Post('uploads/unit-status/preview')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async previewUnitStatus(@UploadedFile() file: UploadedSheet | undefined): Promise<OpsUnitStatusPreview> {
+    if (!file) throw new BadRequestException('missing file')
+    return previewOpsUnitStatus(this.deps.fulfillmentDb, { fileBytes: file.buffer, filename: file.originalname })
+  }
+
+  @Post('uploads/unit-status')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async uploadUnitStatus(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<OpsUnitStatusResult> {
+    const g = await this.gate(req, 'ops:upload-unit-status', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+    return ingestOpsUnitStatus(this.deps.fulfillmentDb, {
+      fileBytes: file.buffer,
+      filename: file.originalname,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
   @Post('shipments/:id/correct')
   @HttpCode(200)
   async correct(
@@ -636,6 +700,30 @@ export class OpsController {
       traceId: g.traceId,
     })
     return result
+  }
+
+  // Manual unit-status correction (2026-08-13 ruling): the device page's edit
+  // control. Not step-up-gated: the forward-only guard inside correctUnitStatus
+  // is what limits the blast radius (it can move a device forward, including
+  // into a terminal branch, but can never leave one and never move backward),
+  // the same reasoning `ops:status-correction` above already rests on.
+  @Post('units/:id/status')
+  @HttpCode(200)
+  async correctUnit(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @Body() body: UnitStatusBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; advanced: boolean }> {
+    const g = await this.gate(req, 'ops:unit-status-correction', idem, [id])
+    if (!KNOWN_UNIT_STATUSES.includes(body.status)) throw new BadRequestException('unknown status')
+    return correctUnitStatus(this.deps.fulfillmentDb, {
+      unitId: id,
+      status: body.status,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
   }
 
   @Post('shipments/:id/override')

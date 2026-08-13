@@ -71,16 +71,48 @@ describe('listDeviceInventory under the real ops read role', () => {
     expect(rows[0]!.activatedAt).toBeNull()
   })
 
-  it('the ICCID stays UNREADABLE to this role: the exclusion is by grant, not by omission (S7)', async () => {
+  // INVERTED 13 Aug 2026, and deliberately not deleted.
+  //
+  // This case used to pin that the ICCID was UNREADABLE to this role, because
+  // migration 20260803120000 granted it to nobody and 20260810020000 excluded it
+  // by name, both citing an open architecture question. That was the question
+  // raised as Q25 when D-19 asked for the ICCID on the activation report.
+  //
+  // It has since been answered the other way: migration 20260812150000 widens
+  // the grant under a 2026-08-12 product ruling. So the assertion flips, which
+  // is what a ruling is supposed to do to a test. It is kept rather than removed
+  // because the COLUMN-SCOPED grant is still the mechanism, and a column-scoped
+  // grant does not extend to columns added later. That property broke this exact
+  // read once already (T4.4 added activated_at and GET /ops/devices started
+  // failing with permission denied), so what needs a test is not the old answer
+  // but the fact that every column this read selects is actually granted.
+  it('the ICCID is now READABLE to this role, by grant: migration 20260812150000, product ruling 12 Aug 2026', async () => {
     await seedUnit()
-    // The read above works, so the role is fine. Naming sim_no in a select under
-    // the same role must still fail, which is what makes "excluded by grant"
-    // a guarantee rather than a convention somebody could quietly drop.
-    await expect(
-      db.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
-        return tx.$queryRaw`SELECT sim_no FROM unit`
-      }),
-    ).rejects.toThrow()
+    const rows = await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+      return tx.$queryRaw<{ sim_no: string | null }[]>`SELECT sim_no FROM unit`
+    })
+    expect(rows[0]!.sim_no).not.toBeNull()
+  })
+
+  it('the LIST carries the SIM in full, which is the posture the ruling settled on', async () => {
+    // The ruling first shipped the SIM masked with a per-device Reveal and
+    // overturned that the same day: this is an internal admin console, and
+    // masking a value the operator cross-checks against the source Excel only
+    // cost them a click. Pinned so the posture is a decision on the record
+    // rather than something a later reader has to infer from a SELECT list.
+    await seedUnit()
+    const rows = await listDeviceInventory(db)
+    expect(rows[0]!.simNo).toMatch(/^ICCID-/)
+  })
+
+  it('device_qr stays OFF the list, so the two columns the migration granted are not treated as one decision', async () => {
+    // Granted in the same migration, but deliberately on-demand only
+    // (readDeviceDetail): a raw manufacturer blob is not a value an operator
+    // verifies by eye the way a SIM number is. If a later change puts it on the
+    // list projection, that should be a choice somebody makes, not a drift.
+    await seedUnit()
+    const rows = await listDeviceInventory(db)
+    expect('deviceQr' in rows[0]!).toBe(false)
   })
 })

@@ -13,12 +13,11 @@ import { UploadsPage } from '../../src/features/uploads/UploadsPage.js'
 //      shares one URL.
 //
 // Three equal choices became three equal cards, each on its own route. The
-// 2026-08-11 ruling keeps both fixes and turns the remaining cards into step 1
-// of one continuous flow with a numbered step rail, instead of a page an
-// operator drills into and backs out of. The SAME 2026-08-11 ruling also moves
-// the bank upload out of here entirely: it is now stages 1 and 2 of the
-// workflow workspace, so /uploads offers only damage reports and device
-// inventory, and /uploads/bank redirects into the workspace.
+// 2026-08-11 ruling moved the bank upload into the workflow workspace, and the
+// 2026-08-12 ruling moved device inventory into its own section
+// (/inventory/upload): the inventory team owns its own insertion. So /uploads
+// now offers ONLY damage reports, and both former slugs redirect somewhere
+// true rather than 404ing.
 afterEach(() => { cleanup() })
 
 function renderAt(path: string) {
@@ -33,11 +32,13 @@ function renderAt(path: string) {
   )
 }
 
-describe('Uploads step 1: two equal choices, none preselected', () => {
-  it('offers the two remaining uploads as links', () => {
+describe('Uploads step 1: the remaining choice, none preselected', () => {
+  it('offers the damage upload as a link, and no device inventory card', () => {
     renderAt('/uploads')
     expect(screen.getByRole('link', { name: /damage report/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /device inventory/i })).toBeTruthy()
+    // Device inventory moved to /inventory/upload (2026-08-12): a card here
+    // would be a second entry point to a flow another section now owns.
+    expect(screen.queryByRole('link', { name: /device inventory/i })).toBeNull()
   })
 
   // THE load-bearing assertion, carried over from the tabs-era fix: arriving
@@ -61,25 +62,25 @@ describe('Uploads step 1: two equal choices, none preselected', () => {
     expect(screen.queryByText(/^submit$/i)).toBeNull()
   })
 
-  // Bank moved to the workflow workspace (2026-08-11 ruling), so the only
-  // remaining "From the bank" source line is damage's own "From the bank,
-  // after delivery".
-  it('says who sends each file, so the operator knows which one they hold', () => {
+  // Bank moved to the workflow workspace and device inventory to its own
+  // section, so the only remaining source line is damage's own.
+  it('says who sends the file, so the operator knows which one they hold', () => {
     renderAt('/uploads')
     expect(screen.getAllByText(/from the bank/i).length).toBe(1)
-    expect(screen.getByText(/from the manufacturer/i)).toBeTruthy()
+    // Device inventory is NOT on this index any more: it moved to its own
+    // section on 2026-08-12 because the inventory team owns its own insertion.
+    expect(screen.queryByText(/from the manufacturer/i)).toBeNull()
   })
 
-  it('states the required columns up front for the two kinds that can name them', () => {
+  it('states the required columns up front for the kinds that can name them', () => {
     renderAt('/uploads')
-    // Device ID is device inventory's only required column since the 12 Aug 2026
-    // walkthrough (Workflow A frozen rule); Sim No and Device QR are optional.
-    // Courier status requires all three of its own, because there is no useful
-    // partial row there. Bank and damage name none: their layout is resolved by
-    // source profile at ingest, so the portal has no constant to state.
+    // TWO, not three: device inventory could name its one required column but is
+    // no longer on this index, so the courier status and activation files are the
+    // ones left that can. Bank and damage name none, because their layout is
+    // resolved by source profile at ingest and the portal has no constant to
+    // state.
     const stated = screen.getAllByText(/required columns:/i).map((el) => el.textContent)
-    expect(stated).toHaveLength(3)
-    expect(stated.some((t) => /required columns: device id$/i.test(t ?? ''))).toBe(true)
+    expect(stated).toHaveLength(2)
     expect(stated.some((t) => /required columns: awb, status, status date$/i.test(t ?? ''))).toBe(true)
     expect(stated.some((t) => /required columns: device id, status$/i.test(t ?? ''))).toBe(true)
   })
@@ -113,9 +114,25 @@ describe('Uploads: each upload keeps its own linkable route', () => {
     renderAt('/uploads/damage')
     expect(await screen.findByText(/damage report upload/i)).toBeTruthy()
   })
-  it('deep-links the device inventory upload', async () => {
-    renderAt('/uploads/device-inventory')
-    expect(await screen.findByText(/device inventory upload/i)).toBeTruthy()
+  // Device inventory moved into the Inventory section (2026-08-12): the old
+  // slug is a redirect for the same bookmark-must-not-404 reason as bank.
+  // Sentinel target, same rationale as above.
+  it('redirects /uploads/device-inventory into the Inventory section', async () => {
+    render(
+      <MemoryRouter
+        initialEntries={['/uploads/device-inventory']}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <AuthProvider>
+          <Routes>
+            <Route path="/uploads/*" element={<UploadsPage />} />
+            <Route path="/inventory/upload" element={<div>inventory upload home</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+    expect(screen.queryByText(/device inventory upload/i)).toBeNull()
+    expect(await screen.findByText(/inventory upload home/i)).toBeTruthy()
   })
   it('sends an unknown upload path back to step 1 rather than 404ing', () => {
     renderAt('/uploads/nonsense')
