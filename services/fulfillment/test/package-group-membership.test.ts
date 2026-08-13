@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import ExcelJS from 'exceljs'
 import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { excelLinesFor, buildDispatchPackage } from '../src/package.js'
+import { excelLinesFor, buildDispatchPackage, dispatchGroupXlsx } from '../src/package.js'
 import type { PackageLine } from '../src/package.js'
 import { artifactTypesFor } from '../src/dispatch.js'
 
@@ -126,6 +127,60 @@ describe('artifactTypesFor (dispatch.ts contract, group-first)', () => {
     expect(
       artifactTypesFor({ dispatch_group: null, soundbox: true, standee_count: 1, sticker_count: 1 }),
     ).toEqual(['SOUNDBOX_IMG', 'STANDEE_IMG', 'STICKER_IMG'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T7.3 GUARD (13 Aug 2026). Phase 7 proposed stopping composition of the SECOND
+// collateral artifact for a merchant wanting BOTH a standee and a sticker, on
+// the grounds that ONE_PER_PAGE delivery collapses the two onto one page, so
+// the sticker is rendered and never delivered. That premise is false on two
+// counts, and this block exists so the cleanup cannot be taken without meeting
+// both of them.
+//
+//   1. GRID_3X2 DELIVERS IT. A grid batch runs standee and sticker as two
+//      SEPARATE material runs, because a sheet never mixes standee board with
+//      sticker adhesive, and each run takes its copies from that line's own
+//      count. Dropping the STICKER_IMG composition would silently shorten a
+//      real print run rather than save a render. See assembleGridGroupPdf in
+//      package.ts, pinned by assemble-layout.test.ts's "standee run first, then
+//      sticker run on a fresh sheet".
+//
+//   2. THE EXCEL SHIPS THE REFERENCE IN BOTH LAYOUTS. The Artifact Refs cell is
+//      every non-superseded artifact on the line, filtered by neither layout
+//      nor delivery group, so the sticker reference reaches the print vendor on
+//      the sheet even when ONE_PER_PAGE keeps its page out of the PDF.
+//
+// So that cleanup is gated on whether GRID_3X2 survives at all, and is not the
+// free render-cost saving it was sized as. If grid is ever retired, this block
+// is the one to revisit, deliberately.
+describe('A both-products COLLATERAL line composes BOTH artifacts (T7.3 guard)', () => {
+  it('standee AND sticker are composed, because ONE_PER_PAGE collapsing them is a DELIVERY rule, not a composition one', () => {
+    expect(
+      artifactTypesFor({ dispatch_group: 'COLLATERAL', soundbox: false, standee_count: 1, sticker_count: 2 }),
+    ).toEqual(['STANDEE_IMG', 'STICKER_IMG'])
+  })
+
+  it('the COLLATERAL sheet carries BOTH references, so the second artifact reaches the vendor in either layout', async () => {
+    const both = line({
+      asgnId: 'asgn_both',
+      dispatchGroup: 'COLLATERAL',
+      soundbox: false,
+      standeeCount: 1,
+      stickerCount: 2,
+      artifacts: [
+        { artifactType: 'STANDEE_IMG', assetReference: 'dev-asset:standee:v1' },
+        { artifactType: 'STICKER_IMG', assetReference: 'dev-asset:sticker:v1' },
+      ],
+    })
+    const wb = new ExcelJS.Workbook()
+    const buf = await dispatchGroupXlsx([both], 'COLLATERAL')
+    await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
+    const ws = wb.worksheets[0]!
+    const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
+    const cell = ws.getRow(2).getCell(headers.indexOf('Artifact Refs') + 1).text
+    expect(cell).toContain('dev-asset:standee:v1')
+    expect(cell).toContain('dev-asset:sticker:v1')
   })
 })
 
