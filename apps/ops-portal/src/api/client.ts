@@ -71,6 +71,29 @@ export async function sendOnce(deps: ApiClientDeps, req: ApiRequest): Promise<Ap
 }
 
 export function createApiClient(deps: ApiClientDeps) {
+  // The refresh token is one-time-use with family-wide revocation on reuse
+  // (services/auth/src/refresh.ts rotateRefresh). Several ops calls 401 at
+  // once whenever the access token expires mid-page (most pages fire more
+  // than one request), and each used to fire its OWN /session/refresh: the
+  // first won the rotation, every other call presented the now-stale token,
+  // got treated as replay, and the server revoked the whole session even
+  // though a refresh had just succeeded. This single in-flight promise makes
+  // every concurrent 401 await the SAME refresh call instead of racing.
+  let refreshInFlight: Promise<string | null> | null = null
+  function refreshOnce(): Promise<string | null> {
+    if (refreshInFlight === null) {
+      refreshInFlight = (async () => {
+        const refreshed = await sendOnce(deps, { method: 'POST', path: '/session/refresh', base: 'auth', withCookie: true })
+        if (refreshed.status < 200 || refreshed.status >= 300) return null
+        const tok = (refreshed.data as { accessToken?: string }).accessToken
+        if (typeof tok !== 'string') return null
+        setAccessToken(tok)
+        return tok
+      })().finally(() => { refreshInFlight = null })
+    }
+    return refreshInFlight
+  }
+
   // Refresh once on a 401, step up once on a gated 403. `alreadyRefreshed` and
   // `alreadySteppedUp` each bound their own interceptor to a single attempt per
   // logical request so a persistently-failing backend cannot loop.
@@ -80,11 +103,8 @@ export function createApiClient(deps: ApiClientDeps) {
 
     if (r.status === 401 && req.base !== 'auth') {
       if (!alreadyRefreshed) {
-        const refreshed = await sendOnce(deps, { method: 'POST', path: '/session/refresh', base: 'auth', withCookie: true })
-        if (refreshed.status >= 200 && refreshed.status < 300) {
-          const tok = (refreshed.data as { accessToken?: string }).accessToken
-          if (typeof tok === 'string') { setAccessToken(tok); return attempt<T>(req, true, alreadySteppedUp) }
-        }
+        const tok = await refreshOnce()
+        if (tok !== null) return attempt<T>(req, true, alreadySteppedUp)
       }
       // Either the refresh itself failed, or this is a retry that still got a
       // 401 (post-refresh 401): one refresh attempt is all we get either way.

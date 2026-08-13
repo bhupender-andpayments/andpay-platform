@@ -61,10 +61,13 @@ export function NeedsYouBlock() {
   const total = counts.quarantine + counts.intake + counts.status
   if (total === 0) return null
 
-  const items: readonly { label: string; count: number }[] = [
-    { label: 'Quarantined rows', count: counts.quarantine },
-    { label: 'Intake exceptions', count: counts.intake },
-    { label: 'Courier status exceptions', count: counts.status },
+  // Each row carries its OWN queue url. All three linked to a bare /queues,
+  // which rendered whichever tab that page defaulted to, so two of the three
+  // counts led somewhere that did not contain the rows they counted.
+  const items: readonly { label: string; count: number; href: string }[] = [
+    { label: 'Quarantined rows', count: counts.quarantine, href: '/queues/quarantine' },
+    { label: 'Intake exceptions', count: counts.intake, href: '/queues/intake' },
+    { label: 'Courier status exceptions', count: counts.status, href: '/queues/status' },
   ]
 
   return (
@@ -80,7 +83,7 @@ export function NeedsYouBlock() {
               {/* Every count is a way INTO the rows it counts. A number an operator
                   cannot click is a number they have to go and find. */}
               <Link
-                to="/queues"
+                to={item.href}
                 className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted/50"
               >
                 <span className="text-muted-foreground">{item.label}</span>

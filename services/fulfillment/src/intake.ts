@@ -37,11 +37,21 @@ export interface IntakeSheet {
   rows: IntakeRow[]
 }
 
+// One quarantined row, echoed back to the caller so an upload surface can SAY
+// which row was flagged and why, instead of reporting only a count. Carries
+// exactly what intake_exception itself stores (row_ref + reason_code): no
+// device_serial and no ICCID, so sensitive-by-default still holds on the wire.
+export interface IntakeFlaggedRow {
+  rowRef: string
+  reason: string
+}
+
 export interface IntakeResult {
   // Set only on a whole-sheet rejection; absent on a (possibly partial) accept.
   rejected?: 'unauthorized' | 'schema_invalid'
   createdUnitIds: string[]
   quarantined: number
+  flaggedRows: IntakeFlaggedRow[]
   // true when the file was already processed (the {vendor}|{file_id} inbox key
   // hit): fn did not run, so createdUnitIds/quarantined report zero even though
   // the ORIGINAL ingest may have created units.
@@ -49,7 +59,7 @@ export interface IntakeResult {
 }
 
 function emptyResult(rejected: 'unauthorized' | 'schema_invalid'): IntakeResult {
-  return { rejected, createdUnitIds: [], quarantined: 0, deduped: false }
+  return { rejected, createdUnitIds: [], quarantined: 0, flaggedRows: [], deduped: false }
 }
 
 // Whole-file schema validation (D103b): a row missing a REQUIRED field, or
@@ -117,11 +127,23 @@ export async function ingestIntakeSheetWithinTx(
   // and any other caller omit it, keeping the legacy silent-no-op semantics
   // byte-for-byte. Optional with a default so the correction call site is
   // unchanged.
-  opts: { flagDuplicates?: boolean } = {},
+  //
+  // persistDuplicateExceptions (2026-08-13 ruling, overturning the R2 write
+  // above - see docs/escalations/duplicate_rows_not_quarantined.md): a
+  // duplicate has nothing an operator can correct, so writing it to
+  // intake_exception only produces a queue entry whose one action (Resolve)
+  // re-runs this function with flagDuplicates OFF and silently no-ops. The ops
+  // device-inventory path (ops-device-inventory.ts) sets this false: a
+  // duplicate is still DETECTED and still counted in `quarantined` /
+  // `flaggedRows` so the upload screen can name it, it is just never
+  // PERSISTED. Defaults to true so the vendor channel and every existing
+  // caller/test keep today's byte-for-byte behavior.
+  opts: { flagDuplicates?: boolean; persistDuplicateExceptions?: boolean } = {},
 ): Promise<IntakeResult> {
-  const { flagDuplicates = false } = opts
+  const { flagDuplicates = false, persistDuplicateExceptions = true } = opts
   const vndrUuid = toUuid(sheet.vndrId)
   const createdUnitIds: string[] = []
+  const flaggedRows: IntakeFlaggedRow[] = []
   let quarantined = 0
 
   // STEP C: file idempotency (06.A) on {vendor}|{file_id} via the inbox. A
@@ -149,12 +171,21 @@ export async function ingestIntakeSheetWithinTx(
       // ONLY, row_ref locates the row in the source file. NO device_serial and
       // NO ICCID are stored here. Sensitive-by-default holds even in the flag
       // path; the operator resolves via file_id + row_ref against the file.
+      //
+      // The INSERT is now conditional on persistDuplicateExceptions; the
+      // REPORTING (quarantined/flaggedRows) is not, on purpose: a caller that
+      // opts out of persistence still learns exactly which rows were skipped
+      // and why, it just does not clutter a correction queue with rows that
+      // have nothing to correct.
       const flag = async (rowRef: string, reasonCode: string): Promise<void> => {
-        await tx.$executeRaw`
-          INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
-          VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${reasonCode})
-        `
+        if (persistDuplicateExceptions) {
+          await tx.$executeRaw`
+            INSERT INTO intake_exception (id, vndr_id, file_id, row_ref, reason_code)
+            VALUES (gen_random_uuid(), ${vndrUuid}::uuid, ${sheet.fileId}, ${rowRef}, ${reasonCode})
+          `
+        }
         quarantined++
+        flaggedRows.push({ rowRef, reason: reasonCode })
       }
 
       for (let i = 0; i < sheet.rows.length; i++) {
@@ -287,7 +318,7 @@ export async function ingestIntakeSheetWithinTx(
       }
     })
 
-  return { createdUnitIds, quarantined, deduped: !ran }
+  return { createdUnitIds, quarantined, flaggedRows, deduped: !ran }
 }
 
 // Ingest one manufacturer intake sheet (S8, 105c, D103b, D103d, E1). Returns

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { QueuesPage } from '../../src/features/queues/QueuesPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
@@ -43,6 +43,23 @@ function headerValue(call: Call, name: string): string | null {
   return headers[name] ?? null
 }
 
+// The tab lives in the URL since 2026-08-12, so QueuesPage must be mounted
+// behind a route or it can only ever render its redirect. Each test opens the
+// tab it is about directly, which is also the behaviour every link into this
+// page depends on; the click-through-the-strip path is covered in
+// queues-tabs.test.tsx.
+function renderQueues(tab: 'quarantine' | 'intake' | 'status') {
+  return render(
+    <MemoryRouter initialEntries={[`/queues/${tab}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <AuthProvider>
+        <Routes>
+          <Route path="/queues/:tab" element={<QueuesPage />} />
+        </Routes>
+      </AuthProvider>
+    </MemoryRouter>,
+  )
+}
+
 describe('QueuesPage', () => {
   beforeEach(() => {
     clearAccessToken()
@@ -79,13 +96,7 @@ describe('QueuesPage', () => {
       }),
     )
 
-    render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AuthProvider>
-          <QueuesPage />
-        </AuthProvider>
-      </MemoryRouter>,
-    )
+    renderQueues('quarantine')
 
     expect(await screen.findByText('file-1')).toBeTruthy()
     expect(screen.getByText('Missing Branch Code')).toBeTruthy()
@@ -182,15 +193,8 @@ describe('QueuesPage', () => {
       }),
     )
 
-    render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AuthProvider>
-          <QueuesPage />
-        </AuthProvider>
-      </MemoryRouter>,
-    )
+    renderQueues('intake')
 
-    await userEvent.click(screen.getByRole('button', { name: /intake exceptions/i }))
     expect(await screen.findByText('row-5')).toBeTruthy()
 
     await userEvent.click(screen.getByRole('button', { name: /resolve intake exception ie-1/i }))
@@ -253,15 +257,8 @@ describe('QueuesPage', () => {
       }),
     )
 
-    render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AuthProvider>
-          <QueuesPage />
-        </AuthProvider>
-      </MemoryRouter>,
-    )
+    renderQueues('status')
 
-    await userEvent.click(screen.getByRole('button', { name: /status exceptions/i }))
     expect(await screen.findByText('subj-1')).toBeTruthy()
     // A null fileId/rowRef render as a neutral marker, not "null".
     expect(screen.queryByText('null')).toBeNull()
@@ -309,15 +306,8 @@ describe('QueuesPage', () => {
       }),
     )
 
-    render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AuthProvider>
-          <QueuesPage />
-        </AuthProvider>
-      </MemoryRouter>,
-    )
+    renderQueues('status')
 
-    await userEvent.click(screen.getByRole('button', { name: /status exceptions/i }))
     expect(await screen.findByText('AWB-999')).toBeTruthy()
 
     const resolveButton = screen.getByRole('button', { name: /resolve status exception se-2/i }) as HTMLButtonElement
@@ -327,7 +317,11 @@ describe('QueuesPage', () => {
     // A status + courier-timestamp form appears; no shptId input exists
     // anywhere (it is never typed).
     expect(screen.queryByLabelText(/shipment id/i)).toBeNull()
-    await userEvent.selectOptions(screen.getByLabelText(/^status$/i), 'DELIVERED')
+    // The status field is a SearchSelect now, not a native select: open it and
+    // pick the humanised label. The VALUE posted is still the raw enum, which
+    // the body assertion below pins.
+    await userEvent.click(screen.getByLabelText(/^status$/i))
+    await userEvent.click(await screen.findByRole('option', { name: /^delivered$/i }))
     await userEvent.type(screen.getByLabelText(/courier timestamp/i), '2026-08-05T10:00')
 
     const getCallsBeforeResolve = calls.filter((c) => c.url.includes('/ops/exceptions/status')).length

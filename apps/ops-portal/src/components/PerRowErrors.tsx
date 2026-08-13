@@ -82,7 +82,7 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
             {result.quarantined > 0 && (
               <>
                 {' '}
-                <Link to="/queues" className="text-sm font-medium text-primary underline hover:text-primary/80">
+                <Link to="/queues/quarantine" className="text-sm font-medium text-primary underline hover:text-primary/80">
                   view in quarantine queue
                 </Link>
               </>
@@ -98,7 +98,7 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
             {result.flagged > 0 && (
               <>
                 {' '}
-                <Link to="/queues" className="text-sm font-medium text-primary underline hover:text-primary/80">
+                <Link to="/queues/intake" className="text-sm font-medium text-primary underline hover:text-primary/80">
                   view in intake exceptions
                 </Link>
               </>
@@ -137,7 +137,7 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
             {' repeat a VPA we already serve, so they were '}
             <span className="font-semibold">held for review</span>
             {' rather than ingested. A second soundbox for a merchant who already has one is worth confirming before a device ships. '}
-            <Link to="/queues" className="text-sm font-medium text-primary underline hover:text-primary/80">
+            <Link to="/queues/quarantine" className="text-sm font-medium text-primary underline hover:text-primary/80">
               view in quarantine queue
             </Link>
           </p>

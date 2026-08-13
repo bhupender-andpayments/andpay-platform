@@ -11,6 +11,12 @@ export function pillClass(variant: PillVariant): string {
 // pipeline_state, courier_status, activation_status, replacement_status, and
 // vendor status. Unknown values render neutral with a title-cased label.
 const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
+  // device lifecycle (unit-lifecycle.ts spine + terminals)
+  IN_STOCK: { variant: 'positive', label: 'In stock' },
+  ALLOCATED: { variant: 'pending', label: 'Allocated' },
+  PRINTED: { variant: 'info', label: 'Printed' },
+  DAMAGED: { variant: 'negative', label: 'Damaged' },
+  RETURNED: { variant: 'negative', label: 'Returned' },
   // pipeline
   RECEIVED: { variant: 'neutral', label: 'Received' },
   POOLED: { variant: 'neutral', label: 'Pooled' },
@@ -95,4 +101,23 @@ export function fmtDays(n: number | null | undefined): string {
 export function shortId(id: string | null | undefined, keep = 10): string {
   if (!id) return '-'
   return id.length <= keep + 2 ? id : `${id.slice(0, keep)}…`
+}
+
+// "2h ago" for a scan column; callers put the full fmtDateTime in a title so
+// the exact instant stays one hover away. Future instants (clock skew) fall
+// back to the absolute form rather than saying "in -3m".
+export function fmtRelative(iso: string | null | undefined): string {
+  if (!iso) return '-'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '-'
+  const ms = Date.now() - d.getTime()
+  if (ms < 0) return fmtDateTime(iso)
+  const mins = Math.floor(ms / 60_000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days}d ago`
+  return fmtDate(iso)
 }

@@ -563,21 +563,70 @@ export interface UnitInventoryRow {
   printedForMerchant: string | null
   asgnId: string | null
   location: string | null
+  // Full value, unmasked: an internal admin console, and the operator's whole
+  // reason for looking is to cross-check it against the source Excel
+  // (2026-08-13 ruling, reversing this same day's earlier masked-with-Reveal
+  // decision).
+  simNo: string | null
   createdAt: string
   updatedAt: string
 }
 
-// The device inventory. No ICCID and no manufacturer QR payload: both are
-// excluded by the GRANT rather than by this shape, so the wire cannot widen
-// without a migration.
+// The device inventory list. The manufacturer QR payload is absent from THIS
+// wire by design; see getDeviceDetail.
 export function getDevices(c: Client, status?: string) {
   const q = status !== undefined && status !== '' ? `?status=${encodeURIComponent(status)}` : ''
   return c.request<UnitInventoryRow[]>({ method: 'GET', path: `/ops/devices${q}` })
 }
 
+// The on-demand per-device read: the list row plus the raw manufacturer QR
+// payload. 404 when the device does not exist.
+export interface UnitDetailRow extends UnitInventoryRow {
+  deviceQr: unknown
+}
+
+export function getDeviceDetail(c: Client, unitId: string) {
+  return c.request<UnitDetailRow>({ method: 'GET', path: `/ops/devices/${encodeURIComponent(unitId)}` })
+}
+
+// Manual unit-status correction (2026-08-13 ruling): the device page's edit
+// control. Forward-only, same rule as everywhere else; the edge/domain reject
+// an illegal move rather than trusting the picker's own option list.
+export function correctUnitStatus(c: Client, unitId: string, status: string, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; advanced: boolean }>({
+    method: 'POST',
+    path: `/ops/units/${encodeURIComponent(unitId)}/status`,
+    body: { status },
+    idempotencyKey,
+  })
+}
+
 export function getDispatches(c: Client, status?: string) {
   const q = status !== undefined && status !== '' ? `?status=${encodeURIComponent(status)}` : ''
   return c.request<DispatchRow[]>({ method: 'GET', path: `/ops/dispatches${q}` })
+}
+
+// services/tms/src/ops-read.ts DamageCaseView, via GET /ops/damage-cases.
+// The inventory page joins replacement asgn ids against unit.asgnId to mark
+// which devices exist as replacements for damaged ones.
+export interface DamageCaseRow {
+  asgnId: string
+  replacementOf: string
+  merchantDisplayName: string
+  bankReferenceCode: string
+  branchCode: string | null
+  damageReason: string | null
+  bankRemarks: string | null
+  caseStatus: string | null
+  billable: boolean
+  demandState: string
+  createdAt: string
+  updatedAt: string
+}
+
+export function getDamageCases(c: Client, includeClosed = true) {
+  const q = includeClosed ? '?includeClosed=true' : ''
+  return c.request<DamageCaseRow[]>({ method: 'GET', path: `/ops/damage-cases${q}` })
 }
 
 // -----------------------------------------------------------------------
@@ -846,6 +895,18 @@ export interface DeviceInventoryRowError {
   errors: DeviceInventoryRowErrorCode[]
 }
 
+/**
+ * One duplicate row, by its original sheet row number, with the
+ * intake_exception reason code(s). The four codes the server raises today:
+ * duplicate_device_serial_in_file, duplicate_device_serial_existing_unit
+ * (no second device is created for either), duplicate_sim_no_in_file and
+ * duplicate_sim_no_existing_unit (the device IS created, without a SIM).
+ */
+export interface DeviceInventoryFlaggedRow {
+  rowNo: number
+  errors: string[]
+}
+
 /** services/fulfillment/src/ops-device-inventory.ts OpsDeviceInventoryResult. */
 export interface DeviceInventoryUploadResult {
   fileId: string
@@ -854,6 +915,11 @@ export interface DeviceInventoryUploadResult {
   invalid: number
   createdUnitIds: string[]
   invalidRows: DeviceInventoryRowError[]
+  flaggedRows: DeviceInventoryFlaggedRow[]
+  // How many of `invalid` were also queued into intake_exception so an
+  // operator can correct them from Queues rather than losing the row the
+  // moment they navigate away from this screen.
+  queuedForReview: number
   deduped: boolean
 }
 
@@ -904,6 +970,33 @@ export function deviceInventoryStructuralReasons(err: unknown): DeviceInventoryS
 // (apps/ops-edge/src/deps.ts MAX_UPLOAD_BYTES). Checked client-side against
 // File.size BEFORE any network call, so an oversized file never posts.
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+
+// The only two sheet formats any adapter can read (every adapter's own
+// detectFormat: .csv or .xlsx, else `unsupported_extension`).
+export const ACCEPTED_UPLOAD_EXTENSIONS = ['.csv', '.xlsx'] as const
+
+/**
+ * One client-side gate for every upload surface: too big, or not a sheet.
+ * Returns the operator-facing message, or null when the file may be posted.
+ *
+ * THE TYPE HALF IS NOT COSMETIC (2026-08-13 audit). `FileDropZone`'s `accept`
+ * attribute only filters the file-PICKER dialog: a drag-and-drop hands over
+ * whatever was dropped, and the picker itself can be switched to "All files".
+ * So before this, dropping a .txt or a .zip posted it and the operator learned
+ * it was wrong only from a server 400. The server still rejects it (it stays
+ * the authority); this just stops the pointless round trip and answers
+ * instantly, with the same wording the server's own code maps to.
+ */
+export function uploadFileRejection(file: File): string | null {
+  const name = file.name.toLowerCase()
+  if (!ACCEPTED_UPLOAD_EXTENSIONS.some((ext) => name.endsWith(ext))) {
+    return 'Unsupported file type. Upload a .csv or .xlsx file.'
+  }
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return 'File exceeds the 5 MB upload limit. Split it into smaller files and try again.'
+  }
+  return null
+}
 
 function opsBaseUrl(): string {
   return opsBase()
@@ -964,6 +1057,37 @@ export function commitDamage(c: Client, file: File, idempotencyKey: string): Pro
   return postFile<DamageCommitResult>(c, '/ops/uploads/damage/commit', file, idempotencyKey)
 }
 
+/**
+ * services/fulfillment/src/ops-device-inventory.ts DeviceInventoryPreviewRow.
+ * The preview writes NOTHING: it parses the sheet with the same parser the
+ * commit uses and compares each row against stock we already hold, so an
+ * operator can see what the file contains, and what will happen to it, before
+ * committing. The SIM arrives in full, unmasked (admin console).
+ */
+export interface DeviceInventoryPreviewRow {
+  rowNo: number
+  deviceId: string
+  simNo: string
+  deviceQr: string
+  errors: string[]
+  alreadyInStock: boolean
+  simAlreadyUsed: boolean
+  duplicateInFile: boolean
+}
+
+export interface DeviceInventoryPreview {
+  rows: DeviceInventoryPreviewRow[]
+  totalRows: number
+  willAdd: number
+  willFlag: number
+  willReject: number
+}
+
+// No Idempotency-Key: a preview writes nothing, so there is nothing to dedupe.
+export function previewDeviceInventory(c: Client, file: File): Promise<DeviceInventoryPreview> {
+  return postFile<DeviceInventoryPreview>(c, '/ops/uploads/device-inventory/preview', file)
+}
+
 export function commitDeviceInventory(
   c: Client,
   file: File,
@@ -973,6 +1097,51 @@ export function commitDeviceInventory(
   return postFile<DeviceInventoryUploadResult>(c, '/ops/uploads/device-inventory', file, idempotencyKey, {
     manufacturerVndrId,
   })
+}
+
+/**
+ * services/fulfillment/src/ops-unit-status.ts. Bulk unit-status correction:
+ * a sheet of Device ID + New Status, one row per device, same forward-only
+ * guard as the single-device edit. Preview writes nothing.
+ */
+export interface UnitStatusPreviewRow {
+  rowNo: number
+  deviceId: string
+  newStatus: string
+  currentStatus: string | null
+  legal: boolean
+  errors: string[]
+}
+
+export interface UnitStatusPreview {
+  rows: UnitStatusPreviewRow[]
+  totalRows: number
+  willMove: number
+  willReject: number
+}
+
+export function previewUnitStatus(c: Client, file: File): Promise<UnitStatusPreview> {
+  return postFile<UnitStatusPreview>(c, '/ops/uploads/unit-status/preview', file)
+}
+
+export interface UnitStatusResultRow {
+  rowNo: number
+  deviceId: string
+  outcome: 'moved' | 'not_found' | 'illegal_transition' | 'invalid'
+  errors: string[]
+}
+
+export interface UnitStatusUploadResult {
+  fileId: string
+  totalRows: number
+  moved: number
+  skipped: number
+  rows: UnitStatusResultRow[]
+  deduped: boolean
+}
+
+export function commitUnitStatus(c: Client, file: File, idempotencyKey: string): Promise<UnitStatusUploadResult> {
+  return postFile<UnitStatusUploadResult>(c, '/ops/uploads/unit-status', file, idempotencyKey)
 }
 
 // -----------------------------------------------------------------------

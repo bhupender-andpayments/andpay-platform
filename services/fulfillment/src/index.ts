@@ -56,6 +56,7 @@ export {
   type IntakeRow,
   type IntakeSheet,
   type IntakeResult,
+  type IntakeFlaggedRow,
   ingestIntakeSheet,
   ingestIntakeSheetWithinTx,
   isSheetStructurallyValid,
@@ -118,6 +119,7 @@ export { type PullXlsxResult, type PullPdfResult, pullDispatchPackageXlsx, pullT
 export {
   correctStatus,
   overrideTerminal,
+  correctUnitStatus,
   recomposeArtifact,
   holdRecord,
   releaseRecord,
@@ -149,7 +151,31 @@ export {
   type DeviceInventoryParseResult,
   parseDeviceInventoryFile,
 } from './device-inventory-adapter.js'
-export { type OpsDeviceInventoryResult, ingestOpsDeviceInventory } from './ops-device-inventory.js'
+export {
+  type OpsDeviceInventoryResult,
+  type OpsDeviceInventoryFlaggedRow,
+  type OpsDeviceInventoryPreview,
+  type DeviceInventoryPreviewRow,
+  ingestOpsDeviceInventory,
+  previewOpsDeviceInventory,
+} from './ops-device-inventory.js'
+export {
+  type UnitStatusStructuralErrorCode,
+  type UnitStatusStructuralError,
+  type UnitStatusRow,
+  type UnitStatusRowErrorCode,
+  type UnitStatusRowError,
+  type UnitStatusParseResult,
+  parseUnitStatusFile,
+} from './unit-status-adapter.js'
+export {
+  type OpsUnitStatusPreview,
+  type UnitStatusPreviewRow,
+  type OpsUnitStatusResult,
+  type UnitStatusResultRow,
+  previewOpsUnitStatus,
+  ingestOpsUnitStatus,
+} from './ops-unit-status.js'
 export {
   listVendors,
   type VendorRow,
@@ -172,8 +198,10 @@ export {
   type PoolEntryRow,
   listDispatches,
   listDeviceInventory,
+  readDeviceDetail,
   type DispatchRow,
   type UnitInventoryRow,
+  type UnitDetailView,
 } from './ops-read.js'
 export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
 export { InMemoryAssetStore } from './storage/dev-asset-store.js'

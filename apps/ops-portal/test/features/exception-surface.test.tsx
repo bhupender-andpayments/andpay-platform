@@ -37,6 +37,7 @@ function renderSurface() {
 
 const QUARANTINE_ROW = { id: 'q1', fileId: 'gscb.csv', rowNo: 5, reasonCode: 'invalid_mobile_format', resolvedAt: null }
 const INTAKE_ROW = { id: 'i1', vndrId: 'vndr_1', fileId: 'cwd.csv', rowRef: 'row-12', reasonCode: 'unknown_device_serial', resolvedAt: null }
+const STATUS_ROW = { id: 's1', vndrId: 'vndr_2', channel: 'BATCH', subjectRef: 'AWB100001', fileId: null, rowRef: null, reasonCode: 'unknown_awb', shptId: null, resolvedAt: null }
 
 describe('ExceptionSurface: the landing page says what needs attention', () => {
   beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
@@ -55,12 +56,24 @@ describe('ExceptionSurface: the landing page says what needs attention', () => {
     expect(await screen.findByText(/rejected bank rows/i)).toBeTruthy()
   })
 
-  // The whole point: a route straight to the work, not just a number.
+  // The whole point: a route straight to the work, not just a number. And the
+  // route must name the CARD'S OWN queue: all three cards pointed at a bare
+  // /queues, so two of the three landed the operator on Quarantine, showing
+  // rows that had nothing to do with the card they clicked (2026-08-12).
   it('links to the queue that holds the work', async () => {
     stub({ quarantine: [QUARANTINE_ROW] })
     renderSurface()
     const link = await screen.findByRole('link', { name: /rejected bank rows/i })
-    expect(link.getAttribute('href')).toBe('/queues')
+    expect(link.getAttribute('href')).toBe('/queues/quarantine')
+  })
+
+  it('sends each card to ITS OWN queue, not all three to the same one', async () => {
+    stub({ quarantine: [QUARANTINE_ROW], intake: [INTAKE_ROW], status: [STATUS_ROW] })
+    renderSurface()
+    const intake = await screen.findByRole('link', { name: /device intake exceptions/i })
+    expect(intake.getAttribute('href')).toBe('/queues/intake')
+    const status = await screen.findByRole('link', { name: /courier status exceptions/i })
+    expect(status.getAttribute('href')).toBe('/queues/status')
   })
 
   it('says plainly when nothing needs attention', async () => {

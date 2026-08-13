@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { type GridColumn } from '../../ui/DataGrid.js'
+import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { Card, CardHeader, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
-import { fmtDateTime, shortId } from '../../ui/format.js'
-import { orDash, IncludeResolvedToggle } from './shared.js'
+import { Card, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { fmtDateTime, fmtRelative, shortId } from '../../ui/format.js'
+import { orDash } from './shared.js'
 import {
   getIntakeExceptions,
+  getVendors,
   resolveIntakeException,
   type IntakeExceptionView,
+  type VendorRow,
 } from '../../api/endpoints.js'
 import {
   emptyIntakeSheetForm,
@@ -38,6 +41,24 @@ export function IntakeExceptionsTab() {
   const [resolvingId, setResolvingId] = useState<string | null>(null)
   const [form, setForm] = useState<IntakeSheetForm | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  const [vendors, setVendors] = useState<VendorRow[]>([])
+
+  // The Vendor column printed a raw `vndr_01kzs...`. Resolve it to the name the
+  // operator knows, the same way Inventory resolves its manufacturer, falling
+  // back to the id when the lookup misses. Silent on failure: ids still render.
+  useEffect(() => {
+    let cancelled = false
+    getVendors(client)
+      .then((list) => {
+        if (!cancelled && Array.isArray(list)) setVendors(list)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [client])
+
+  const vendorNames = useMemo(() => new Map(vendors.map((v) => [v.id, v.displayName])), [vendors])
 
   const load = useCallback(() => {
     setError(null)
@@ -116,15 +137,53 @@ export function IntakeExceptionsTab() {
     }
   }
 
-  const columns: DataTableColumn<IntakeExceptionView>[] = [
-    { key: 'id', header: 'ID', cell: (r) => <CodeChip>{shortId(r.id)}</CodeChip> },
-    { key: 'vndrId', header: 'Vendor', cell: (r) => r.vndrId },
-    { key: 'fileId', header: 'File ID', cell: (r) => r.fileId },
-    { key: 'rowRef', header: 'Row ref', cell: (r) => r.rowRef },
-    { key: 'reasonCode', header: 'Reason', cell: (r) => <StatusPill value={r.reasonCode} /> },
-    { key: 'createdAt', header: 'Created', cell: (r) => fmtDateTime(r.createdAt) },
-    { key: 'resolvedAt', header: 'Resolved', cell: (r) => fmtDateTime(r.resolvedAt) },
-    { key: 'resolvedByActor', header: 'Resolved by', cell: (r) => orDash(r.resolvedByActor) },
+  const columns: GridColumn<IntakeExceptionView>[] = [
+    {
+      key: 'rowRef',
+      header: 'Row',
+      sortValue: (r) => r.rowRef,
+      // The ROW is what identifies an exception to an operator holding the
+      // file, so it leads. The exception's own uuid led before, which is a
+      // value they can do nothing with; it now sits as a subtitle for support.
+      cell: (r) => (
+        <span className="min-w-0">
+          <span className="num block font-semibold text-foreground">{r.rowRef}</span>
+          <span className="block text-[11px] text-muted-foreground">{shortId(r.id)}</span>
+        </span>
+      ),
+    },
+    { key: 'reasonCode', header: 'Reason', sortValue: (r) => r.reasonCode, cell: (r) => <StatusPill value={r.reasonCode} /> },
+    {
+      key: 'vndrId',
+      header: 'Vendor',
+      sortValue: (r) => vendorNames.get(r.vndrId) ?? r.vndrId,
+      cell: (r) => vendorNames.get(r.vndrId) ?? <CodeChip>{shortId(r.vndrId)}</CodeChip>,
+    },
+    { key: 'fileId', header: 'File', sortValue: (r) => r.fileId, cell: (r) => <CodeChip>{shortId(r.fileId)}</CodeChip> },
+    {
+      key: 'createdAt',
+      header: 'Created',
+      sortValue: (r) => r.createdAt,
+      cell: (r) => (
+        <span title={fmtDateTime(r.createdAt)} className="text-muted-foreground">
+          {fmtRelative(r.createdAt)}
+        </span>
+      ),
+    },
+    {
+      key: 'resolvedAt',
+      header: 'Resolved',
+      sortValue: (r) => r.resolvedAt ?? '',
+      cell: (r) =>
+        r.resolvedAt === null ? (
+          <span className="text-muted-foreground">-</span>
+        ) : (
+          <span title={fmtDateTime(r.resolvedAt)}>
+            {fmtRelative(r.resolvedAt)}
+            <span className="block text-[11px] text-muted-foreground">{orDash(r.resolvedByActor)}</span>
+          </span>
+        ),
+    },
     {
       key: 'actions',
       header: 'Actions',
@@ -145,15 +204,18 @@ export function IntakeExceptionsTab() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader title="Intake Exceptions" subtitle={`${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`} actions={<IncludeResolvedToggle checked={includeResolved} onChange={setIncludeResolved} />} />
-        {error !== null && (
-          <div className="p-4">
-            <ErrorNote>{error}</ErrorNote>
-          </div>
-        )}
-        <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No intake exceptions." />
-      </Card>
+      <QueueTable
+        title="Intake exceptions"
+        rows={rows}
+        columns={columns}
+        error={error}
+        emptyMessage="No intake exceptions."
+        includeResolved={includeResolved}
+        onIncludeResolvedChange={setIncludeResolved}
+        searchPlaceholder="Row, file or vendor…"
+        searchText={(r) => `${r.rowRef} ${r.fileId} ${vendorNames.get(r.vndrId) ?? r.vndrId} ${r.reasonCode}`}
+        vendorOf={(r) => r.vndrId}
+      />
 
       {resolvingId !== null && form !== null && (
         <Card className="p-5">

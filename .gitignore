@@ -21,3 +21,6 @@ infra/aws/cdk.out/
 #docs
 docs/
 evidence/
+
+# Personal demo scratch files, not part of the repo
+demo/

@@ -46,21 +46,24 @@ export function ExceptionSurface() {
             key: 'quarantine',
             label: 'Rejected bank rows',
             description: 'Rows the bank file could not be ingested with, awaiting a correction.',
-            href: '/queues',
+            // Each card names ITS queue. All three pointed at a bare /queues,
+            // so two of the three silently dropped the operator on Quarantine,
+            // showing rows unrelated to the card they had just clicked.
+            href: '/queues/quarantine',
             count: quarantine.length,
           },
           {
             key: 'intake',
             label: 'Device intake exceptions',
             description: 'Inventory rows the manufacturer sent that could not be matched.',
-            href: '/queues',
+            href: '/queues/intake',
             count: intake.length,
           },
           {
             key: 'status',
             label: 'Courier status exceptions',
             description: 'Status updates that referenced something we do not recognise.',
-            href: '/queues',
+            href: '/queues/status',
             count: status.length,
           },
         ])

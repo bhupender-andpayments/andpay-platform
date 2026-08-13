@@ -7,8 +7,10 @@ import { ingestOpsDeviceInventory } from '../src/ops-device-inventory.js'
 // Phase 5 Task 1 (D-G, FR-01a): the class-3 ops device-inventory upload
 // service function. Covers what the ops-edge http suite cannot exercise as
 // directly: the manufacturer-vndr validation, the reused dedup flagging
-// (duplicate serial / duplicate ICCID -> intake_exception), the IN_STOCK
-// insert, the upload-audit ledger row counts, and idempotent replay.
+// (duplicate serial / duplicate ICCID - reported via res.flagged, but NOT
+// persisted to intake_exception as of 2026-08-13, see
+// docs/escalations/duplicate_rows_not_quarantined.md), the IN_STOCK insert,
+// the upload-audit ledger row counts, and idempotent replay.
 
 const url =
   process.env.FULFILLMENT_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
@@ -121,10 +123,20 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
       { device_serial: '1234567890003', status: 'IN_STOCK', product_type: 'SOUNDBOX', sim_no: null },
     ])
 
+    // 2026-08-13 ruling (docs/escalations/duplicate_rows_not_quarantined.md):
+    // duplicates are still DETECTED (res.flagged stays 2, below) but no
+    // longer PERSISTED - a duplicate has nothing an operator can correct, so
+    // it is reported to the upload screen and never written to
+    // intake_exception. Only the format-invalid row (missing_device_id)
+    // lands here now.
     const exceptions = await db.$queryRaw<{ reason_code: string }[]>`
       SELECT reason_code FROM intake_exception ORDER BY reason_code
     `
-    expect(exceptions.map((e) => e.reason_code)).toEqual(['duplicate_device_serial_in_file', 'duplicate_sim_no_existing_unit'])
+    expect(exceptions.map((e) => e.reason_code)).toEqual(['missing_device_id'])
+    const dupCount = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM intake_exception WHERE reason_code LIKE 'duplicate_%'
+    `
+    expect(Number(dupCount[0]!.n)).toBe(0)
 
     const ledger = await db.$queryRaw<
       {
@@ -257,6 +269,59 @@ describe('ingestOpsDeviceInventory (Phase 5 Task 1, D-G)', () => {
 
     const allow = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = 'authz.audit'`
     expect(Number(allow[0]!.n)).toBe(1)
+  })
+
+  // The worked example the 2026-08-13 ruling was written against
+  // (docs/escalations/duplicate_rows_not_quarantined.md): a 12-row file with
+  // 5 new devices, 5 already in inventory, and 2 with a format problem. All
+  // three classes get a DIFFERENT fate, and only one of them is
+  // quarantined - the whole point of the ruling.
+  it('a mixed file adds the new rows, skips the duplicates with no trace in intake_exception, and quarantines only the format-invalid rows', async () => {
+    const manufacturerVndr = await seedVendor('MANUFACTURER')
+
+    // 5 pre-existing units, so 5 rows in the new file collide with real stock.
+    for (let i = 0; i < 5; i += 1) {
+      const uuid = toUuid(newId('unit'))
+      await db.$executeRaw`
+        INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, device_qr, sim_no, updated_at)
+        VALUES (${uuid}::uuid, 'SERIALIZED', 'SOUNDBOX', ${toUuid(manufacturerVndr)}::uuid, 'IN_STOCK', ${`900000000000${i}`}, '{}'::jsonb, ${`8991000000000000${i}00X`}, now())
+      `
+    }
+
+    const rows: string[][] = []
+    for (let i = 0; i < 5; i += 1) rows.push([`910000000000${i}`, `8991000000000001${i}00X`, `QR-new-${i}`]) // 5 new
+    for (let i = 0; i < 5; i += 1) rows.push([`900000000000${i}`, `8991000000000000${i}00X`, `QR-dup-${i}`]) // 5 already in inventory
+    rows.push(['', '8991000000000002000X', 'QR-bad-1']) // missing Device ID
+    rows.push(['910000000000X', '8991000000000002001X', 'QR-bad-2']) // malformed Device ID (letter)
+
+    const clientKey = randomUUID()
+    const res = await ingestOpsDeviceInventory(db, {
+      fileBytes: toCsv(rows),
+      filename: 'mixed.csv',
+      manufacturerVndrId: manufacturerVndr,
+      clientKey,
+      actorId: randomUUID(),
+      traceId: 'trace-mixed',
+    })
+
+    expect(res.deduped).toBe(false)
+    expect(res.accepted).toBe(5)
+    expect(res.flagged).toBe(5) // still REPORTED, per the ruling
+    expect(res.invalid).toBe(2)
+    expect(res.queuedForReview).toBe(2)
+
+    const unitCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM unit`
+    expect(Number(unitCount[0]!.n)).toBe(10) // 5 seeded + 5 newly created
+
+    const exceptions = await db.$queryRaw<{ reason_code: string }[]>`
+      SELECT reason_code FROM intake_exception ORDER BY reason_code
+    `
+    expect(exceptions.map((e) => e.reason_code).sort()).toEqual(['malformed_device_id', 'missing_device_id'])
+
+    const dupCount = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM intake_exception WHERE reason_code LIKE 'duplicate_%'
+    `
+    expect(Number(dupCount[0]!.n)).toBe(0)
   })
 
   // Fix round 1, Finding B: a malformed manufacturerVndrId must be a client

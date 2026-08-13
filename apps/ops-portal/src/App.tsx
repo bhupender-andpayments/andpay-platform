@@ -1,5 +1,6 @@
 import { BrowserRouter } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext.js'
+import { ToastProvider } from './ui/Toast.js'
 import { AppRoutes } from './routes.js'
 
 // The real app shell (Phase 7 task 3): AuthProvider wraps a real
@@ -13,9 +14,11 @@ import { AppRoutes } from './routes.js'
 export function App() {
   return (
     <AuthProvider>
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AppRoutes />
-      </BrowserRouter>
+      <ToastProvider>
+        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <AppRoutes />
+        </BrowserRouter>
+      </ToastProvider>
     </AuthProvider>
   )
 }

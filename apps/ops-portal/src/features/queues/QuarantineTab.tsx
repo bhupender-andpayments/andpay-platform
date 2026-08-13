@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { type GridColumn } from '../../ui/DataGrid.js'
+import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { Card, CardHeader, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
-import { fmtDateTime, shortId } from '../../ui/format.js'
-import { orDash, IncludeResolvedToggle } from './shared.js'
+import { Card, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { fmtDateTime, fmtRelative, shortId } from '../../ui/format.js'
+import { orDash } from './shared.js'
 import {
   getQuarantine,
   resolveQuarantine,
@@ -101,11 +102,19 @@ export function QuarantineTab() {
     }
   }
 
-  const columns: DataTableColumn<QuarantineRowView>[] = [
-    { key: 'id', header: 'ID', cell: (r) => <CodeChip>{shortId(r.id)}</CodeChip> },
-    { key: 'fileId', header: 'File ID', cell: (r) => r.fileId },
-    { key: 'rowNo', header: 'Row', cell: (r) => <span className="num">{r.rowNo}</span> },
-    { key: 'reasonCode', header: 'Reason', cell: (r) => <StatusPill value={r.reasonCode} /> },
+  const columns: GridColumn<QuarantineRowView>[] = [
+    {
+      key: 'rowNo',
+      header: 'Row',
+      sortValue: (r) => r.rowNo,
+      cell: (r) => (
+        <span className="min-w-0">
+          <span className="num block font-semibold text-foreground">{r.rowNo}</span>
+          <span className="block text-[11px] text-muted-foreground">{shortId(r.id)}</span>
+        </span>
+      ),
+    },
+    { key: 'reasonCode', header: 'Reason', sortValue: (r) => r.reasonCode, cell: (r) => <StatusPill value={r.reasonCode} /> },
     // Ruling 2026-08-10: a duplicate_vpa_soundbox hold NAMES the record it
     // collides with, so the operator can judge it from the queue instead of
     // going to look the VPA up. Every other reason carries no detail, so this
@@ -113,9 +122,10 @@ export function QuarantineTab() {
     {
       key: 'duplicateOf',
       header: 'Original',
+      sortValue: (r) => r.detail?.duplicateOf?.reference ?? '',
       cell: (r) => {
         const original = r.detail?.duplicateOf
-        if (original === undefined) return orDash(null)
+        if (original === undefined) return <span className="text-muted-foreground">-</span>
         return (
           <span>
             {original.reference}
@@ -124,9 +134,31 @@ export function QuarantineTab() {
         )
       },
     },
-    { key: 'createdAt', header: 'Created', cell: (r) => fmtDateTime(r.createdAt) },
-    { key: 'resolvedAt', header: 'Resolved', cell: (r) => fmtDateTime(r.resolvedAt) },
-    { key: 'resolvedByActor', header: 'Resolved by', cell: (r) => orDash(r.resolvedByActor) },
+    { key: 'fileId', header: 'File', sortValue: (r) => r.fileId, cell: (r) => <CodeChip>{shortId(r.fileId)}</CodeChip> },
+    {
+      key: 'createdAt',
+      header: 'Created',
+      sortValue: (r) => r.createdAt,
+      cell: (r) => (
+        <span title={fmtDateTime(r.createdAt)} className="text-muted-foreground">
+          {fmtRelative(r.createdAt)}
+        </span>
+      ),
+    },
+    {
+      key: 'resolvedAt',
+      header: 'Resolved',
+      sortValue: (r) => r.resolvedAt ?? '',
+      cell: (r) =>
+        r.resolvedAt === null ? (
+          <span className="text-muted-foreground">-</span>
+        ) : (
+          <span title={fmtDateTime(r.resolvedAt)}>
+            {fmtRelative(r.resolvedAt)}
+            <span className="block text-[11px] text-muted-foreground">{orDash(r.resolvedByActor)}</span>
+          </span>
+        ),
+    },
     {
       key: 'actions',
       header: 'Actions',
@@ -147,15 +179,17 @@ export function QuarantineTab() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader title="Quarantine" subtitle={`${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`} actions={<IncludeResolvedToggle checked={includeResolved} onChange={setIncludeResolved} />} />
-        {error !== null && (
-          <div className="p-4">
-            <ErrorNote>{error}</ErrorNote>
-          </div>
-        )}
-        <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No quarantined rows." />
-      </Card>
+      <QueueTable
+        title="Quarantine"
+        rows={rows}
+        columns={columns}
+        error={error}
+        emptyMessage="No quarantined rows."
+        includeResolved={includeResolved}
+        onIncludeResolvedChange={setIncludeResolved}
+        searchPlaceholder="Row, file or reason…"
+        searchText={(r) => `${r.rowNo} ${r.fileId} ${r.reasonCode} ${r.detail?.duplicateOf?.reference ?? ''}`}
+      />
 
       {resolvingId !== null && form !== null && (
         <Card className="p-5">

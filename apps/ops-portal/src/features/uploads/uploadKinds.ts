@@ -70,7 +70,12 @@ export const DEVICE_INVENTORY_COLUMNS = ['Device ID', 'Sim No', 'Device QR'] as 
 // The bank descriptor that used to open this list moved into the workflow
 // workspace (2026-08-11 ruling): it is now stages 1 and 2 of one continuous
 // lifecycle (features/workflow/workflowKinds.ts's STAGE_HELP), not a
-// standalone upload with its own choice card here.
+// standalone upload with its own choice card here. Device inventory moved out
+// on 2026-08-12 for the same reason in the other direction: the inventory
+// team owns its own insertion, so its upload lives INSIDE the Inventory
+// section (/inventory/upload) and is no longer a choice card here. Its
+// descriptor stays in this module (DEVICE_INVENTORY_KIND below) because the
+// page still renders the shared rail and helper cards.
 export const UPLOAD_KINDS: readonly UploadKind[] = [
   {
     slug: 'damage',
@@ -92,29 +97,37 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
       upload: 'Review and Commit unlock once the file previews cleanly.',
     },
   },
-  {
-    slug: 'device-inventory',
-    title: 'Device inventory',
-    source: 'From the manufacturer',
-    description: 'Devices received into stock, before anything can be printed or shipped.',
-    columns: DEVICE_INVENTORY_COLUMNS,
-    steps: [CHOOSE, UPLOAD, SUBMIT],
-    nextByStep: {
-      upload: ['Pick the manufacturer and drop the file.', 'Submit ingests the rows in one step; there is no separate preview for this file.'],
-      submit: ['Submitting writes the devices into stock.', 'Rows missing a required value are skipped and listed; duplicates land in the intake exceptions queue.'],
-    },
-    goodToKnow: [
-      ...SHARED_GOOD_TO_KNOW,
-      `Required columns: ${DEVICE_INVENTORY_COLUMNS.join(', ')}. Names are matched ignoring case and extra spaces.`,
-      'A missing column rejects the whole file; individual bad rows are skipped, not fatal.',
-    ],
-    guidanceByStep: {
-      upload: 'Submit unlocks once a manufacturer and a file are set.',
-    },
-  },
 ]
 
+// The device-inventory descriptor, addressed directly by its page at
+// /inventory/upload rather than through the UPLOAD_KINDS index. Its first
+// rail step is labelled "Inventory" because that is where the step now
+// navigates: back to the section that owns this flow, not to a central
+// chooser it no longer appears on.
+export const DEVICE_INVENTORY_KIND: UploadKind = {
+  slug: 'device-inventory',
+  title: 'Device inventory',
+  source: 'From the manufacturer',
+  description: 'Devices received into stock, before anything can be printed or shipped.',
+  columns: DEVICE_INVENTORY_COLUMNS,
+  steps: [{ key: 'choose', label: 'Inventory' }, UPLOAD, SUBMIT],
+  nextByStep: {
+    upload: ['Pick the manufacturer and drop the file.', 'Submit ingests the rows in one step; there is no separate preview for this file.'],
+    submit: ['Submitting writes the devices into stock.', 'Rows missing a required value are skipped and listed; duplicates land in the intake exceptions queue.'],
+  },
+  goodToKnow: [
+    ...SHARED_GOOD_TO_KNOW,
+    `Required columns: ${DEVICE_INVENTORY_COLUMNS.join(', ')}. Names are matched ignoring case and extra spaces.`,
+    'A missing column rejects the whole file; individual bad rows are skipped, not fatal.',
+    'A Device ID already in stock is never added twice; a repeated SIM number adds the device without its SIM.',
+  ],
+  guidanceByStep: {
+    upload: 'Submit unlocks once a manufacturer and a file are set.',
+  },
+}
+
 export function kindBySlug(slug: string): UploadKind | undefined {
+  if (slug === DEVICE_INVENTORY_KIND.slug) return DEVICE_INVENTORY_KIND
   return UPLOAD_KINDS.find((k) => k.slug === slug)
 }
 
