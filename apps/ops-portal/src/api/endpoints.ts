@@ -499,6 +499,12 @@ export interface PoolEntryRow extends BatchEntryRow {
   // asking the operator to type a tnnt_ and a prg_ from memory.
   tenantId: string
   programId: string
+  /**
+   * WHY a HELD entry was held (12 Aug 2026). Null on POOLED and BATCHED rows,
+   * and on a hold placed before the reason existed. Optional so an older server
+   * that predates the column still parses.
+   */
+  holdReason?: string | null
 }
 
 /** services/fulfillment/src/ops-read.ts BatchArtifactRow. */
@@ -1056,10 +1062,14 @@ export function recompose(c: Client, body: RecomposeBody, idempotencyKey: string
 
 // NO body: the edge route (apps/ops-edge/src/ops.controller.ts's `hold`)
 // takes only the `:asgnId` path param.
-export function holdRecord(c: Client, asgnId: string, idempotencyKey: string) {
+// 12 Aug 2026: the hold carries its reason, like the batch trigger does. The
+// edge rejects a blank one before it authorizes anything, so this is required
+// rather than optional.
+export function holdRecord(c: Client, asgnId: string, reason: string, idempotencyKey: string) {
   return c.request<{ deduped: boolean }>({
     method: 'POST',
     path: `/ops/records/${asgnId}/hold`,
+    body: { reason },
     idempotencyKey,
   })
 }

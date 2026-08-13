@@ -100,6 +100,13 @@ interface DamageCaseStatusBody {
 interface ActivateAssignmentBody {
   dispatchId: string
 }
+// 12 Aug 2026: a manual hold carries its reason, like the manual trigger below.
+// Free text, so it lands on the domain row (pending_pool_entry.hold_reason) and
+// never on the IDs-only 6e, the same posture as OverrideBody.overrideReason and
+// BatchTriggerBody.reason.
+interface HoldBody {
+  reason: string
+}
 interface BatchTriggerBody {
   tenantWire: string
   programWire: string
@@ -619,11 +626,23 @@ export class OpsController {
   async hold(
     @Req() req: EdgeRequest,
     @Param('asgnId') asgnId: string,
+    @Body() body: HoldBody,
     @Headers('idempotency-key') idem: string | undefined,
   ): Promise<{ deduped: boolean }> {
+    // Validated BEFORE this.gate, exactly as the batch-trigger reason is and for
+    // the same reason: a malformed request must never put an ALLOW on the hash
+    // chain for an action that then fails. The domain re-checks it, which is the
+    // guarantee that holds for every caller; this check is what produces the
+    // operator-facing 400.
+    const reason = typeof body?.reason === 'string' ? body.reason.trim() : ''
+    if (reason === '') throw new BadRequestException('reason is required')
+    if (reason.length > MAX_TRIGGER_REASON_LENGTH) {
+      throw new BadRequestException(`reason must be at most ${MAX_TRIGGER_REASON_LENGTH} characters`)
+    }
     const g = await this.gate(req, 'ops:record-hold', idem, [asgnId])
     const result = await holdRecord(this.deps.fulfillmentDb, {
       asgnId,
+      reason,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

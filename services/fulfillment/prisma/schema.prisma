@@ -167,6 +167,14 @@ model PendingPoolEntry {
   // HOLD never creates a Batch (critique fix). The tamper-evident 6e write is step 9.
   heldByActor         String?  @map("held_by_actor") @db.Uuid
   heldAt              DateTime? @map("held_at") @db.Timestamptz(6)
+  /// WHY the record was held (12 Aug 2026: "manual hold exists with reason +
+  /// audit"). Operator free text, so it lives on the domain row and never on
+  /// the co-committed 6e, which stays IDs and enum tokens only, exactly as
+  /// batch.trigger_note does under M4. Nullable: holds placed before this
+  /// column existed have no reason to backfill, and holdEntryWithinTx's
+  /// event-driven caller has no human behind it and legitimately holds without
+  /// one. Migration 20260812160000.
+  holdReason          String?  @map("hold_reason")
   // spec 08: the Fulfillment-owned dispatch state, advanced by the dispatch PM
   // (distinct from pool_status and from any TMS state, T2/T12).
   dispatchState       String?  @map("dispatch_state") // QR_GENERATED | SENT_TO_VENDOR | DISPATCHED_BY_VENDOR

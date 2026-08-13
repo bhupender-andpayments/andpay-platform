@@ -632,9 +632,33 @@ export async function recomposeArtifact(
  */
 export async function holdRecord(
   db: FulfillmentDb,
-  args: { asgnId: string; clientKey: string; actorId: string; traceId: string },
+  args: {
+    asgnId: string
+    // WHY the record is being held (12 Aug 2026: "manual hold exists with
+    // reason + audit"). REQUIRED here, exactly as manualBatch's own reason is,
+    // and for the same argument: a hold keeps a merchant's real order out of
+    // every batch for as long as it stands, and the reason is the whole point
+    // of auditing it. Stored on pending_pool_entry.hold_reason (the
+    // trigger_note precedent); deliberately NOT added to the ALLOW 6e below,
+    // which stays IDs-only (DD1).
+    reason: string
+    clientKey: string
+    actorId: string
+    traceId: string
+  },
 ): Promise<{ deduped: boolean }> {
   const asgnUuid = toUuid(args.asgnId)
+
+  // Validated BEFORE any transaction opens and before the target lookup, so a
+  // malformed request never touches the database, mirroring manualBatch. The
+  // length bound is the same number for the same reason: a size limit so a
+  // caller cannot write an unbounded string into the domain row, not a
+  // sanitiser.
+  const reason = args.reason.trim()
+  if (reason === '') throw new OpsClientError('invalid', 'hold reason required')
+  if (reason.length > MAX_TRIGGER_NOTE_LENGTH) {
+    throw new OpsClientError('invalid', `hold reason must be at most ${MAX_TRIGGER_NOTE_LENGTH} characters`)
+  }
 
   const ran = await db.$transaction(async (tx: Tx) => {
     const rows = await tx.$queryRaw<{ program_id: string }[]>`
@@ -644,7 +668,7 @@ export async function holdRecord(
     await enterWriteScope(tx, 'fulfillment_write', rows[0]!.program_id)
 
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:record-hold'), async () => {
-      await holdEntryWithinTx(tx, args.asgnId, { operatorId: args.actorId })
+      await holdEntryWithinTx(tx, args.asgnId, { operatorId: args.actorId }, reason)
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the hold.
       await enqueue(
         tx,
@@ -760,11 +784,18 @@ export async function releaseRecord(
  */
 type ManualBatchResult = { btchId: string; unitCount: number } | null
 
-// BRD 5.3.4: the cap on the force-dispatch reason. 500 characters is the same
-// order as any other operator note field and exists so a paste of a whole email
-// thread (or a script) cannot write an unbounded string into the domain row. The
-// reason is stored, never interpolated into SQL (it rides as a bound parameter)
-// and never logged, so this is a size bound, not a sanitiser.
+// BRD 5.3.4: the cap on the force-dispatch reason, and since 12 Aug 2026 on the
+// manual-HOLD reason too (holdRecord above), which is deliberately the same
+// number: both are operator free text on a domain row and there is no argument
+// for two different limits. 500 characters is the same order as any other
+// operator note field and exists so a paste of a whole email thread (or a
+// script) cannot write an unbounded string into the domain row. The reason is
+// stored, never interpolated into SQL (it rides as a bound parameter) and never
+// logged, so this is a size bound, not a sanitiser.
+//
+// Declared below its first caller on purpose: it sits with manualBatch, whose
+// BRD requirement introduced it. A const is fully initialised before any of
+// these exported functions can be invoked, so the earlier reference is safe.
 const MAX_TRIGGER_NOTE_LENGTH = 500
 
 export async function manualBatch(

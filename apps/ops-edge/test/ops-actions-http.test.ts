@@ -556,8 +556,29 @@ describe('ops-edge actions: domain client-errors map to 4xx via the OpsErrorFilt
       .post(`/ops/records/${newId('asgn')}/hold`)
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
-      .send({})
+      // A reason is required since 12 Aug 2026, so this fixture carries one:
+      // without it the request would 400 on the reason and never reach the
+      // not-found path this test is about.
+      .send({ reason: 'holding pending a bank correction' })
     expect(res.status).toBe(404)
+  })
+
+  // 12 Aug 2026: "manual hold exists with reason + audit". The reason is
+  // validated BEFORE the gate, exactly as the batch-trigger reason is, so a
+  // malformed request never puts an ALLOW on the hash chain for an action that
+  // then fails.
+  it('POST hold with NO reason -> 400 and NO 6e, before any authorization decision', async () => {
+    const token = await mint({})
+    const before = (await rawAuditRows()).length
+    for (const body of [{}, { reason: '' }, { reason: '   ' }, { reason: 'x'.repeat(501) }]) {
+      const res = await request(app.getHttpServer())
+        .post(`/ops/records/${newId('asgn')}/hold`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send(body)
+      expect(res.status).toBe(400)
+    }
+    expect((await rawAuditRows()).length).toBe(before)
   })
 
   it('POST release with a non-existent asgnId (fresh AAL2) -> 404, not 500', async () => {

@@ -609,6 +609,13 @@ export interface PoolEntryRow extends BatchEntryRow {
   // ids rather than PII, so the D104 default-exclude posture is unchanged.
   tenantId: string
   programId: string
+  /**
+   * WHY a HELD entry was held (12 Aug 2026). Null on every POOLED or BATCHED
+   * row, and also null on a hold placed before the column existed or by the
+   * event-driven consumer, which has no human behind it. Operator free text, so
+   * it is shown to operators and never put on a fact or an audit record.
+   */
+  holdReason: string | null
 }
 
 interface PoolEntryDbRow extends BatchEntryDbRow {
@@ -616,6 +623,7 @@ interface PoolEntryDbRow extends BatchEntryDbRow {
   created_at: Date
   tenant_id: string
   program_id: string
+  hold_reason: string | null
 }
 
 function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
@@ -625,6 +633,7 @@ function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
     createdAt: r.created_at,
     tenantId: fromUuid('tnnt', r.tenant_id),
     programId: fromUuid('prog', r.program_id),
+    holdReason: r.hold_reason,
   }
 }
 
@@ -633,7 +642,8 @@ const POOL_ENTRY_COLUMNS = `asgn_id::text AS asgn_id, merchant_display_name, mer
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
              dispatch_group,
              batch::text AS batch, created_at,
-             tenant_id::text AS tenant_id, program_id::text AS program_id`
+             tenant_id::text AS tenant_id, program_id::text AS program_id,
+             hold_reason`
 
 export async function listPoolEntries(
   db: FulfillmentDb,

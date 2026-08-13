@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import { manualTrigger, holdEntry, onDemandAccrued } from '../src/batching.js'
+import { holdRecord } from '../src/ops.js'
+import { listPoolEntries } from '../src/ops-read.js'
 import { poolConfig } from '../src/config/pool-config.js'
 
 const url =
@@ -208,6 +210,81 @@ describe('holdEntry (record-HOLD, check 3d)', () => {
       const row = allEntries.find((r) => r.asgn_id === o.asgnUuid)
       expect(row?.pool_status).toBe('BATCHED')
     }
+  })
+
+  // 12 Aug 2026: "manual hold exists with reason + audit". The trigger got its
+  // reason under M4; hold recorded only who and when, so an operator arriving at
+  // a HELD row could see who stopped it and never why.
+  describe('the hold reason', () => {
+    it('holdRecord stores the trimmed reason on the row and the ops read projects it', async () => {
+      const tenantUuid = toUuid(newId('tnnt'))
+      const programUuid = toUuid(newId('prog'))
+      const entry = await seedPooled(tenantUuid, programUuid, 'trace-hold-reason', BASE)
+
+      await holdRecord(db, {
+        asgnId: entry.asgnWire,
+        reason: '   awaiting a corrected ship-to from the bank   ',
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-hold-reason',
+      })
+
+      const row = await db.$queryRaw<{ pool_status: string; hold_reason: string | null }[]>`
+        SELECT pool_status, hold_reason FROM pending_pool_entry WHERE asgn_id = ${entry.asgnUuid}::uuid
+      `
+      expect(row[0]!.pool_status).toBe('HELD')
+      expect(row[0]!.hold_reason).toBe('awaiting a corrected ship-to from the bank')
+
+      const pool = await listPoolEntries(db, { poolStatus: 'HELD' })
+      const projected = pool.find((p) => p.asgnId === entry.asgnWire)
+      expect(projected?.holdReason).toBe('awaiting a corrected ship-to from the bank')
+    })
+
+    it('rejects a blank or oversized reason BEFORE any write, so the row stays POOLED', async () => {
+      const tenantUuid = toUuid(newId('tnnt'))
+      const programUuid = toUuid(newId('prog'))
+      const entry = await seedPooled(tenantUuid, programUuid, 'trace-hold-bad', BASE)
+
+      for (const reason of ['', '   ', 'x'.repeat(501)]) {
+        await expect(
+          holdRecord(db, {
+            asgnId: entry.asgnWire,
+            reason,
+            clientKey: randomUUID(),
+            actorId: randomUUID(),
+            traceId: 't-hold-bad',
+          }),
+        ).rejects.toMatchObject({ kind: 'invalid' })
+      }
+
+      const row = await db.$queryRaw<{ pool_status: string; hold_reason: string | null }[]>`
+        SELECT pool_status, hold_reason FROM pending_pool_entry WHERE asgn_id = ${entry.asgnUuid}::uuid
+      `
+      expect(row[0]!.pool_status).toBe('POOLED') // never held
+      expect(row[0]!.hold_reason).toBeNull()
+      // A rejected request must not have burned an idempotency slot or an audit
+      // record either: the validation runs before any transaction opens.
+      const audit = await db.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM outbox WHERE event_type = 'authz.audit'
+      `
+      expect(Number(audit[0]!.n)).toBe(0)
+    })
+
+    it('the event-driven caller still holds with NO reason, which is a meaning not an omission', async () => {
+      // holdEntry's other caller is a fact consumer with no human behind it.
+      // Requiring a reason there would force an invented one onto the row.
+      const tenantUuid = toUuid(newId('tnnt'))
+      const programUuid = toUuid(newId('prog'))
+      const entry = await seedPooled(tenantUuid, programUuid, 'trace-hold-auto', BASE)
+
+      await holdEntry(db, entry.asgnWire, { operatorId: randomUUID() })
+
+      const row = await db.$queryRaw<{ pool_status: string; hold_reason: string | null }[]>`
+        SELECT pool_status, hold_reason FROM pending_pool_entry WHERE asgn_id = ${entry.asgnUuid}::uuid
+      `
+      expect(row[0]!.pool_status).toBe('HELD')
+      expect(row[0]!.hold_reason).toBeNull()
+    })
   })
 
   it('a BATCHED entry is untouched (the AND pool_status=POOLED guard)', async () => {

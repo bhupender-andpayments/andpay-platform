@@ -1,0 +1,43 @@
+-- A manual HOLD records why, not just who.
+--
+-- WHY. The 12 Aug 2026 walkthrough states the trigger rules as "Manual
+-- force-trigger and manual hold exist (with reason + audit)". The manual
+-- TRIGGER got exactly that under M4 (batch.trigger_note, 2026-08-10). Hold did
+-- not, and the asymmetry is not defensible on its own terms: holding a record
+-- keeps a merchant's real order out of every batch for as long as the hold
+-- stands, which is at least as consequential as forcing one early, and the
+-- record carried only held_by_actor and held_at. An operator arriving at a HELD
+-- row could see who stopped it and when, and never why.
+--
+-- WHERE THE TEXT LIVES, and this follows M4's own ruling rather than inventing
+-- a posture: operator free text goes on the DOMAIN ROW and never on the audit
+-- record. The co-committed 6e stays IDs and enum tokens only (S7/S10.5, DD1),
+-- exactly as it does for the trigger note and for
+-- shpt_status_event.override_reason. It is stored as a bound parameter, never
+-- interpolated, and never logged, and the length bound in ops.ts is a size
+-- limit rather than a sanitiser.
+--
+-- Nullable, and it stays nullable. Two reasons, both real: every hold placed
+-- before this column existed has no reason to backfill, and inventing one would
+-- put words in an operator's mouth; and holdEntryWithinTx's OTHER caller is an
+-- event-driven fact consumer with no human behind it, which legitimately holds
+-- with no reason at all. NULL therefore means "no operator reason recorded",
+-- which is the truth in both cases.
+--
+-- RELEASE deliberately gets no such column here. The walkthrough names a reason
+-- for the hold, and a release returns the record to the ordinary pool rather
+-- than removing it from one, so there is no equivalent claim to justify.
+-- Adding one speculatively would be inventing a requirement.
+--
+-- NO GRANT IS NEEDED, checked rather than assumed (same reasoning as
+-- 20260810120000). This schema has no ALTER DEFAULT PRIVILEGES, so a newly READ
+-- table needs its own grant, but a new COLUMN on an already-granted table does
+-- not: every grant reaching pending_pool_entry is TABLE-level.
+--   * fulfillment_write: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
+--     IN SCHEMA fulfillment (20260727000100).
+--   * fulfillment_read, fulfillment_ops_read, fulfillment_vendor_read: table
+--     level GRANT SELECT on fulfillment.pending_pool_entry (20260727000200,
+--     20260727010000, 20260803140000).
+-- Additive only (S23 expand-contract): one nullable column, no DROP, no ALTER
+-- of an existing column, no RLS change, no money surface.
+ALTER TABLE "pending_pool_entry" ADD COLUMN IF NOT EXISTS "hold_reason" text;

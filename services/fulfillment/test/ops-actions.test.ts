@@ -286,7 +286,7 @@ describe('holdRecord / releaseRecord (spec 10c Task 7)', () => {
     const { asgnWire, asgnUuid } = await seedPooled(tenantUuid, programUuid)
     const actorId = randomUUID()
 
-    const holdRes = await holdRecord(db, { asgnId: asgnWire, clientKey: randomUUID(), actorId, traceId: 't5' })
+    const holdRes = await holdRecord(db, { asgnId: asgnWire, reason: 'held for the round-trip test', clientKey: randomUUID(), actorId, traceId: 't5' })
     expect(holdRes.deduped).toBe(false)
 
     const held = await poolEntryRow(asgnUuid)
@@ -329,7 +329,7 @@ describe('holdRecord / releaseRecord (spec 10c Task 7)', () => {
     const programUuid = toUuid(newId('prog'))
     const { asgnWire } = await seedPooled(tenantUuid, programUuid)
     const clientKey = randomUUID()
-    const args = { asgnId: asgnWire, clientKey, actorId: randomUUID(), traceId: 't8' }
+    const args = { asgnId: asgnWire, reason: 'held for the replay test', clientKey, actorId: randomUUID(), traceId: 't8' }
 
     const first = await holdRecord(db, args)
     expect(first.deduped).toBe(false)
@@ -341,7 +341,7 @@ describe('holdRecord / releaseRecord (spec 10c Task 7)', () => {
     const tenantUuid = toUuid(newId('tnnt'))
     const programUuid = toUuid(newId('prog'))
     const { asgnWire, asgnUuid } = await seedPooled(tenantUuid, programUuid)
-    await holdRecord(db, { asgnId: asgnWire, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't9' })
+    await holdRecord(db, { asgnId: asgnWire, reason: 'held before release', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't9' })
 
     const clientKey = randomUUID()
     const args = { asgnId: asgnWire, clientKey, actorId: randomUUID(), traceId: 't10' }

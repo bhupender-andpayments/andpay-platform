@@ -603,7 +603,18 @@ export async function manualTrigger(
  */
 // Injected-tx variant (spec 10c Task 4): the current body verbatim minus the
 // db.$transaction wrapper. holdEntry (below) delegates to this.
-export async function holdEntryWithinTx(tx: Tx, asgnIdWire: string, actor: OpsActor): Promise<void> {
+export async function holdEntryWithinTx(
+  tx: Tx,
+  asgnIdWire: string,
+  actor: OpsActor,
+  // WHY this hold was placed (12 Aug 2026). Optional, and its absence is a
+  // meaning rather than an omission: the ops path REQUIRES it (holdRecord
+  // validates before any transaction opens), while this function's other
+  // caller is an event-driven fact consumer with no human behind it, which
+  // legitimately holds with no reason. Undefined stores NULL, which reads as
+  // "no operator reason recorded" either way.
+  reason?: string,
+): Promise<void> {
   const asgnUuid = toUuid(asgnIdWire)
 
   const rows = await tx.$queryRaw<{ program_id: string }[]>`
@@ -613,9 +624,13 @@ export async function holdEntryWithinTx(tx: Tx, asgnIdWire: string, actor: OpsAc
 
   await setProgramContext(tx, rows[0]!.program_id)
 
+  // The reason rides as a BOUND parameter, never interpolated, and is never
+  // logged: it is operator free text on a domain row, the same posture as
+  // batch.trigger_note.
   await tx.$executeRaw`
     UPDATE pending_pool_entry
-    SET pool_status = 'HELD', held_by_actor = ${actor.operatorId}::uuid, held_at = now(), updated_at = now()
+    SET pool_status = 'HELD', held_by_actor = ${actor.operatorId}::uuid, held_at = now(),
+        hold_reason = ${reason ?? null}, updated_at = now()
     WHERE asgn_id = ${asgnUuid}::uuid AND pool_status = 'POOLED'
   `
 }

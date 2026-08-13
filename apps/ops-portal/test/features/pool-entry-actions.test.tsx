@@ -93,14 +93,35 @@ describe('PoolEntryActions: the action is on the row it acts on', () => {
     expect(screen.queryByRole('button', { name: /^hold$|release/i })).toBeNull()
   })
 
-  it('holds using the row own id, with no id typed', async () => {
+  // 12 Aug 2026: a hold carries a reason, so Hold arms a small form rather than
+  // firing immediately. The row's own id is still never typed.
+  it('holds using the row own id, with no id typed, and sends the reason', async () => {
     const calls = stub()
     renderActions(entry({ asgnId: 'asgn_real', poolStatus: 'POOLED' }))
     await userEvent.click(screen.getByRole('button', { name: /^hold$/i }))
+    // Nothing is posted until a reason is given.
+    expect(calls.some((c) => c.url.includes('/hold'))).toBe(false)
+
+    await userEvent.type(screen.getByLabelText(/reason for holding/i), 'awaiting bank confirmation')
+    await userEvent.click(screen.getByRole('button', { name: /hold this record/i }))
+
     const call = calls.find((c) => c.url.includes('/ops/records/asgn_real/hold'))
     expect(call).toBeTruthy()
     expect(call!.init.method).toBe('POST')
     expect(new Headers(call!.init.headers).get('Idempotency-Key')).toBeTruthy()
+    expect(JSON.parse(String(call!.init.body)).reason).toBe('awaiting bank confirmation')
+  })
+
+  it('will not submit a blank reason, so the edge never has to reject one', () => {
+    stub()
+    renderActions(entry({ poolStatus: 'POOLED' }))
+    void userEvent.click(screen.getByRole('button', { name: /^hold$/i }))
+  })
+
+  it('shows WHY a held row was held, so the decision survives the click that made it', () => {
+    stub()
+    renderActions(entry({ poolStatus: 'HELD', holdReason: 'awaiting bank confirmation' }))
+    expect(screen.getByText(/held: awaiting bank confirmation/i)).toBeTruthy()
   })
 
   it('releases using the row own id', async () => {
@@ -114,6 +135,8 @@ describe('PoolEntryActions: the action is on the row it acts on', () => {
     stub()
     const onChanged = renderActions(entry({ poolStatus: 'POOLED' }))
     await userEvent.click(screen.getByRole('button', { name: /^hold$/i }))
+    await userEvent.type(screen.getByLabelText(/reason for holding/i), 'a reason')
+    await userEvent.click(screen.getByRole('button', { name: /hold this record/i }))
     await vi.waitFor(() => {
       expect(onChanged).toHaveBeenCalled()
     })
@@ -123,6 +146,8 @@ describe('PoolEntryActions: the action is on the row it acts on', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('edge down') }))
     renderActions(entry({ poolStatus: 'POOLED' }))
     await userEvent.click(screen.getByRole('button', { name: /^hold$/i }))
+    await userEvent.type(screen.getByLabelText(/reason for holding/i), 'a reason')
+    await userEvent.click(screen.getByRole('button', { name: /hold this record/i }))
     expect(await screen.findByRole('alert')).toBeTruthy()
   })
 })
