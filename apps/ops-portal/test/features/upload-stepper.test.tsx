@@ -41,10 +41,17 @@ describe('uploadKinds: the step honesty rules', () => {
     }
   })
 
-  it('states columns ONLY for device inventory', () => {
-    for (const kind of UPLOAD_KINDS) {
-      if (kind.slug === 'device-inventory') expect(kind.columns).toBeDefined()
-      else expect(kind.columns).toBeUndefined()
-    }
+  it('courier status has NO review step and ends in Submit', () => {
+    expect(kindBySlug('courier-status')!.steps.map((s) => s.key)).toEqual(['choose', 'upload', 'submit'])
+  })
+
+  // The rule is NOT "device inventory is special", it is "state columns only
+  // where the portal shares a real constant with the parser". Device inventory
+  // and courier status both do; bank and damage resolve their layout by source
+  // profile at ingest, so listing columns for those would invent a contract the
+  // portal cannot check.
+  it('states columns ONLY where the portal shares a real constant with the parser', () => {
+    const withColumns = UPLOAD_KINDS.filter((k) => k.columns !== undefined).map((k) => k.slug)
+    expect(withColumns.sort()).toEqual(['courier-status', 'device-inventory'])
   })
 })

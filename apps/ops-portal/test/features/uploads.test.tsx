@@ -6,6 +6,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { DamageUploadPage } from '../../src/features/uploads/DamageUploadPage.js'
 import { DeviceInventoryUploadPage } from '../../src/features/uploads/DeviceInventoryUploadPage.js'
+import { CourierStatusUploadPage } from '../../src/features/uploads/CourierStatusUploadPage.js'
 import { UploadsPage } from '../../src/features/uploads/UploadsPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
@@ -112,6 +113,31 @@ const MANUFACTURERS = [
     updatedAt: '2026-07-02T00:00:00.000Z',
   },
 ]
+
+// D-17 (T5.1). The two vendor types are seeded together so the courier select
+// can be asserted to filter, exactly as the manufacturer select is.
+const COURIERS = [
+  {
+    id: 'vndr_cour1',
+    type: 'COURIER',
+    displayName: 'Blue Dart',
+    status: 'ACTIVE',
+    courierCode: 'BD',
+    createdAt: '2026-07-01T00:00:00.000Z',
+    updatedAt: '2026-07-02T00:00:00.000Z',
+  },
+  ...MANUFACTURERS,
+]
+
+const COURIER_STATUS_RESULT = {
+  fileId: 'file-9',
+  advanced: 3,
+  trailOnly: 1,
+  quarantined: 2,
+  invalid: 1,
+  invalidRows: [{ rowNo: 5, errors: ['unparseable_status_date'] }],
+  deduped: false,
+}
 
 const DEVICE_INVENTORY_RESULT = {
   fileId: 'file-3',
@@ -383,6 +409,91 @@ describe('uploads', () => {
     expect(screen.getByText('Missing Device Id')).toBeTruthy()
     const rowCell = screen.getByText('4')
     expect(rowCell).toBeTruthy()
+  })
+
+  // D-17 (T5.1): the fourth upload surface. The courier emails a spreadsheet
+  // every morning and no vendor credential can authenticate an inbox.
+  it('courier status: Continue needs BOTH a file and a courier, and Submit posts the named courier', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init })
+        if (url.includes('/ops/vendors')) return jsonResponse(COURIERS)
+        if (url.includes('/ops/uploads/courier-status')) return jsonResponse(COURIER_STATUS_RESULT)
+        return jsonResponse({})
+      }),
+    )
+
+    renderWithProviders(<CourierStatusUploadPage />)
+
+    // Sourced from the REAL vendor read, filtered to COURIER: a manufacturer
+    // must never be offerable as the sender of a status file.
+    const select = (await screen.findByLabelText(/^courier$/i)) as HTMLSelectElement
+    expect(within(select).getByText('Blue Dart')).toBeTruthy()
+    expect(within(select).queryByText('Acme Devices')).toBeNull()
+
+    const continueButton = screen.getByRole('button', { name: /continue to submit/i }) as HTMLButtonElement
+    expect(continueButton.disabled).toBe(true)
+
+    const input = screen.getByLabelText(/courier status file/i) as HTMLInputElement
+    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'morning.csv'))
+    expect(continueButton.disabled).toBe(true)
+    expect(calls.some((c) => c.url.includes('/ops/uploads/courier-status'))).toBe(false)
+
+    await userEvent.selectOptions(select, 'vndr_cour1')
+    expect(continueButton.disabled).toBe(false)
+    await userEvent.click(continueButton)
+
+    const submitButton = (await screen.findByRole('button', { name: /upload courier status file/i })) as HTMLButtonElement
+    expect(calls.some((c) => c.url.includes('/ops/uploads/courier-status'))).toBe(false)
+    await userEvent.click(submitButton)
+
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/uploads/courier-status'))).toBe(true)
+    })
+    const uploadCall = calls.find((c) => c.url.includes('/ops/uploads/courier-status'))!
+    expect(headerValue(uploadCall, 'Idempotency-Key')).toBeTruthy()
+    const form = uploadCall.init.body as FormData
+    expect(form.get('courierVndrId')).toBe('vndr_cour1')
+  })
+
+  it('courier status: the four outcomes are reported separately, because each is a different next action', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/vendors')) return jsonResponse(COURIERS)
+        if (url.includes('/ops/uploads/courier-status')) return jsonResponse(COURIER_STATUS_RESULT)
+        return jsonResponse({})
+      }),
+    )
+
+    renderWithProviders(<CourierStatusUploadPage />)
+    const select = (await screen.findByLabelText(/^courier$/i)) as HTMLSelectElement
+    await userEvent.upload(screen.getByLabelText(/courier status file/i), makeFile('x', 'morning.csv'))
+    await userEvent.selectOptions(select, 'vndr_cour1')
+    await userEvent.click(screen.getByRole('button', { name: /continue to submit/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /upload courier status file/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Moved forward')).toBeTruthy()
+    })
+    // Read off each label's own value, never a bare number match: three of the
+    // four counts here would collide with a digit somewhere else on the page.
+    const valueOf = (label: string): string | null =>
+      (screen.getByText(label).nextElementSibling as HTMLElement).textContent
+    expect(valueOf('Moved forward')).toBe('3')
+    expect(valueOf('Recorded only')).toBe('1')
+    expect(valueOf('Held for review')).toBe('2')
+    expect(valueOf('Rejected rows')).toBe('1')
+
+    // A held row is not fixed by re-uploading, and the page says where it IS
+    // fixed rather than leaving an operator to guess. The helper card below the
+    // form says the same thing, hence getAll.
+    expect(screen.getAllByText(/exceptions queue/i).length).toBeGreaterThan(0)
+    // The row the FILE got wrong is named with its row number and its reason.
+    expect(screen.getByText('5')).toBeTruthy()
+    expect(screen.getByText('Unparseable Status Date')).toBeTruthy()
   })
 
   it('device inventory upload: a file over 5 MB is rejected client-side and never posted', async () => {

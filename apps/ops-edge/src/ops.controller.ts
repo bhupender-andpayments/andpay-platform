@@ -35,8 +35,10 @@ import {
   upsertBatchingConfig,
   setVendorPrintLayout,
   ingestOpsDeviceInventory,
+  ingestOpsCourierStatus,
   type IntakeSheet,
   type OpsDeviceInventoryResult,
+  type OpsCourierStatusResult,
 } from '@andpay/fulfillment-service'
 import {
   previewBankFile,
@@ -250,6 +252,15 @@ interface BankTemplateMasterUploadBody {
 // it server-side (type='MANUFACTURER') before any write.
 interface DeviceInventoryUploadBody {
   manufacturerVndrId: string
+}
+// D-17 (T5.1): the courier-status upload's non-file field. courierVndrId is the
+// same kind of VALIDATED BODY REFERENCE as manufacturerVndrId above and for the
+// same reason: an ops principal carries no vendor scope, the file arrived by
+// email with the courier's name on it rather than with its credential, and the
+// fulfillment service checks server-side that the id is a COURIER before any
+// write. Naming the wrong courier quarantines every row, never moves a parcel.
+interface CourierStatusUploadBody {
+  courierVndrId: string
 }
 
 interface ResolveQuarantineBody {
@@ -549,6 +560,34 @@ export class OpsController {
       fileBytes: file.buffer,
       filename: file.originalname,
       manufacturerVndrId: body.manufacturerVndrId,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // D-17 (T5.1, 13 Aug 2026): the courier's morning status file, uploaded by
+  // ops. The walkthrough's Phase-1 courier story is an emailed spreadsheet, and
+  // the existing batch path is JSON on a vendor-credentialed route, which no
+  // inbox can authenticate. Same multipart/gate/re-parse posture as the
+  // device-inventory upload: the SERVER re-parses the bytes and validates the
+  // courier reference inside the fulfillment service, never trusting
+  // client-sent rows.
+  @Post('uploads/courier-status')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async uploadCourierStatus(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+    @Body() body: CourierStatusUploadBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<OpsCourierStatusResult> {
+    const g = await this.gate(req, 'ops:upload-courier-status', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+    return ingestOpsCourierStatus(this.deps.fulfillmentDb, {
+      fileBytes: file.buffer,
+      filename: file.originalname,
+      courierVndrId: body.courierVndrId,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

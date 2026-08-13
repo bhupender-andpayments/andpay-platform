@@ -70,6 +70,12 @@ const SHARED_GOOD_TO_KNOW = [
 // import order.
 export const DEVICE_INVENTORY_COLUMNS = ['Device ID'] as const
 
+// D-17 (T5.1): all three are REQUIRED, unlike the device-inventory sheet's one.
+// There is no useful partial row here: a status update with no AWB names
+// nothing, one with no status says nothing, and one with no date cannot be
+// ordered against the updates around it.
+export const COURIER_STATUS_COLUMNS = ['AWB', 'Status', 'Status Date'] as const
+
 // The bank descriptor that used to open this list moved into the workflow
 // workspace (2026-08-11 ruling): it is now stages 1 and 2 of one continuous
 // lifecycle (features/workflow/workflowKinds.ts's STAGE_HELP), not a
@@ -114,6 +120,30 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
     ],
     guidanceByStep: {
       upload: 'Submit unlocks once a manufacturer and a file are set.',
+    },
+  },
+  {
+    slug: 'courier-status',
+    title: 'Courier status',
+    source: 'From the courier, usually each morning',
+    description: 'Delivery progress for parcels already dispatched. Each row moves one AWB along the delivery ladder.',
+    columns: COURIER_STATUS_COLUMNS,
+    steps: [CHOOSE, UPLOAD, SUBMIT],
+    nextByStep: {
+      upload: ['Pick the courier the file came from and drop it.', 'Submit applies the rows in one step; there is no separate preview for this file.'],
+      submit: [
+        'Submitting moves each parcel the file names along the delivery ladder.',
+        'Rows the file got wrong are listed here; rows we could not apply land in the exceptions queue.',
+      ],
+    },
+    goodToKnow: [
+      ...SHARED_GOOD_TO_KNOW,
+      `Required columns: ${COURIER_STATUS_COLUMNS.join(', ')}. Names are matched ignoring case and extra spaces.`,
+      'Dates must be YYYY-MM-DD. A day/month date is refused rather than guessed at, because the two readings are indistinguishable for most of every month.',
+      'Naming the wrong courier moves nothing: every row is held instead, so a mistake here costs an upload, never a parcel.',
+    ],
+    guidanceByStep: {
+      upload: 'Submit unlocks once a courier and a file are set.',
     },
   },
 ]

@@ -70,12 +70,17 @@ describe('Uploads step 1: two equal choices, none preselected', () => {
     expect(screen.getByText(/from the manufacturer/i)).toBeTruthy()
   })
 
-  it('states the device inventory required column up front, and no other columns', () => {
+  it('states the required columns up front for the two kinds that can name them', () => {
     renderAt('/uploads')
-    // Device ID is the only required column since the 12 Aug 2026 walkthrough
-    // (Workflow A frozen rule); Sim No and Device QR are optional.
-    expect(screen.getByText(/required columns:/i).textContent).toMatch(/required columns: device id$/i)
-    expect(screen.getAllByText(/required columns/i).length).toBe(1)
+    // Device ID is device inventory's only required column since the 12 Aug 2026
+    // walkthrough (Workflow A frozen rule); Sim No and Device QR are optional.
+    // Courier status requires all three of its own, because there is no useful
+    // partial row there. Bank and damage name none: their layout is resolved by
+    // source profile at ingest, so the portal has no constant to state.
+    const stated = screen.getAllByText(/required columns:/i).map((el) => el.textContent)
+    expect(stated).toHaveLength(2)
+    expect(stated.some((t) => /required columns: device id$/i.test(t ?? ''))).toBe(true)
+    expect(stated.some((t) => /required columns: awb, status, status date$/i.test(t ?? ''))).toBe(true)
   })
 })
 

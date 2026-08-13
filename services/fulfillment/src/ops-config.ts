@@ -93,6 +93,12 @@ const OPS_PERMISSIONS = [
   // close-quarantine has one: "I sent this to the CWD" and "the CWD confirmed
   // it" are different claims, and the co-committed 6e carries the operation.
   'ops:request-activation',
+  // D-17 (T5.1, 13 Aug 2026): the courier emails its morning status file and an
+  // operator uploads it. Its own permission rather than reuse of
+  // ops:upload-device-inventory, because the two uploads move different things
+  // and an operator entitled to load stock is not thereby entitled to move
+  // parcels through the delivery ladder.
+  'ops:upload-courier-status',
 ]
 
 // Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role permission differentiation.

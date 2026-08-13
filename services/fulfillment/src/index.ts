@@ -95,6 +95,17 @@ export {
   type StatusRow,
   type StatusFileResult,
 } from './status-file.js'
+export { ingestOpsCourierStatus, type OpsCourierStatusResult } from './ops-courier-status.js'
+export {
+  parseCourierStatusFile,
+  type CourierStatusFileRow,
+  type CourierStatusRowError,
+  type CourierStatusRowErrorCode,
+  type CourierStatusStructuralError,
+  type CourierStatusStructuralErrorCode,
+  type CourierStatusParseResult,
+} from './courier-status-adapter.js'
+export { parseSheetGrid, headerIndexer, type SheetGrid, type SheetGridError } from './sheet-grid.js'
 export {
   ingestStatusWebhook,
   passthroughMapper,

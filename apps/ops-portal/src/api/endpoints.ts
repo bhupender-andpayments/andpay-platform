@@ -1008,6 +1008,34 @@ export function commitDeviceInventory(
   })
 }
 
+// D-17 (T5.1): the courier's morning status file, uploaded by ops.
+//
+// The result splits two kinds of failure that an operator fixes differently.
+// `invalid` rows are ones the FILE got wrong (a blank AWB, an unreadable date):
+// they never reached the delivery rail and are fixed by correcting the file.
+// `quarantined` rows DID reach it and were held there (an AWB we do not know,
+// the wrong courier): they are worked from the exceptions queue.
+export interface CourierStatusUploadResult {
+  fileId: string
+  advanced: number
+  trailOnly: number
+  quarantined: number
+  invalid: number
+  invalidRows: { rowNo: number; errors: string[] }[]
+  deduped: boolean
+}
+
+export function commitCourierStatus(
+  c: Client,
+  file: File,
+  courierVndrId: string,
+  idempotencyKey: string,
+): Promise<CourierStatusUploadResult> {
+  return postFile<CourierStatusUploadResult>(c, '/ops/uploads/courier-status', file, idempotencyKey, {
+    courierVndrId,
+  })
+}
+
 // -----------------------------------------------------------------------
 // Operational actions (Task 14). The confirmed ops-edge contract
 // (apps/ops-edge/src/ops.controller.ts): four gated writes (Idempotency-Key
