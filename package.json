@@ -12,6 +12,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run --typecheck",
     "build": "pnpm -r build",
+    "demo": "bash ./scripts/demo.sh",
+    "demo:reseed": "bash ./scripts/demo.sh --reseed",
     "dev:up": "docker compose -f infra/docker-compose.dev.yml up -d --wait",
     "dev:down": "docker compose -f infra/docker-compose.dev.yml down",
     "db:up": "docker compose -f infra/docker-compose.dev.yml up -d --wait",

@@ -1014,6 +1014,27 @@ extend corpus-recorded rulings must ride the next corpus submission (pattern:
     report carry the ICCID, and if so under what grant, to which roles, and with what treatment
     on the CSV export? Until then the report carries Device IDs, which it already does.
 
+    ANSWERED 13 Aug 2026 BY ANOTHER BRANCH, and taken on merge. The inventory-ownership work
+    already on `main` carries migration `20260812150000_unit_sim_qr_ops_read`, which grants
+    `sim_no` and `device_qr` to `fulfillment_ops_read` under a 12 Aug product ruling. So the
+    question this plan could not answer for itself was answered elsewhere while it was being
+    asked, and the grant holds. The test that pinned the ICCID as unreadable is INVERTED rather
+    than deleted, because the mechanism it guards is still live: the grant is COLUMN-SCOPED, a
+    column-scoped grant does not extend to columns added later, and that property already broke
+    this exact read once (T4.4 added `activated_at` and `GET /ops/devices` began failing with
+    permission denied). What the test now pins is that every column the read selects is granted,
+    that the list carries the SIM, and that `device_qr` stays off the list projection.
+
+    TWO THINGS STILL OUTSTANDING, and neither is closed by the merge. First, that migration's own
+    header says "Pending written confirmation in the architecture chat", so its authority is a
+    product ruling, not a corpus one; by this repo's governance (CLAUDE.md, S4) a PII surface
+    belongs to the corpus, so the confirmation is still owed. Second, the ruling as recorded in
+    `ops-read.ts` shipped the SIM MASKED on the list with a per-device reveal and then overturned
+    that the same day, so the list now carries the ICCID IN FULL. That is a wider exposure than a
+    masked list, it was not what this plan asked about, and it should be confirmed deliberately
+    rather than inherited. T5.3 (the ICCID on the downloadable activation report) is a THIRD
+    surface again, a CSV export rather than a screen, and is still not built.
+
 26. **The COLLATERAL close predicate (D-24, raised by T6.5, 13 Aug 2026):** a soundbox
     replacement closes when it is activated, which TMS observes directly. A COLLATERAL
     replacement's terminal is DELIVERY, which only fulfillment sees, and the shipment fact
@@ -1036,3 +1057,79 @@ extend corpus-recorded rulings must ride the next corpus submission (pattern:
   flagged to the corpus (section 7) rather than designed here.
 - Phase 2/3 walkthrough items (courier aggregator APIs, direct CWD API, composite merchant
   identity, queue expiry) are design-protected via the seams in section 5 and built by nobody.
+
+---
+
+## 10. The merge with the inventory-ownership branch (13 Aug 2026)
+
+`origin/main` moved while this plan was being built: PR #1 merged a substantial parallel effort
+(5,213 insertions, 58 files) that independently rebuilt the ops inventory workspace and the
+device-inventory upload, added a device detail page, a unit-status upload, a Picker, a
+QueueTable and a Toast, and touched `intake.ts`, `ops-device-inventory.ts` and `ops-read.ts`.
+
+Eighteen files conflicted. Most were unions. FOUR carried competing RULINGS, which is why they
+were escalated rather than resolved by hunk: on both sides the code was correct FOR ITS OWN
+READING, so picking a hunk would have silently overturned somebody's decision.
+
+**The colleague's UI is the design that survives.** Where both branches built the same screen,
+theirs lands as written and this plan's FEATURES were carried onto it: the Soundbox ID and
+Activation columns onto their inventory grid, the D-8 Close action and the how-was-it-retired
+line onto their quarantine tab, the D-15 collided-with column onto their intake tab, and the
+courier-status and activation upload kinds onto their `/uploads` index.
+
+**Ruling 1, the ICCID.** Their grant holds; this plan's pin is inverted. See Q25, which now
+records what remains outstanding: the corpus confirmation their own migration says is pending,
+and the same-day overturn that put the SIM on the list in full rather than masked.
+
+**Ruling 2, duplicate handling.** Their branch stopped PERSISTING a detected duplicate to
+`intake_exception`, on the grounds that a duplicate has nothing an operator can correct. Ruled
+in favour of the Workflow A frozen rule: this door suppresses ICCID noise by NOT CHECKING, which
+the frozen rule requires anyway, rather than by checking and discarding. Their switch is not
+carried; their `flaggedRows` IS, because naming which rows were skipped is worth having whether
+or not those rows also queue.
+NOT FIXED BY THAT RULING, and recorded at the switch in `intake.ts` rather than buried: their
+underlying observation about the SERIAL duplicate stands. `flagDuplicates` is on for both doors,
+so a repeat serial still writes an `intake_exception` whose only action re-runs the ingest with
+the flag off and no-ops. That is a real dead end in the queue and this merge does not address it.
+
+**Ruling 3, activation is not a status.** Their inventory UI listed `ACTIVATED` among the unit
+statuses, with a label, a filter and a stat card. D-16 took it off the ladder (T4.4), so that
+filter could never match again: it would have returned an empty list forever while implying the
+platform had lost every activated device. Their design is kept and re-pointed at the activation
+axis. The card counts `activatedAt`, the slice is a URL param beside their replacements one, and
+the status facet no longer offers a value nothing can hold.
+
+**Four fixtures were found asserting contracts that no longer exist**, all mocked and therefore
+all passing while wrong: `missing_sim_no` as a row error, a letter in a Device ID as malformed,
+`ACTIVATED` among the status options, and Sim No as a fatal missing column. The frozen rule
+removed every one of those checks. With the three found in Phase 4 that is seven, which is enough
+to call it a pattern: a mocked fixture standing in for a writer has nothing forcing it to track
+the writer. Worth a dedicated sweep.
+
+**One conflation was found and split.** `DEVICE_INVENTORY_COLUMNS` was doing two jobs, and the
+merge collapsed them: the SHEET carries three columns, only Device ID is REQUIRED. Together they
+told an operator "Expected Device ID", which implies the other two do not belong in the file.
+
+Gate after the merge: 287 files, 2,376 tests, clean.
+
+### Running it
+
+`pnpm demo` is the single entry point (`scripts/demo.sh`). It brings up Postgres and Redpanda,
+migrates all six contexts, builds, seeds, then boots the fact rail, the three edges and the
+portal, and prints the URL, the credentials and the two files to upload. `--fast` skips the
+build; `--reseed` seeds and exits, which is what `pnpm test` leaves you needing.
+
+The ORDER is the reason it exists rather than a convenience. `seed-data.mjs` deletes the two
+vendor ids `serve.mjs` creates on boot, so seeding after the server silently removes the print
+vendor and the courier, and the symptom is a confusing one: batches still form, then dead-letter
+with "expected exactly 1 ACTIVE PRINT vendor, found 0", while the manufacturer dropdown keeps
+working so nothing looks broken. The script always seeds first.
+
+The harness itself stays gitignored under `docs/plan/phase7_demo/harness/`, because it carries
+conveniences that must never be production code (an in-process MFA vault, no login throttle, a
+widened TOTP window). `pnpm demo` says so plainly if it is absent rather than failing on a
+missing file four steps in.
+
+One stale document: `docs/plan/phase7_demo/demo-assets/DEMO_SCRIPT.md` step 7 still routes device
+inventory through Uploads. That upload moved into the Inventory section in this merge. The
+banner says so; the file is gitignored and was not edited.
