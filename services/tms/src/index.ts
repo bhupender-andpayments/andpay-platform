@@ -78,6 +78,8 @@ export {
   type DamagePreviewRowResult,
 } from './ops.js'
 export {
+  readActivationTrailOps,
+  type ActivationTrailOpsRow,
   readQuarantineQueue,
   listDamageReasons,
   readDamageCases,

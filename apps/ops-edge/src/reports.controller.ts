@@ -15,12 +15,15 @@ import {
   readReport,
   readTileDrilldown,
   readBatchJourney,
+  readDispatchDetail,
   toCsv,
   type ReadScope,
   type ReportName,
   type ReportFilters,
   type TileName,
 } from '@andpay/analytics-service'
+import { readShipmentTrailOps } from '@andpay/fulfillment-service'
+import { readActivationTrailOps } from '@andpay/tms-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAnalyticsRead, emitOpsAnalyticsCrossTenant } from './audit.js'
@@ -159,6 +162,45 @@ export class ReportsController {
     if (result === null) throw new NotFoundException()
     res.setHeader('x-analytics-watermark', result.watermark.asOf ?? 'none')
     return result
+  }
+
+  // GET /ops/reports/dispatch/:asgnId (D-16, T4.5): ONE Dispatch ID's two
+  // branches, side by side, with the full history under each.
+  //
+  // THE COMPOSITION HAPPENS HERE and could not happen anywhere else. The branch
+  // STATE is analytics, which is where the two axes already meet. The two TRAILS
+  // belong to the contexts that own them: shpt_status_event to fulfillment,
+  // assignment_activation_event to TMS. No service reads another's tables and
+  // nothing is joined (C4, T1, T7); the edge fans out to three reads and puts
+  // the answer together, which is the same pattern the batch-journey view and
+  // the merchant-name resolution already use.
+  //
+  // It lives on this controller and not on OpsReadController for the reason
+  // batch-journey does: the analytics read is CROSS-TENANT, so guardrail G3
+  // binds it to emit both the per-read 6e and the D99 cross-tenant-access entry,
+  // and OpsReadController is pinned to emit zero audit records.
+  //
+  // 404 on an unprojected dispatch, mirroring batchJourney: "no such dispatch"
+  // and "a dispatch at stage zero" must not render the same.
+  @Get('dispatch/:asgnId')
+  @HttpCode(200)
+  async dispatchDetail(
+    @Req() req: EdgeRequest,
+    @Param('asgnId') asgnId: string,
+    @Res({ passthrough: true }) res: EdgeResponse,
+  ): Promise<unknown> {
+    await this.authorize(req, 'analytics:read-dispatch-detail')
+    const scope: ReadScope = { kind: 'crossTenant' }
+    const detail = await readDispatchDetail(this.deps.analyticsDb, scope, asgnId)
+    if (detail === null) throw new NotFoundException()
+    // The delivery trail needs a parcel to have a trail. A dispatch with no
+    // shipment yet gets an empty branch rather than a failed request: not
+    // dispatched is a stage, not an error.
+    const deliveryTrail =
+      detail.shptId === null ? [] : await readShipmentTrailOps(this.deps.fulfillmentDb, detail.shptId)
+    const activationTrail = await readActivationTrailOps(this.deps.tmsDb, asgnId)
+    res.setHeader('x-analytics-watermark', detail.watermark.asOf ?? 'none')
+    return { ...detail, deliveryTrail, activationTrail }
   }
 
   @Get(':name')

@@ -10,6 +10,7 @@ import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
 import { UploadsPage } from './features/uploads/UploadsPage.js'
 import { WorkflowPage } from './features/workflow/WorkflowPage.js'
 import { DispatchesPage } from './features/dispatches/DispatchesPage.js'
+import { DispatchDetailPage } from './features/dispatches/DispatchDetailPage.js'
 import { InventoryPage } from './features/inventory/InventoryPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
 import { MerchantsPage } from './features/merchants/MerchantsPage.js'
@@ -79,6 +80,10 @@ export function AppRoutes() {
               correction and terminal override, are now actions on the dispatch
               they act on, and recompose moved onto the batch. */}
           <Route path="/dispatches" element={<DispatchesPage />} />
+          {/* D-16 (T4.5): one Dispatch ID's two branches. Nested under
+              /dispatches because that list is where an operator arrives from,
+              the same relationship /batches/:btchId has to /batches. */}
+          <Route path="/dispatches/:asgnId" element={<DispatchDetailPage />} />
           {/* The Inventory section the redesign deferred under option B for
               want of a read. GET /ops/devices exists now, so the condition
               that kept it out is gone. */}

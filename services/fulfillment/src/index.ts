@@ -173,6 +173,8 @@ export {
   type PoolEntryRow,
   listDispatches,
   listDeviceInventory,
+  readShipmentTrailOps,
+  type DispatchStatusEventRow,
   type DispatchRow,
   type UnitInventoryRow,
 } from './ops-read.js'

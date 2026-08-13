@@ -852,3 +852,49 @@ export async function listDeviceInventory(
   })
   return rows.map(toUnitInventoryDto)
 }
+
+// D-16 (T4.5): the DELIVERY branch's trail for one dispatch, cross-tenant, for
+// the per-dispatch detail page. The tenant edge has had this read since spec
+// 10b (read.ts's readShipmentStatusTrail); ops could not reach it, because that
+// one enters the PROGRAM-SCOPED fulfillment_read role and an ops operator holds
+// no program scope by construction (guardrail G1). This is the same query under
+// fulfillment_ops_read, whose shpt_status_event policy is permissive by design.
+//
+// PLATFORM-ONLY entry (no program to bind), like every other read in this file.
+// AWB and carrier status only, which is what the table carries: no recipient
+// PII reaches this row.
+export interface DispatchStatusEventRow {
+  status: string
+  courierTimestamp: Date
+  statusSource: string
+  sourceRef: string
+  receivedAt: Date
+  overrideReason: string | null
+}
+
+export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): Promise<DispatchStatusEventRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<{
+      status: string
+      courier_timestamp: Date
+      status_source: string
+      source_ref: string
+      received_at: Date
+      override_reason: string | null
+    }[]>`
+      SELECT status, courier_timestamp, status_source, source_ref, received_at, override_reason
+      FROM shpt_status_event
+      WHERE shpt_id = ${toUuid(shptId)}::uuid
+      ORDER BY courier_timestamp ASC, received_at ASC
+    `
+  })
+  return rows.map((r) => ({
+    status: r.status,
+    courierTimestamp: r.courier_timestamp,
+    statusSource: r.status_source,
+    sourceRef: r.source_ref,
+    receivedAt: r.received_at,
+    overrideReason: r.override_reason,
+  }))
+}

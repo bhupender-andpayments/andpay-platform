@@ -655,6 +655,71 @@ export async function readReport(
   return { rows, watermark }
 }
 
+
+/**
+ * D-16 (T4.5): the per-dispatch detail read, both branches of one Dispatch ID.
+ *
+ * The BRANCH STATE lives here because analytics is where the two axes already
+ * meet: delivery from the shipment facts, activation from the activation fact.
+ * The TRAILS do not: shpt_status_event belongs to fulfillment and
+ * assignment_activation_event to TMS, and the edge fans out to each of them and
+ * composes the answer. Never a join, never a cross-context read from a service
+ * (C4, T1, T7).
+ *
+ * Returns null when no dispatch_row exists yet, which is a real answer rather
+ * than an empty one: the assignment has not been projected, so the platform
+ * genuinely has nothing to say about its journey.
+ */
+export interface DispatchDetailView {
+  dispatchId: string
+  dispatchGroup: string | null
+  bankCode: string
+  bankDisplay: string
+  merchantDisplay: string
+  deviceIds: string[]
+  batchId: string | null
+  // The DELIVERY branch.
+  awb: string | null
+  shptId: string | null
+  dispatchDate: string | null
+  courierStatus: string | null
+  deliveryDate: string | null
+  // The ACTIVATION branch, independent of everything above it.
+  activationStatus: string | null
+  activationDate: string | null
+  watermark: Watermark
+}
+
+export async function readDispatchDetail(
+  db: AnalyticsDb,
+  scope: ReadScope,
+  dispatchId: string,
+): Promise<DispatchDetailView | null> {
+  // Watermark FIRST, the same floor-property rationale as readTiles: read after
+  // the data and asOf could overstate what the row reflects.
+  const watermark = await readFreshness(db)
+  const all = await scopedDispatchRead(db, scope)
+  const r = all.find((row) => row.dispatch_id === dispatchId)
+  if (r === undefined) return null
+  return {
+    dispatchId: r.dispatch_id,
+    dispatchGroup: r.dispatch_group,
+    bankCode: r.bank_code,
+    bankDisplay: r.bank_display,
+    merchantDisplay: r.merchant_display,
+    deviceIds: r.device_ids ?? [],
+    batchId: r.batch_id,
+    awb: r.awb,
+    shptId: r.shpt_id,
+    dispatchDate: iso(r.dispatch_date),
+    courierStatus: r.courier_status,
+    deliveryDate: iso(r.delivery_date),
+    activationStatus: r.activation_status,
+    activationDate: iso(r.activation_date),
+    watermark,
+  }
+}
+
 /** The single-dispatch-row activation-gate signal (D-H.1, Phase 5 Task 2). */
 export interface DispatchActivationStatus {
   deliveryDate: string | null

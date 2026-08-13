@@ -1314,6 +1314,57 @@ export interface BatchJourneyView {
 // 404 when the batch has no rows in the analytics projection, mirroring
 // getBatchDetail: the caller can tell "no such batch" from "a batch at stage
 // zero" rather than reading an empty-but-valid-looking body.
+// D-16 (T4.5): ONE Dispatch ID's two branches with the full history under each.
+// The edge composes it from three contexts; the shape below mirrors that
+// response and invents nothing.
+export interface DispatchTrailEntry {
+  status: string
+  /** When the thing HAPPENED (reported time), not when we recorded it. */
+  at: string
+  statusSource: string
+}
+
+export interface DispatchDetailView {
+  dispatchId: string
+  dispatchGroup: string | null
+  bankCode: string
+  bankDisplay: string
+  merchantDisplay: string
+  deviceIds: string[]
+  batchId: string | null
+  awb: string | null
+  shptId: string | null
+  dispatchDate: string | null
+  courierStatus: string | null
+  deliveryDate: string | null
+  activationStatus: string | null
+  activationDate: string | null
+  deliveryTrail: { status: string; courierTimestamp: string; statusSource: string; overrideReason: string | null }[]
+  activationTrail: { status: string; occurredAt: string; statusSource: string; actorId: string | null }[]
+  watermark: Watermark
+}
+
+// 404 when the dispatch has no row in the analytics projection, mirroring
+// getBatchJourney: "no such dispatch" and "a dispatch at stage zero" must not
+// render the same.
+export function getDispatchDetail(c: Client, asgnId: string) {
+  return c.request<DispatchDetailView>({
+    method: 'GET',
+    path: `/ops/reports/dispatch/${encodeURIComponent(asgnId)}`,
+  })
+}
+
+// D-16 (T4.1b): record that the activation request for these dispatch ids has
+// gone out to the CWD. A list, because that is how a send happens.
+export function requestActivation(c: Client, dispatchIds: string[], idempotencyKey: string) {
+  return c.request<{ deduped: boolean; recorded: string[]; unknown: string[] }>({
+    method: 'POST',
+    path: '/ops/assignments/request-activation',
+    body: { dispatchIds },
+    idempotencyKey,
+  })
+}
+
 export function getBatchJourney(c: Client, btchId: string) {
   return c.request<BatchJourneyView>({
     method: 'GET',

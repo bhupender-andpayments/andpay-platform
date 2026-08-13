@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { fromUuid } from '@andpay/ids'
 import request from 'supertest'
 import { SignJWT, generateKeyPair, exportJWK, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
@@ -68,12 +69,17 @@ async function mint(overrides: Record<string, unknown> = {}): Promise<string> {
     .sign(privateKey)
 }
 
-async function insertRow(programId: string, batchId: string | null, pipelineState: string): Promise<void> {
+async function insertRow(
+  programId: string,
+  batchId: string | null,
+  pipelineState: string,
+  dispatchId: string = `asgn_${randomUUID()}`,
+): Promise<void> {
   await analyticsDb.$executeRaw`
     INSERT INTO dispatch_row
       (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
        batch_id, pipeline_state, billable_flag, received_at, updated_at)
-    VALUES (${`asgn_${randomUUID()}`}, ${programId}::uuid, 'HDFC', 'HDFC Bank', 'Acme',
+    VALUES (${dispatchId}, ${programId}::uuid, 'HDFC', 'HDFC Bank', 'Acme',
             ARRAY['DEV1']::text[], ${batchId}, ${pipelineState}, true, now(), now())`
 }
 
@@ -212,5 +218,80 @@ describe('GET /ops/reports/batch-journey/:btchId', () => {
     // A report route would have 404ed on the unknown name 'batch-journey'.
     expect(res.status).toBe(200)
     expect(res.body.batchId).toBe(BATCH)
+  })
+})
+
+// D-16 (T4.5): the per-dispatch detail read, composed at the edge from three
+// contexts. It lives on this controller for the same reason batch-journey does
+// (guardrail G3: a cross-tenant analytics read emits both 6e records).
+describe('ops reports edge: GET /ops/reports/dispatch/:asgnId (D-16, T4.5)', () => {
+  it('returns both branches with their own trails, composed from analytics, fulfillment and tms', async () => {
+    const prog = randomUUID()
+    // A WIRE asgn id is a Crockford base32 encoding of the uuid, not the hex
+    // digits: the edge decodes it with toUuid before reading the tms trail, so
+    // it has to be minted by fromUuid rather than hand-spelled.
+    const asgnUuid = randomUUID()
+    const asgnId = fromUuid('asgn', asgnUuid)
+    const shptUuid = randomUUID()
+
+    await analyticsDb.$executeRaw`
+      INSERT INTO dispatch_row
+        (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
+         batch_id, pipeline_state, billable_flag, received_at, awb, shpt_id, dispatch_group,
+         courier_status, activation_status, updated_at)
+      VALUES (${asgnId}, ${prog}::uuid, 'HDFC', 'HDFC Bank', 'Acme', ARRAY['DEV1']::text[],
+              ${BATCH}, 'DISPATCHED', true, now(), 'AWB-D1', ${fromUuid('shpt', shptUuid)},
+              'SOUNDBOX', 'IN_TRANSIT', 'ACTIVATED', now())`
+
+    // The DELIVERY trail, in fulfillment.
+    await fulfillmentDb.$executeRaw`
+      INSERT INTO shpt_status_event (id, shpt_id, program_id, status, courier_timestamp, status_source, source_ref, trace_id)
+      VALUES (gen_random_uuid(), ${shptUuid}::uuid, ${prog}::uuid, 'PICKED_UP', ${new Date('2026-08-12T09:00:00.000Z')}, 'courier-file', 'ref-1', 't-1')`
+    await fulfillmentDb.$executeRaw`
+      INSERT INTO shpt_status_event (id, shpt_id, program_id, status, courier_timestamp, status_source, source_ref, trace_id)
+      VALUES (gen_random_uuid(), ${shptUuid}::uuid, ${prog}::uuid, 'IN_TRANSIT', ${new Date('2026-08-12T15:00:00.000Z')}, 'courier-file', 'ref-2', 't-2')`
+
+    // The ACTIVATION trail, in tms. Note the CWD confirmed while the parcel was
+    // still in transit, which is exactly the shape the old ladder could not hold.
+    await tmsDb.$executeRaw`
+      INSERT INTO assignment_activation_event (id, asgn_id, program_id, status, occurred_at, status_source, trace_id)
+      VALUES (gen_random_uuid(), ${asgnUuid}::uuid, ${prog}::uuid, 'ACTIVATED', ${new Date('2026-08-12T12:00:00.000Z')}, 'ops:mark-activated', 't-3')`
+
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get(`/ops/reports/dispatch/${asgnId}`)
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(res.status).toBe(200)
+    expect(res.body.dispatchId).toBe(asgnId)
+    expect(res.body.courierStatus).toBe('IN_TRANSIT')
+    expect(res.body.activationStatus).toBe('ACTIVATED')
+    expect(res.body.deliveryTrail.map((e: { status: string }) => e.status)).toEqual(['PICKED_UP', 'IN_TRANSIT'])
+    expect(res.body.activationTrail).toHaveLength(1)
+    expect(res.body.activationTrail[0].status).toBe('ACTIVATED')
+    expect(res.headers['x-analytics-watermark']).toBe(WATERMARK_ISO)
+  })
+
+  it('a dispatch with no shipment yet gets an EMPTY delivery branch, not a failed read', async () => {
+    const prog = randomUUID()
+    const asgnId = fromUuid('asgn', randomUUID())
+    await insertRow(prog, null, 'RECEIVED', asgnId)
+
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get(`/ops/reports/dispatch/${asgnId}`)
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(res.status).toBe(200)
+    expect(res.body.deliveryTrail).toEqual([])
+    expect(res.body.activationTrail).toEqual([])
+  })
+
+  it('404 on an unprojected dispatch, so "no such dispatch" never renders as "stage zero"', async () => {
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get(`/ops/reports/dispatch/${fromUuid('asgn', randomUUID())}`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(404)
   })
 })

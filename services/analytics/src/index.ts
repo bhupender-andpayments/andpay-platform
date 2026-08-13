@@ -12,6 +12,8 @@ export {
   readTileDrilldown,
   readReport,
   readDispatchActivationStatus,
+  readDispatchDetail,
+  type DispatchDetailView,
   readBatchJourney,
   type TileSet,
   type TileName,

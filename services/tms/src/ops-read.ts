@@ -1,4 +1,4 @@
-import { fromUuid } from '@andpay/ids'
+import { fromUuid, toUuid } from '@andpay/ids'
 import type { TmsDb } from './db.js'
 import type { Tx } from './internal.js'
 import { toDamageReasonDto, type DamageReasonDbRow, type DamageReasonRow } from './damage-reason.js'
@@ -297,4 +297,45 @@ export async function readQuarantineQueue(
         `
   })
   return rows.map(toDto)
+}
+
+// D-16 (T4.5): the ACTIVATION branch's trail for one dispatch, for the
+// per-dispatch detail page. The counterpart of fulfillment's
+// readShipmentTrailOps: same shape of question, the other axis, the other
+// context, composed by the edge and never by a join (C4).
+//
+// tms_ops_read is cross-tenant by construction, which is what an ops operator
+// is. IDs, enum tokens and timestamps only; the trail carries nothing else.
+export interface ActivationTrailOpsRow {
+  status: string
+  occurredAt: Date
+  statusSource: string
+  actorId: string | null
+  recordedAt: Date
+}
+
+export async function readActivationTrailOps(db: TmsDb, asgnId: string): Promise<ActivationTrailOpsRow[]> {
+  const asgnUuid = toUuid(asgnId)
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<{
+      status: string
+      occurred_at: Date
+      status_source: string
+      actor_id: string | null
+      created_at: Date
+    }[]>`
+      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, created_at
+      FROM assignment_activation_event
+      WHERE asgn_id = ${asgnUuid}::uuid
+      ORDER BY occurred_at ASC, created_at ASC
+    `
+  })
+  return rows.map((r) => ({
+    status: r.status,
+    occurredAt: r.occurred_at,
+    statusSource: r.status_source,
+    actorId: r.actor_id,
+    recordedAt: r.created_at,
+  }))
 }
