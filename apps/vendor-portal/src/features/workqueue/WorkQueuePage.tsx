@@ -17,6 +17,15 @@ import { DownloadPackageButton } from '../pull/DownloadPackageButton.js'
 // 2026-08-10 ruling: the pull is per DELIVERY GROUP, same as the dispatch
 // Excel builder and the ops download, so the Package column now renders TWO
 // buttons per row rather than one, each carrying its own group and label.
+//
+// D-12 (Q11 ruled 13 Aug 2026): a dispatch is FOUR files, in two pairs, an
+// Excel plus its QR images per group. This column only ever offered the two
+// Excels, and its own labels said so, while the images route sat live and
+// authorized at the edge with nothing calling it. So a print vendor could click
+// their way to half their package and had to hand-build a URL for the other
+// half, which is exactly the sort of thing that gets done once and then done
+// wrong. Four buttons now, grouped in the two pairs the ruling names, so the
+// column reads the way the package is actually shaped.
 const COLUMNS: ReadonlyArray<DataTableColumn<WorkQueueRow>> = [
   { key: 'btchId', header: 'Batch', cell: (row) => row.btchId },
   { key: 'unitCount', header: 'Units', cell: (row) => row.unitCount },
@@ -26,9 +35,15 @@ const COLUMNS: ReadonlyArray<DataTableColumn<WorkQueueRow>> = [
     key: 'package',
     header: 'Package',
     cell: (row) => (
-      <div className="space-y-2">
-        <DownloadPackageButton btchId={row.btchId} group="SOUNDBOX" label="Soundbox Excel" />
-        <DownloadPackageButton btchId={row.btchId} group="COLLATERAL" label="Collateral Excel" />
+      <div className="space-y-3">
+        <div className="space-y-2">
+          <DownloadPackageButton btchId={row.btchId} group="SOUNDBOX" kind="excel" label="Soundbox Excel" />
+          <DownloadPackageButton btchId={row.btchId} group="SOUNDBOX" kind="images" label="Soundbox QR images" />
+        </div>
+        <div className="space-y-2">
+          <DownloadPackageButton btchId={row.btchId} group="COLLATERAL" kind="excel" label="Collateral Excel" />
+          <DownloadPackageButton btchId={row.btchId} group="COLLATERAL" kind="images" label="Collateral QR images" />
+        </div>
       </div>
     ),
   },

@@ -24,3 +24,16 @@ export function history(c: Client) {
 export function packageDownloadPath(btchId: string, group: 'SOUNDBOX' | 'COLLATERAL'): string {
   return `/vendor/batch/${encodeURIComponent(btchId)}/package/${group}`
 }
+
+// The IMAGE half of the same package (D-12; Q11 ruled 13 Aug 2026: four files
+// per dispatch, in two pairs, a soundbox Excel plus soundbox QR images and a
+// collateral Excel plus collateral QR images).
+//
+// This route has existed at the edge since spec 14b, with the same own-batch
+// authorize and the same ALLOW/DENY 6e as the Excel pull, and nothing in this
+// portal ever called it: a print vendor could reach two of their four files by
+// clicking and the other two only by hand-building a URL. The buttons even said
+// "Soundbox Excel" and "Collateral Excel", so the gap was known and named.
+export function collateralDownloadPath(btchId: string, group: 'SOUNDBOX' | 'COLLATERAL'): string {
+  return `/vendor/batch/${encodeURIComponent(btchId)}/collateral/${group}`
+}

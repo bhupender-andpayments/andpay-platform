@@ -57,7 +57,7 @@ describe('DownloadPackageButton', () => {
 
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
 
-    render(<DownloadPackageButton btchId="btch_1" group="SOUNDBOX" label="Soundbox Excel" />)
+    render(<DownloadPackageButton btchId="btch_1" group="SOUNDBOX" kind="excel" label="Soundbox Excel" />)
 
     await userEvent.click(screen.getByRole('button', { name: /download/i }))
 
@@ -90,7 +90,7 @@ describe('DownloadPackageButton', () => {
     const createObjectURL = vi.fn(() => 'blob:mock-url')
     vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL: vi.fn() })
 
-    render(<DownloadPackageButton btchId="btch_2" group="COLLATERAL" label="Collateral Excel" />)
+    render(<DownloadPackageButton btchId="btch_2" group="COLLATERAL" kind="excel" label="Collateral Excel" />)
 
     await userEvent.click(screen.getByRole('button', { name: /download/i }))
 
@@ -105,7 +105,7 @@ describe('DownloadPackageButton', () => {
       vi.fn(async () => ({ status: 401, ok: false, blob: async () => ({ text: vi.fn(), arrayBuffer: vi.fn() }) })),
     )
 
-    render(<DownloadPackageButton btchId="btch_3" group="SOUNDBOX" label="Soundbox Excel" />)
+    render(<DownloadPackageButton btchId="btch_3" group="SOUNDBOX" kind="excel" label="Soundbox Excel" />)
 
     await userEvent.click(screen.getByRole('button', { name: /download/i }))
 
@@ -131,8 +131,8 @@ describe('DownloadPackageButton', () => {
 
     render(
       <>
-        <DownloadPackageButton btchId="btch_4" group="SOUNDBOX" label="Soundbox Excel" />
-        <DownloadPackageButton btchId="btch_4" group="COLLATERAL" label="Collateral Excel" />
+        <DownloadPackageButton btchId="btch_4" group="SOUNDBOX" kind="excel" label="Soundbox Excel" />
+        <DownloadPackageButton btchId="btch_4" group="COLLATERAL" kind="excel" label="Collateral Excel" />
       </>,
     )
 
@@ -149,5 +149,131 @@ describe('DownloadPackageButton', () => {
     expect(calls.some((c) => c.url.includes('/vendor/batch/btch_4/package/COLLATERAL'))).toBe(true)
 
     clickSpy.mockRestore()
+  })
+
+  // D-12 (T7.2, Q11 ruled 13 Aug 2026): a dispatch is FOUR files, in two pairs.
+  // This portal only ever offered the two Excels while the images route sat live
+  // and authorized at the edge with nothing calling it, so half a vendor's
+  // package was reachable only by hand-building a URL.
+  describe('the images half of each pair (D-12, four files per dispatch)', () => {
+    it('kind="images" hits the collateral route, not the package route, and names the file .pdf', async () => {
+      const calls: Call[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string, init: RequestInit) => {
+          calls.push({ url, init })
+          return { status: 200, ok: true, blob: async () => ({ text: vi.fn(), arrayBuffer: vi.fn() }) }
+        }),
+      )
+      vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:mock-url'), revokeObjectURL: vi.fn() })
+      // The filename is read off the anchor the component builds, because that
+      // is what actually lands on the vendor's disk. Mirrors the edge's own
+      // Content-Disposition so clicking and curling agree.
+      const names: (string | undefined)[] = []
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+        names.push(this.getAttribute('download') ?? undefined)
+      })
+
+      render(<DownloadPackageButton btchId="btch_5" group="COLLATERAL" kind="images" label="Collateral QR images" />)
+      await userEvent.click(screen.getByRole('button', { name: /download collateral qr images/i }))
+
+      await vi.waitFor(() => {
+        expect(calls).toHaveLength(1)
+      })
+      expect(calls[0]!.url).toContain('/vendor/batch/btch_5/collateral/COLLATERAL')
+      expect(calls[0]!.url).not.toContain('/package/')
+      expect(headerValue(calls[0]!, 'Authorization')).toBe('Bearer tok-1')
+      expect(names).toEqual(['COLLATERAL-btch_5.pdf'])
+
+      clickSpy.mockRestore()
+    })
+
+    it('all FOUR buttons hit four distinct paths, which is the shape the ruling names', async () => {
+      const calls: Call[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string, init: RequestInit) => {
+          calls.push({ url, init })
+          return { status: 200, ok: true, blob: async () => ({ text: vi.fn(), arrayBuffer: vi.fn() }) }
+        }),
+      )
+      vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:mock-url'), revokeObjectURL: vi.fn() })
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+      render(
+        <>
+          <DownloadPackageButton btchId="btch_6" group="SOUNDBOX" kind="excel" label="Soundbox Excel" />
+          <DownloadPackageButton btchId="btch_6" group="SOUNDBOX" kind="images" label="Soundbox QR images" />
+          <DownloadPackageButton btchId="btch_6" group="COLLATERAL" kind="excel" label="Collateral Excel" />
+          <DownloadPackageButton btchId="btch_6" group="COLLATERAL" kind="images" label="Collateral QR images" />
+        </>,
+      )
+
+      for (const name of [
+        /download soundbox excel/i,
+        /download soundbox qr images/i,
+        /download collateral excel/i,
+        /download collateral qr images/i,
+      ]) {
+        await userEvent.click(screen.getByRole('button', { name }))
+      }
+
+      await vi.waitFor(() => {
+        expect(calls).toHaveLength(4)
+      })
+      expect(new Set(calls.map((c) => c.url)).size).toBe(4)
+      expect(calls.map((c) => c.url.replace(/^.*\/vendor/, '/vendor')).sort()).toEqual([
+        '/vendor/batch/btch_6/collateral/COLLATERAL',
+        '/vendor/batch/btch_6/collateral/SOUNDBOX',
+        '/vendor/batch/btch_6/package/COLLATERAL',
+        '/vendor/batch/btch_6/package/SOUNDBOX',
+      ])
+
+      clickSpy.mockRestore()
+    })
+
+    it('on 404 says the batch has none, rather than telling the vendor to retry something that cannot succeed', async () => {
+      // A soundbox-only batch legitimately has no collateral images, and the
+      // edge answers 404 for exactly that. This used to fall into the generic
+      // failure branch, whose copy is "Please try again".
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({ status: 404, ok: false, blob: async () => ({ text: vi.fn(), arrayBuffer: vi.fn() }) })),
+      )
+      const createObjectURL = vi.fn(() => 'blob:mock-url')
+      vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL: vi.fn() })
+
+      render(<DownloadPackageButton btchId="btch_7" group="COLLATERAL" kind="images" label="Collateral QR images" />)
+      await userEvent.click(screen.getByRole('button', { name: /download/i }))
+
+      const note = await screen.findByRole('status')
+      expect(note.textContent).toMatch(/no collateral qr images/i)
+      expect(note.textContent).not.toMatch(/try again/i)
+      // Not an error, so nothing shouts at the vendor and no download starts.
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(createObjectURL).not.toHaveBeenCalled()
+    })
+
+    it('never reads the images blob either, same opaque-cargo rule as the PII-bearing Excel', async () => {
+      const textSpy = vi.fn(async () => 'pdf-bytes')
+      const arrayBufferSpy = vi.fn(async () => new ArrayBuffer(0))
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({ status: 200, ok: true, blob: async () => ({ text: textSpy, arrayBuffer: arrayBufferSpy }) })),
+      )
+      vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:mock-url'), revokeObjectURL: vi.fn() })
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+      render(<DownloadPackageButton btchId="btch_8" group="SOUNDBOX" kind="images" label="Soundbox QR images" />)
+      await userEvent.click(screen.getByRole('button', { name: /download/i }))
+
+      await vi.waitFor(() => {
+        expect(clickSpy).toHaveBeenCalledTimes(1)
+      })
+      expect(textSpy).not.toHaveBeenCalled()
+      expect(arrayBufferSpy).not.toHaveBeenCalled()
+
+      clickSpy.mockRestore()
+    })
   })
 })

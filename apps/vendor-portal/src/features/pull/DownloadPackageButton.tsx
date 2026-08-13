@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { packageDownloadPath } from '../../api/endpoints.js'
+import { packageDownloadPath, collateralDownloadPath } from '../../api/endpoints.js'
 import { getAccessToken } from '../../api/tokenStore.js'
 
 // FR-04 pull (spec 14b task 13), now PER DELIVERY GROUP (2026-08-10 ruling):
@@ -19,23 +19,41 @@ import { getAccessToken } from '../../api/tokenStore.js'
 // The component carries no default group: `group` and `label` are required
 // props, and its parent (WorkQueuePage) renders it twice, once per delivery
 // group, so the two buttons never drift into a hidden default.
+//
+// D-12 (Q11 ruled 13 Aug 2026): a dispatch is FOUR files, in two pairs, an
+// Excel plus its QR images per delivery group. So `kind` joins `group` as a
+// required prop on the same reasoning: this one component now covers both
+// halves of both pairs, and a default would let a caller quietly ask for the
+// wrong half. The images route has existed at the edge all along and nothing
+// here called it.
 
-type Status = 'idle' | 'downloading' | 'denied' | 'session-lost' | 'failed'
+type Status = 'idle' | 'downloading' | 'denied' | 'session-lost' | 'failed' | 'empty'
+
+// 'excel' is the picking sheet, which carries recipient PII on the ship view.
+// 'images' is the merged QR collateral, which does not. Both are handled with
+// the identical opaque-blob discipline regardless: the rule is about never
+// reading a download, not about which downloads happen to be sensitive.
+type PackageKind = 'excel' | 'images'
 
 interface DownloadPackageButtonProps {
   btchId: string
   group: 'SOUNDBOX' | 'COLLATERAL'
+  kind: PackageKind
   label: string
 }
 
-export function DownloadPackageButton({ btchId, group, label }: DownloadPackageButtonProps) {
+export function DownloadPackageButton({ btchId, group, kind, label }: DownloadPackageButtonProps) {
   const [status, setStatus] = useState<Status>('idle')
 
   async function handleClick(): Promise<void> {
     setStatus('downloading')
     const base = (import.meta.env.VITE_VENDOR_BASE as string | undefined) ?? 'http://localhost:3010'
+    // Filenames mirror each route's own Content-Disposition, so a vendor who
+    // clicks and a vendor who curls end up with the same file on disk.
+    const path = kind === 'excel' ? packageDownloadPath(btchId, group) : collateralDownloadPath(btchId, group)
+    const filename = kind === 'excel' ? `dispatch-${group}-${btchId}.xlsx` : `${group}-${btchId}.pdf`
     try {
-      const res = await fetch(`${base}${packageDownloadPath(btchId, group)}`, {
+      const res = await fetch(`${base}${path}`, {
         headers: { Authorization: `Bearer ${getAccessToken()}` },
       })
 
@@ -45,6 +63,16 @@ export function DownloadPackageButton({ btchId, group, label }: DownloadPackageB
       }
       if (res.status === 403) {
         setStatus('denied')
+        return
+      }
+      // 404 is NOT a failure and must not say "try again": a batch legitimately
+      // has nothing in a group (a soundbox-only batch has no collateral images),
+      // and the edge returns 404 for exactly that. Retrying will never change
+      // it. The ops portal already treats this 404 as "no artifact"; this door
+      // used to fold it into the generic failure and tell the vendor to retry
+      // something that could not succeed.
+      if (res.status === 404) {
+        setStatus('empty')
         return
       }
       if (!res.ok) {
@@ -59,7 +87,7 @@ export function DownloadPackageButton({ btchId, group, label }: DownloadPackageB
       try {
         const anchor = document.createElement('a')
         anchor.href = url
-        anchor.download = `dispatch-${group}-${btchId}.xlsx`
+        anchor.download = filename
         document.body.appendChild(anchor)
         anchor.click()
         anchor.remove()
@@ -93,6 +121,11 @@ export function DownloadPackageButton({ btchId, group, label }: DownloadPackageB
       {status === 'session-lost' && (
         <p role="alert" className="text-sm text-red-700">
           Your session has expired. Please sign in again to download this {label}.
+        </p>
+      )}
+      {status === 'empty' && (
+        <p role="status" className="text-sm text-slate-600">
+          This batch has no {label}.
         </p>
       )}
       {status === 'failed' && (

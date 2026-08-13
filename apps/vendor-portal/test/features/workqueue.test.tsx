@@ -75,10 +75,16 @@ describe('WorkQueuePage', () => {
 
     // Task 15: a DownloadPackageButton (task 13) renders per row, one per
     // batch, taking only btchId (no PII column added). 2026-08-10 ruling: the
-    // pull is per delivery group, so each row now carries TWO buttons, one for
-    // Soundbox and one for Collateral.
+    // pull is per delivery group, so each row carries a button per group.
+    //
+    // D-12 (T7.2, Q11 ruled 13 Aug 2026): a dispatch is FOUR files, in two
+    // pairs, an Excel plus its QR images per group. The column offered only the
+    // two Excels, and said so on the labels, while the images route sat live at
+    // the edge with nothing calling it. Two rows, four buttons each.
     expect(screen.getAllByRole('button', { name: /download soundbox excel/i })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: /download soundbox qr images/i })).toHaveLength(2)
     expect(screen.getAllByRole('button', { name: /download collateral excel/i })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: /download collateral qr images/i })).toHaveLength(2)
   })
 
   it('shows an error message when the request fails', async () => {
