@@ -20,13 +20,19 @@ import { enterWriteRole } from './write-context.js'
 // FORWARD, so replaying an old fact is a no-op rather than a device that
 // silently reverts from DELIVERED to DISPATCHED. This is cheaper and far more
 // robust than making every caller remember to guard.
+// D-16 (T4.4, 13 Aug 2026): this is the DELIVERY axis, and only that.
+// 'ACTIVATED' used to sit on top of it and that was the defect D-16 names. A
+// device the CWD activated before the courier's update landed could never
+// afterwards record its delivery, because the monotonic guard refuses to move a
+// device backwards, correctly, and the ladder had wrongly told it that delivery
+// was backwards. Activation is now unit.activated_at, a parallel axis, and the
+// two can be read together without either overwriting the other.
 export const UNIT_STATUS_ORDER = [
   'IN_STOCK', // born at manufacturer intake
   'ALLOCATED', // reserved for a batch, before the print vendor has it
   'PRINTED', // the print vendor confirmed this serial was printed
   'DISPATCHED', // handed to the courier (the return sheet carries the AWB)
   'DELIVERED', // the courier confirmed delivery
-  'ACTIVATED', // live in the field
 ] as const
 
 export type UnitStatus = (typeof UNIT_STATUS_ORDER)[number]
@@ -34,7 +40,8 @@ export type UnitStatus = (typeof UNIT_STATUS_ORDER)[number]
 // Terminal BRANCHES, deliberately outside the ordered spine: a device does not
 // pass THROUGH damaged or returned on its way anywhere. They are assigned
 // directly and, once set, the monotonic guard below refuses to move the device
-// on, so a damaged device cannot later be reported ACTIVATED by a stale fact.
+// on, so a damaged device cannot later be reported DELIVERED by a stale fact.
+// markUnitsActivatedForAssignment honours the same rule on the activation axis.
 export const UNIT_TERMINAL_STATUSES = ['DAMAGED', 'RETURNED'] as const
 export type UnitTerminalStatus = (typeof UNIT_TERMINAL_STATUSES)[number]
 
@@ -149,11 +156,43 @@ export interface ActivatedFactView {
 }
 
 /**
+ * Stamp the ACTIVATION axis on every unit printed for one assignment.
+ *
+ * D-16 (T4.4): this deliberately does not touch `status`. The delivery axis is
+ * whatever the courier last told us and stays that way; a device can be
+ * activated while it is still DISPATCHED and later record its DELIVERED without
+ * either write standing on the other.
+ *
+ * A device already written off as DAMAGED or RETURNED is skipped. That is the
+ * one place the two axes DO talk to each other, and it is the same rule the
+ * status spine already enforces: nothing leaves a terminal branch, so a stale
+ * activation must not quietly mark a scrapped device live in the field.
+ *
+ * Idempotent by construction: `activated_at IS NULL` means a redelivered fact
+ * stamps nothing, and the FIRST reported instant is the one kept rather than the
+ * last one to arrive.
+ */
+export async function markUnitsActivatedForAssignment(
+  tx: Tx,
+  asgnUuid: string,
+  activatedAt: Date,
+): Promise<number> {
+  const moved = await tx.$queryRaw<{ id: string }[]>`
+    UPDATE unit SET activated_at = ${activatedAt}::timestamptz, updated_at = now()
+    WHERE asgn_id = ${asgnUuid}::uuid
+      AND activated_at IS NULL
+      AND status <> ALL(${[...UNIT_TERMINAL_STATUSES]}::text[])
+    RETURNING id::text AS id
+  `
+  return moved.length
+}
+
+/**
  * fct.tms.assignment.activated.v1: the device is live in the field.
  *
- * Returns how many units moved, which is 0 for a redelivery, 0 when the
+ * Returns how many units were stamped, which is 0 for a redelivery, 0 when the
  * assignment has no paired device yet, and 0 for a device already written off
- * as DAMAGED (the monotonic guard refuses to resurrect it).
+ * as DAMAGED (a terminal branch is never resurrected).
  */
 export async function projectActivationToUnits(
   db: FulfillmentDb,
@@ -166,7 +205,11 @@ export async function projectActivationToUnits(
     // PLATFORM-ONLY, so there is no program scope to set.
     await enterWriteRole(tx as unknown as Tx, 'fulfillment_write')
     await onceWithin(tx as unknown as Tx, CONSUMER, `${env.dedupKey}|unit_activated`, async () => {
-      advanced = await advanceUnitsForAssignment(tx as unknown as Tx, toUuid(env.payload.asgnId), 'ACTIVATED')
+      advanced = await markUnitsActivatedForAssignment(
+        tx as unknown as Tx,
+        toUuid(env.payload.asgnId),
+        new Date(env.payload.activatedAt),
+      )
     })
   })
   return { advanced }

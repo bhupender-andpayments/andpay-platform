@@ -26,6 +26,11 @@ import { fmtDateTime } from '../../ui/format.js'
 // filter should read as the journey a device takes. ALLOCATED is deliberately
 // listed even though nothing currently reaches it: the rung exists in
 // unit-lifecycle.ts, and hiding it here would quietly disagree with the domain.
+//
+// ACTIVATED is deliberately NOT here any more (D-16, T4.4). It stopped being a
+// value this column can take: activation is a separate axis with its own column,
+// and leaving a dead option in the filter would return an empty list forever
+// while implying the platform had lost every activated device.
 const STATUS_FILTERS = [
   '',
   'IN_STOCK',
@@ -33,7 +38,6 @@ const STATUS_FILTERS = [
   'PRINTED',
   'DISPATCHED',
   'DELIVERED',
-  'ACTIVATED',
   'DAMAGED',
   'RETURNED',
 ] as const
@@ -103,6 +107,20 @@ export function InventoryPage() {
     { key: 'deviceSerial', header: 'Device ID', cell: (r) => r.deviceSerial ?? '-' },
     { key: 'id', header: 'Soundbox ID', cell: (r) => <CodeChip>{r.id}</CodeChip> },
     { key: 'status', header: 'Status', cell: (r) => r.status },
+    // D-16: activation is its OWN column, not another value the Status column
+    // could take. A device reads DISPATCHED and Activated at the same time when
+    // the CWD got there before the courier's update did, and that pairing is
+    // exactly what an operator needs to see rather than have flattened away.
+    {
+      key: 'activatedAt',
+      header: 'Activation',
+      cell: (r) =>
+        r.activatedAt === null ? (
+          <span className="text-muted-foreground">not activated</span>
+        ) : (
+          'Activated'
+        ),
+    },
     { key: 'productType', header: 'Product', cell: (r) => r.productType },
     {
       key: 'merchant',

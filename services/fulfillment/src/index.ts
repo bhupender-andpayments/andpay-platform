@@ -28,6 +28,7 @@ export {
   advanceUnitStatus,
   advanceUnitsForShipment,
   advanceUnitsForAssignment,
+  markUnitsActivatedForAssignment,
   type UnitStatus,
   type UnitTerminalStatus,
   type AnyUnitStatus,

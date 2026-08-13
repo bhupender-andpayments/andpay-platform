@@ -774,6 +774,12 @@ export interface UnitInventoryRow {
   id: string
   deviceSerial: string | null
   status: string
+  // D-16 (T4.4): the ACTIVATION axis, independent of `status` above. Null means
+  // not activated; a value means the CWD activated it at that instant, whatever
+  // the delivery axis happens to say. The two are returned side by side on
+  // purpose, because collapsing them back into one column is the defect D-16
+  // was written to fix.
+  activatedAt: Date | null
   productType: string
   manufacturerVndr: string | null
   batch: string | null
@@ -789,6 +795,7 @@ interface UnitInventoryDbRow {
   id: string
   device_serial: string | null
   status: string
+  activated_at: Date | null
   product_type: string
   manufacturer_vndr: string | null
   batch: string | null
@@ -805,6 +812,7 @@ function toUnitInventoryDto(r: UnitInventoryDbRow): UnitInventoryRow {
     id: fromUuid('unit', r.id),
     deviceSerial: r.device_serial,
     status: r.status,
+    activatedAt: r.activated_at,
     productType: r.product_type,
     manufacturerVndr: r.manufacturer_vndr === null ? null : fromUuid('vndr', r.manufacturer_vndr),
     batch: r.batch === null ? null : fromUuid('btch', r.batch),
@@ -825,7 +833,7 @@ export async function listDeviceInventory(
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     if (status !== undefined) {
       return tx.$queryRaw<UnitInventoryDbRow[]>`
-        SELECT id::text AS id, device_serial, status, product_type,
+        SELECT id::text AS id, device_serial, status, activated_at, product_type,
                manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
                shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
                asgn_id::text AS asgn_id, location, created_at, updated_at
@@ -834,7 +842,7 @@ export async function listDeviceInventory(
       `
     }
     return tx.$queryRaw<UnitInventoryDbRow[]>`
-      SELECT id::text AS id, device_serial, status, product_type,
+      SELECT id::text AS id, device_serial, status, activated_at, product_type,
                manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
                shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
                asgn_id::text AS asgn_id, location, created_at, updated_at

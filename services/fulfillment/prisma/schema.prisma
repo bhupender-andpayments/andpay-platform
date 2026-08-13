@@ -109,6 +109,17 @@ model Unit {
   // printed_for_merchant is too coarse to carry an activation back to the right
   // device. Nullable: stock exists before it is paired to anything.
   asgnId             String?  @map("asgn_id") @db.Uuid
+  /// D-16 activation axis (T4.4). Activation used to be the top rung of
+  /// `status`, which meant a device the CWD activated before the courier's
+  /// delivery update landed could never afterwards record its delivery: the
+  /// monotonic guard refuses to move backwards, and the ladder had wrongly told
+  /// it delivery was backwards. `status` now carries the DELIVERY axis only,
+  /// which is genuinely ordered, and activation is this nullable timestamp
+  /// alongside it. Reported time (when the CWD activated the device), not
+  /// platform time (S22). A timestamp and not a second status column because the
+  /// device side of activation has exactly one transition; REQUEST_SENT_TO_CWD
+  /// is assignment-level and lives on tms.assignment_activation_event.
+  activatedAt        DateTime? @map("activated_at") @db.Timestamptz(6)
   location           String?
   // quantity-line-only
   qrString           String?  @map("qr_string")

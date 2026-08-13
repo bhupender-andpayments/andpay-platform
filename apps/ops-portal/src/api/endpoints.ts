@@ -589,6 +589,10 @@ export interface UnitInventoryRow {
   id: string
   deviceSerial: string | null
   status: string
+  // D-16: the activation axis, separate from `status`. Null means not
+  // activated. A device can carry a value here while status still reads
+  // DISPATCHED, which is the point of the split.
+  activatedAt: string | null
   productType: string
   manufacturerVndr: string | null
   batch: string | null

@@ -18,7 +18,11 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 const DEVICE = {
   id: 'unit_1',
   deviceSerial: '9990000001001',
-  status: 'ACTIVATED',
+  // D-16 (T4.4): the two axes at once, and deliberately in the shape the old
+  // ladder could not express. This device is still with the courier AND already
+  // activated by the CWD.
+  status: 'DISPATCHED',
+  activatedAt: '2026-08-02T09:00:00.000Z',
   productType: 'SOUNDBOX',
   manufacturerVndr: 'vndr_1',
   batch: 'btch_1',
@@ -29,7 +33,7 @@ const DEVICE = {
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-02T00:00:00.000Z',
 }
-const IN_STOCK = { ...DEVICE, id: 'unit_2', deviceSerial: '9990000001002', status: 'IN_STOCK', batch: null, shipment: null, printedForMerchant: null, asgnId: null }
+const IN_STOCK = { ...DEVICE, id: 'unit_2', deviceSerial: '9990000001002', status: 'IN_STOCK', activatedAt: null, batch: null, shipment: null, printedForMerchant: null, asgnId: null }
 const MERCHANTS = [{ mrchId: 'mrch_1', displayName: 'Flow Alpha Store', legalName: 'FLOW ALPHA LLP', mcc: '5411', status: 'ACTIVE', updatedAt: '2026-08-01T00:00:00.000Z' }]
 
 function jsonResponse(body: unknown): Response {
@@ -114,14 +118,32 @@ describe('InventoryPage', () => {
 
   // ALLOCATED is reachable by nothing today. It is still offered because the
   // rung exists in unit-lifecycle.ts, and a filter that silently disagreed with
-  // the domain would be its own small lie.
-  it('offers every lifecycle status, in lifecycle order rather than alphabetical', async () => {
+  // the domain would be its own small lie. ACTIVATED, by contrast, is GONE from
+  // this list on purpose (D-16, T4.4): it stopped being a value `status` can
+  // take, and leaving it would return an empty list forever while implying the
+  // platform had lost every activated device.
+  it('offers every delivery status, in lifecycle order, and no longer offers ACTIVATED', async () => {
     stub()
     renderPage()
     const select = (await screen.findByLabelText(/^status/i)) as HTMLSelectElement
     expect([...select.options].map((o) => o.value)).toEqual([
-      '', 'IN_STOCK', 'ALLOCATED', 'PRINTED', 'DISPATCHED', 'DELIVERED', 'ACTIVATED', 'DAMAGED', 'RETURNED',
+      '', 'IN_STOCK', 'ALLOCATED', 'PRINTED', 'DISPATCHED', 'DELIVERED', 'DAMAGED', 'RETURNED',
     ])
+  })
+
+  it('shows the delivery axis and the activation axis as separate columns', async () => {
+    stub()
+    renderPage()
+    // The row reads DISPATCHED and Activated at the same time, which is the
+    // whole of D-16 on one line.
+    expect(await screen.findByText('DISPATCHED')).toBeTruthy()
+    expect(await screen.findByText('Activated')).toBeTruthy()
+  })
+
+  it('says "not activated" rather than leaving the cell blank, which could mean not loaded', async () => {
+    stub([{ ...DEVICE, activatedAt: null }])
+    renderPage()
+    expect(await screen.findByText(/not activated/i)).toBeTruthy()
   })
 
   it('survives a non-array body instead of taking the page down with it', async () => {
