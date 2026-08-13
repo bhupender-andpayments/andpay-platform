@@ -49,6 +49,16 @@ function readVendorFields(raw: unknown): { vndrId?: string; workQueue?: string }
 // handler itself signals in-band (advanced/trail_only/quarantined/deduped/
 // rejected); 400 on an S8 parse failure; 403 on an authz DENY; 401 is the
 // guard's own concern (never reached here).
+//
+// KEPT LIVE, ruled 13 Aug 2026 (T5.2, Q19). The 12 Aug walkthrough files
+// webhooks under Phase 2, and this route was built before that and is already
+// routed. It stays enabled rather than being gated off, because it is purely
+// ADDITIVE (an integrated courier that posts here reaches the same rail as one
+// that does not) and because it is CREDENTIAL-GATED twice over: the class-6
+// guard authenticates the caller, then a D2 authorize checks it against its own
+// vendor before any write, emitting an audited DENY when it fails. There is no
+// unauthenticated surface here to defer. Gating it off would remove a working
+// channel from couriers already using it and buy nothing D-17 asks for.
 @Controller('vendor')
 export class CourierStatusController {
   constructor(@Inject(EDGE_DEPS) private readonly deps: EdgeDeps) {}
