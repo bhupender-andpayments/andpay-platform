@@ -97,6 +97,11 @@ interface RecomposeBody {
 }
 interface DamageCaseStatusBody {
   status: string
+  // Workflow C step 1 (T6.4): the operator's own note on the case, distinct
+  // from the bank's remarks on the damage row. Optional, and omitting it leaves
+  // any existing note alone; free text, so it lands on the domain row and never
+  // on the IDs-only 6e, the same posture as HoldBody.reason.
+  opsRemarks?: string
 }
 // Phase 5 Task 2 (D-H.1): the target rides in the BODY, not a route param
 // (unlike hold/release/damage-case-status), because this is the FIRST caller
@@ -731,7 +736,12 @@ export class OpsController {
 
   // FR08-2 (BRD 5.8): transition a replacement's damage case_status. Target
   // asgnId is a wire id in the path; the service decodes it (toUuid) and the
-  // body carries only the new status (D99, M7/S16: no actor/scope in the body).
+  // body carries the new status plus an optional operator note (D99, M7/S16:
+  // no actor/scope in the body).
+  //
+  // D-24 (T6.5) spells the middle state "In Progress" while the column stores
+  // "In-Progress"; the domain normalizes on whitespace and case, so a caller
+  // may send either and neither spelling is a client error.
   @Post('records/:asgnId/damage-case-status')
   @HttpCode(200)
   async updateDamageCase(
@@ -744,6 +754,7 @@ export class OpsController {
     return updateDamageCaseStatusOps(this.deps.tmsDb, {
       asgnId,
       newStatus: body.status,
+      ...(typeof body.opsRemarks === 'string' ? { opsRemarks: body.opsRemarks } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

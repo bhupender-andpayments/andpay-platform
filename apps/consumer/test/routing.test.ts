@@ -28,7 +28,13 @@ const ROUTES = {
 describe('the routing table matches the pump table it was copied from', () => {
   it('routes each context to the topics that pump.mjs proved', () => {
     expect(ROUTES.identity.topics).toEqual(['fct.tms.bank_file_row.v1'])
+    // D-24 (T6.5): TMS gained fct.fulfillment.dispatch.v1, its FIRST subscription
+    // to another context's fact. A damage case moves to In Progress when the
+    // replacement it answers enters the pipeline, which only fulfillment sees;
+    // consuming the existing fact is the sanctioned way to learn it (T7), and
+    // the alternative would have been a cross-context table read (C4 forbids it).
     expect([...ROUTES.tms.topics].sort()).toEqual([
+      'fct.fulfillment.dispatch.v1',
       'fct.identity.enrollment.v1',
       'fct.identity.merchant.v1',
       'fct.identity.tenant.v1',

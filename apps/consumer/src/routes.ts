@@ -4,6 +4,7 @@ import {
   projectMerchantFact,
   projectTenantFact,
   createAssignmentFromEnrollment,
+  projectDispatchToCases,
   type PrismaClient as TmsClient,
 } from '@andpay/tms-service'
 import {
@@ -120,11 +121,19 @@ export function tmsRoutes(db: TmsClient): ConsumerRoute {
       'fct.identity.merchant.v1',
       'fct.identity.tenant.v1',
       'fct.identity.enrollment.v1',
+      // D-24 (T6.5): a damage case moves to In Progress when the replacement
+      // it answers enters the pipeline. That is a FULFILLMENT event, and TMS
+      // learns it the only sanctioned way (T7): by consuming the fact it
+      // already publishes. No new topic, no cross-context read.
+      'fct.fulfillment.dispatch.v1',
     ],
     handle: async (envelope: Envelope) => {
       switch (envelope.type) {
         case 'fct.identity.merchant.v1':
           await projectMerchantFact(db, envelope as Parameters<typeof projectMerchantFact>[1])
+          return
+        case 'fct.fulfillment.dispatch.v1':
+          await projectDispatchToCases(db, envelope as Parameters<typeof projectDispatchToCases>[1])
           return
         case 'fct.identity.tenant.v1':
           await projectTenantFact(db, envelope as Parameters<typeof projectTenantFact>[1])
