@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
-  MAX_UPLOAD_BYTES,
+  uploadFileRejection,
   previewDamage,
   commitDamage,
   type DamagePreviewResult,
@@ -48,8 +48,10 @@ export function DamageUploadPage() {
     setPreview(null)
     setCommitResult(null)
     if (picked === null) return
-    if (picked.size > MAX_UPLOAD_BYTES) {
-      setError('File exceeds the 5 MB upload limit. Split it into smaller files and try again.')
+    // One shared gate: wrong type OR too big, refused before any network call.
+    const rejection = uploadFileRejection(picked)
+    if (rejection !== null) {
+      setError(rejection)
       return
     }
     setPreviewing(true)

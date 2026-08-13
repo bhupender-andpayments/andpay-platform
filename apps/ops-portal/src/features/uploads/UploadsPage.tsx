@@ -1,6 +1,5 @@
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
 import { DamageUploadPage } from './DamageUploadPage.js'
-import { DeviceInventoryUploadPage } from './DeviceInventoryUploadPage.js'
 import { UPLOAD_KINDS, INDEX_STEPS } from './uploadKinds.js'
 import { UploadStepper } from './UploadStepper.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -82,7 +81,9 @@ export function UploadsPage() {
           in the parent <Routes> tree does not reliably win against it. */}
       <Route path="bank" element={<Navigate to="/workflow" replace />} />
       <Route path="damage" element={<DamageUploadPage />} />
-      <Route path="device-inventory" element={<DeviceInventoryUploadPage />} />
+      {/* Device inventory moved into its own section on 2026-08-12 (the
+          inventory team owns its own insertion). Old links keep working. */}
+      <Route path="device-inventory" element={<Navigate to="/inventory/upload" replace />} />
       {/* An unknown upload slug lands on the choices rather than a dead end. */}
       <Route path="*" element={<Navigate to="/uploads" replace />} />
     </Routes>

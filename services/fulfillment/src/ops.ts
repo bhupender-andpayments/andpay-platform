@@ -7,6 +7,7 @@ import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope, enterWriteRole } from './write-context.js'
 import { advanceShipmentStatus, type AdvanceOutcome } from './courier-status.js'
+import { canAdvanceUnitStatus, advanceUnitStatus, type AnyUnitStatus } from './unit-lifecycle.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
 import { holdEntryWithinTx, triggerBatchWithinTx } from './batching.js'
 import { DEFAULT_POOL_CFG } from './config/pool-config.js'
@@ -309,6 +310,61 @@ export async function overrideTerminal(
     })
   })
   return { deduped: !ran, overridden: true }
+}
+
+/**
+ * Manual unit-status correction (2026-08-13 ruling, operator review): a device
+ * page gets an edit control so ops can advance a device's status by hand
+ * (registration is manual today, and the automated hooks that would normally
+ * carry a device through the middle of the spine do not all exist yet - see
+ * unit-lifecycle.ts's own note that ALLOCATED is "reachable by nothing").
+ *
+ * Deliberately reuses the SAME forward-only guard every automatic path already
+ * enforces (`canAdvanceUnitStatus` / `advanceUnitStatus`, unit-lifecycle.ts):
+ * this is a new CALLER of that guard, not a bypass of it, unlike
+ * `overrideTerminal` above. A manual edit can move a device forward, including
+ * into DAMAGED or RETURNED, but can never leave a terminal branch and can never
+ * move it backward - the "cannot be reverted" rule holds for a human operator
+ * exactly as it holds for every fact consumer.
+ */
+export async function correctUnitStatus(
+  db: FulfillmentDb,
+  args: { unitId: string; status: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean; advanced: boolean }> {
+  const unitUuid = toUuid(args.unitId)
+  let advanced = false
+  const ran = await db.$transaction(async (tx: Tx) => {
+    // unit is PLATFORM-ONLY (unit-lifecycle.ts), so there is no program scope
+    // to resolve or set - enterWriteRole only, mirroring every other unit
+    // mutation in that file.
+    await enterWriteRole(tx, 'fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:unit-status-correction'), async () => {
+      const current = await tx.$queryRaw<{ status: string }[]>`
+        SELECT status FROM unit WHERE id = ${unitUuid}::uuid
+      `
+      if (current.length === 0) throw new OpsClientError('not-found', 'unit not found')
+      if (!canAdvanceUnitStatus(current[0]!.status, args.status as AnyUnitStatus)) {
+        throw new OpsClientError('invalid', `cannot move a unit from ${current[0]!.status} to ${args.status}`)
+      }
+      advanced = await advanceUnitStatus(tx, unitUuid, args.status as AnyUnitStatus)
+
+      // Co-commit the ALLOW 6e (S15/T2 ruling), unconditional once this
+      // callback runs, mirroring correctStatus above: the audit records the
+      // authorized attempt, not the row effect.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:unit-status-correction',
+            principalId: args.actorId,
+            resourceIds: [args.unitId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+  return { deduped: !ran, advanced: ran ? advanced : false }
 }
 
 /**

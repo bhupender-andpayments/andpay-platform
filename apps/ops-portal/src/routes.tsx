@@ -11,6 +11,9 @@ import { UploadsPage } from './features/uploads/UploadsPage.js'
 import { WorkflowPage } from './features/workflow/WorkflowPage.js'
 import { DispatchesPage } from './features/dispatches/DispatchesPage.js'
 import { InventoryPage } from './features/inventory/InventoryPage.js'
+import { DeviceDetailPage } from './features/inventory/DeviceDetailPage.js'
+import { UnitStatusUploadPage } from './features/inventory/UnitStatusUploadPage.js'
+import { DeviceInventoryUploadPage } from './features/uploads/DeviceInventoryUploadPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
 import { MerchantsPage } from './features/merchants/MerchantsPage.js'
 import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
@@ -81,9 +84,23 @@ export function AppRoutes() {
           <Route path="/dispatches" element={<DispatchesPage />} />
           {/* The Inventory section the redesign deferred under option B for
               want of a read. GET /ops/devices exists now, so the condition
-              that kept it out is gone. */}
+              that kept it out is gone. Owned end-to-end from here per the
+              2026-08-12 ruling: ingestion (/inventory/upload) lives INSIDE
+              the section, not under the central Uploads index, and each
+              device has its own detail page. /inventory/upload is registered
+              before /inventory/device/:unitId only for readability; the
+              paths cannot collide. */}
           <Route path="/inventory" element={<InventoryPage />} />
+          <Route path="/inventory/upload" element={<DeviceInventoryUploadPage />} />
+          <Route path="/inventory/status-upload" element={<UnitStatusUploadPage />} />
+          <Route path="/inventory/device/:unitId" element={<DeviceDetailPage />} />
+          {/* The queue tab is IN THE URL (2026-08-12). It was `useState`, so
+              every link into this page landed on Quarantine no matter which
+              queue the link was about, and a bookmark or a "look at this screen"
+              link could not name a queue at all. A bare /queues redirects to the
+              first tab. */}
           <Route path="/queues" element={<QueuesPage />} />
+          <Route path="/queues/:tab" element={<QueuesPage />} />
           <Route path="/reports" element={<ReportPage />} />
           <Route path="/masterdata" element={<MasterDataPage />} />
 

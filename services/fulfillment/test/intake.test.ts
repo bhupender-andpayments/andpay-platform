@@ -540,6 +540,44 @@ describe('ingestIntakeSheet (manufacturer intake, the only Unit-creating channel
     expect(preserved[0]!.sim_no).toBe(iccid)
   })
 
+  // 2026-08-13 ruling (docs/escalations/duplicate_rows_not_quarantined.md,
+  // overturning (h) above for the caller that opts in): a duplicate has
+  // nothing an operator can correct, so the ops device-inventory upload
+  // reports it but never persists it. This is the THIRD path, distinct from
+  // both (h) (flagDuplicates on, persisted - the vendor channel) and (h2)
+  // (flagDuplicates off, silent - the correction path): flagged AND detected,
+  // but not written.
+  it('(h3) flagDuplicates on with persistDuplicateExceptions off: a cross-file repeat serial is still REPORTED (quarantined/flaggedRows), but intake_exception stays EMPTY', async () => {
+    const vndrId = newId('vndr')
+    const claim = classSixClaim(vndrId, 'wq-A')
+
+    const sheetA: IntakeSheet = {
+      fileId: 'file-h3-a',
+      vndrId,
+      workQueue: 'wq-A',
+      rows: [serializedRow('SER-H3-X')],
+    }
+    const resA = await ingestIntakeSheet(db, claim, sheetA, 'trace-h3-a')
+    expect(resA.createdUnitIds).toHaveLength(1)
+
+    const sheetB: IntakeSheet = {
+      fileId: 'file-h3-b',
+      vndrId,
+      workQueue: 'wq-A',
+      rows: [serializedRow('SER-H3-X')],
+    }
+    const resB = await db.$transaction((tx) =>
+      ingestIntakeSheetWithinTx(tx, sheetB, 'trace-h3-b', { flagDuplicates: true, persistDuplicateExceptions: false }),
+    )
+    expect(resB.createdUnitIds).toHaveLength(0) // no second unit, same as (h)
+    expect(resB.quarantined).toBe(1) // still REPORTED
+    expect(resB.flaggedRows).toEqual([{ rowRef: 'row-0', reason: 'duplicate_device_serial_existing_unit' }])
+
+    // ...but nothing landed in intake_exception, unlike (h).
+    const excCount = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM intake_exception`
+    expect(Number(excCount[0]!.n)).toBe(0)
+  })
+
   it('(i) a QUANTITY_LINE row with a missing/non-positive count is schema_invalid (D103b): the WHOLE sheet is rejected, ZERO Units, ZERO intake_exception', async () => {
     const vndrId = newId('vndr')
     const workQueue = 'wq-A'

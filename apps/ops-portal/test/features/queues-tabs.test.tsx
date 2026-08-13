@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { QueuesPage } from '../../src/features/queues/QueuesPage.js'
 import { QuarantineTab } from '../../src/features/queues/QuarantineTab.js'
@@ -29,6 +29,21 @@ function wrap(ui: React.ReactNode) {
   return render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>{ui}</AuthProvider>
+    </MemoryRouter>,
+  )
+}
+
+// The SHELL needs a routed wrapper: the tab moved into the url on 2026-08-12,
+// so QueuesPage reads it from useParams and a bare mount only ever redirects.
+function wrapShell(path = '/queues/quarantine') {
+  return render(
+    <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <AuthProvider>
+        <Routes>
+          <Route path="/queues" element={<QueuesPage />} />
+          <Route path="/queues/:tab" element={<QueuesPage />} />
+        </Routes>
+      </AuthProvider>
     </MemoryRouter>,
   )
 }
@@ -64,12 +79,32 @@ describe('queues tabs after the C-2 split', () => {
   it('the shell still reaches all three tabs, not just the default one', async () => {
     // The regression a split invites: two tabs are never rendered by any test,
     // so a broken import in either is invisible until an operator clicks it.
-    wrap(<QueuesPage />)
+    wrapShell()
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
 
     for (const label of [/intake exceptions/i, /status exceptions/i, /quarantine/i]) {
       await userEvent.click(screen.getByRole('button', { name: label }))
       expect(await screen.findByText(/show resolved rows/i)).toBeTruthy()
     }
+  })
+
+  // The tab is ADDRESSABLE, which is the whole reason it moved into the url:
+  // every link into this page (three Command Center cards, three upload-result
+  // links, the workspace block) names a specific queue, and they all used to
+  // land on Quarantine regardless.
+  it('opens the tab named in the url, not the first one', async () => {
+    wrapShell('/queues/status')
+    // The tab strip itself reports which tab is live (aria-pressed), which is
+    // the assertion that cannot pass by accident: "Status exceptions" also
+    // appears as the card title below it.
+    const statusTab = await screen.findByRole('button', { name: /status exceptions/i })
+    expect(statusTab.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: /^quarantine$/i }).getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('redirects a bare /queues to the first tab rather than rendering a tabless page', async () => {
+    wrapShell('/queues')
+    expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
+    expect(await screen.findByText(/show resolved rows/i)).toBeTruthy()
   })
 })

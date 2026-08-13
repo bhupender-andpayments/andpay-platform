@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
-  MAX_UPLOAD_BYTES,
+  uploadFileRejection,
   commitBank,
   getBatchDetail,
   getBatchJourney,
@@ -468,10 +468,12 @@ function Workspace({
     commitBaseline.current = null
     commitAt.current = null
     if (picked === null) return
-    if (picked.size > MAX_UPLOAD_BYTES) {
-      // BEFORE any network call, so an oversized file never posts. "5 MB", the
-      // repo-wide wording; the byte value is unchanged.
-      setError('File exceeds the 5 MB upload limit. Split it into smaller files and try again.')
+    // One shared gate, BEFORE any network call: wrong type OR too big. The type
+    // half also closes the drag-drop bypass (FileDropZone's `accept` only
+    // filters the picker dialog).
+    const rejection = uploadFileRejection(picked)
+    if (rejection !== null) {
+      setError(rejection)
       return
     }
     setPreviewing(true)

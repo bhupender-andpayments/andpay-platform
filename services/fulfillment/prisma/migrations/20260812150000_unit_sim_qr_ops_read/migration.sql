@@ -1,0 +1,17 @@
+-- Widen the ops read grant to sim_no and device_qr (product ruling 2026-08-12).
+--
+-- 20260810020000 deliberately excluded both columns, deferring the
+-- permission-surface question. The product team has since ruled (meeting ask,
+-- 2026-08-12, inventory ownership handoff) that the ops console must show the
+-- SIM: MASKED on the list (server-side, last 6 only), full value on a
+-- per-device detail read the operator explicitly requests. device_qr rides the
+-- same detail read so the operator can verify the manufacturer payload.
+--
+-- What this does NOT change: the ICCID still never rides a fact (S7,
+-- events.ts), is never logged, and intake_exception still stores no serial and
+-- no ICCID. The widening is the read grant only, and the LIST projection masks
+-- in ops-read.ts before the value leaves the service.
+--
+-- Pending written confirmation in the architecture chat; this migration cites
+-- the product ruling as its authority in the meantime.
+GRANT SELECT (sim_no, device_qr) ON fulfillment.unit TO fulfillment_ops_read;

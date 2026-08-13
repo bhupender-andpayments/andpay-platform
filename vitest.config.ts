@@ -30,6 +30,13 @@ export default defineConfig({
           include: ['packages/**/test/**/*.test.ts', 'services/**/test/**/*.test.ts', 'apps/**/test/**/*.test.ts', 'test/**/*.test.ts'],
           exclude: [...configDefaults.exclude, 'apps/ops-portal/**', 'apps/vendor-portal/**'],
           environment: 'node',
+          // Marks that a DATABASE-BACKED suite actually ran, which is the only
+          // condition under which the global teardown is allowed to truncate
+          // anything (its GUARD 3). Without this, a jsdom-only run - which
+          // opens no connection - still triggered the truncation and destroyed
+          // live dev data. This project is the only one whose suites use
+          // Postgres, so the marker belongs here and nowhere else.
+          setupFiles: ['./test/db-tests-ran.setup.ts'],
           typecheck: {
             // Under `projects`, the root's CLI-forwarded options are filtered
             // to a fixed allow-list that excludes `typecheck` (vitest only

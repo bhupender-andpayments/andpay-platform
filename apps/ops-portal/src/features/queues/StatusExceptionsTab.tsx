@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { type GridColumn } from '../../ui/DataGrid.js'
+import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { Card, CardHeader, Field, Input, Select, Button, ErrorNote, InfoNote, StatusPill, CodeChip } from '../../ui/primitives.js'
-import { fmtDateTime, shortId } from '../../ui/format.js'
-import { orDash, IncludeResolvedToggle } from './shared.js'
+import { Card, Field, Input, Button, ErrorNote, InfoNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { SearchSelect } from '../../components/Picker.js'
+import { fmtDateTime, fmtRelative, shortId, statusMeta } from '../../ui/format.js'
+import { orDash } from './shared.js'
 import {
   getStatusExceptions,
+  getVendors,
   resolveStatusException,
   type CourierStatusExceptionView,
+  type VendorRow,
 } from '../../api/endpoints.js'
 import { emptyStatusExceptionForm, type StatusExceptionForm } from './resolve.js'
 
@@ -53,6 +57,7 @@ export function StatusExceptionsTab() {
   const { client } = useAuth()
   const [includeResolved, setIncludeResolved] = useState(false)
   const [rows, setRows] = useState<CourierStatusExceptionView[]>([])
+  const [vendors, setVendors] = useState<VendorRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [resolvingRow, setResolvingRow] = useState<CourierStatusExceptionView | null>(null)
   const [form, setForm] = useState<StatusExceptionForm | null>(null)
@@ -73,6 +78,22 @@ export function StatusExceptionsTab() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // The Vendor column printed a raw `vndr_...`; resolve it to the name the
+  // operator knows. Silent on failure: the id still renders.
+  useEffect(() => {
+    let cancelled = false
+    getVendors(client)
+      .then((list) => {
+        if (!cancelled && Array.isArray(list)) setVendors(list)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [client])
+
+  const vendorNames = useMemo(() => new Map(vendors.map((v) => [v.id, v.displayName])), [vendors])
 
   function startResolve(row: CourierStatusExceptionView): void {
     if (row.shptId === null) return
@@ -115,17 +136,66 @@ export function StatusExceptionsTab() {
     }
   }
 
-  const columns: DataTableColumn<CourierStatusExceptionView>[] = [
-    { key: 'id', header: 'ID', cell: (r) => <CodeChip>{shortId(r.id)}</CodeChip> },
-    { key: 'vndrId', header: 'Vendor', cell: (r) => r.vndrId },
-    { key: 'channel', header: 'Channel', cell: (r) => r.channel },
-    { key: 'subjectRef', header: 'Subject ref', cell: (r) => r.subjectRef },
-    { key: 'fileId', header: 'File ID', cell: (r) => orDash(r.fileId) },
-    { key: 'rowRef', header: 'Row ref', cell: (r) => orDash(r.rowRef) },
-    { key: 'reasonCode', header: 'Reason', cell: (r) => <StatusPill value={r.reasonCode} /> },
-    { key: 'createdAt', header: 'Created', cell: (r) => fmtDateTime(r.createdAt) },
-    { key: 'resolvedAt', header: 'Resolved', cell: (r) => fmtDateTime(r.resolvedAt) },
-    { key: 'resolvedByActor', header: 'Resolved by', cell: (r) => orDash(r.resolvedByActor) },
+  const columns: GridColumn<CourierStatusExceptionView>[] = [
+    {
+      key: 'subjectRef',
+      header: 'Subject',
+      sortValue: (r) => r.subjectRef,
+      // The AWB (or whatever the update referenced) is the handle an operator
+      // has; the exception uuid sits under it for support.
+      cell: (r) => (
+        <span className="min-w-0">
+          <span className="num block font-semibold text-foreground">{r.subjectRef}</span>
+          <span className="block text-[11px] text-muted-foreground">{shortId(r.id)}</span>
+        </span>
+      ),
+    },
+    { key: 'reasonCode', header: 'Reason', sortValue: (r) => r.reasonCode, cell: (r) => <StatusPill value={r.reasonCode} /> },
+    {
+      key: 'vndrId',
+      header: 'Vendor',
+      sortValue: (r) => vendorNames.get(r.vndrId) ?? r.vndrId,
+      cell: (r) => vendorNames.get(r.vndrId) ?? <CodeChip>{shortId(r.vndrId)}</CodeChip>,
+    },
+    { key: 'channel', header: 'Channel', sortValue: (r) => r.channel, cell: (r) => r.channel },
+    {
+      key: 'fileId',
+      header: 'File',
+      sortValue: (r) => r.fileId ?? '',
+      cell: (r) =>
+        r.fileId === null ? (
+          <span className="text-muted-foreground">-</span>
+        ) : (
+          <span>
+            <CodeChip>{shortId(r.fileId)}</CodeChip>
+            {r.rowRef !== null && <span className="block text-[11px] text-muted-foreground">{r.rowRef}</span>}
+          </span>
+        ),
+    },
+    {
+      key: 'createdAt',
+      header: 'Created',
+      sortValue: (r) => r.createdAt,
+      cell: (r) => (
+        <span title={fmtDateTime(r.createdAt)} className="text-muted-foreground">
+          {fmtRelative(r.createdAt)}
+        </span>
+      ),
+    },
+    {
+      key: 'resolvedAt',
+      header: 'Resolved',
+      sortValue: (r) => r.resolvedAt ?? '',
+      cell: (r) =>
+        r.resolvedAt === null ? (
+          <span className="text-muted-foreground">-</span>
+        ) : (
+          <span title={fmtDateTime(r.resolvedAt)}>
+            {fmtRelative(r.resolvedAt)}
+            <span className="block text-[11px] text-muted-foreground">{orDash(r.resolvedByActor)}</span>
+          </span>
+        ),
+    },
     {
       key: 'actions',
       header: 'Actions',
@@ -151,15 +221,20 @@ export function StatusExceptionsTab() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader title="Status Exceptions" subtitle={`${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`} actions={<IncludeResolvedToggle checked={includeResolved} onChange={setIncludeResolved} />} />
-        {error !== null && (
-          <div className="p-4">
-            <ErrorNote>{error}</ErrorNote>
-          </div>
-        )}
-        <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyMessage="No status exceptions." />
-      </Card>
+      <QueueTable
+        title="Status exceptions"
+        rows={rows}
+        columns={columns}
+        error={error}
+        emptyMessage="No status exceptions."
+        includeResolved={includeResolved}
+        onIncludeResolvedChange={setIncludeResolved}
+        searchPlaceholder="AWB, file or reason…"
+        searchText={(r) =>
+          `${r.subjectRef} ${r.fileId ?? ''} ${r.rowRef ?? ''} ${r.channel} ${r.reasonCode} ${vendorNames.get(r.vndrId) ?? r.vndrId}`
+        }
+        vendorOf={(r) => r.vndrId}
+      />
 
       {resolvingRow !== null && form !== null && (
         <Card className="p-5">
@@ -175,20 +250,14 @@ export function StatusExceptionsTab() {
               <CodeChip>{resolvingRow.shptId}</CodeChip>
             </Field>
             <Field label="Status" htmlFor="se-form-status">
-              <Select
+              <SearchSelect
                 id="se-form-status"
+                className="w-52"
+                placeholder="Pick a status…"
+                options={KNOWN_STATUSES.map((s) => ({ value: s, label: statusMeta(s).label }))}
                 value={form.status}
-                onChange={(e) => {
-                  const value = e.target.value
-                  setForm((prev) => (prev === null ? prev : { ...prev, status: value }))
-                }}
-              >
-                {KNOWN_STATUSES.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </Select>
+                onChange={(value) => setForm((prev) => (prev === null ? prev : { ...prev, status: value }))}
+              />
             </Field>
             <Field label="Courier timestamp" htmlFor="se-form-courierTimestamp">
               <Input

@@ -29,6 +29,9 @@
  * split to an instance-per-context stays a connection-string change (CLAUDE.md).
  */
 
+import { existsSync, rmSync } from 'node:fs'
+import { DB_TESTS_RAN_MARKER } from './vitest.db-marker.js'
+
 // The four DOMAIN contexts. Deliberately a literal list, not "every schema".
 const DOMAIN_CONTEXTS = [
   { ctx: 'identity', schema: 'identity', urlVar: 'IDENTITY_DATABASE_URL' },
@@ -271,6 +274,26 @@ export async function teardown(): Promise<void> {
     console.log(`${TAG} skipped (${SKIP_ENV}=1); the database keeps whatever the run left.`)
     return
   }
+
+  // GUARD 3: NEVER CLEAN UP AFTER TESTS THAT TOUCHED NO DATABASE (2026-08-13,
+  // added after a real data loss).
+  //
+  // This teardown is a ROOT-level globalSetup, so it fires after ANY vitest run
+  // from the repo root - including `--project ops-portal`, a jsdom-only project
+  // that opens no connection. It truncated a live dev database's units,
+  // vendors, merchants and assignments on the back of a pure React test run,
+  // because it had no way to know that nothing had been written.
+  //
+  // The `node` project (the only one whose suites use Postgres) writes this
+  // marker from its setupFiles, once per test file. No marker means no
+  // database-backed test ran, which means there is no residue to clean and
+  // nothing here should touch a row. Removed after a real pass so the next run
+  // re-earns it rather than inheriting this one's verdict.
+  if (!existsSync(DB_TESTS_RAN_MARKER)) {
+    console.log(`${TAG} skipped: no database-backed test ran, so there is no residue to clean.`)
+    return
+  }
+  rmSync(DB_TESTS_RAN_MARKER, { force: true })
 
   const results: string[] = []
   for (const { ctx, schema, urlVar } of DOMAIN_CONTEXTS) {
