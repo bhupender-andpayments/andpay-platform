@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { getReport, markActivated, type ReportCell, type ReportRow } from '../../api/endpoints.js'
+import { getReport, markActivated, markActivatedBulk, type ReportCell, type ReportRow } from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { PageHeader, Card, CardHeader, Button, ErrorNote, InfoNote, SkeletonRows, StatusPill } from '../../ui/primitives.js'
@@ -47,6 +47,24 @@ function arrayField(row: ReportRow, key: string): readonly string[] {
   return Array.isArray(value) ? value : []
 }
 
+// Operator-facing wording for a bulk outcome. The server sends a CODE, and the
+// wording lives here, the same split the upload pages use: the edge's vocabulary
+// is a contract, and an operator should not have to read one.
+function outcomeLabel(code: string): string {
+  switch (code) {
+    case 'activated':
+      return 'Activated'
+    case 'already-activated':
+      return 'Already activated'
+    case 'not-activatable':
+      return 'Collateral does not activate'
+    case 'unknown-dispatch':
+      return 'Not found'
+    default:
+      return code
+  }
+}
+
 function isDelivered(row: ReportRow): boolean {
   return stringField(row, 'deliveryDate') !== null
 }
@@ -74,6 +92,16 @@ export function ActivationPage() {
   // catches up the row is no longer in the response at all, and the id in this
   // set simply stops matching anything.
   const [locallyActivated, setLocallyActivated] = useState<ReadonlySet<string>>(new Set())
+  // D-19 (T5.4): the rows the operator has ticked. Held as ids, not indices, so
+  // a refetch that reorders or shortens the list cannot silently re-point a
+  // selection at a different merchant.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  // The per-row outcome of the last bulk action, keyed by dispatch id. This is
+  // the answer to the objection that got Mark-all refused: a loop that fails
+  // halfway must not leave an operator unable to tell which records went
+  // through, so the result is shown per row rather than as one verdict.
+  const [bulkOutcome, setBulkOutcome] = useState<ReadonlyMap<string, string>>(new Map())
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -91,6 +119,48 @@ export function ActivationPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  function toggle(dispatchId: string): void {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(dispatchId)) next.delete(dispatchId)
+      else next.add(dispatchId)
+      return next
+    })
+  }
+
+  async function handleActivateSelected(): Promise<void> {
+    const ids = [...selected]
+    if (ids.length === 0) return
+    setActionError(null)
+    setActionNote(null)
+    setBulkOutcome(new Map())
+    setBulkBusy(true)
+    try {
+      const { results } = await markActivatedBulk(client, ids, newIdempotencyKey())
+      const outcome = new Map<string, string>()
+      const activated: string[] = []
+      for (const r of results) {
+        outcome.set(r.dispatchId, r.activated ? 'activated' : (r.reason ?? 'not activated'))
+        if (r.activated) activated.push(r.dispatchId)
+      }
+      setBulkOutcome(outcome)
+      setLocallyActivated((prev) => new Set([...prev, ...activated]))
+      // Count what ACTUALLY happened, never what was asked for. Saying "12
+      // marked" after 9 succeeded is the exact failure the refusal named.
+      setActionNote(
+        activated.length === results.length
+          ? `${activated.length} of ${results.length} marked activated.`
+          : `${activated.length} of ${results.length} marked activated. The rest are listed below with their reason.`,
+      )
+      setSelected(new Set())
+      await load()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to mark the selected records activated.')
+    } finally {
+      setBulkBusy(false)
+    }
+  }
 
   async function handleActivate(row: ReportRow): Promise<void> {
     const dispatchId = stringField(row, 'dispatchId')
@@ -116,6 +186,23 @@ export function ActivationPage() {
   }
 
   const columns: DataTableColumn<ReportRow>[] = [
+    {
+      key: 'select',
+      header: 'Select',
+      cell: (row) => {
+        const dispatchId = stringField(row, 'dispatchId')
+        if (dispatchId === null) return null
+        return (
+          <input
+            type="checkbox"
+            aria-label={`Select ${stringField(row, 'merchantDisplay') ?? dispatchId}`}
+            checked={selected.has(dispatchId)}
+            onChange={() => toggle(dispatchId)}
+            disabled={bulkBusy}
+          />
+        )
+      },
+    },
     { key: 'dispatchId', header: 'Dispatch ID', cell: (row) => stringField(row, 'dispatchId') ?? '-' },
     { key: 'bankCode', header: 'Bank', cell: (row) => stringField(row, 'bankCode') ?? '-' },
     { key: 'merchantDisplay', header: 'Merchant', cell: (row) => stringField(row, 'merchantDisplay') ?? '-' },
@@ -153,6 +240,24 @@ export function ActivationPage() {
       key: 'activationStatus',
       header: 'Activation Status',
       cell: (row) => <StatusPill value={stringField(row, 'activationStatus')} />,
+    },
+    {
+      key: 'outcome',
+      header: 'Last result',
+      // Blank until a bulk action has said something about this row. An empty
+      // cell here means "not part of the last action", which is true and is
+      // different from "it failed".
+      cell: (row) => {
+        const dispatchId = stringField(row, 'dispatchId')
+        const outcome = dispatchId === null ? undefined : bulkOutcome.get(dispatchId)
+        return outcome === undefined ? (
+          <span className="text-muted-foreground">-</span>
+        ) : (
+          <span className={outcome === 'activated' ? 'text-foreground' : 'text-muted-foreground'}>
+            {outcomeLabel(outcome)}
+          </span>
+        )
+      },
     },
     {
       key: 'actions',
@@ -194,7 +299,7 @@ export function ActivationPage() {
     <div className="space-y-6">
       <PageHeader
         title="Activation"
-        description="Delivered, not-yet-activated soundboxes. Mark a device+SIM activated once the CWD confirms it out of band."
+        description="Soundboxes awaiting activation. Mark a device+SIM activated once the CWD confirms it out of band."
       />
 
       {loadError !== null && <ErrorNote>{loadError}</ErrorNote>}
@@ -203,8 +308,20 @@ export function ActivationPage() {
 
       <Card>
         <CardHeader
-          title="Delivered, awaiting activation"
+          title="Awaiting activation"
           subtitle={`${visibleRows.length} ${visibleRows.length === 1 ? 'row' : 'rows'}`}
+          actions={
+            <Button
+              size="sm"
+              disabled={selected.size === 0 || bulkBusy}
+              loading={bulkBusy}
+              onClick={() => {
+                void handleActivateSelected()
+              }}
+            >
+              {selected.size === 0 ? 'Mark selected activated' : `Mark ${selected.size} activated`}
+            </Button>
+          }
         />
         {loading ? (
           <SkeletonRows rows={6} cols={8} />
@@ -213,7 +330,7 @@ export function ActivationPage() {
             columns={columns}
             rows={visibleRows}
             getRowKey={(row, index) => stringField(row, 'dispatchId') ?? String(index)}
-            emptyMessage="No delivered, not-yet-activated assignments."
+            emptyMessage="Nothing is awaiting activation."
           />
         )}
       </Card>

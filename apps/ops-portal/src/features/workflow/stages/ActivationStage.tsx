@@ -9,13 +9,21 @@ import { CodeChip, ErrorNote, InfoNote } from '../../../ui/primitives.js'
 import { fmtDateTime, fmtNumber } from '../../../ui/format.js'
 import type { DerivedWorkflow } from '../workflowStage.js'
 
-// Stage 8, the last step of the lifecycle. ONE RECORD PER CLICK.
+// Stage 8, one of the two PARALLEL end states since D-16 (T4.3): a batch can
+// finish activation while its delivery is still outstanding, and this stage no
+// longer waits on the other.
 //
-// NO MARK-ALL BUTTON, deliberately. `markActivated` marks exactly one dispatch and
-// no bulk write exists anywhere in the system, so a "Mark all" here could only be a
-// client-side loop. A loop that fails halfway leaves the operator unable to tell
-// which records went through: the screen would have claimed an action it only
-// partly took. Rejected on that ground, not on effort.
+// ONE RECORD PER CLICK, still, on THIS surface. The old note here refused a
+// Mark-all outright, and its reasoning was: "a Mark all here could only be a
+// CLIENT-SIDE LOOP. A loop that fails halfway leaves the operator unable to
+// tell which records went through: the screen would have claimed an action it
+// only partly took." That objection was right. D-19 rules bulk marking in, so
+// T5.4 answered the objection rather than overruling it: there is now a
+// SERVER-SIDE bulk write that returns a result per row, and the Activation
+// screen (features/activation/) is where it lives, because that is the
+// cross-batch worklist an operator works a morning's confirmations from. This
+// stage stays single-record: it is scoped to one batch's remaining rows, where
+// a bulk control would be a second way to do the same thing on a shorter list.
 //
 // A fresh Idempotency-Key per click, never one reused across rows: the key is what
 // makes a retried click safe, and one key covering two records would make the

@@ -181,6 +181,86 @@ describe('ActivationPage', () => {
     expect(JSON.parse(String(write!.init.body)).dispatchId).toBe('asgn_not_delivered')
   })
 
+  // D-19 (T5.4): bulk marking, and the shape of the objection it had to answer.
+  // The recorded refusal was that a client-side loop failing halfway leaves an
+  // operator unable to tell which records went through. So the result is per
+  // row, and the confirmation counts what HAPPENED rather than what was asked.
+  describe('bulk mark activated', () => {
+    const TWO_ROWS = {
+      rows: [
+        {
+          dispatchId: 'asgn_a',
+          bankCode: 'HDFC',
+          merchantDisplay: 'Alpha Store',
+          deviceIds: ['DEV-A'],
+          deliveryDate: '2026-08-09T06:30:00.000Z',
+          activationStatus: null,
+          simActivationStatus: null,
+          activationFailureReason: null,
+        },
+        {
+          dispatchId: 'asgn_b',
+          bankCode: 'HDFC',
+          merchantDisplay: 'Beta Store',
+          deviceIds: ['DEV-B'],
+          deliveryDate: null,
+          activationStatus: null,
+          simActivationStatus: null,
+          activationFailureReason: null,
+        },
+      ],
+      watermark: { asOf: null, perTopic: {} },
+    }
+
+    function stubBulk(results: { dispatchId: string; activated: boolean; reason: string | null }[]): Call[] {
+      const calls: Call[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string, init: RequestInit) => {
+          calls.push({ url, init })
+          if (url.includes('/ops/assignments/activate-bulk')) return jsonResponse({ results })
+          return jsonResponse(TWO_ROWS)
+        }),
+      )
+      return calls
+    }
+
+    it('posts only the ticked rows, and nothing at all with none ticked', async () => {
+      const calls = stubBulk([{ dispatchId: 'asgn_a', activated: true, reason: null }])
+      renderActivationPage()
+
+      const bulkButton = (await screen.findByRole('button', { name: /mark selected activated/i })) as HTMLButtonElement
+      expect(bulkButton.disabled).toBe(true)
+
+      await userEvent.click(screen.getByLabelText('Select Alpha Store'))
+      // The label counts the selection, so an operator can see what they are
+      // about to act on before they act on it.
+      await userEvent.click(await screen.findByRole('button', { name: /mark 1 activated/i }))
+
+      const write = calls.find((c) => c.url.includes('/ops/assignments/activate-bulk'))
+      expect(write).toBeTruthy()
+      expect(parseBody(write!).dispatchIds).toEqual(['asgn_a'])
+    })
+
+    it('reports what ACTUALLY happened per row, never what was asked for', async () => {
+      stubBulk([
+        { dispatchId: 'asgn_a', activated: true, reason: null },
+        { dispatchId: 'asgn_b', activated: false, reason: 'not-activatable' },
+      ])
+      renderActivationPage()
+
+      await userEvent.click(await screen.findByLabelText('Select Alpha Store'))
+      await userEvent.click(screen.getByLabelText('Select Beta Store'))
+      await userEvent.click(screen.getByRole('button', { name: /mark 2 activated/i }))
+
+      // 1 of 2, not 2. Claiming both is the exact failure the refusal named.
+      expect(await screen.findByText(/1 of 2 marked activated/i)).toBeTruthy()
+      // And the row that did not go through says why, next to itself, in words
+      // rather than in the edge's code vocabulary.
+      expect(screen.getByText(/collateral does not activate/i)).toBeTruthy()
+    })
+  })
+
   it('has NO failure-mark control and NO distinct SIM-activation control anywhere on the page (C3 fence)', async () => {
     vi.stubGlobal(
       'fetch',

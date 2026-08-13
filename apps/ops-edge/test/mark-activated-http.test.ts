@@ -355,6 +355,106 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
     })
   })
 
+  // D-19 (T5.4): the SERVER-SIDE bulk write, which exists to answer the recorded
+  // objection to a Mark-all: a client-side loop failing halfway leaves an
+  // operator unable to tell which records went through.
+  describe('POST /ops/assignments/activate-bulk (T5.4, D-19)', () => {
+    it('marks each row independently and reports a result PER ROW, good and bad together', async () => {
+      const good = newId('asgn')
+      await seedTmsAssignment(good)
+      await seedDispatchRow(good, true)
+
+      const collateral = newId('asgn')
+      await seedTmsAssignment(collateral)
+      await seedDispatchRow(collateral, true, 'COLLATERAL')
+
+      const missing = newId('asgn')
+      await seedTmsAssignment(missing)
+      // Deliberately no dispatch_row: nothing to evaluate the one gate against.
+
+      const token = await mint()
+      const res = await request(app.getHttpServer())
+        .post('/ops/assignments/activate-bulk')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ dispatchIds: [good, collateral, missing] })
+
+      expect(res.status).toBe(200)
+      expect(res.body.results).toEqual([
+        { dispatchId: good, activated: true, reason: null },
+        { dispatchId: collateral, activated: false, reason: 'not-activatable' },
+        { dispatchId: missing, activated: false, reason: 'unknown-dispatch' },
+      ])
+
+      // The one good row really landed; the two bad ones did not roll it back.
+      const row = await tmsDb.$queryRaw<{ activation_status: string | null }[]>`
+        SELECT activation_status FROM assignment WHERE id = ${toUuid(good)}::uuid`
+      expect(row[0]!.activation_status).toBe('ACTIVATED')
+      const untouched = await tmsDb.$queryRaw<{ activated_at: Date | null }[]>`
+        SELECT activated_at FROM assignment WHERE id = ${toUuid(collateral)}::uuid`
+      expect(untouched[0]!.activated_at).toBeNull()
+
+      // One activated fact and one ALLOW 6e: the rows that never ran emit
+      // neither, so the audit never claims work that did not happen.
+      expect(await tmsActivatedFactCount()).toBe(1)
+      expect(await tmsAuditRows()).toHaveLength(1)
+    })
+
+    it('a re-sent batch marks nothing twice, whatever idempotency key it carries', async () => {
+      // The underlying write dedups on the BUSINESS key, not the client key, so
+      // this holds even for an operator who generated a fresh key.
+      const asgnId = newId('asgn')
+      await seedTmsAssignment(asgnId)
+      await seedDispatchRow(asgnId, true)
+      const token = await mint()
+
+      const send = () =>
+        request(app.getHttpServer())
+          .post('/ops/assignments/activate-bulk')
+          .set('Authorization', `Bearer ${token}`)
+          .set('Idempotency-Key', randomUUID())
+          .send({ dispatchIds: [asgnId] })
+
+      const first = await send()
+      const second = await send()
+
+      expect(first.body.results[0].activated).toBe(true)
+      expect(second.body.results[0]).toEqual({ dispatchId: asgnId, activated: false, reason: 'already-activated' })
+      expect(await tmsActivatedFactCount()).toBe(1)
+      expect(await tmsAuditRows()).toHaveLength(1)
+    })
+
+    it('an empty list is a 400 with no writes at all', async () => {
+      const token = await mint()
+      const res = await request(app.getHttpServer())
+        .post('/ops/assignments/activate-bulk')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ dispatchIds: [] })
+
+      expect(res.status).toBe(400)
+      expect(await tmsAuditRows()).toHaveLength(0)
+    })
+
+    it('a token whose role lacks ops:mark-activated -> 403, no row touched', async () => {
+      const asgnId = newId('asgn')
+      await seedTmsAssignment(asgnId)
+      await seedDispatchRow(asgnId, true)
+
+      const res = await request(app.getHttpServer())
+        .post('/ops/assignments/activate-bulk')
+        .set('Authorization', `Bearer ${await mint({ psr: 'role:nothing' })}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ dispatchIds: [asgnId] })
+
+      expect(res.status).toBe(403)
+      const row = await tmsDb.$queryRaw<{ activated_at: Date | null }[]>`
+        SELECT activated_at FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+      expect(row[0]!.activated_at).toBeNull()
+      expect(await tmsActivatedFactCount()).toBe(0)
+    })
+  })
+
   it('a token whose role lacks ops:mark-activated -> 403 with a DENY 6e, no domain effect', async () => {
     const asgnId = newId('asgn')
     await seedTmsAssignment(asgnId)

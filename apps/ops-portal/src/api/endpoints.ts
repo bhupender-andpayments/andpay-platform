@@ -1382,6 +1382,19 @@ export function getDispatchDetail(c: Client, asgnId: string) {
   })
 }
 
+// D-19 (T5.4): mark several dispatches activated in one action. The result is
+// PER ROW, deliberately: the recorded objection to a Mark-all was that a
+// client-side loop failing halfway leaves an operator unable to tell which
+// records went through, and a per-row result is the answer to it.
+export function markActivatedBulk(c: Client, dispatchIds: string[], idempotencyKey: string) {
+  return c.request<{ results: { dispatchId: string; activated: boolean; reason: string | null }[] }>({
+    method: 'POST',
+    path: '/ops/assignments/activate-bulk',
+    body: { dispatchIds },
+    idempotencyKey,
+  })
+}
+
 // D-16 (T4.1b): record that the activation request for these dispatch ids has
 // gone out to the CWD. A list, because that is how a send happens.
 export function requestActivation(c: Client, dispatchIds: string[], idempotencyKey: string) {

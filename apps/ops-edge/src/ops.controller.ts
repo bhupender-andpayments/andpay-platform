@@ -109,6 +109,12 @@ interface ActivateAssignmentBody {
 interface RequestActivationBody {
   dispatchIds: string[]
 }
+// D-19 (T5.4): the bulk mark-activated body. A list for the same reason the
+// CWD-request body is one, and the response is PER ROW rather than a single
+// verdict, which is the whole point (see the route).
+interface BulkActivateBody {
+  dispatchIds: string[]
+}
 // 12 Aug 2026: a manual hold carries its reason, like the manual trigger below.
 // Free text, so it lands on the domain row (pending_pool_entry.hold_reason) and
 // never on the IDs-only 6e, the same posture as OverrideBody.overrideReason and
@@ -816,6 +822,71 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
+  }
+
+  // D-19 (T5.4, 13 Aug 2026): mark SEVERAL dispatches activated in one action.
+  //
+  // THIS REVERSES A RECORDED REFUSAL, and it is worth being precise about what
+  // was refused. ActivationStage.tsx said: "NO MARK-ALL BUTTON, deliberately...
+  // a Mark all here could only be a CLIENT-SIDE LOOP. A loop that fails halfway
+  // leaves the operator unable to tell which records went through: the screen
+  // would have claimed an action it only partly took. Rejected on that ground,
+  // not on effort." That objection was right, and the walkthrough ruling bulk
+  // marking in does not make it wrong. So the fix is the server-side write the
+  // refusal said did not exist, returning a RESULT PER ROW: nothing is claimed
+  // that did not happen, and a row that failed says so next to the rows that
+  // succeeded.
+  //
+  // Each row is INDEPENDENT: its own transaction, its own gates, its own 6e.
+  // One failure never rolls back the rows around it, because a partial success
+  // faithfully reported is better than an all-or-nothing that loses twenty-nine
+  // good marks to one bad id.
+  //
+  // Idempotency does not depend on the client key here. The underlying write
+  // dedups on the BUSINESS key `${asgnId}|activate` (activateAssignmentWithinTx),
+  // so re-sending a batch re-marks nothing whatever key it carries. The header
+  // is still required, because every mutation on this edge requires one.
+  @Post('assignments/activate-bulk')
+  @HttpCode(200)
+  async activateAssignmentsBulk(
+    @Req() req: EdgeRequest,
+    @Body() body: BulkActivateBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ results: { dispatchId: string; activated: boolean; reason: string | null }[] }> {
+    const ids = Array.isArray(body?.dispatchIds) ? body.dispatchIds.filter((id) => typeof id === 'string') : []
+    if (ids.length === 0) {
+      throw new BadRequestException('dispatchIds must be a non-empty array')
+    }
+    const g = await this.gate(req, 'ops:mark-activated', idem, ids)
+
+    const results: { dispatchId: string; activated: boolean; reason: string | null }[] = []
+    for (const dispatchId of ids) {
+      // The SAME two checks the single route applies, per row. Expressing them
+      // once more here rather than calling that route's handler keeps the
+      // per-row reason available: a thrown ConflictException would end the
+      // batch, which is exactly the behaviour this route exists to avoid.
+      const status = await readDispatchActivationStatus(this.deps.analyticsDb, dispatchId)
+      if (status === null) {
+        results.push({ dispatchId, activated: false, reason: 'unknown-dispatch' })
+        continue
+      }
+      if (status.dispatchGroup === 'COLLATERAL') {
+        results.push({ dispatchId, activated: false, reason: 'not-activatable' })
+        continue
+      }
+      const r = await activateAssignmentOps(this.deps.tmsDb, {
+        asgnId: dispatchId,
+        port: new ManualDevicePort(),
+        clientKey: g.clientKey,
+        actorId: g.actorId,
+        traceId: g.traceId,
+      })
+      // `activated: false` with no reason is the already-activated case: the
+      // business-key dedup refused a second mark. Not an error, and not a
+      // success either, so it is reported as neither.
+      results.push({ dispatchId, activated: r.activated, reason: r.activated ? null : 'already-activated' })
+    }
+    return { results }
   }
 
   @Post('batches/trigger')

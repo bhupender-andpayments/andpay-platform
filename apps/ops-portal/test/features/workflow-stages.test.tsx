@@ -368,11 +368,13 @@ describe('ActivationStage', () => {
   })
 
   // A set assertion for the same reason as PrintStage's: `/mark all/i` alone would
-  // pass a future button labelled "Activate batch" or "Mark remaining". The rule is
-  // that the ONLY controls here are one per row, because markActivated marks exactly
-  // one dispatch and a client-side loop failing halfway leaves an ambiguous half-done
-  // state nobody can read back.
-  it('offers NO bulk mark-all, because no bulk write exists', () => {
+  // pass a future button labelled "Activate batch" or "Mark remaining". The rule
+  // holds for THIS surface even though D-19 / T5.4 rules bulk marking in and a
+  // server-side bulk write now exists: this stage is scoped to one batch's
+  // remaining rows, and the bulk control lives on the cross-batch Activation
+  // worklist, which is where a morning's confirmations are actually worked. A
+  // second way to do the same thing on a shorter list is not a feature.
+  it('offers NO bulk mark-all on the per-batch stage: that control lives on the Activation worklist', () => {
     wrap(<ActivationStage derived={deriveWorkflow(snapshot({ batchDetail: detail, journey }))} batchDetail={detail} btchId="btch_1" onChanged={() => {}} />)
     expect(screen.queryByRole('button', { name: /mark all/i })).toBeNull()
     expect(screen.getAllByRole('button').map((b) => b.textContent?.trim())).toEqual([
