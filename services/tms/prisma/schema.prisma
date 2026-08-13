@@ -92,6 +92,15 @@ model Assignment {
   replacementOf       String?   @map("replacement_of") @db.Uuid
   damageReason        String?   @map("damage_reason")
   bankRemarks         String?   @map("bank_remarks")
+  /// Workflow C step 1 (T6.4): what an OPERATOR wrote about this case, as
+  /// opposed to bank_remarks above, which is what the BANK wrote on the damage
+  /// row. A second column and not an edit of the first, because they are
+  /// different people's words and an audit that cannot tell them apart is not
+  /// worth keeping. It is what makes the D-22 'others' reason usable: a case
+  /// reasoned "others" with no note is a case nobody can work. Free operator
+  /// text, so it stays on this domain row and never rides a fact or an audit
+  /// record (S7/DD1), the same posture as batch.trigger_note.
+  opsRemarks          String?   @map("ops_remarks")
   caseStatus          String?   @map("case_status") // Open | In-Progress | Closed (replacements only)
   demandState         String    @map("demand_state") // received | pooled-for-fulfillment | closed | replacement-raised | activated
   activatedAt         DateTime? @map("activated_at") @db.Timestamptz(6)

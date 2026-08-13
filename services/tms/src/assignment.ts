@@ -14,6 +14,7 @@ import {
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope } from './write-context.js'
 import { recordActivationStatusWithinTx, type ActivationStatusSource } from './activation-branch.js'
+import { advanceCaseStatusWithinTx } from './damage-case.js'
 import type { DevicePort } from './device-port.js'
 
 // The consumer view of the identity enrollment fact (T7). Declared LOCALLY,
@@ -404,6 +405,18 @@ export async function activateAssignmentWithinTx(
       actorId: opts?.actorId ?? null,
       traceId,
     })
+    // D-24 (T6.5): if this assignment is a REPLACEMENT, activation is its
+    // terminal, so the damage case it answers closes here. The write's own
+    // predicate checks `replacement_of IS NOT NULL`, so an ordinary activation
+    // moves nothing and needs no branch: a case only closes when there was a
+    // case. Forward-only, so a redelivered activation closes nothing twice and
+    // a case an operator already closed stays closed.
+    //
+    // This is the SOUNDBOX terminal. A COLLATERAL replacement's terminal is
+    // delivery, which is a fulfillment fact TMS cannot map to an assignment
+    // without holding a shipment reference it is not allowed to hold (T2/T12).
+    // See PLAN.md Q26: that half is not automated, and manual close covers it.
+    await advanceCaseStatusWithinTx(tx, asgnUuid, 'Closed')
     await enqueue(tx, {
       aggregateType: 'assignment',
       aggregateId: asgnId,

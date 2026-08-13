@@ -19,6 +19,11 @@ import {
   type DuplicateVpaOriginal,
 } from './ingest.js'
 import { ingestDamageRowWithinTx, CASE_STATUS_VALUES, type BankDamageRow } from './damage.js'
+
+// The cap on an operator's case note, matching the trigger-note and hold-reason
+// caps elsewhere: long enough for a real explanation, short enough that the
+// column is a note and not a document store.
+const MAX_OPS_REMARKS_LENGTH = 500
 import {
   parseBankRequestFile,
   parseBankDamageFile,
@@ -26,6 +31,7 @@ import {
 } from './bank-file-adapter.js'
 import { createDamageReasonWithinTx, setDamageReasonActiveWithinTx, type DamageReasonRow } from './damage-reason.js'
 import { activateAssignmentWithinTx } from './assignment.js'
+import { normalizeCaseStatus } from './damage.js'
 import { recordActivationStatusWithinTx } from './activation-branch.js'
 import type { DevicePort } from './device-port.js'
 
@@ -832,11 +838,26 @@ export async function deactivateDamageReasonOps(
 // follow-up (see docs/plan/FR08_COMPLETION_DECISIONS.md).
 export async function updateDamageCaseStatusOps(
   db: TmsDb,
-  args: { asgnId: string; newStatus: string; clientKey: string; actorId: string; traceId: string },
+  args: {
+    asgnId: string
+    newStatus: string
+    // Workflow C step 1 (T6.4): what the OPERATOR wants recorded about this
+    // case, distinct from the bank's own remarks on the damage row. Optional,
+    // and an omitted value LEAVES THE EXISTING NOTE ALONE rather than clearing
+    // it: a status change is not a reason to erase what somebody wrote. Passing
+    // an empty string is the explicit clear.
+    opsRemarks?: string
+    clientKey: string
+    actorId: string
+    traceId: string
+  },
 ): Promise<{ deduped: boolean }> {
-  const target = CASE_STATUS_VALUES.find((v) => v === args.newStatus)
+  const target = normalizeCaseStatus(args.newStatus)
   if (target === undefined) {
     throw new OpsClientError('invalid', `case_status must be one of: ${CASE_STATUS_VALUES.join(', ')}`)
+  }
+  if (args.opsRemarks !== undefined && args.opsRemarks.length > MAX_OPS_REMARKS_LENGTH) {
+    throw new OpsClientError('invalid', `opsRemarks must be ${MAX_OPS_REMARKS_LENGTH} characters or fewer`)
   }
   const asgnUuid = toUuid(args.asgnId)
 
@@ -857,7 +878,16 @@ export async function updateDamageCaseStatusOps(
       // scope here, right before the UPDATE, keeps the WITH-CHECK program next
       // to the write it guards.
       await enterWriteScope(tx, 'tms_write', programId)
-      await tx.$executeRaw`UPDATE assignment SET case_status = ${target}, updated_at = now() WHERE id = ${asgnUuid}::uuid`
+      // The remarks ride as a BOUND parameter and are never logged: operator
+      // free text on a domain row, the same posture as batch.trigger_note.
+      // COALESCE keeps an existing note when the caller sent none.
+      await tx.$executeRaw`
+        UPDATE assignment
+        SET case_status = ${target},
+            ops_remarks = COALESCE(${args.opsRemarks ?? null}, ops_remarks),
+            updated_at = now()
+        WHERE id = ${asgnUuid}::uuid
+      `
       await enqueue(
         tx,
         buildAuthzAuditEvent(

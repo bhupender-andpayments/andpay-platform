@@ -196,7 +196,7 @@ describe('parseBankDamageFile (phase 2 task 1, D-C core)', () => {
     ])
   })
 
-  it('the FR08-1/FR08-2 columns are OPTIONAL: a file omitting them entirely still parses (no structural error)', async () => {
+  it('the five real columns are the whole required set: a file with only those parses cleanly', async () => {
     const baseHeaders = ['tenantReference', 'vpaValue', 'damageReason', 'bankRemarks', 'shipToAddress']
     const csv = toCsv(baseHeaders, [['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr']])
     const result = await parseBankDamageFile(csv, 'damage.csv', 'file-2')
@@ -205,18 +205,29 @@ describe('parseBankDamageFile (phase 2 task 1, D-C core)', () => {
     expect(result.rows[0]).not.toHaveProperty('deliveryStatus')
   })
 
-  it('FR08-1: when the row supplies item columns, they are parsed as the item group (authoritative spec)', async () => {
-    // positions 5..8 = soundbox, standeeCount, stickerCount, deliveryStatus
+  // THE RE-PIN (D-20 and D-24, T6.2). These two used to assert that the item
+  // columns steered the replacement and that the file could seed the case
+  // status. Both are removed from the canonical mapping, and a file that still
+  // carries those columns is now simply carrying columns nobody reads.
+  it('D-20: item quantity columns are IGNORED, even when the file still supplies them', async () => {
+    // positions 5..8 = the old soundbox, standeeCount, stickerCount, deliveryStatus
     const row = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', 'false', '3', '0', 'In-Progress']
     const result = await parseBankDamageFile(toCsv(DAMAGE_HEADERS, [row]), 'damage.csv', 'file-2')
     expect(result.errors).toEqual([])
-    expect(result.rows[0]).toMatchObject({ items: { soundbox: false, standeeCount: 3, stickerCount: 0 }, deliveryStatus: 'In-Progress' })
+    // The five real fields still land.
+    expect(result.rows[0]).toMatchObject({ tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank' })
+    // And the removed ones do not, so the file cannot decide which items a
+    // damage replaces. That decision now runs through damage-resolution.ts,
+    // which is where O-1's answer will land.
+    expect(result.rows[0]).not.toHaveProperty('items')
   })
 
-  it('FR08-1: item group is ALL-OR-NOTHING: one populated cell sets the whole group (blanks -> false/0)', async () => {
-    const row = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', '', '', '4', '']
+  it('D-24: a file cannot seed the case status, because that lifecycle is ours to observe', async () => {
+    // A file that opened a case already Closed was asserting a state nobody
+    // here had watched happen.
+    const row = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', '', '', '4', 'Closed']
     const result = await parseBankDamageFile(toCsv(DAMAGE_HEADERS, [row]), 'damage.csv', 'file-2')
-    expect(result.rows[0]).toMatchObject({ items: { soundbox: false, standeeCount: 0, stickerCount: 4 } })
     expect(result.rows[0]).not.toHaveProperty('deliveryStatus')
+    expect(result.rows[0]).not.toHaveProperty('items')
   })
 })

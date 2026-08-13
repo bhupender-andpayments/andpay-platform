@@ -106,7 +106,10 @@ export interface DamageCaseView {
   bankReferenceCode: string
   branchCode: string | null
   damageReason: string | null
+  /** What the BANK wrote on the damage row. */
   bankRemarks: string | null
+  /** What an OPERATOR wrote about the case (T6.4). Different people's words. */
+  opsRemarks: string | null
   caseStatus: string | null
   billable: boolean
   demandState: string
@@ -122,6 +125,7 @@ interface DamageCaseDbRow {
   branch_code: string | null
   damage_reason: string | null
   bank_remarks: string | null
+  ops_remarks: string | null
   case_status: string | null
   billable: boolean
   demand_state: string
@@ -138,6 +142,7 @@ function toDamageCaseDto(r: DamageCaseDbRow): DamageCaseView {
     branchCode: r.branch_code,
     damageReason: r.damage_reason,
     bankRemarks: r.bank_remarks,
+    opsRemarks: r.ops_remarks,
     caseStatus: r.case_status,
     billable: r.billable,
     demandState: r.demand_state,
@@ -155,14 +160,14 @@ export async function readDamageCases(
     return args.includeClosed
       ? await tx.$queryRaw<DamageCaseDbRow[]>`
           SELECT id, replacement_of, merchant_display_name, bank_reference_code, branch_code,
-                 damage_reason, bank_remarks, case_status, billable, demand_state, created_at, updated_at
+                 damage_reason, bank_remarks, ops_remarks, case_status, billable, demand_state, created_at, updated_at
           FROM assignment
           WHERE replacement_of IS NOT NULL
           ORDER BY created_at
         `
       : await tx.$queryRaw<DamageCaseDbRow[]>`
           SELECT id, replacement_of, merchant_display_name, bank_reference_code, branch_code,
-                 damage_reason, bank_remarks, case_status, billable, demand_state, created_at, updated_at
+                 damage_reason, bank_remarks, ops_remarks, case_status, billable, demand_state, created_at, updated_at
           FROM assignment
           WHERE replacement_of IS NOT NULL AND case_status IS DISTINCT FROM 'Closed'
           ORDER BY created_at

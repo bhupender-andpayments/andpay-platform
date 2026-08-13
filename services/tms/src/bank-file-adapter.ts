@@ -60,25 +60,35 @@ export const DEFAULT_REQUEST_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
   tenantReference: 'tenantReference',
 })
 
+// D-20 and D-24 (T6.2, 13 Aug 2026): the damage file carries NO quantities and
+// NO delivery status.
+//
+// FR08-1 mapped three "Conditional Quantity of each item to be replaced" columns
+// here, and FR08-2 mapped a file-side "Delivery Status" that seeded the case.
+// The 12 Aug walkthrough removes both, and each removal is a different kind of
+// change. The quantities were the only mechanism that decided WHICH of a
+// merchant's items a damage report replaces, so removing them is exactly what
+// leaves O-1 open; the decision now runs through damage-resolution.ts, whose
+// strategy in force falls back to replacing what the request shipped. The
+// delivery status went because a case's lifecycle is the platform's to observe
+// (D-24), not the bank's to assert in a spreadsheet: a file that opened a case
+// already Closed described a state nobody here had watched happen.
+//
+// The MAPPING is what changed, not the row shape: BankDamageRow still admits
+// `items`, so a source profile that genuinely carries per-item quantities
+// resolves exactly as it always did. Nothing maps them today.
 export const DEFAULT_DAMAGE_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
   tenantReference: 'tenantReference',
   vpaValue: 'vpaValue',
   damageReason: 'damageReason',
   bankRemarks: 'bankRemarks',
   shipToAddress: 'shipToAddress',
-  // FR08-1 / FR08-2 (BRD 5.8 + Annexure C): the "Conditional Quantity of each
-  // item to be replaced" columns and the file-side "Delivery Status" seed. All
-  // OPTIONAL (see OPTIONAL_DAMAGE_FIELDS) so existing damage files without them
-  // keep parsing.
-  soundbox: 'soundbox',
-  standeeCount: 'standeeCount',
-  stickerCount: 'stickerCount',
-  deliveryStatus: 'deliveryStatus',
 })
 
-// Damage columns that are OPTIONAL (not structurally required). Same mechanism
-// the request mapping uses to make `vpaHint` optional.
-const OPTIONAL_DAMAGE_FIELDS = ['soundbox', 'standeeCount', 'stickerCount', 'deliveryStatus']
+// Damage columns that are OPTIONAL (not structurally required). Empty since
+// T6.2 removed the four optional ones; kept as the mechanism, not as dead code,
+// because Q17's merchant-name column is the next candidate for it.
+const OPTIONAL_DAMAGE_FIELDS: string[] = []
 
 // vpaHint and tenantReference are the OPTIONAL request fields (see ingest.ts);
 // every other canonical field on both row shapes is required.
@@ -323,25 +333,11 @@ function normalizeDamageRow(
     bankRemarks: get('bankRemarks'),
     shipToAddress: get('shipToAddress'),
   }
-  // FR08-1: item columns are all-or-nothing per row. If the row supplies ANY of
-  // the three item cells, the row's spec is authoritative for all three (a blank
-  // among them means "not replaced": false / 0); if it supplies NONE, the fields
-  // stay undefined and the ingest clones the original like-for-like (backward
-  // compatible with damage files that omit the columns entirely).
-  const rawSoundbox = get('soundbox')
-  const rawStandee = get('standeeCount')
-  const rawSticker = get('stickerCount')
-  if (rawSoundbox !== '' || rawStandee !== '' || rawSticker !== '') {
-    row.items = {
-      soundbox: parseBoolean(rawSoundbox),
-      standeeCount: parseCount(rawStandee),
-      stickerCount: parseCount(rawSticker),
-    }
-  }
-  // FR08-2 seed: the file-side Delivery Status seeds the initial case_status when
-  // present; the ingest validates it and otherwise defaults to 'Open'.
-  const rawStatus = get('deliveryStatus')
-  if (rawStatus !== '') row.deliveryStatus = rawStatus
+  // D-20 / D-24 (T6.2): NOTHING is read for `items` or `deliveryStatus` here any
+  // more. Both fields survive on BankDamageRow so a source profile that really
+  // does carry per-item quantities keeps resolving as it always did, but the
+  // canonical mapping no longer looks for those columns, so a file that still
+  // has them is simply ignoring extra columns rather than steering the outcome.
   return row
 }
 

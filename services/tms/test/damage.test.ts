@@ -31,6 +31,23 @@ async function seedOriginal(vpa: string, bank: string, sourceEventId = 'req-1|1'
   return fromUuid('asgn', asgnUuid)
 }
 
+// A merchant who ordered PAPER ONLY: no soundbox, so the request has exactly
+// one COLLATERAL group. The D-21 case below needs this shape and no other
+// helper in this suite produces it.
+async function seedCollateralOnlyOriginal(vpa: string, bank: string, sourceEventId = 'req-paper|1'): Promise<string> {
+  const asgnUuid = toUuid(newId('asgn'))
+  await db.$executeRaw`INSERT INTO assignment (
+    id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
+    bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count,
+    billable, demand_state, source_event_id, dispatch_group, updated_at
+  ) VALUES (
+    ${asgnUuid}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
+    'Paper Only', 'Paper Only Pvt Ltd', '5814', ${bank}, 'HDFC Bank', 'Old Addr', 'upi://pay', ${vpa}, false, 2, 3,
+    true, 'pooled-for-fulfillment', ${sourceEventId}, 'COLLATERAL', now()
+  )`
+  return fromUuid('asgn', asgnUuid)
+}
+
 describe('damage ingest and replacement (check 6, D116)', () => {
   it('matches by (tenant, vpa), creates a non-billable replacement, and emits both facts', async () => {
     // Task 4 (W-5): seedOriginal is the LEGACY combined shape (one row,
@@ -151,15 +168,46 @@ describe('FR08-1 per-row item replacement + FR08-2 case-status seed', () => {
     expect(repl[0]).toMatchObject({ soundbox: false, standee_count: 5, sticker_count: 0 })
   })
 
-  it('seeds case_status from a valid file Delivery Status, else defaults to Open', async () => {
+  // THE RE-PIN (D-24, T6.2). This used to assert that the file's Delivery
+  // Status seeded the case. It cannot any more, and not merely because the
+  // column is unmapped: the field is gone from the row shape entirely. A case
+  // ALWAYS opens at Open, because where a replacement has got to is something
+  // only this platform watches, and a file that opened one already Closed was
+  // asserting a lifecycle nobody here had observed.
+  it('a case ALWAYS opens at Open, whatever the file thought', async () => {
     await seedOriginal('acme@hdfcbank', 'HDFC')
-    await ingestDamageRow(db, { fileId: 'dmg-i3', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank', damageReason: 'battery issue', bankRemarks: '', shipToAddress: 'A', deliveryStatus: 'In-Progress' }, 't')
+    await ingestDamageRow(db, { fileId: 'dmg-i3', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank', damageReason: 'battery issue', bankRemarks: '', shipToAddress: 'A' }, 't')
     await seedOriginal('acme2@hdfcbank', 'HDFC', 'req-2|1')
-    await ingestDamageRow(db, { fileId: 'dmg-i4', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme2@hdfcbank', damageReason: 'battery issue', bankRemarks: '', shipToAddress: 'A', deliveryStatus: 'garbage-status' }, 't')
+    await ingestDamageRow(db, { fileId: 'dmg-i4', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'acme2@hdfcbank', damageReason: 'battery issue', bankRemarks: '', shipToAddress: 'A' }, 't')
     const rows = await db.$queryRaw<{ vpa_value: string; case_status: string }[]>`
       SELECT vpa_value, case_status FROM assignment WHERE replacement_of IS NOT NULL ORDER BY vpa_value`
-    expect(rows.find((x) => x.vpa_value === 'acme@hdfcbank')!.case_status).toBe('In-Progress')
-    expect(rows.find((x) => x.vpa_value === 'acme2@hdfcbank')!.case_status).toBe('Open')
+    // One damage row mints one replacement per damaged dispatch group (W-5),
+    // so the count is per group rather than per file row.
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every((x) => x.case_status === 'Open')).toBe(true)
+  })
+})
+
+// D-21 (T6.3, 13 Aug 2026): "standee damage for a merchant who never had a
+// soundbox must pass". It does, and T6.2 is what made it pass: the file's item
+// columns were the only way a damage row could name a group the request never
+// ordered, so with those gone the resolution can only ever name groups the
+// request actually shipped.
+describe('D-21: damage for a merchant who never ordered a soundbox', () => {
+  it('replaces the collateral they DID order, rather than being held for lacking a soundbox', async () => {
+    await seedCollateralOnlyOriginal('paper@hdfcbank', 'HDFC')
+    const r = await ingestDamageRow(
+      db,
+      { fileId: 'dmg-d21', rowNo: 1, tenantReference: 'HDFC', vpaValue: 'paper@hdfcbank', damageReason: 'physical damage', bankRemarks: '', shipToAddress: 'Addr' },
+      't',
+    )
+    expect(r).toBe('replaced')
+    const repl = await db.$queryRaw<{ dispatch_group: string; soundbox: boolean }[]>`
+      SELECT dispatch_group, soundbox FROM assignment WHERE replacement_of IS NOT NULL`
+    expect(repl.map((x) => x.dispatch_group)).toEqual(['COLLATERAL'])
+    expect(repl[0]!.soundbox).toBe(false)
+    const q = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM quarantine_row`
+    expect(Number(q[0]!.n)).toBe(0)
   })
 })
 
