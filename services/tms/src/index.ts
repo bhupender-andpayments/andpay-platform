@@ -36,6 +36,16 @@ export {
   activateAssignmentWithinTx,
   type EnrollmentFactView,
 } from './assignment.js'
+export {
+  ACTIVATION_STATUS_ORDER,
+  ACTIVATION_STATUS_SOURCES,
+  canAdvanceActivationStatus,
+  recordActivationStatusWithinTx,
+  readActivationTrail,
+  type ActivationStatus,
+  type ActivationStatusSource,
+  type ActivationTrailEntry,
+} from './activation-branch.js'
 export { ingestDamageRow, ingestDamageRowWithinTx, type BankDamageRow } from './damage.js'
 export {
   UnwiredDevicePort,

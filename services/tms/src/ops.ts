@@ -823,6 +823,10 @@ export async function activateAssignmentOps(
   const result = await args.port.activate({ asgnId: args.asgnId, deviceRef: args.asgnId })
   return db.$transaction((tx: Tx) =>
     activateAssignmentWithinTx(tx, args.asgnId, result.activatedAt, args.traceId, {
+      // D-16: this door HAS an operator behind it, so the activation trail names
+      // both rather than falling back to the port default.
+      statusSource: 'ops:mark-activated',
+      actorId: args.actorId,
       onAudit: (tx2) =>
         enqueue(
           tx2,

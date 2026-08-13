@@ -157,7 +157,7 @@ beforeEach(async () => {
   // and the tms/fulfillment domain rows the read decision is authorized over.
   await fulfillmentDb.$executeRawUnsafe('TRUNCATE outbox, inbox')
   await tmsDb.$executeRawUnsafe(
-    'TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
+    'TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
   )
   seeded = await seed()
 })

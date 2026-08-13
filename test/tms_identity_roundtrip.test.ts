@@ -15,7 +15,7 @@ const tms = new TmsClient({ datasourceUrl: tmsUrl })
 const identity = new IdentityClient({ datasourceUrl: idUrl })
 
 beforeEach(async () => {
-  await tms.$executeRawUnsafe('TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox')
+  await tms.$executeRawUnsafe('TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox')
   await identity.$executeRawUnsafe('TRUNCATE sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox')
 })
 afterAll(async () => { await tms.$disconnect(); await identity.$disconnect() })

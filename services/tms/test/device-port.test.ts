@@ -7,7 +7,7 @@ import { TMS_ACTIVATED_TOPIC } from '../src/events.js'
 
 const url = process.env.TMS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'
 const db = new PrismaClient({ datasourceUrl: url })
-beforeEach(async () => { await db.$executeRawUnsafe('TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox') })
+beforeEach(async () => { await db.$executeRawUnsafe('TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox') })
 afterAll(async () => { await db.$disconnect() })
 
 const fixturePort: DevicePort = { activate: async () => ({ activatedAt: '2026-07-23T10:00:00.000Z' }) }

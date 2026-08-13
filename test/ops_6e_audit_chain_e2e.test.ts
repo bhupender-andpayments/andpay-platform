@@ -274,7 +274,7 @@ beforeEach(async () => {
   )
   // The tms outbox/inbox and the ingest ledger the tms ops actions co-commit into.
   await tmsDb.$executeRawUnsafe(
-    'TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
+    'TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
   )
   seeded = await seedShpt('IN_TRANSIT')
 })

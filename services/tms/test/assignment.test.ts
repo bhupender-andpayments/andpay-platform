@@ -12,7 +12,7 @@ const db = new PrismaClient({ datasourceUrl: url })
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
+    'TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
   )
 })
 // Clears up AFTER the last test as well as before each one (F-9). Truncating
@@ -24,7 +24,7 @@ beforeEach(async () => {
 // test.
 afterAll(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
+    'TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
   )
   await db.$disconnect()
 })

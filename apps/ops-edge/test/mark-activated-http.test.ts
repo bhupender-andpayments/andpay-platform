@@ -44,7 +44,12 @@ let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey']
 async function mint(overrides: Record<string, unknown> = {}): Promise<string> {
   const now = Math.floor(Date.now() / 1000)
   const payload: Record<string, unknown> = {
-    sub: 'user_ops_activate_1',
+    // A UUID, because the activation trail stores actor_id as a uuid (D-16,
+    // T4.1a) exactly like pending_pool_entry.held_by_actor and
+    // quarantine_row.resolved_by_actor. In production claim.sub IS a principal
+    // uuid; this fixture used to carry a readable label and only got away with
+    // it while no writer cast it.
+    sub: randomUUID(),
     cls: 3,
     mode: 'live',
     aud: 'andpay:internal-admin',

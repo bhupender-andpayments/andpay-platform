@@ -13,6 +13,7 @@ import {
 } from './events.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope } from './write-context.js'
+import { recordActivationStatusWithinTx, type ActivationStatusSource } from './activation-branch.js'
 import type { DevicePort } from './device-port.js'
 
 // The consumer view of the identity enrollment fact (T7). Declared LOCALLY,
@@ -360,7 +361,14 @@ export async function activateAssignmentWithinTx(
   asgnId: string,
   activatedAt: string,
   traceId: string,
-  opts?: { onAudit?: (tx: Tx) => Promise<void> },
+  opts?: {
+    onAudit?: (tx: Tx) => Promise<void>
+    // D-16: who to name on the activation trail row. The ops trigger passes its
+    // own door and actor; the port path passes neither and the trail records
+    // 'port' with no operator, which is a meaning rather than a gap.
+    statusSource?: ActivationStatusSource
+    actorId?: string
+  },
 ): Promise<{ activated: boolean }> {
   const asgnUuid = toUuid(asgnId)
   const dedupKey = `${asgnId}|activate`
@@ -377,6 +385,25 @@ export async function activateAssignmentWithinTx(
 
   const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
     await tx.$executeRaw`UPDATE assignment SET activated_at = ${activatedAt}::timestamptz, demand_state = 'activated', updated_at = now() WHERE id = ${asgnUuid}::uuid`
+    // D-16: the same transition, recorded on the ACTIVATION AXIS. activated_at
+    // and demand_state above are the old scalar shape and stay exactly as they
+    // were, so nothing reading them moves; this adds the branch state and its
+    // append-only trail alongside. Inside the onceWithin, so a redelivered
+    // activation appends nothing and the trail cannot grow a duplicate.
+    //
+    // statusSource is 'port' rather than the operator door: this function is
+    // reached both by activateAssignment (the DevicePort path, no human) and by
+    // activateAssignmentOps, and the caller that KNOWS an operator was behind it
+    // is the one that passes opts.statusSource.
+    await recordActivationStatusWithinTx(tx, {
+      asgnId,
+      programUuid: target[0]!.program_id,
+      status: 'ACTIVATED',
+      occurredAt: new Date(activatedAt),
+      statusSource: opts?.statusSource ?? 'port',
+      actorId: opts?.actorId ?? null,
+      traceId,
+    })
     await enqueue(tx, {
       aggregateType: 'assignment',
       aggregateId: asgnId,

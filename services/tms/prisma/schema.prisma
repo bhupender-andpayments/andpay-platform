@@ -95,6 +95,14 @@ model Assignment {
   caseStatus          String?   @map("case_status") // Open | In-Progress | Closed (replacements only)
   demandState         String    @map("demand_state") // received | pooled-for-fulfillment | closed | replacement-raised | activated
   activatedAt         DateTime? @map("activated_at") @db.Timestamptz(6)
+  /// D-16 activation branch: the LATEST activation status, denormalized off
+  /// assignment_activation_event under forward-only-wins, so the common read
+  /// needs no aggregate. NULL is a real state (no request has been sent to the
+  /// CWD yet), not an unknown. CHECK constrained in the migration; a plain text
+  /// column with enum tokens, following demand_state and case_status above.
+  /// This is the axis that is INDEPENDENT of delivery: a soundbox can be
+  /// activated before, after, or without its delivery being recorded.
+  activationStatus    String?   @map("activation_status") // REQUEST_SENT_TO_CWD | ACTIVATED
   // Phase 2 task 3 (D-F): the additional-soundbox provenance marker, computed
   // TMS-side inside the same insert transaction (NO fact-schema change).
   // INITIAL = the first assignment processed for this merchant_id; ADDITIONAL
@@ -257,4 +265,33 @@ model QuarantineRow {
 
   @@unique([fileId, rowNo])
   @@map("quarantine_row")
+}
+
+/// D-16 activation branch: the append-only activation trail, one row per
+/// transition of one Dispatch ID. Modeled on fulfillment's ShptStatusEvent
+/// deliberately, because D-16 makes activation the SECOND branch alongside
+/// delivery and the two should be shaped alike: never mutated, a correction is
+/// a new forward event (107a), and the latest status is denormalized onto the
+/// aggregate (assignment.activation_status) under forward-only-wins.
+///
+/// occurred_at is REPORTED time (when the CWD activated it, when the request
+/// went out); created_at is platform time (S22). status_source names WHICH door
+/// wrote the row, so the trail reads back without joining the audit ledger.
+/// actor_id is nullable because not every writer is a human: the port-driven
+/// activateAssignment path has no operator behind it, and NULL there means "no
+/// operator", not "we lost it". IDs, enum tokens and timestamps only, no free
+/// text (S4, S7). PROGRAM-SCOPED.
+model AssignmentActivationEvent {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  asgnId       String   @map("asgn_id") @db.Uuid
+  programId    String   @map("program_id") @db.Uuid
+  status       String // REQUEST_SENT_TO_CWD | ACTIVATED
+  occurredAt   DateTime @map("occurred_at") @db.Timestamptz(6)
+  statusSource String   @map("status_source") // ops:mark-activated | ops:request-activation | port
+  actorId      String?  @map("actor_id") @db.Uuid
+  traceId      String   @map("trace_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([asgnId])
+  @@map("assignment_activation_event")
 }
