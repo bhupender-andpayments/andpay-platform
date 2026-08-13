@@ -180,6 +180,13 @@ async function supersedeAndRearmMaxWait(
   tenantWire: string,
   programWire: string,
   firingTimerId: string | undefined,
+  // How far ahead to arm the replacement, in seconds. Omitted means a FULL
+  // window, which is right after a batch (the pool is empty, so the next entry
+  // to arrive starts its own wait from scratch). runDueBatchTimers passes the
+  // REMAINDER instead when it wakes on a pool whose oldest entry is not due
+  // yet, so the next wake lands on that entry's own deadline rather than a
+  // window after this one.
+  delaySeconds?: number,
 ): Promise<void> {
   await tx.$executeRaw`
     UPDATE saga_timer SET status = 'superseded'
@@ -190,8 +197,8 @@ async function supersedeAndRearmMaxWait(
       FOR UPDATE SKIP LOCKED
     )
   `
-  const cfg = await resolvePoolConfig(tx, tenantWire, programWire)
-  await setTimer(tx, pmInstanceId, new Date(Date.now() + cfg.maxWaitSeconds * 1000), 'max_wait')
+  const seconds = delaySeconds ?? (await resolvePoolConfig(tx, tenantWire, programWire)).maxWaitSeconds
+  await setTimer(tx, pmInstanceId, new Date(Date.now() + seconds * 1000), 'max_wait')
 }
 
 export interface TriggerBatchOpts {
@@ -520,6 +527,57 @@ export async function runDueBatchTimers(
 
       const tenantWire = fromUuid('tnnt', rows[0]!.tenant_id)
       const programWire = fromUuid('prog', rows[0]!.program_id)
+
+      // MAX WAIT IS THE OLDEST ENTRY'S AGE (12 Aug 2026), not the time since
+      // this pool last batched. The walkthrough states the rule as "else oldest
+      // record >= Max Wait Time -> trigger partial", and the timer alone cannot
+      // express that: it is armed when the pool is created and re-armed after
+      // every batch, so its due time measures the POOL's idle stretch. A pool
+      // batched at T with maxWait 7d fires again at T+7d, which sweeps an entry
+      // that arrived at T+6d after ONE day of waiting, and an entry that arrives
+      // at T+7d+1s waits nearly two full windows. Neither is what an operator
+      // promised the bank.
+      //
+      // So the timer becomes a WAKE-UP and the decision is made here against the
+      // real pool: batch only if the oldest POOLED entry has actually reached
+      // maxWait, otherwise re-arm for exactly the remainder and leave the pool
+      // alone. The sweep then lands within a tick of the entry's own deadline
+      // whatever the pool did before it.
+      //
+      // The read is deliberately unscoped and outside a write transaction: it
+      // is one aggregate over this pool's own rows, and the decision it feeds is
+      // re-checked by triggerBatch under the pool lock anyway. HELD rows are
+      // excluded because a held entry is not waiting to be batched, which is the
+      // same predicate the lot-size count and the claim UPDATE already use.
+      // Measured against the CALLER's `now`, the same clock that decided this
+      // timer was due, never SQL now(). This function already takes an
+      // injectable clock and it would be incoherent for dueness and the age
+      // decision to disagree about what time it is: a caller sweeping with a
+      // future `now` (the scheduler's own test does exactly that) would find
+      // every timer due and every entry too young, and nothing would ever
+      // batch.
+      const oldest = await db.$queryRaw<{ waited_seconds: number | null }[]>`
+        SELECT EXTRACT(EPOCH FROM (${now}::timestamptz - MIN(created_at)))::float8 AS waited_seconds
+        FROM pending_pool_entry
+        WHERE tenant_id = ${rows[0]!.tenant_id}::uuid AND program_id = ${rows[0]!.program_id}::uuid
+          AND pool_status = 'POOLED'
+      `
+      const waited = oldest[0]?.waited_seconds ?? null
+      const cfg = await resolvePoolConfig(db, tenantWire, programWire)
+
+      // waited === null means the pool is EMPTY. Fall through to triggerBatch,
+      // which creates no batch and re-arms the timer it is consuming (T0b.1).
+      // Deciding "not due" here instead would duplicate that re-arm and leave
+      // two pending timers.
+      if (waited !== null && waited < cfg.maxWaitSeconds) {
+        const remaining = cfg.maxWaitSeconds - waited
+        await db.$transaction(async (tx: Tx) => {
+          await enterWriteRole(tx, 'fulfillment_write')
+          await supersedeAndRearmMaxWait(tx, timer.instanceId, tenantWire, programWire, timer.id, remaining)
+        })
+        return
+      }
+
       await triggerBatch(db, tenantWire, programWire, 'MAX_WAIT', {
         epoch: timer.id,
         firingTimerId: timer.id,

@@ -335,6 +335,106 @@ describe('runDueBatchTimers: a MAX_WAIT fire on an EMPTY pool must not disarm ma
     expect(batches).toEqual([{ trigger_reason: 'MAX_WAIT', unit_count: 1 }])
   })
 
+})
+
+// T3.3 (12 Aug 2026): max wait is measured from the OLDEST PENDING ENTRY, not
+// from the pool's last batch. These are the age-anchor tests; the empty-pool
+// disarm above is a different rule that happens to share the same timer.
+describe('runDueBatchTimers: max wait is the oldest entry age (T3.3)', () => {
+  // 12 Aug 2026: "else oldest record >= Max Wait Time -> trigger partial". The
+  // timer alone cannot express that. It is armed at pool creation and re-armed
+  // after every batch, so its due time measures the POOL's idle stretch, not any
+  // entry's wait. A pool batched at T with maxWait 7d fires again at T+7d, which
+  // sweeps an entry that arrived at T+6d after ONE day, and makes an entry
+  // arriving at T+7d+1s wait nearly two full windows.
+  it('does NOT batch when the oldest entry is younger than max wait, and re-arms for the remainder', async () => {
+    const anchor = await seedPoolAnchor()
+    const timerId = await seedDueTimer(anchor.pmInstanceId)
+    const { maxWaitSeconds } = poolConfig(anchor.tenantWire, anchor.programWire)
+
+    // An entry that arrived only moments ago, on a pool whose timer is already
+    // due. Under the old rule this was swept immediately.
+    await seedPooled(anchor.tenantUuid, anchor.programUuid, 'trace-too-young', new Date())
+
+    const fired = await runDueBatchTimers(db, new Date())
+    expect(fired).toEqual([timerId]) // the timer was consumed
+
+    const batches = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM batch`
+    expect(Number(batches[0]!.n)).toBe(0) // but nothing was batched
+
+    const entry = await db.$queryRaw<{ pool_status: string }[]>`
+      SELECT pool_status FROM pending_pool_entry WHERE tenant_id = ${anchor.tenantUuid}::uuid
+    `
+    expect(entry[0]!.pool_status).toBe('POOLED') // still waiting, untouched
+
+    // Exactly one fresh timer, armed for the entry's REMAINING wait rather than
+    // a whole new window. Bounded on both sides so a lazy full-window re-arm
+    // would fail: the remainder must be close to maxWait but strictly under it.
+    const timers = await db.$queryRaw<{ id: string; status: string; fire_at: Date }[]>`
+      SELECT id::text AS id, status, fire_at FROM saga_timer WHERE instance_id = ${anchor.pmInstanceId}::uuid
+    `
+    expect(timers.find((t) => t.id === timerId)?.status).toBe('fired')
+    const pending = timers.filter((t) => t.status === 'pending')
+    expect(pending).toHaveLength(1)
+    const secondsAhead = (pending[0]!.fire_at.getTime() - Date.now()) / 1000
+    expect(secondsAhead).toBeLessThan(maxWaitSeconds)
+    expect(secondsAhead).toBeGreaterThan(maxWaitSeconds - 120)
+  })
+
+  it('DOES batch when the oldest entry has reached max wait, even though the pool batched recently', async () => {
+    // The mirror case, and the one the old rule got wrong in the other
+    // direction: what matters is the entry's own age, not when the pool last
+    // fired.
+    const anchor = await seedPoolAnchor()
+    const timerId = await seedDueTimer(anchor.pmInstanceId)
+    const { maxWaitSeconds } = poolConfig(anchor.tenantWire, anchor.programWire)
+
+    const aged = new Date(Date.now() - (maxWaitSeconds + 60) * 1000)
+    await seedPooled(anchor.tenantUuid, anchor.programUuid, 'trace-aged', aged)
+
+    const fired = await runDueBatchTimers(db, new Date())
+    expect(fired).toEqual([timerId])
+
+    const batches = await db.$queryRaw<{ trigger_reason: string; unit_count: number }[]>`
+      SELECT trigger_reason, unit_count FROM batch
+      WHERE tenant_id = ${anchor.tenantUuid}::uuid AND program_id = ${anchor.programUuid}::uuid
+    `
+    expect(batches).toEqual([{ trigger_reason: 'MAX_WAIT', unit_count: 1 }])
+  })
+
+  it('a HELD entry does not keep the pool awake: it is not waiting to be batched', async () => {
+    // HELD is excluded from the lot-size count and from the claim UPDATE, so it
+    // must be excluded from the age check too. Otherwise an indefinitely held
+    // record would make every wake-up decide "due", batch nothing (the claim
+    // skips HELD), and re-arm forever.
+    const anchor = await seedPoolAnchor()
+    const timerId = await seedDueTimer(anchor.pmInstanceId)
+    const { maxWaitSeconds } = poolConfig(anchor.tenantWire, anchor.programWire)
+
+    const aged = await seedPooled(
+      anchor.tenantUuid,
+      anchor.programUuid,
+      'trace-held-old',
+      new Date(Date.now() - (maxWaitSeconds + 60) * 1000),
+    )
+    await db.$executeRaw`
+      UPDATE pending_pool_entry SET pool_status = 'HELD', updated_at = now()
+      WHERE asgn_id = ${aged.asgnUuid}::uuid
+    `
+
+    await runDueBatchTimers(db, new Date())
+
+    // The pool reads as EMPTY, so it takes the empty-pool path: no batch, and
+    // the timer is re-armed for a full window (T0b.1).
+    const batches = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM batch`
+    expect(Number(batches[0]!.n)).toBe(0)
+    const timers = await db.$queryRaw<{ id: string; status: string }[]>`
+      SELECT id::text AS id, status FROM saga_timer WHERE instance_id = ${anchor.pmInstanceId}::uuid
+    `
+    expect(timers.find((t) => t.id === timerId)?.status).toBe('fired')
+    expect(timers.filter((t) => t.status === 'pending')).toHaveLength(1)
+  })
+
   it('but a LOT_SIZE trigger that finds an empty pool still touches NO timer', async () => {
     // The asymmetry is deliberate and worth pinning, because "always re-arm"
     // looks like the simpler rule and is wrong. Only a MAX_WAIT fire CONSUMES a
