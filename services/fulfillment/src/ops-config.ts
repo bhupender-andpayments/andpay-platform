@@ -86,6 +86,13 @@ const OPS_PERMISSIONS = [
   // exception, T6). No list permission is needed (no new list route is added
   // by this task).
   'ops:mark-activated',
+  // D-16 (T4.1b, 13 Aug 2026): the OTHER half of the activation branch. This
+  // records that the activation request has LEFT US for the CWD, which is the
+  // window an operator chases and which nothing could express before. Its own
+  // operation string rather than a flag on mark-activated, for the same reason
+  // close-quarantine has one: "I sent this to the CWD" and "the CWD confirmed
+  // it" are different claims, and the co-committed 6e carries the operation.
+  'ops:request-activation',
 ]
 
 // Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role permission differentiation.

@@ -69,6 +69,7 @@ export {
   deactivateDamageReasonOps,
   updateDamageCaseStatusOps,
   activateAssignmentOps,
+  requestActivationOps,
   BankFileParseError,
   OpsClientError,
   type BankPreviewResult,

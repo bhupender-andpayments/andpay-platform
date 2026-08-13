@@ -293,6 +293,68 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
     expect(await tmsAuditRows()).toHaveLength(0)
   })
 
+  // T4.1b (D-16): the OTHER activation door. Its own route, its own permission
+  // and its own operation string, because "I sent this to the CWD" and "the CWD
+  // confirmed it" are different claims.
+  describe('POST /ops/assignments/request-activation (T4.1b, D-16)', () => {
+    it('stamps REQUEST_SENT_TO_CWD across a send and reports what it could not resolve', async () => {
+      const known = newId('asgn')
+      await seedTmsAssignment(known)
+      const missing = newId('asgn')
+
+      const token = await mint()
+      const res = await request(app.getHttpServer())
+        .post('/ops/assignments/request-activation')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ dispatchIds: [known, missing] })
+
+      expect(res.status).toBe(200)
+      expect(res.body.recorded).toEqual([known])
+      expect(res.body.unknown).toEqual([missing])
+
+      const row = await tmsDb.$queryRaw<{ activation_status: string | null; activated_at: Date | null }[]>`
+        SELECT activation_status, activated_at FROM assignment WHERE id = ${toUuid(known)}::uuid`
+      expect(row[0]!.activation_status).toBe('REQUEST_SENT_TO_CWD')
+      // Sending the request is NOT activating it. The old scalar stays untouched.
+      expect(row[0]!.activated_at).toBeNull()
+
+      const audit = await tmsAuditRows()
+      expect(audit).toHaveLength(1)
+      expect(audit[0]!.operation).toBe('ops:request-activation')
+      expect(audit[0]!.decision).toBe('ALLOW')
+    })
+
+    it('an empty list is a 400 with no writes at all', async () => {
+      const token = await mint()
+      const res = await request(app.getHttpServer())
+        .post('/ops/assignments/request-activation')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ dispatchIds: [] })
+
+      expect(res.status).toBe(400)
+      expect(await tmsAuditRows()).toHaveLength(0)
+    })
+
+    it('a token whose role lacks the permission -> 403 with a DENY 6e, no domain effect', async () => {
+      const asgnId = newId('asgn')
+      await seedTmsAssignment(asgnId)
+
+      const token = await mint({ psr: 'role:nothing' })
+      const res = await request(app.getHttpServer())
+        .post('/ops/assignments/request-activation')
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ dispatchIds: [asgnId] })
+
+      expect(res.status).toBe(403)
+      const row = await tmsDb.$queryRaw<{ activation_status: string | null }[]>`
+        SELECT activation_status FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+      expect(row[0]!.activation_status).toBeNull()
+    })
+  })
+
   it('a token whose role lacks ops:mark-activated -> 403 with a DENY 6e, no domain effect', async () => {
     const asgnId = newId('asgn')
     await seedTmsAssignment(asgnId)

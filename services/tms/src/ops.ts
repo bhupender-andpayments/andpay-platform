@@ -26,6 +26,7 @@ import {
 } from './bank-file-adapter.js'
 import { createDamageReasonWithinTx, setDamageReasonActiveWithinTx, type DamageReasonRow } from './damage-reason.js'
 import { activateAssignmentWithinTx } from './assignment.js'
+import { recordActivationStatusWithinTx } from './activation-branch.js'
 import type { DevicePort } from './device-port.js'
 
 // Fix wave 1 (fulfillment/src/ops.ts, Task 9 review, Important 1) equivalent
@@ -626,6 +627,84 @@ export async function closeQuarantineRow(
     })
   })
   return { deduped: !ran, closed }
+}
+
+/**
+ * D-16 (T4.1b): record that the activation request for these dispatch ids has
+ * been SENT TO THE CWD.
+ *
+ * WHY THIS IS AN ACTION AND NOT A SIDE EFFECT OF THE REPORT. D-16 says report
+ * generation is what sets REQUEST_SENT_TO_CWD, and the literal reading would put
+ * a write inside GET /ops/reports/activation. That route is a pinned pure read
+ * whose whole posture is that reads are not mutations, and a mutating GET is
+ * also retried by every proxy and prefetched by every browser. So the same state
+ * is written by an explicit operator act instead: "I have sent this batch to the
+ * CWD", which is the claim the 6e should carry anyway. The domain write is this
+ * one function either way, so moving the trigger later costs a route and no
+ * state. Raised as a question rather than assumed (PLAN.md Q24).
+ *
+ * Takes a LIST because that is how the work happens: an operator exports a
+ * worklist and sends it in one go, and stamping thirty rows through thirty
+ * requests would leave a half-sent batch on any failure.
+ *
+ * The program for each row is resolved SERVER-SIDE from the assignment itself
+ * (D99), never from the caller, and the write scope is entered per row because
+ * the scope is per program and one send can span several. Unknown ids are
+ * REPORTED rather than thrown on: a stale worklist naming a row that has since
+ * been archived should not cost the operator the other twenty-nine.
+ */
+export async function requestActivationOps(
+  db: TmsDb,
+  args: { asgnIds: string[]; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean; recorded: string[]; unknown: string[] }> {
+  if (args.asgnIds.length === 0) {
+    throw new OpsClientError('invalid', 'at least one dispatch id is required')
+  }
+  const recorded: string[] = []
+  const unknown: string[] = []
+  const ran = await db.$transaction(async (tx: Tx) => {
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:request-activation'), async () => {
+      // ONE reported instant for the whole send, taken once: every row in this
+      // batch left for the CWD together, and stamping each with its own
+      // now() would put a spurious ordering in the trail.
+      const occurredAt = new Date()
+      for (const asgnId of args.asgnIds) {
+        const target = await tx.$queryRaw<{ program_id: string }[]>`
+          SELECT program_id::text AS program_id FROM assignment WHERE id = ${toUuid(asgnId)}::uuid
+        `
+        if (target.length === 0) {
+          unknown.push(asgnId)
+          continue
+        }
+        await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
+        await recordActivationStatusWithinTx(tx, {
+          asgnId,
+          programUuid: target[0]!.program_id,
+          status: 'REQUEST_SENT_TO_CWD',
+          occurredAt,
+          statusSource: 'ops:request-activation',
+          actorId: args.actorId,
+          traceId: args.traceId,
+        })
+        recorded.push(asgnId)
+      }
+      // The ALLOW 6e co-commits in the SAME tx as the stamps (spec 10c CC-1),
+      // naming every id the operator actually acted on. IDs and enum tokens
+      // only (S7/S10.5).
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:request-activation',
+            principalId: args.actorId,
+            resourceIds: recorded,
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+  return { deduped: !ran, recorded, unknown }
 }
 
 // Phase 3 Task 1 (BRD FR-08, FR-11) admin CRUD on the damage_reason master,

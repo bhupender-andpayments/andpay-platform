@@ -9,7 +9,7 @@ import {
   recordActivationStatusWithinTx,
   readActivationTrail,
 } from '../src/activation-branch.js'
-import { activateAssignmentOps } from '../src/ops.js'
+import { activateAssignmentOps, requestActivationOps } from '../src/ops.js'
 import { activateAssignment } from '../src/assignment.js'
 import type { DevicePort } from '../src/device-port.js'
 
@@ -284,5 +284,116 @@ describe('the existing activation path now writes the axis too (T4.1a)', () => {
     `
     expect(row[0]!.activated_at).not.toBeNull()
     expect(row[0]!.demand_state).toBe('activated')
+  })
+})
+
+// T4.1b: the OTHER writer of the axis, and the state that had nowhere to live
+// before D-16. This is the window between asking the CWD and being told.
+describe('requestActivationOps (T4.1b, D-16)', () => {
+  it('stamps REQUEST_SENT_TO_CWD across a whole send, with ONE reported instant for the batch', async () => {
+    const a = await seedAssignment()
+    const b = await seedAssignment()
+    const actorId = randomUUID()
+
+    const r = await requestActivationOps(db, {
+      asgnIds: [a.asgnId, b.asgnId],
+      clientKey: randomUUID(),
+      actorId,
+      traceId: 't-req-1',
+    })
+    expect(r.deduped).toBe(false)
+    expect(r.recorded.sort()).toEqual([a.asgnId, b.asgnId].sort())
+    expect(r.unknown).toEqual([])
+
+    expect(await activationStatusOf(a.asgnId)).toBe('REQUEST_SENT_TO_CWD')
+    expect(await activationStatusOf(b.asgnId)).toBe('REQUEST_SENT_TO_CWD')
+
+    // Both rows left for the CWD together, so both carry the same instant. A
+    // per-row now() would put a spurious ordering in the trail.
+    const trailA = await db.$transaction((tx) => readActivationTrail(tx as unknown as Tx, a.asgnId))
+    const trailB = await db.$transaction((tx) => readActivationTrail(tx as unknown as Tx, b.asgnId))
+    expect(trailA[0]!.occurredAt.getTime()).toBe(trailB[0]!.occurredAt.getTime())
+    expect(trailA[0]!.statusSource).toBe('ops:request-activation')
+    expect(trailA[0]!.actorId).toBe(actorId)
+  })
+
+  it('names an unknown id instead of throwing, so a stale worklist costs one row not the send', async () => {
+    const good = await seedAssignment()
+    const missing = fromUuid('asgn', toUuid(newId('asgn')))
+
+    const r = await requestActivationOps(db, {
+      asgnIds: [good.asgnId, missing],
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-req-2',
+    })
+    expect(r.recorded).toEqual([good.asgnId])
+    expect(r.unknown).toEqual([missing])
+    expect(await activationStatusOf(good.asgnId)).toBe('REQUEST_SENT_TO_CWD')
+  })
+
+  it('co-commits exactly one ALLOW 6e naming the ids actually acted on, and no more', async () => {
+    const a = await seedAssignment()
+    const missing = fromUuid('asgn', toUuid(newId('asgn')))
+    const actorId = randomUUID()
+
+    await requestActivationOps(db, {
+      asgnIds: [a.asgnId, missing],
+      clientKey: randomUUID(),
+      actorId,
+      traceId: 't-req-3',
+    })
+
+    const rows = await db.$queryRaw<{ payload: { operation: string; decision: string; resourceIds?: string[]; principalId: string } }[]>`
+      SELECT payload FROM outbox WHERE event_type = 'authz.audit'
+    `
+    const audit = rows.map((r) => r.payload).filter((p) => p.operation === 'ops:request-activation')
+    expect(audit).toHaveLength(1)
+    expect(audit[0]!.decision).toBe('ALLOW')
+    expect(audit[0]!.principalId).toBe(actorId)
+    // The id we could not resolve is NOT claimed as acted on.
+    expect(audit[0]!.resourceIds).toEqual([a.asgnId])
+  })
+
+  it('a replayed client key is a no-op: no second stamp, no second trail row, no second 6e', async () => {
+    const a = await seedAssignment()
+    const clientKey = randomUUID()
+
+    const first = await requestActivationOps(db, { asgnIds: [a.asgnId], clientKey, actorId: randomUUID(), traceId: 't-req-4a' })
+    const second = await requestActivationOps(db, { asgnIds: [a.asgnId], clientKey, actorId: randomUUID(), traceId: 't-req-4b' })
+    expect(first.deduped).toBe(false)
+    expect(second.deduped).toBe(true)
+
+    const trail = await db.$transaction((tx) => readActivationTrail(tx as unknown as Tx, a.asgnId))
+    expect(trail).toHaveLength(1)
+  })
+
+  it('cannot walk an already-activated record back to REQUEST_SENT_TO_CWD', async () => {
+    const a = await seedAssignment()
+    await activateAssignmentOps(db, {
+      asgnId: a.asgnId,
+      port: fixturePort,
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-req-5a',
+    })
+    await requestActivationOps(db, {
+      asgnIds: [a.asgnId],
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-req-5b',
+    })
+    expect(await activationStatusOf(a.asgnId)).toBe('ACTIVATED')
+    // The trail still records that somebody sent the request again.
+    const trail = await db.$transaction((tx) => readActivationTrail(tx as unknown as Tx, a.asgnId))
+    expect(trail.map((e) => e.status).sort()).toEqual(['ACTIVATED', 'REQUEST_SENT_TO_CWD'])
+  })
+
+  it('rejects an empty send as a client error before opening a transaction', async () => {
+    await expect(
+      requestActivationOps(db, { asgnIds: [], clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-req-6' }),
+    ).rejects.toThrow(/at least one dispatch id/)
+    const rows = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox`
+    expect(Number(rows[0]!.n)).toBe(0)
   })
 })
