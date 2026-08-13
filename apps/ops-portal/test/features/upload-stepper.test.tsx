@@ -52,6 +52,6 @@ describe('uploadKinds: the step honesty rules', () => {
   // portal cannot check.
   it('states columns ONLY where the portal shares a real constant with the parser', () => {
     const withColumns = UPLOAD_KINDS.filter((k) => k.columns !== undefined).map((k) => k.slug)
-    expect(withColumns.sort()).toEqual(['courier-status', 'device-inventory'])
+    expect(withColumns.sort()).toEqual(['activation', 'courier-status', 'device-inventory'])
   })
 })

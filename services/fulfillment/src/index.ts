@@ -107,6 +107,15 @@ export {
 } from './courier-status-adapter.js'
 export { parseSheetGrid, headerIndexer, type SheetGrid, type SheetGridError } from './sheet-grid.js'
 export {
+  parseActivationFile,
+  type ActivationFileRow,
+  type ActivationFileRowError,
+  type ActivationFileRowErrorCode,
+  type ActivationFileStructuralError,
+  type ActivationFileStructuralErrorCode,
+  type ActivationFileParseResult,
+} from './activation-file-adapter.js'
+export {
   ingestStatusWebhook,
   passthroughMapper,
   type WebhookEvent,
@@ -185,6 +194,7 @@ export {
   listDispatches,
   listDeviceInventory,
   readShipmentTrailOps,
+  resolveAssignmentsByDeviceSerial,
   type DispatchStatusEventRow,
   type DispatchRow,
   type UnitInventoryRow,

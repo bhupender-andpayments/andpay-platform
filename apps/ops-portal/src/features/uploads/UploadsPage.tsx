@@ -2,6 +2,7 @@ import { Link, Navigate, Route, Routes } from 'react-router-dom'
 import { DamageUploadPage } from './DamageUploadPage.js'
 import { DeviceInventoryUploadPage } from './DeviceInventoryUploadPage.js'
 import { CourierStatusUploadPage } from './CourierStatusUploadPage.js'
+import { ActivationUploadPage } from './ActivationUploadPage.js'
 import { UPLOAD_KINDS, INDEX_STEPS } from './uploadKinds.js'
 import { UploadStepper } from './UploadStepper.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -85,6 +86,7 @@ export function UploadsPage() {
       <Route path="damage" element={<DamageUploadPage />} />
       <Route path="device-inventory" element={<DeviceInventoryUploadPage />} />
       <Route path="courier-status" element={<CourierStatusUploadPage />} />
+      <Route path="activation" element={<ActivationUploadPage />} />
       {/* An unknown upload slug lands on the choices rather than a dead end. */}
       <Route path="*" element={<Navigate to="/uploads" replace />} />
     </Routes>

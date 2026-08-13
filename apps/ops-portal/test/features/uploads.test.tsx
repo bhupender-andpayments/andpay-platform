@@ -7,6 +7,7 @@ import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { DamageUploadPage } from '../../src/features/uploads/DamageUploadPage.js'
 import { DeviceInventoryUploadPage } from '../../src/features/uploads/DeviceInventoryUploadPage.js'
 import { CourierStatusUploadPage } from '../../src/features/uploads/CourierStatusUploadPage.js'
+import { ActivationUploadPage } from '../../src/features/uploads/ActivationUploadPage.js'
 import { UploadsPage } from '../../src/features/uploads/UploadsPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
@@ -494,6 +495,67 @@ describe('uploads', () => {
     // The row the FILE got wrong is named with its row number and its reason.
     expect(screen.getByText('5')).toBeTruthy()
     expect(screen.getByText('Unparseable Status Date')).toBeTruthy()
+  })
+
+  // D-19 (T5.5): the CWD's activation file. EVERY row comes back, including the
+  // ones that did not activate, because the CWD reported an activation for each
+  // line and an operator has to see what became of it.
+  it('activation: every row comes back with its own outcome, activated or not', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/uploads/activation'))
+          return jsonResponse({
+            activated: 1,
+            invalid: 1,
+            invalidRows: [{ rowNo: 3, errors: ['unsupported_status'] }],
+            results: [
+              { deviceId: 'SER-1', dispatchId: 'asgn_a', activated: true, reason: null },
+              { deviceId: 'SER-2', dispatchId: '', activated: false, reason: 'unknown-device' },
+            ],
+          })
+        return jsonResponse({})
+      }),
+    )
+
+    renderWithProviders(<ActivationUploadPage />)
+
+    await userEvent.upload(screen.getByLabelText(/activation file/i), makeFile('x', 'cwd.csv'))
+    await userEvent.click(screen.getByRole('button', { name: /continue to submit/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /upload activation file/i }))
+
+    // The one that worked and the one that did not, both named, in words. The
+    // outcome is read off the row's own cell: "Activated" is also the count
+    // label above the table.
+    const okRow = (await screen.findByText('SER-1')).closest('tr')!
+    expect(within(okRow).getByText('Activated')).toBeTruthy()
+    expect(screen.getByText('SER-2')).toBeTruthy()
+    expect(screen.getByText(/device not recognised/i)).toBeTruthy()
+    // And the row the file itself was wrong about, separately, with its reason
+    // in words rather than in the server's code vocabulary.
+    expect(screen.getByText(/status is not a success/i)).toBeTruthy()
+  })
+
+  it('activation: a structural rejection names the column and no rows are claimed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/uploads/activation'))
+          return jsonResponse(
+            { message: 'activation file failed structural parse', reasons: [{ code: 'missing_required_column', column: 'Status' }] },
+            400,
+          )
+        return jsonResponse({})
+      }),
+    )
+
+    renderWithProviders(<ActivationUploadPage />)
+    await userEvent.upload(screen.getByLabelText(/activation file/i), makeFile('x', 'cwd.csv'))
+    await userEvent.click(screen.getByRole('button', { name: /continue to submit/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /upload activation file/i }))
+
+    expect(await screen.findByText(/missing required column "Status"/i)).toBeTruthy()
+    expect(screen.getByText(/no rows were read/i)).toBeTruthy()
   })
 
   it('device inventory upload: a file over 5 MB is rejected client-side and never posted', async () => {

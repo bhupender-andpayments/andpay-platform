@@ -175,8 +175,11 @@ afterAll(async () => {
 })
 
 beforeEach(async () => {
-  await fulfillmentDb.$executeRawUnsafe('TRUNCATE outbox, inbox CASCADE')
-  await tmsDb.$executeRawUnsafe('TRUNCATE assignment, outbox, inbox CASCADE')
+  // `unit` joined the list with the T5.5 activation upload: it resolves device
+  // serials through unit.asgn_id, and a serial left behind by a previous test
+  // would resolve to somebody else's assignment.
+  await fulfillmentDb.$executeRawUnsafe('TRUNCATE unit, outbox, inbox CASCADE')
+  await tmsDb.$executeRawUnsafe('TRUNCATE assignment, assignment_activation_event, outbox, inbox CASCADE')
   await analyticsDb.$executeRawUnsafe('TRUNCATE dispatch_row, outbox, inbox CASCADE')
 })
 
@@ -436,7 +439,114 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
       expect(await tmsAuditRows()).toHaveLength(0)
     })
 
-    it('a token whose role lacks ops:mark-activated -> 403, no row touched', async () => {
+    // D-19 (T5.5): the CWD's activation file. It names DEVICES; the platform
+  // activates ASSIGNMENTS, so the edge resolves the serial through
+  // fulfillment's unit.asgn_id and then runs the same per-row activation.
+  describe('POST /ops/uploads/activation (T5.5, D-19)', () => {
+    async function seedUnitFor(asgnId: string, serial: string): Promise<void> {
+      await fulfillmentDb.$executeRaw`
+        INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, asgn_id, updated_at)
+        VALUES (${toUuid(newId('unit'))}::uuid, 'SERIALIZED', 'SOUNDBOX', ${toUuid(newId('vndr'))}::uuid,
+                'DELIVERED', ${serial}, ${toUuid(asgnId)}::uuid, now())
+      `
+    }
+
+    function csv(lines: string[]): Buffer {
+      return Buffer.from(lines.join('\n') + '\n', 'utf8')
+    }
+
+    it('activates by DEVICE serial, resolving each one back to its dispatch', async () => {
+      const asgnId = newId('asgn')
+      await seedTmsAssignment(asgnId)
+      await seedDispatchRow(asgnId, true)
+      await seedUnitFor(asgnId, 'SER-ACT-1')
+
+      const res = await request(app.getHttpServer())
+        .post('/ops/uploads/activation')
+        .set('Authorization', `Bearer ${await mint()}`)
+        .set('Idempotency-Key', randomUUID())
+        .attach('file', csv(['Device ID,Status', 'SER-ACT-1,Activated']), 'cwd.csv')
+
+      expect(res.status).toBe(200)
+      expect(res.body.activated).toBe(1)
+      expect(res.body.results[0]).toEqual({
+        deviceId: 'SER-ACT-1',
+        dispatchId: asgnId,
+        activated: true,
+        reason: null,
+      })
+
+      const row = await tmsDb.$queryRaw<{ activation_status: string | null }[]>`
+        SELECT activation_status FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+      expect(row[0]!.activation_status).toBe('ACTIVATED')
+    })
+
+    it('a serial the platform cannot place is REPORTED, never dropped', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/ops/uploads/activation')
+        .set('Authorization', `Bearer ${await mint()}`)
+        .set('Idempotency-Key', randomUUID())
+        .attach('file', csv(['Device ID,Status', 'SER-NOBODY,Activated']), 'cwd.csv')
+
+      expect(res.status).toBe(200)
+      expect(res.body.activated).toBe(0)
+      expect(res.body.results).toEqual([
+        { deviceId: 'SER-NOBODY', dispatchId: '', activated: false, reason: 'unknown-device' },
+      ])
+    })
+
+    it('a row claiming a FAILURE is rejected by name, because no failure write exists (C3 fence)', async () => {
+      const asgnId = newId('asgn')
+      await seedTmsAssignment(asgnId)
+      await seedDispatchRow(asgnId, true)
+      await seedUnitFor(asgnId, 'SER-ACT-2')
+
+      const res = await request(app.getHttpServer())
+        .post('/ops/uploads/activation')
+        .set('Authorization', `Bearer ${await mint()}`)
+        .set('Idempotency-Key', randomUUID())
+        .attach('file', csv(['Device ID,Status', 'SER-ACT-2,Failed']), 'cwd.csv')
+
+      expect(res.status).toBe(200)
+      expect(res.body.activated).toBe(0)
+      expect(res.body.invalid).toBe(1)
+      expect(res.body.invalidRows[0].errors).toEqual(['unsupported_status'])
+      // Nothing was written for that device.
+      const row = await tmsDb.$queryRaw<{ activated_at: Date | null }[]>`
+        SELECT activated_at FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+      expect(row[0]!.activated_at).toBeNull()
+    })
+
+    it('a missing required COLUMN is a 400 naming the column and never the filename (S4/5c)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/ops/uploads/activation')
+        .set('Authorization', `Bearer ${await mint()}`)
+        .set('Idempotency-Key', randomUUID())
+        .attach('file', csv(['Device ID', 'SER-ACT-3']), 'private-notes.csv')
+
+      expect(res.status).toBe(400)
+      expect(JSON.stringify(res.body)).toContain('Status')
+      expect(JSON.stringify(res.body)).not.toContain('private-notes')
+    })
+
+    it('a token whose role lacks ops:mark-activated -> 403, nothing activated', async () => {
+      const asgnId = newId('asgn')
+      await seedTmsAssignment(asgnId)
+      await seedDispatchRow(asgnId, true)
+      await seedUnitFor(asgnId, 'SER-ACT-4')
+
+      const res = await request(app.getHttpServer())
+        .post('/ops/uploads/activation')
+        .set('Authorization', `Bearer ${await mint({ psr: 'role:nothing' })}`)
+        .set('Idempotency-Key', randomUUID())
+        .attach('file', csv(['Device ID,Status', 'SER-ACT-4,Activated']), 'cwd.csv')
+
+      expect(res.status).toBe(403)
+      expect(await tmsActivatedFactCount()).toBe(0)
+    })
+  })
+
+  it('a token whose role lacks ops:mark-activated -> 403, no row touched', async () => {
       const asgnId = newId('asgn')
       await seedTmsAssignment(asgnId)
       await seedDispatchRow(asgnId, true)

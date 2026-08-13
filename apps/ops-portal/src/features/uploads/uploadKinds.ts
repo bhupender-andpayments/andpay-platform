@@ -76,6 +76,11 @@ export const DEVICE_INVENTORY_COLUMNS = ['Device ID'] as const
 // ordered against the updates around it.
 export const COURIER_STATUS_COLUMNS = ['AWB', 'Status', 'Status Date'] as const
 
+// D-19 (T5.5): the CWD names DEVICES, because that is what it activates and
+// what its own systems track. The platform resolves each serial back to the
+// dispatch it was printed for.
+export const ACTIVATION_COLUMNS = ['Device ID', 'Status'] as const
+
 // The bank descriptor that used to open this list moved into the workflow
 // workspace (2026-08-11 ruling): it is now stages 1 and 2 of one continuous
 // lifecycle (features/workflow/workflowKinds.ts's STAGE_HELP), not a
@@ -144,6 +149,30 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
     ],
     guidanceByStep: {
       upload: 'Submit unlocks once a courier and a file are set.',
+    },
+  },
+  {
+    slug: 'activation',
+    title: 'Activation confirmations',
+    source: 'From the CWD, after activation',
+    description: 'Devices the CWD has activated. Each row marks one soundbox activated.',
+    columns: ACTIVATION_COLUMNS,
+    steps: [CHOOSE, UPLOAD, SUBMIT],
+    nextByStep: {
+      upload: ['Drop the file the CWD sent.', 'Submit marks each device activated in one step; there is no separate preview for this file.'],
+      submit: [
+        'Each row is marked independently, so one bad row never costs you the rest.',
+        'Every row comes back with its own outcome, including the ones we could not place.',
+      ],
+    },
+    goodToKnow: [
+      ...SHARED_GOOD_TO_KNOW,
+      `Required columns: ${ACTIVATION_COLUMNS.join(', ')}. Names are matched ignoring case and extra spaces.`,
+      'Only a success can be recorded. A row reporting a failure is rejected by name rather than skipped, because there is nowhere to record it.',
+      'A device we cannot place is reported back, never dropped.',
+    ],
+    guidanceByStep: {
+      upload: 'Submit unlocks once a file is set.',
     },
   },
 ]

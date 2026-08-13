@@ -78,9 +78,10 @@ describe('Uploads step 1: two equal choices, none preselected', () => {
     // partial row there. Bank and damage name none: their layout is resolved by
     // source profile at ingest, so the portal has no constant to state.
     const stated = screen.getAllByText(/required columns:/i).map((el) => el.textContent)
-    expect(stated).toHaveLength(2)
+    expect(stated).toHaveLength(3)
     expect(stated.some((t) => /required columns: device id$/i.test(t ?? ''))).toBe(true)
     expect(stated.some((t) => /required columns: awb, status, status date$/i.test(t ?? ''))).toBe(true)
+    expect(stated.some((t) => /required columns: device id, status$/i.test(t ?? ''))).toBe(true)
   })
 })
 

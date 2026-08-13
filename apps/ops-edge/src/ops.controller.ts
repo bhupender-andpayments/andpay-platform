@@ -36,6 +36,9 @@ import {
   setVendorPrintLayout,
   ingestOpsDeviceInventory,
   ingestOpsCourierStatus,
+  parseActivationFile,
+  resolveAssignmentsByDeviceSerial,
+  type ActivationFileRowError,
   type IntakeSheet,
   type OpsDeviceInventoryResult,
   type OpsCourierStatusResult,
@@ -114,6 +117,13 @@ interface RequestActivationBody {
 // verdict, which is the whole point (see the route).
 interface BulkActivateBody {
   dispatchIds: string[]
+}
+// One row's outcome from an activation attempt, shared by the bulk route and the
+// activation file upload. `reason` is null exactly when `activated` is true.
+interface ActivationRowResult {
+  dispatchId: string
+  activated: boolean
+  reason: string | null
 }
 // 12 Aug 2026: a manual hold carries its reason, like the manual trigger below.
 // Free text, so it lands on the domain row (pending_pool_entry.hold_reason) and
@@ -859,12 +869,24 @@ export class OpsController {
     }
     const g = await this.gate(req, 'ops:mark-activated', idem, ids)
 
-    const results: { dispatchId: string; activated: boolean; reason: string | null }[] = []
-    for (const dispatchId of ids) {
-      // The SAME two checks the single route applies, per row. Expressing them
-      // once more here rather than calling that route's handler keeps the
-      // per-row reason available: a thrown ConflictException would end the
-      // batch, which is exactly the behaviour this route exists to avoid.
+    return { results: await this.activateEach(ids, g) }
+  }
+
+  // The per-row activation shared by the bulk route above and the activation
+  // FILE upload below. One copy, because the two differ only in where their list
+  // of dispatch ids came from, and the gates a row passes must not depend on
+  // that. Every row is independent: its own transaction, its own gates, its own
+  // 6e, and a failure never rolls back its neighbours.
+  private async activateEach(
+    dispatchIds: string[],
+    g: { clientKey: string; actorId: string; traceId: string },
+  ): Promise<ActivationRowResult[]> {
+    const results: ActivationRowResult[] = []
+    for (const dispatchId of dispatchIds) {
+      // The SAME checks the single route applies, per row. Expressed here rather
+      // than by calling that route's handler because a thrown ConflictException
+      // would end the batch, which is exactly what these routes exist to avoid:
+      // the reason has to survive as data, not as an exception.
       const status = await readDispatchActivationStatus(this.deps.analyticsDb, dispatchId)
       if (status === null) {
         results.push({ dispatchId, activated: false, reason: 'unknown-dispatch' })
@@ -881,12 +903,74 @@ export class OpsController {
         actorId: g.actorId,
         traceId: g.traceId,
       })
-      // `activated: false` with no reason is the already-activated case: the
-      // business-key dedup refused a second mark. Not an error, and not a
-      // success either, so it is reported as neither.
+      // `activated: false` is the already-activated case: the business-key dedup
+      // refused a second mark. Not an error and not a success, so it is reported
+      // as neither.
       results.push({ dispatchId, activated: r.activated, reason: r.activated ? null : 'already-activated' })
     }
-    return { results }
+    return results
+  }
+
+  // D-19 (T5.5, 13 Aug 2026): the CWD's ACTIVATION FILE, uploaded by ops.
+  //
+  // THE FILE NAMES DEVICES AND THE PLATFORM ACTIVATES ASSIGNMENTS, so the serial
+  // has to be resolved back to the dispatch it was printed for. That link is
+  // fulfillment's `unit.asgn_id` while the write is TMS's, so the EDGE composes
+  // the two reads: one resolution, then the same per-row activation the bulk
+  // route uses. No service reads another's tables (C4).
+  //
+  // A serial the platform cannot place is reported as its own row outcome rather
+  // than dropped. The CWD reported an activation for it, and losing that report
+  // silently is how a device ends up with no recorded outcome and nobody notices.
+  @Post('uploads/activation')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async uploadActivation(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{
+    activated: number
+    invalid: number
+    invalidRows: ActivationFileRowError[]
+    results: (ActivationRowResult & { deviceId: string })[]
+  }> {
+    const g = await this.gate(req, 'ops:mark-activated', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+
+    const parsed = await parseActivationFile(file.buffer, file.originalname)
+    if (parsed.structuralErrors.length > 0) {
+      // The CODE and, for a missing column, its canonical name. The adapter's
+      // `message` embeds the operator's filename and must never ride a response
+      // (S4/5c).
+      throw new BadRequestException({
+        message: 'activation file failed structural parse',
+        reasons: parsed.structuralErrors.map((e) =>
+          e.column === undefined ? { code: e.code } : { code: e.code, column: e.column },
+        ),
+      })
+    }
+
+    const serials = parsed.validRows.map((r) => r.deviceId)
+    const bySerial = await resolveAssignmentsByDeviceSerial(this.deps.fulfillmentDb, serials)
+
+    const results: (ActivationRowResult & { deviceId: string })[] = []
+    for (const deviceId of serials) {
+      const dispatchId = bySerial.get(deviceId)
+      if (dispatchId === undefined) {
+        results.push({ deviceId, dispatchId: '', activated: false, reason: 'unknown-device' })
+        continue
+      }
+      const [outcome] = await this.activateEach([dispatchId], g)
+      results.push({ deviceId, ...outcome! })
+    }
+
+    return {
+      activated: results.filter((r) => r.activated).length,
+      invalid: parsed.invalidRows.length,
+      invalidRows: parsed.invalidRows,
+      results,
+    }
   }
 
   @Post('batches/trigger')

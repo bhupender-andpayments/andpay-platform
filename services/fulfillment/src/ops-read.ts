@@ -898,3 +898,36 @@ export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): P
     overrideReason: r.override_reason,
   }))
 }
+
+// T5.5 (D-19): resolve DEVICE SERIALS back to the assignments they were printed
+// for, so the ops activation upload can drive the TMS activation write.
+//
+// The CWD's file names devices, because that is what it activates and what its
+// own systems track. The platform activates ASSIGNMENTS. `unit.asgn_id` is the
+// link, and it exists precisely because a merchant can hold several assignments
+// over time and printed_for_merchant cannot tell them apart.
+//
+// This returns a MAP rather than a list, and returns nothing for a serial it
+// cannot place, so the caller can report which rows it could not resolve instead
+// of quietly returning fewer rows than it was given. A device that exists but
+// has never been paired is not in the map either: a null asgn_id means nobody
+// has printed it for anyone, which is not something to guess about.
+export async function resolveAssignmentsByDeviceSerial(
+  db: FulfillmentDb,
+  deviceSerials: string[],
+): Promise<Map<string, string>> {
+  if (deviceSerials.length === 0) return new Map()
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<{ device_serial: string; asgn_id: string | null }[]>`
+      SELECT device_serial, asgn_id::text AS asgn_id
+      FROM unit
+      WHERE device_serial = ANY(${deviceSerials}::text[]) AND asgn_id IS NOT NULL
+    `
+  })
+  const out = new Map<string, string>()
+  for (const r of rows) {
+    if (r.device_serial !== null && r.asgn_id !== null) out.set(r.device_serial, fromUuid('asgn', r.asgn_id))
+  }
+  return out
+}

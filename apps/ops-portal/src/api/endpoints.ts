@@ -1382,6 +1382,20 @@ export function getDispatchDetail(c: Client, asgnId: string) {
   })
 }
 
+// D-19 (T5.5): the CWD's activation file. Rows name DEVICES; the edge resolves
+// each serial to its dispatch and runs the same per-row activation, so the
+// result carries both ids and a per-row reason.
+export interface ActivationUploadResult {
+  activated: number
+  invalid: number
+  invalidRows: { rowNo: number; errors: string[] }[]
+  results: { deviceId: string; dispatchId: string; activated: boolean; reason: string | null }[]
+}
+
+export function commitActivationFile(c: Client, file: File, idempotencyKey: string): Promise<ActivationUploadResult> {
+  return postFile<ActivationUploadResult>(c, '/ops/uploads/activation', file, idempotencyKey)
+}
+
 // D-19 (T5.4): mark several dispatches activated in one action. The result is
 // PER ROW, deliberately: the recorded objection to a Mark-all was that a
 // client-side loop failing halfway leaves an operator unable to tell which

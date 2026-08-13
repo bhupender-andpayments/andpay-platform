@@ -18,8 +18,14 @@ const db = new PrismaClient({ datasourceUrl: url })
 const PROGRAM = toUuid(newId('prog'))
 const TENANT = toUuid(newId('tnnt'))
 
-const TRUNCATE =
-  'TRUNCATE shpt_status_event, courier_status_exception, shpt, unit, pending_pool_entry, vndr, outbox, inbox CASCADE'
+// EXACTLY the tables this suite writes, and no CASCADE. It was copied wider
+// from status-file.test.ts (which needs `unit` and `pending_pool_entry` for a
+// test this one does not have), and the extra names cost a real gate run: a
+// TRUNCATE takes an AccessExclusiveLock, so naming tables a suite never touches
+// widens the lock set it contends on, and the surrounding suites deadlocked
+// against it (Postgres 40P01, package.test.ts's own beforeEach). A truncate list
+// is a lock declaration, not a tidiness list.
+const TRUNCATE = 'TRUNCATE shpt_status_event, courier_status_exception, shpt, vndr, outbox, inbox'
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(TRUNCATE)
