@@ -1382,6 +1382,52 @@ export function getDispatchDetail(c: Client, asgnId: string) {
   })
 }
 
+// D-24 (T6.6): the damage cases. A case IS the replacement assignment: the
+// complaint overlay lives on the replacement row, which is why every field here
+// describes a replacement and `replacementOf` points back at what it replaces.
+export interface DamageCaseView {
+  asgnId: string
+  replacementOf: string
+  merchantDisplayName: string
+  bankReferenceCode: string
+  branchCode: string | null
+  damageReason: string | null
+  /** What the BANK wrote on the damage row. */
+  bankRemarks: string | null
+  /** What an OPERATOR wrote about the case. Different people's words. */
+  opsRemarks: string | null
+  caseStatus: string | null
+  billable: boolean
+  demandState: string
+  createdAt: string
+  updatedAt: string
+}
+
+export function getDamageCases(c: Client, includeClosed: boolean) {
+  return c.request<DamageCaseView[]>({
+    method: 'GET',
+    path: `/ops/damage-cases${includeClosed ? '?includeClosed=true' : ''}`,
+  })
+}
+
+// The status vocabulary is normalized server-side on whitespace and case, so
+// either spelling of the middle state is accepted. Omitting opsRemarks LEAVES
+// an existing note alone; sending an empty string clears it.
+export function updateDamageCaseStatus(
+  c: Client,
+  asgnId: string,
+  status: string,
+  idempotencyKey: string,
+  opsRemarks?: string,
+) {
+  return c.request<{ deduped: boolean }>({
+    method: 'POST',
+    path: `/ops/records/${encodeURIComponent(asgnId)}/damage-case-status`,
+    body: opsRemarks === undefined ? { status } : { status, opsRemarks },
+    idempotencyKey,
+  })
+}
+
 // D-19 (T5.5): the CWD's activation file. Rows name DEVICES; the edge resolves
 // each serial to its dispatch and runs the same per-row activation, so the
 // result carries both ids and a per-row reason.

@@ -127,7 +127,7 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 11 real sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 12 real sections, no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
@@ -144,8 +144,13 @@ describe('ops-portal app shell + navigation', () => {
     //
     // The 2026-08-11 ruling ADDS Workflow, the lifecycle workspace, which leads
     // the Pipeline group in the sidebar and sorts last here.
+    //
+    // D-24 (T6.6) ADDS Damage cases, beside Queues under Operations: both are
+    // work an operator picks up and moves along, as opposed to an object they
+    // look at. The read had existed at the edge since FR08-2 with no surface at
+    // all, which is most of why those statuses were stale.
     expect([...names].sort()).toEqual(
-      ['Activation', 'Batches', 'Command Center', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads', 'Workflow'],
+      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads', 'Workflow'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })

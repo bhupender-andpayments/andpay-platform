@@ -43,7 +43,7 @@ const TILES_FIXTURE = {
   activatedSuccessfully: 0,
 }
 
-// A single fetch stub that answers every mount-time read the 11 sections'
+// A single fetch stub that answers every mount-time read the 12 sections'
 // DEFAULT tab issues (dashboards tiles, the reports page's default report,
 // queues' default quarantine tab, master-data's default vendor-registry tab,
 // the activation worklist report), plus login/rehydrate.
@@ -124,6 +124,8 @@ const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
   { label: 'Dispatches', heading: /^dispatches$/i },
   { label: 'Inventory', heading: /^inventory$/i },
   { label: 'Activation', heading: /^activation$/i },
+  // D-24 (T6.6): the damage cases screen.
+  { label: 'Damage cases', heading: /^damage cases$/i },
 ]
 
 describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
@@ -142,7 +144,7 @@ describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
     consoleErrorSpy.mockRestore()
   })
 
-  it('mounts the shell authenticated and routes through all 11 sections with no thrown errors and no console.error', async () => {
+  it('mounts the shell authenticated and routes through all 12 sections with no thrown errors and no console.error', async () => {
     await renderAuthedShell()
 
     const nav = screen.getByRole('navigation', { name: /main/i })

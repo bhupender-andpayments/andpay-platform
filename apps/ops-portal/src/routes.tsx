@@ -11,6 +11,7 @@ import { UploadsPage } from './features/uploads/UploadsPage.js'
 import { WorkflowPage } from './features/workflow/WorkflowPage.js'
 import { DispatchesPage } from './features/dispatches/DispatchesPage.js'
 import { DispatchDetailPage } from './features/dispatches/DispatchDetailPage.js'
+import { DamageCasesPage } from './features/damage/DamageCasesPage.js'
 import { InventoryPage } from './features/inventory/InventoryPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
 import { MerchantsPage } from './features/merchants/MerchantsPage.js'
@@ -88,6 +89,10 @@ export function AppRoutes() {
               want of a read. GET /ops/devices exists now, so the condition
               that kept it out is gone. */}
           <Route path="/inventory" element={<InventoryPage />} />
+          {/* D-24 (T6.6): the damage cases. The read has existed at the edge
+              since FR08-2 with no portal surface at all, which is most of why
+              the statuses were stale: nobody could see them. */}
+          <Route path="/damage-cases" element={<DamageCasesPage />} />
           <Route path="/queues" element={<QueuesPage />} />
           <Route path="/reports" element={<ReportPage />} />
           <Route path="/masterdata" element={<MasterDataPage />} />

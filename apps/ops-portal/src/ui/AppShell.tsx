@@ -77,6 +77,7 @@ const SECTIONS: readonly Section[] = [
   { to: '/uploads', label: 'Uploads', icon: IconUploads },
   { to: '/dispatches', label: 'Dispatches', icon: IconOperations },
   { to: '/queues', label: 'Queues', icon: IconQueues },
+  { to: '/damage-cases', label: 'Damage cases', icon: IconQueues },
   { to: '/reports', label: 'Reports', icon: IconReports },
   { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
 ]
@@ -94,7 +95,9 @@ const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = 
   // `/workflow` FIRST: line 95 maps `g.routes` in order, so array position here
   // is render order in the sidebar.
   { title: 'Pipeline', routes: ['/workflow', '/merchants', '/inventory', '/batches', '/dispatches', '/activation'] },
-  { title: 'Operations', routes: ['/uploads', '/queues'] },
+  // Damage cases sit beside Queues: both are work an operator picks up and
+  // moves along, as opposed to an object they look at.
+  { title: 'Operations', routes: ['/uploads', '/queues', '/damage-cases'] },
   { title: 'Insights', routes: ['/reports'] },
   { title: 'Setup', routes: ['/masterdata'] },
 ]
