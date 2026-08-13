@@ -2,7 +2,8 @@ import { enqueue } from '@andpay/outbox'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { eventKey } from '@andpay/keys'
 import type { TmsDb } from './db.js'
-import { emitDemandFact, dispatchGroupsFor, type DispatchGroup } from './assignment.js'
+import { emitDemandFact, type DispatchGroup } from './assignment.js'
+import { activeDamageResolution } from './damage-resolution.js'
 import { replacementRaisedFactEnvelope, TMS_REPLACEMENT_RAISED_TOPIC } from './events.js'
 import { type Tx } from './internal.js'
 import { enterWriteScope, enterWriteRole } from './write-context.js'
@@ -15,26 +16,45 @@ export interface BankDamageRow {
   damageReason: string
   bankRemarks: string
   shipToAddress: string
-  // FR08-1: per-row items to replace, as a SINGLE optional group so the
-  // all-or-nothing invariant is unrepresentable: either the row supplies the
-  // full item trio (authoritative) or it omits `items` entirely and the ingest
-  // clones the matched original like-for-like. Parsed in normalizeDamageRow.
+  // Per-row items to replace, as a SINGLE optional group so the all-or-nothing
+  // invariant is unrepresentable: either the row supplies the full item trio
+  // (authoritative) or it omits `items` and the resolution strategy decides.
+  //
+  // D-20 (T6.2) removed the columns that fed this from the CANONICAL mapping, so
+  // nothing populates it today. The field survives because a source profile that
+  // genuinely carries per-item quantities must keep resolving as it always did,
+  // and because WHICH items a damage replaces is O-1's open question: a future
+  // answer may well want this input back. Contrast deliveryStatus below, which
+  // is gone outright.
   items?: { soundbox: boolean; standeeCount: number; stickerCount: number }
-  // FR08-2: optional file-side Delivery Status seeding the initial case_status.
-  deliveryStatus?: string
 }
 
-// FR08-2: the valid replacement case-status lifecycle values. The file's
-// Delivery Status only seeds the initial state when it matches one of these
-// (case- and whitespace-insensitive); anything else falls back to 'Open'.
+// The replacement case-status lifecycle values.
+//
+// D-24 (T6.2): a case now ALWAYS opens at 'Open', and the file's old Delivery
+// Status column that used to seed it is gone from the row shape entirely, not
+// merely unmapped. That is a different call from the one made about `items`
+// above, and deliberately: which items are damaged is something the bank can
+// legitimately know and tell us, while where a replacement has got to is
+// something only this platform watches. A file that opened a case already
+// Closed was asserting a lifecycle nobody here had observed.
 export const CASE_STATUS_VALUES = ['Open', 'In-Progress', 'Closed'] as const
 export type CaseStatus = (typeof CASE_STATUS_VALUES)[number]
 
-function seedCaseStatus(raw: string | undefined): CaseStatus {
-  if (raw === undefined) return 'Open'
+const INITIAL_CASE_STATUS: CaseStatus = 'Open'
+
+/**
+ * Read a caller-supplied case status against the closed vocabulary.
+ *
+ * D-24 (T6.5) spells the middle state "In Progress" and this schema stores it
+ * "In-Progress", so the comparison is normalized on whitespace and case rather
+ * than making every caller learn which spelling this particular column chose.
+ * Returns undefined for anything outside the vocabulary; a caller decides
+ * whether that is a client error or a silent skip.
+ */
+export function normalizeCaseStatus(raw: string): CaseStatus | undefined {
   const norm = raw.trim().toLowerCase().replace(/\s+/g, '-')
-  const match = CASE_STATUS_VALUES.find((v) => v.toLowerCase() === norm)
-  return match ?? 'Open'
+  return CASE_STATUS_VALUES.find((v) => v.toLowerCase() === norm)
 }
 
 interface OriginalRow {
@@ -130,29 +150,35 @@ export async function ingestDamageRowWithinTx(
 
   await enterWriteScope(tx, 'tms_write', matches[0]!.program_id)
 
-  // FR08-1 at the request grain: honor the file's per-row item spec when
-  // supplied (all-or-nothing: normalizeDamageRow sets all three together or
-  // none), else pool the matched originals like-for-like (a two-group
-  // request's clone is the union of both groups' products, exactly what it
-  // shipped with).
-  const replSoundbox = row.items?.soundbox ?? matches.some((m) => m.soundbox)
-  const replStandee = row.items?.standeeCount ?? Math.max(...matches.map((m) => m.standee_count), 0)
-  const replSticker = row.items?.stickerCount ?? Math.max(...matches.map((m) => m.sticker_count), 0)
-  const replacementGroups = dispatchGroupsFor({ soundbox: replSoundbox, standee_count: replStandee, sticker_count: replSticker })
-  // dispatchGroupsFor's orphan rule (a request-grain row that ordered nothing
-  // still becomes a visible COLLATERAL group) does not apply to damage: a
-  // zero-count COLLATERAL group here means the damage names nothing collateral
-  // at all, so it is filtered out rather than minted as a meaningless
-  // replacement. When that leaves nothing to replace, quarantine no_match too.
-  const effectiveGroups = replacementGroups.filter((g) => g.group === 'SOUNDBOX' || g.standeeCount > 0 || g.stickerCount > 0)
-  if (effectiveGroups.length === 0) {
+  // THE O-1 DECISION POINT (T6.1). Which of the merchant's items this damage
+  // replaces is the one open question the walkthrough did not answer, so it is
+  // made in exactly one place (damage-resolution.ts) rather than inline here.
+  // The strategy in force today is a faithful copy of what this code did before
+  // the seam existed; when O-1 is answered, that module changes and this ingest
+  // does not.
+  //
+  // A strategy that CANNOT decide holds the row rather than guessing, which is
+  // the same posture this ingest already takes for a row it cannot match.
+  const resolution = activeDamageResolution({
+    originals: matches.map((m) => ({
+      dispatchGroup: m.dispatch_group,
+      soundbox: m.soundbox,
+      standeeCount: m.standee_count,
+      stickerCount: m.sticker_count,
+    })),
+    damageReason: row.damageReason,
+    bankRemarks: row.bankRemarks,
+    ...(row.items === undefined ? {} : { items: row.items }),
+  })
+  if (resolution.kind === 'quarantine') {
     await tx.$executeRaw`
       INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
-      VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_damage'}, ${'no_match'})
+      VALUES (${row.fileId}, ${row.rowNo}, ${'redacted:bank_damage'}, ${resolution.reasonCode})
       ON CONFLICT (file_id, row_no) DO NOTHING
     `
     return 'quarantined'
   }
+  const effectiveGroups = resolution.groups
 
   // Which original row anchors each replacement dispatch group. New-shape
   // requests have at most one row per dispatch group. A LEGACY combined row
@@ -166,9 +192,20 @@ export async function ingestDamageRowWithinTx(
     matches.find((m) => m.dispatch_group === 'COLLATERAL') ??
     matches.find((m) => m.standee_count > 0 || m.sticker_count > 0)
 
-  // The damage names an item the request never had: vendor/bank error, not a
-  // new demand. Same quarantine surface as a failed match. Checked for every
-  // group BEFORE any insert, so a quarantine never leaves a partial mint.
+  // The resolution named a group this request cannot anchor. Held, never
+  // minted, and checked for EVERY group before any insert so a hold never
+  // leaves a partial mint.
+  //
+  // D-21 asked for the "collateral must exist" VALIDATION to go, and T6.2 is
+  // what removed it: the file's item columns were the only way a damage row
+  // could name a group the request never had, so with those unmapped, standee
+  // damage for a merchant who never ordered a soundbox now resolves to the
+  // collateral it did order and passes. What remains here is not that
+  // validation. It is a structural guard on the MINT, and it is what stops a
+  // future O-1 strategy (reason-implies-group can name SOUNDBOX for a
+  // collateral-only merchant) from dereferencing an anchor that is not there.
+  // Removing it in D-21's name would be removing a safety net and calling it
+  // compliance.
   for (const groupSpec of effectiveGroups) {
     const anchor = groupSpec.group === 'SOUNDBOX' ? soundboxOriginal : collateralOriginal
     if (anchor === undefined) {
@@ -181,8 +218,7 @@ export async function ingestDamageRowWithinTx(
     }
   }
 
-  // FR08-2: seed the initial case_status from the file's Delivery Status, else Open.
-  const initialCaseStatus = seedCaseStatus(row.deliveryStatus)
+  const initialCaseStatus = INITIAL_CASE_STATUS
 
   let anyWon = false
   for (const groupSpec of effectiveGroups) {

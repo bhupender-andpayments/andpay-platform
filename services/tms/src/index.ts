@@ -46,7 +46,28 @@ export {
   type ActivationStatusSource,
   type ActivationTrailEntry,
 } from './activation-branch.js'
-export { ingestDamageRow, ingestDamageRowWithinTx, type BankDamageRow } from './damage.js'
+export {
+  ingestDamageRow,
+  ingestDamageRowWithinTx,
+  normalizeCaseStatus,
+  CASE_STATUS_VALUES,
+  type BankDamageRow,
+  type CaseStatus,
+} from './damage.js'
+export {
+  advanceCaseStatusWithinTx,
+  projectDispatchToCases,
+  type DispatchFactView,
+} from './damage-case.js'
+export {
+  cloneMatchedRequest,
+  activeDamageResolution,
+  type DamagedCollateralResolution,
+  type DamageResolution,
+  type DamageResolutionInput,
+  type MatchedOriginal,
+  type ReplacementGroupSpec,
+} from './damage-resolution.js'
 export {
   UnwiredDevicePort,
   ManualDevicePort,
