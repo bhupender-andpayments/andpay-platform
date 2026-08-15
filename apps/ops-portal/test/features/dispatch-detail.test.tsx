@@ -125,6 +125,26 @@ describe('DispatchDetailPage (D-16, T4.5)', () => {
     expect(screen.getByText('Request sent to CWD')).toBeTruthy()
   })
 
+  it('a request the ANALYTICS fold has not seen still shows: the TMS trail wins over a null fold', async () => {
+    // No activation-request fact exists (PLAN.md section 7 item 8), so the
+    // fold's activationStatus stays null forever for this state; the trail is
+    // the TMS read and is the truth the card must follow (V-4 posture).
+    stub({
+      ...DETAIL,
+      activationStatus: null,
+      activationDate: null,
+      activationTrail: [
+        { status: 'REQUEST_SENT_TO_CWD', occurredAt: '2026-08-16T04:24:00.000Z', statusSource: 'ops:request-activation', actorId: null, recordedAt: '2026-08-16T04:24:00.000Z' },
+      ],
+    })
+    renderPage()
+    expect(await screen.findByText('Activation')).toBeTruthy()
+    // The status line reports the request, and the request button is GONE.
+    expect(screen.getAllByText('Request sent to CWD').length).toBeGreaterThan(0)
+    expect(screen.queryByText(/record request sent to cwd/i)).toBeNull()
+    expect(screen.getByText(/mark activated/i)).toBeTruthy()
+  })
+
   it('an activated device does not move the parcel: the rail stays on the courier axis', async () => {
     stub(DETAIL)
     renderPage()

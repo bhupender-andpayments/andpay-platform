@@ -44,18 +44,24 @@ import { fmtDateTime, statusMeta } from '../../ui/format.js'
 // reached. This is the page an operator lands on when someone asks about a
 // merchant by name.
 //
-// NO ACTIVATION ON THIS PAGE (2026-08-15 ruling). A dispatch's lifecycle ends
-// at Delivered: parcels deliver, they do not activate. Activation is the
-// DEVICE's own axis (D-16, unit.activated_at), and the device page - one click
-// away through the Devices links below - is where it is shown. An earlier
-// version rendered activation as a second branch column here, and it read as a
-// stalled lifecycle on every collateral dispatch and every not-yet-activated
-// device, which is exactly the confusion D-16 separated the axes to end.
+// ACTIVATION IS A CARD, NEVER A RUNG (revised 16 Aug 2026, UAT walkthrough
+// findings A3/A4, superseding the 2026-08-15 no-activation-here ruling). That
+// ruling's rail half survives in full: the RAIL is the parcel's, a dispatch
+// delivers and does not activate, and rendering activation as a rung read as a
+// stalled lifecycle on every collateral dispatch, which is exactly the
+// confusion D-16 separated the axes to end. Its removal half did not survive:
+// the device page never gained the activation ACTIONS the ruling pointed at,
+// requestActivation had no consumer anywhere, so REQUEST_SENT_TO_CWD was
+// unreachable from the entire UI while D-16/T4.5 records that this page
+// carries BOTH axes. So activation is a fact card beside Request and
+// Fulfilment: status, instant, trail, and the two writes the Activation
+// worklist already uses. A COLLATERAL dispatch states its terminal is
+// Delivered instead of offering a write that would 409.
 //
-// ONE HORIZONTAL RAIL, the same shared LifecycleRail the device page uses,
-// because with activation gone this lifecycle is a single unbranched ladder.
-// The rail is the POSITION SUMMARY; the per-event courier trail with its two
-// clocks (S22: reported by the courier vs recorded by us), source channels and
+// ONE HORIZONTAL RAIL, the same shared LifecycleRail the device page uses:
+// the delivery lifecycle is a single unbranched ladder and stays one. The rail
+// is the POSITION SUMMARY; the per-event courier trail with its two clocks
+// (S22: reported by the courier vs recorded by us), source channels and
 // override reasons lives on the shipment page, one click away through the AWB.
 //
 // WHERE EVERY STAGE'S TIME COMES FROM, and where none exists. The courier legs
@@ -207,6 +213,14 @@ export function DispatchDetailPage() {
           .filter((p): p is string => p !== null)
           .join(', ')
 
+  // detail.activationStatus is the ANALYTICS fold, and analytics never learns
+  // REQUEST_SENT_TO_CWD: no activation-request fact exists (a new topic is a
+  // corpus decision, PLAN.md section 7 item 8), so the ops surfaces read that
+  // state from TMS. The trail below IS the TMS read, so the latest trail entry
+  // wins over a null fold. This is the same read-your-own-write posture the
+  // Activation worklist took (V-4), for the same reason.
+  const activationStatus = detail.activationStatus ?? detail.activationTrail.at(-1)?.status ?? null
+
   return (
     <div className="space-y-4">
       <BackLink to="/dispatches" label="Dispatches" fromSearch={fromSearch} />
@@ -335,10 +349,10 @@ export function DispatchDetailPage() {
             ) : (
               <>
                 <FactRow icon={Zap} label="Status">
-                  {detail.activationStatus === null ? (
+                  {activationStatus === null ? (
                     <NoValue>no request sent yet</NoValue>
                   ) : (
-                    <StatusPill value={detail.activationStatus} />
+                    <StatusPill value={activationStatus} />
                   )}
                 </FactRow>
                 <FactRow icon={PackageCheck} label="Activated">
@@ -355,9 +369,9 @@ export function DispatchDetailPage() {
                   </div>
                 )}
                 {activationError !== null && <ErrorNote>{activationError}</ErrorNote>}
-                {detail.activationStatus !== 'ACTIVATED' && (
+                {activationStatus !== 'ACTIVATED' && (
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {detail.activationStatus === null && (
+                    {activationStatus === null && (
                       <Button variant="secondary" onClick={() => setActivationAction('request')}>
                         <Send className="mr-1.5 h-3.5 w-3.5" /> Record request sent to CWD
                       </Button>
