@@ -67,6 +67,18 @@ tenant, then global; a bank with no row inherits. This is the one ruling that
 reverses a corpus-recorded decision, so it rides the next corpus submission
 (addition 11 below) and lands as code only alongside this record.
 
+BUILT SHAPE (same day, commit `37413e9`), recorded because it is narrower than
+the ruling's words: a bank-tier row carries MIN LOT SIZE ONLY, and a bank with
+an override is evaluated on its own pooled count, its trigger claiming only
+its own entries (BRD 5.3.3's evaluate-per-bank without re-graining the pool).
+Max wait stays resolved at the pool tiers, because the max-wait timer is armed
+per POOL (one saga instance per batch_pool row); a per-bank wait ceiling would
+require per-bank pools or per-bank timers, which is a pool re-grain, a much
+larger change deliberately not taken days before UAT. A bank-tier write that
+supplies maxWaitSeconds is REJECTED, not ignored, and a table CHECK enforces
+the same. If per-bank max wait is ever truly needed, it is a new decision, and
+the honest implementation is pool-per-bank, not a config row.
+
 ## What this changes on the ledgers
 
 - PLAN.md section 8: Q12 answered (R-7), Q21 answered (R-3), Q23 answered
