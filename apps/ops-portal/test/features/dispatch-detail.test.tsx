@@ -1,14 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, within } from '@testing-library/react'
+import { render, screen, cleanup } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { DispatchDetailPage } from '../../src/features/dispatches/DispatchDetailPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
-// D-16 (T4.5): the per-dispatch detail page renders the TWO BRANCHES, not one
-// ladder. The response shape below mirrors the edge's dispatchDetail route
-// (apps/ops-edge/src/reports.controller.ts), which composes it from analytics,
-// fulfillment and tms; nothing is invented here.
+// The per-dispatch detail page: ONE horizontal rail over the BRD delivery
+// ladder, no activation (2026-08-15 ruling: parcels deliver, devices activate,
+// and the device page owns that axis). The response shape below mirrors the
+// edge's dispatchDetail route (apps/ops-edge/src/reports.controller.ts);
+// nothing is invented here.
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -34,12 +35,12 @@ const DETAIL = {
   activationStatus: 'ACTIVATED',
   activationDate: '2026-08-12T12:00:00.000Z',
   deliveryTrail: [
-    { status: 'PICKED_UP', courierTimestamp: '2026-08-12T09:00:00.000Z', statusSource: 'courier-file', overrideReason: null },
-    { status: 'IN_TRANSIT', courierTimestamp: '2026-08-12T15:00:00.000Z', statusSource: 'courier-file', overrideReason: null },
+    { status: 'PICKED_UP', courierTimestamp: '2026-08-12T09:00:00.000Z', statusSource: 'courier-file', sourceRef: 'vndr_1|file_7', receivedAt: '2026-08-12T09:05:00.000Z', overrideReason: null },
+    { status: 'IN_TRANSIT', courierTimestamp: '2026-08-12T15:00:00.000Z', statusSource: 'courier-file', sourceRef: 'vndr_1|file_8', receivedAt: '2026-08-12T15:04:00.000Z', overrideReason: null },
   ],
   activationTrail: [
-    { status: 'REQUEST_SENT_TO_CWD', occurredAt: '2026-08-12T10:00:00.000Z', statusSource: 'ops:request-activation', actorId: null },
-    { status: 'ACTIVATED', occurredAt: '2026-08-12T12:00:00.000Z', statusSource: 'ops:mark-activated', actorId: null },
+    { status: 'REQUEST_SENT_TO_CWD', occurredAt: '2026-08-12T10:00:00.000Z', statusSource: 'ops:request-activation', actorId: null, recordedAt: '2026-08-12T10:00:30.000Z' },
+    { status: 'ACTIVATED', occurredAt: '2026-08-12T12:00:00.000Z', statusSource: 'ops:mark-activated', actorId: null, recordedAt: '2026-08-12T12:00:20.000Z' },
   ],
   watermark: { asOf: '2026-08-12T16:00:00.000Z', perTopic: {} },
 }
@@ -70,52 +71,56 @@ describe('DispatchDetailPage (D-16, T4.5)', () => {
     cleanup()
   })
 
-  it('renders delivery and activation as SEPARATE branches, each with its own history', async () => {
+  it('renders the delivery ladder as one rail, and no activation anywhere on the page', async () => {
     stub(DETAIL)
     renderPage()
 
-    const delivery = await screen.findByTestId('delivery-branch')
-    const activation = screen.getByTestId('activation-branch')
+    expect(await screen.findByText('Dispatch lifecycle')).toBeTruthy()
+    for (const label of [
+      'Received',
+      'Pending batch',
+      'QR generated',
+      'Sent to print vendor',
+      'Dispatched by vendor',
+      'Delivered',
+    ]) {
+      expect(screen.getByText(label)).toBeTruthy()
+    }
+    // In transit is the current rung AND the header pill, so it appears twice.
+    expect(screen.getAllByText(/in transit/i).length).toBeGreaterThan(0)
 
-    // Each branch shows its OWN current state, off its own axis. Both branches
-    // repeat their latest status in the trail below the heading, so these are
-    // getAll: the point is that the token appears on ONE side, not how often.
-    expect(within(delivery).getAllByText('IN_TRANSIT').length).toBeGreaterThan(0)
-    expect(within(activation).getAllByText('ACTIVATED').length).toBeGreaterThan(0)
-
-    // And its own trail. The request-sent event exists only on the activation
-    // side, which is how you can tell they were not merged into one timeline.
-    expect(within(activation).getByText('REQUEST_SENT_TO_CWD')).toBeTruthy()
-    expect(within(delivery).queryByText('REQUEST_SENT_TO_CWD')).toBeNull()
-    expect(within(delivery).getByText('PICKED_UP')).toBeTruthy()
-    // And the delivery side knows nothing about activation.
-    expect(within(delivery).queryByText('ACTIVATED')).toBeNull()
+    // A dispatch does not activate; its devices do, on the device page. The
+    // activation trail the read still carries must render nowhere here.
+    expect(screen.queryByText(/activation/i)).toBeNull()
+    expect(screen.queryByText(/request sent to cwd/i)).toBeNull()
+    expect(screen.queryByText(/^activated$/i)).toBeNull()
   })
 
-  it('shows an activated record whose parcel has NOT arrived, without either branch contradicting the other', async () => {
+  it('an activated device does not move the parcel: the rail stays on the courier axis', async () => {
     stub(DETAIL)
     renderPage()
 
-    // Activated, and still in transit, at the same time. Under the old single
-    // ladder one of these two readings had to lose.
-    const activation = await screen.findByTestId('activation-branch')
-    expect(within(activation).getAllByText('ACTIVATED').length).toBeGreaterThan(0)
-    expect(within(screen.getByTestId('delivery-branch')).getAllByText('IN_TRANSIT').length).toBeGreaterThan(0)
-    // No delivery date is claimed.
-    expect(screen.queryByText(/^Delivered /)).toBeNull()
+    // The read says ACTIVATED (12:00) while the parcel is IN_TRANSIT (15:00).
+    // The rail reports the parcel, so In transit is where it stands and no
+    // delivery instant is claimed.
+    expect((await screen.findAllByText(/in transit/i)).length).toBeGreaterThan(0)
+    expect(screen.getByText('Delivered')).toBeTruthy()
+    // The Delivered FactRow answers honestly.
+    expect(screen.getByText('not yet')).toBeTruthy()
   })
 
-  it('a COLLATERAL dispatch says paper does not activate rather than showing an empty queue', async () => {
+  it('a COLLATERAL dispatch renders the same ladder with no activation apology card', async () => {
     stub({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null, activationTrail: [] })
     renderPage()
 
-    expect(await screen.findByText(/collateral does not activate/i)).toBeTruthy()
-    // "No events recorded yet" would read as "we are waiting", which for a
-    // standee is never true.
-    expect(screen.queryByText(/no events recorded yet/i)).toBeNull()
+    expect(await screen.findByText('Dispatch lifecycle')).toBeTruthy()
+    // The old page had to explain that paper does not activate. With activation
+    // gone from this page there is nothing to apologise for.
+    expect(screen.queryByText(/collateral does not activate/i)).toBeNull()
+    expect(screen.queryByText(/activation/i)).toBeNull()
   })
 
-  it('an empty branch says nothing has happened yet, which is a real answer and not a failure', async () => {
+  it('a dispatch the courier has not touched still shows the whole ladder, early rungs reached', async () => {
     stub({
       ...DETAIL,
       awb: null,
@@ -127,9 +132,49 @@ describe('DispatchDetailPage (D-16, T4.5)', () => {
     })
     renderPage()
 
-    expect(await screen.findByText('Not dispatched')).toBeTruthy()
-    expect(screen.getByText('Not requested')).toBeTruthy()
-    expect(screen.getAllByText(/no events recorded yet/i)).toHaveLength(2)
+    // The BRD's first rungs are real positions this dispatch has reached, and
+    // the courier rungs ahead are drawn unreached rather than hidden.
+    expect(await screen.findByText('Received')).toBeTruthy()
+    expect(screen.getByText('Pending batch')).toBeTruthy()
+    expect(screen.getByText('Delivered')).toBeTruthy()
+    // The AWB fact answers honestly instead of claiming a parcel.
+    expect(screen.getByText('not dispatched')).toBeTruthy()
+  })
+
+  // WHAT WAS ASKED FOR, which the analytics read does not carry. The page fetches
+  // it from the batch that holds this dispatch, so the quantities and the UPI ID
+  // an operator asks about are on screen without a new backend route.
+  it('shows the ordered quantities and the UPI ID, taken from the batch that holds this dispatch', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/batches/')) {
+          return jsonResponse({
+            batch: { id: 'btch_1', triggerReason: 'MANUAL', unitCount: 1, printVndr: null, triggeredByActor: null, triggerNote: null, createdAt: '2026-08-12T08:00:00.000Z', updatedAt: '2026-08-12T08:00:00.000Z' },
+            entries: [{ asgnId: ASGN, merchantDisplayName: 'ALPHA', merchantLegalName: 'ALPHA LLP', bankReferenceCode: '3', bankDisplayName: 'GSCB', branchCode: '30', soundbox: true, standeeCount: 2, stickerCount: 4, poolStatus: 'BATCHED', dispatchState: 'SENT_TO_VENDOR', shipToSuperseded: false, dispatchGroup: 'SOUNDBOX' }],
+            artifacts: [{ asgnId: ASGN, artifactType: 'STANDEE_IMG', assetReference: 's3://x', supersededAt: null, labelQr: 'upi://pay?pa=alpha@gscb&pn=ALPHA', labelDisplayName: 'ALPHA' }],
+            printLayout: 'ONE_PER_PAGE',
+          })
+        }
+        if (url.includes('/ops/devices')) return jsonResponse([])
+        return jsonResponse({ ...DETAIL, batchId: 'btch_1' })
+      }),
+    )
+    renderPage()
+
+    expect(await screen.findByText(/Soundbox, 2 standee, 4 sticker/i)).toBeTruthy()
+    expect(await screen.findByText('alpha@gscb')).toBeTruthy()
+    // The branch code comes from the same row, and the batch is a link to the
+    // page that owns it: nothing here asks the operator to copy an id.
+    expect(screen.getByText('30')).toBeTruthy()
+    expect(screen.getByRole('link', { name: /btch_1/ }).getAttribute('href')).toBe('/batches/btch_1')
+  })
+
+  it('names the bank as the requester, because a soundbox request comes from a bank and not a person', async () => {
+    stub(DETAIL)
+    renderPage()
+    expect(await screen.findByText(/requested by/i)).toBeTruthy()
+    expect(screen.getByText(/HDFC Bank/)).toBeTruthy()
   })
 
   it('survives a failed read instead of taking the page down with it', async () => {

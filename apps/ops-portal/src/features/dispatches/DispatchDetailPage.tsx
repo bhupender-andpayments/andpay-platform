@@ -1,85 +1,87 @@
-import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useLocation, useParams } from 'react-router-dom'
+import {
+  AlertTriangle,
+  Boxes,
+  Building2,
+  Hourglass,
+  Inbox,
+  Landmark,
+  Package,
+  PackageCheck,
+  Printer,
+  QrCode,
+  Route,
+  Smartphone,
+  Store,
+  Truck,
+  Undo2,
+} from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { getDispatchDetail, type DispatchDetailView } from '../../api/endpoints.js'
-import { PageHeader, Card, CardHeader, ErrorNote, CodeChip, SkeletonRows, EmptyState } from '../../ui/primitives.js'
-import { fmtDateTime } from '../../ui/format.js'
+import {
+  getBatchDetail,
+  getDevices,
+  getDispatchDetail,
+  getPoolEntries,
+  type BatchEntryRow,
+  type DispatchDetailView,
+  type UnitInventoryRow,
+} from '../../api/endpoints.js'
+import { Card, CardBody, ErrorNote, EmptyState, SkeletonRows, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
+import { BackLink, FactRow, NoValue, SectionHeading } from '../../ui/DetailFacts.js'
+import { WatermarkBadge } from '../../components/WatermarkBadge.js'
+import { DispatchGroupBadge } from '../fulfillment/DispatchGroupBadge.js'
+import { fmtDateTime, statusMeta } from '../../ui/format.js'
 
-// D-16 (T4.5): ONE Dispatch ID's life, rendered as the TWO BRANCHES it actually
-// has rather than as one ladder.
+// ONE DISPATCH, END TO END: what was asked for, what it became, and where it has
+// reached. This is the page an operator lands on when someone asks about a
+// merchant by name.
 //
-// Every other surface in this portal reads the journey at the BATCH grain: the
-// workflow rail, the batch detail hub, the journey rollup. None of them could
-// answer "where is this one merchant's soundbox", which is the question an
-// operator gets asked by name. This page answers it, and answers it in the shape
-// D-16 gives: delivery and activation side by side, each with its own history
-// underneath, neither of them able to speak for the other.
+// NO ACTIVATION ON THIS PAGE (2026-08-15 ruling). A dispatch's lifecycle ends
+// at Delivered: parcels deliver, they do not activate. Activation is the
+// DEVICE's own axis (D-16, unit.activated_at), and the device page - one click
+// away through the Devices links below - is where it is shown. An earlier
+// version rendered activation as a second branch column here, and it read as a
+// stalled lifecycle on every collateral dispatch and every not-yet-activated
+// device, which is exactly the confusion D-16 separated the axes to end.
 //
-// The two branches are NOT rendered as one merged timeline, deliberately. A
-// merge would have to interleave them by timestamp, and the moment it did, a
-// device activated before its parcel arrived would read as a lifecycle that went
-// backwards. Keeping them apart is the point: they are independent, and a
-// reader should be able to see one branch stalled while the other has finished.
-
-// A COLLATERAL group never activates (W-5, paper does not activate), so its
-// activation branch is absent rather than empty. "No activation events" would
-// read as "we are waiting", which for a standee is never true.
-function activatesAtAll(dispatchGroup: string | null): boolean {
-  return dispatchGroup !== 'COLLATERAL'
-}
-
-function Branch({
-  title,
-  testId,
-  state,
-  note,
-  rows,
-}: {
-  title: string
-  // The two branches render identically, so a reader (and a test) needs a way
-  // to say WHICH one it is looking at without walking the DOM upwards.
-  testId: string
-  state: string
-  note: string | null
-  rows: { label: string; at: string | null; source: string; extra?: string | null }[]
-}) {
-  return (
-    <Card>
-      <CardHeader title={title} />
-      <div className="px-5 pb-5" data-testid={testId}>
-        <p className="text-[22px] font-semibold leading-none tracking-[-0.02em] text-foreground">{state}</p>
-        {note !== null && <p className="mt-2 text-[13px] text-muted-foreground">{note}</p>}
-        <div className="mt-4">
-          {rows.length === 0 ? (
-            // An empty trail is a real answer: nothing has happened on this
-            // branch yet. It is not a load failure and must not look like one.
-            <p className="text-[13px] text-muted-foreground">No events recorded yet.</p>
-          ) : (
-            <ol className="flex flex-col gap-3">
-              {rows.map((r, i) => (
-                <li key={`${r.label}-${r.at ?? i}`} className="flex flex-col gap-0.5 border-l-2 border-border pl-3">
-                  <span className="text-[13px] font-medium text-foreground">{r.label}</span>
-                  <span className="text-[12px] text-muted-foreground">{fmtDateTime(r.at)}</span>
-                  <span className="text-[12px] text-muted-foreground">via {r.source}</span>
-                  {r.extra !== undefined && r.extra !== null && (
-                    <span className="text-[12px] text-muted-foreground">{r.extra}</span>
-                  )}
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-      </div>
-    </Card>
-  )
-}
+// ONE HORIZONTAL RAIL, the same shared LifecycleRail the device page uses,
+// because with activation gone this lifecycle is a single unbranched ladder.
+// The rail is the POSITION SUMMARY; the per-event courier trail with its two
+// clocks (S22: reported by the courier vs recorded by us), source channels and
+// override reasons lives on the shipment page, one click away through the AWB.
+//
+// WHERE EVERY STAGE'S TIME COMES FROM, and where none exists. The courier legs
+// are genuine append-only events, so they carry real instants. Everything
+// BEFORE the print vendor is a current-value column with no per-transition row
+// anywhere, so those rungs render as reached with NO time rather than borrowing
+// one. The single exception is the pool's exit: a batch claims its records
+// inside the same transaction that creates the batch, so the batch's own
+// instant IS when this dispatch stopped waiting.
+//
+// STATUS VOCABULARY IS THE BRD'S (section 6.2 Key Status Lifecycle: Received,
+// Pending Batch, QR Generated, Sent to Print Vendor, Dispatched by Vendor, In
+// Transit, Delivered) plus the courier ladder from FR-06. Nothing on this page
+// is a stage somebody invented for the screen.
 
 export function DispatchDetailPage() {
   const { client } = useAuth()
   const { asgnId } = useParams<{ asgnId: string }>()
+  const location = useLocation()
+  const fromSearch = (location.state as { fromSearch?: string } | null)?.fromSearch ?? ''
+
   const [detail, setDetail] = useState<DispatchDetailView | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // What the analytics read does NOT carry: the ordered quantities and the QR.
+  // Both live in fulfillment, keyed by this same Dispatch ID, so they are fetched
+  // from the reads that already serve them rather than asked of a new route.
+  const [entry, setEntry] = useState<BatchEntryRow | null>(null)
+  const [batchFormedAt, setBatchFormedAt] = useState<string | null>(null)
+  const [labelQr, setLabelQr] = useState<string | null>(null)
+  const [deviceIdBySerial, setDeviceIdBySerial] = useState<ReadonlyMap<string, string>>(new Map())
 
   const load = useCallback(async () => {
     if (asgnId === undefined) return
@@ -88,9 +90,8 @@ export function DispatchDetailPage() {
     try {
       setDetail(await getDispatchDetail(client, asgnId))
     } catch {
-      // "Not found" and "the read failed" are told apart by the caller only via
-      // the status, which this client does not surface here; the message covers
-      // both honestly rather than claiming the dispatch does not exist.
+      // "Not found" and "the read failed" are not told apart here, so the message
+      // covers both honestly rather than claiming the dispatch does not exist.
       setError('Could not read this dispatch. It may not have been projected yet.')
       setDetail(null)
     } finally {
@@ -102,93 +103,276 @@ export function DispatchDetailPage() {
     void load()
   }, [load])
 
+  // Enrichment, and deliberately silent on failure: this page must still render
+  // everything the analytics read gave it if fulfillment is unreachable. A
+  // missing quantity is a missing line, never a broken page.
+  useEffect(() => {
+    if (detail === null || asgnId === undefined) return
+    let cancelled = false
+
+    if (detail.batchId !== null) {
+      getBatchDetail(client, detail.batchId)
+        .then((batch) => {
+          if (cancelled || batch === null) return
+          setEntry(batch.entries.find((e) => e.asgnId === asgnId) ?? null)
+          setBatchFormedAt(batch.batch.createdAt)
+          const artifact = batch.artifacts.find((a) => a.asgnId === asgnId && a.supersededAt === null)
+          setLabelQr(artifact?.labelQr ?? null)
+        })
+        .catch(() => {})
+    } else {
+      // Not batched yet, so the pool still holds the row.
+      getPoolEntries(client)
+        .then((pool) => {
+          if (cancelled || !Array.isArray(pool)) return
+          setEntry(pool.find((p) => p.asgnId === asgnId) ?? null)
+        })
+        .catch(() => {})
+    }
+
+    // The analytics read names devices by their HARDWARE SERIAL; the device page
+    // is keyed by unit id. Resolving through the inventory list is what makes
+    // each serial a link instead of a dead string.
+    if (detail.deviceIds.length > 0) {
+      getDevices(client)
+        .then((devices: UnitInventoryRow[]) => {
+          if (cancelled || !Array.isArray(devices)) return
+          setDeviceIdBySerial(
+            new Map(devices.filter((d) => d.deviceSerial !== null).map((d) => [d.deviceSerial as string, d.id])),
+          )
+        })
+        .catch(() => {})
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [client, detail, asgnId])
+
+  /** The UPI ID, out of the QR's own pa= parameter, so there is no second source. */
+  const vpa = useMemo(() => {
+    if (labelQr === null) return null
+    const q = labelQr.indexOf('?')
+    if (q < 0) return null
+    for (const pair of labelQr.slice(q + 1).split('&')) {
+      const [k, v] = pair.split('=')
+      if (k === 'pa' && v !== undefined) return decodeURIComponent(v)
+    }
+    return null
+  }, [labelQr])
+
+  const rail = useMemo(
+    () => (detail === null ? [] : buildRail(detail, entry, batchFormedAt)),
+    [detail, entry, batchFormedAt],
+  )
+
   if (loading) return <SkeletonRows rows={6} />
   if (error !== null) return <ErrorNote>{error}</ErrorNote>
   if (detail === null) return <EmptyState title="No such dispatch" />
 
-  const deliveryRows = detail.deliveryTrail.map((e) => ({
-    label: e.status,
-    at: e.courierTimestamp,
-    source: e.statusSource,
-    extra: e.overrideReason === null ? null : `Override: ${e.overrideReason}`,
-  }))
-  const activationRows = detail.activationTrail.map((e) => ({
-    label: e.status,
-    at: e.occurredAt,
-    source: e.statusSource,
-  }))
+  const ordered =
+    entry === null
+      ? null
+      : [entry.soundbox ? 'Soundbox' : null, entry.standeeCount > 0 ? `${entry.standeeCount} standee` : null, entry.stickerCount > 0 ? `${entry.stickerCount} sticker` : null]
+          .filter((p): p is string => p !== null)
+          .join(', ')
 
   return (
-    <div className="flex flex-col gap-5">
-      <PageHeader
-        title={detail.merchantDisplay}
-        description={`${detail.bankDisplay} - ${detail.dispatchGroup ?? 'legacy combined'}`}
-      />
+    <div className="space-y-4">
+      <BackLink to="/dispatches" label="Dispatches" fromSearch={fromSearch} />
 
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight">{detail.merchantDisplay}</h1>
+            <DispatchGroupBadge group={detail.dispatchGroup} />
+          </div>
+          <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+            <CodeChip>{detail.dispatchId}</CodeChip>
+            {detail.dispatchGroup === null && <span>legacy combined dispatch</span>}
+          </p>
+        </div>
+        <div className="ml-auto flex items-center gap-3">
+          <StatusPill value={detail.courierStatus ?? ''} />
+          <WatermarkBadge watermark={detail.watermark.asOf} />
+        </div>
+      </div>
+
+      {/* The lifecycle owns the top of the page as a horizontal rail, the same
+          grammar as the device page. */}
       <Card>
-        <CardHeader title="Dispatch" />
-        <dl className="grid grid-cols-2 gap-4 px-5 pb-5 text-[13px] sm:grid-cols-4">
-          <div>
-            <dt className="text-muted-foreground">Dispatch ID</dt>
-            <dd className="mt-1">
-              <CodeChip>{detail.dispatchId}</CodeChip>
-            </dd>
+        <CardBody>
+          <div className="pb-5">
+            <h2 className="text-base font-medium">Dispatch lifecycle</h2>
+            <p className="text-[12.5px] text-muted-foreground">
+              The BRD delivery ladder, Received through Delivered. The AWB below opens the full courier trail.
+            </p>
           </div>
-          <div>
-            <dt className="text-muted-foreground">AWB</dt>
-            <dd className="mt-1">{detail.awb ?? <span className="text-muted-foreground">not dispatched</span>}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Batch</dt>
-            <dd className="mt-1">
-              {detail.batchId === null ? (
-                <span className="text-muted-foreground">not batched</span>
-              ) : (
-                <CodeChip>{detail.batchId}</CodeChip>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Device ID(s)</dt>
-            <dd className="mt-1">
-              {detail.deviceIds.length === 0 ? (
-                <span className="text-muted-foreground">none paired</span>
-              ) : (
-                detail.deviceIds.join(', ')
-              )}
-            </dd>
-          </div>
-        </dl>
+          <LifecycleRail stages={rail} />
+        </CardBody>
       </Card>
 
-      {/* Side by side, and equal width: neither branch is the main one. */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <Branch
-          title="Delivery"
-          testId="delivery-branch"
-          state={detail.courierStatus ?? 'Not dispatched'}
-          note={detail.deliveryDate === null ? null : `Delivered ${fmtDateTime(detail.deliveryDate)}`}
-          rows={deliveryRows}
-        />
-        {activatesAtAll(detail.dispatchGroup) ? (
-          <Branch
-            title="Activation"
-            testId="activation-branch"
-            state={detail.activationStatus ?? 'Not requested'}
-            note={detail.activationDate === null ? null : `Activated ${fmtDateTime(detail.activationDate)}`}
-            rows={activationRows}
-          />
-        ) : (
-          <Card>
-            <CardHeader title="Activation" />
-            <div className="px-5 pb-5">
-              <p className="text-[13px] text-muted-foreground">
-                Collateral does not activate. This consignment&apos;s lifecycle ends at delivery.
-              </p>
-            </div>
-          </Card>
-        )}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardBody>
+            {/* WHO ASKED FOR THIS. A soundbox request arrives from a bank on an
+                uploaded file, so the requester is the bank and its branch, not a
+                person: there is no operator behind a demand row. */}
+            <SectionHeading>Request</SectionHeading>
+            <FactRow icon={Landmark} label="Requested by">
+              {detail.bankDisplay} <span className="text-muted-foreground">({detail.bankCode})</span>
+            </FactRow>
+            <FactRow icon={Building2} label="Branch">
+              {entry?.branchCode ?? <NoValue>not recorded</NoValue>}
+            </FactRow>
+            <FactRow icon={Store} label="Merchant">
+              {detail.merchantDisplay}
+            </FactRow>
+            <FactRow icon={Boxes} label="Ordered">
+              {ordered === null ? <NoValue>not read yet</NoValue> : ordered === '' ? <NoValue>nothing</NoValue> : ordered}
+            </FactRow>
+            <FactRow icon={QrCode} label="UPI ID">
+              {vpa ?? <NoValue>no card composed yet</NoValue>}
+            </FactRow>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardBody>
+            <SectionHeading>Fulfilment</SectionHeading>
+            <FactRow icon={Package} label="Batch">
+              {detail.batchId === null ? (
+                <NoValue>not batched</NoValue>
+              ) : (
+                <Link className="underline underline-offset-2" to={`/batches/${detail.batchId}`}>
+                  <CodeChip>{detail.batchId}</CodeChip>
+                </Link>
+              )}
+            </FactRow>
+            <FactRow icon={Truck} label="AWB">
+              {detail.awb === null ? (
+                <NoValue>not dispatched</NoValue>
+              ) : detail.shptId === null ? (
+                <span className="num">{detail.awb}</span>
+              ) : (
+                <Link className="num underline underline-offset-2" to={`/dispatches/shipment/${detail.shptId}`}>
+                  {detail.awb}
+                </Link>
+              )}
+            </FactRow>
+            <FactRow icon={Smartphone} label="Devices">
+              {detail.deviceIds.length === 0 ? (
+                <NoValue>none paired</NoValue>
+              ) : (
+                <span className="inline-flex flex-wrap gap-x-2 gap-y-1">
+                  {detail.deviceIds.map((serial) => {
+                    const unitId = deviceIdBySerial.get(serial)
+                    return unitId === undefined ? (
+                      // A serial we cannot resolve renders as text: a dead link
+                      // is worse than an honest string.
+                      <span key={serial} className="num">
+                        {serial}
+                      </span>
+                    ) : (
+                      <Link key={serial} className="num underline underline-offset-2" to={`/inventory/device/${unitId}`}>
+                        {serial}
+                      </Link>
+                    )
+                  })}
+                </span>
+              )}
+            </FactRow>
+            <FactRow icon={Truck} label="Dispatched">
+              {detail.dispatchDate === null ? <NoValue>not yet</NoValue> : fmtDateTime(detail.dispatchDate)}
+            </FactRow>
+            <FactRow icon={PackageCheck} label="Delivered">
+              {detail.deliveryDate === null ? <NoValue>not yet</NoValue> : fmtDateTime(detail.deliveryDate)}
+            </FactRow>
+          </CardBody>
+        </Card>
       </div>
     </div>
   )
+}
+
+/** The BRD 6.2 ladder, as rail rungs. Order IS the lifecycle. */
+const RAIL_LADDER = [
+  { key: 'RECEIVED', label: 'Received', icon: Inbox },
+  { key: 'PENDING_BATCH', label: 'Pending batch', icon: Hourglass },
+  { key: 'QR_GENERATED', label: 'QR generated', icon: QrCode },
+  { key: 'SENT_TO_VENDOR', label: 'Sent to print vendor', icon: Printer },
+  { key: 'DISPATCHED_BY_VENDOR', label: 'Dispatched by vendor', icon: Truck },
+  { key: 'IN_TRANSIT', label: 'In transit', icon: Route },
+  { key: 'DELIVERED', label: 'Delivered', icon: PackageCheck },
+] as const
+
+/** Where a courier status sits on the ladder above. */
+const COURIER_RUNG: Record<string, number> = {
+  DISPATCHED_BY_VENDOR: 4,
+  IN_TRANSIT: 5,
+  DELIVERED: 6,
+}
+
+/**
+ * The BRD's ladder with the row's real position on it.
+ *
+ * The first four rungs are inferred from where the row SITS, because nothing
+ * records their transitions: a dispatch that exists was received; one with no
+ * batch is still pending a batch; a composed card proves QR generation; a
+ * dispatch_state past QR_GENERATED proves the vendor has it. Inferred rungs
+ * carry no instant (the pool-exit exception is noted at the top of this file).
+ * Courier rungs are dated from the trail's own append-only events, latest
+ * event per rung, since a rung can be scanned twice.
+ *
+ * RETURNED is terminal (the parcel came back) and closes the rail in red.
+ * FAILED is NOT terminal in the domain - a failed attempt can be re-attempted
+ * and still deliver - so it renders as a red stop while Delivered stays ahead
+ * of it as a future rung.
+ */
+function buildRail(detail: DispatchDetailView, entry: BatchEntryRow | null, batchFormedAt: string | null): RailStage[] {
+  const batched = detail.batchId !== null
+  const dispatchState = entry?.dispatchState ?? null
+  const composed = dispatchState !== null
+  const sentToVendor = dispatchState === 'SENT_TO_VENDOR' || dispatchState === 'DISPATCHED_BY_VENDOR'
+  const trail = detail.deliveryTrail
+  const last = trail.at(-1) ?? null
+  const offLadder = last !== null && !(last.status in COURIER_RUNG)
+
+  // The furthest rung the trail proves, which for a FAILED/RETURNED parcel is
+  // the furthest ORDINARY rung any of its events reached.
+  const provenByTrail = trail.reduce((max, e) => Math.max(max, COURIER_RUNG[e.status] ?? 4), -1)
+
+  const currentIdx =
+    trail.length > 0 ? provenByTrail : sentToVendor ? 4 : composed ? 3 : batched ? 2 : 1
+
+  /** The latest real instant the courier reported for one specific rung. */
+  const rungTime = (key: string): string | null =>
+    trail.reduce<string | null>((latest, e) => (e.status === key ? e.courierTimestamp : latest), null)
+
+  const stages: RailStage[] = RAIL_LADDER.map((rung, i) => ({
+    key: rung.key,
+    label: rung.label,
+    icon: rung.icon,
+    // With an off-ladder stop (failed, returned) appended, the spine holds no
+    // 'current': the red stop is where the parcel actually is.
+    state: i < currentIdx ? 'reached' : i === currentIdx ? (offLadder ? 'reached' : 'current') : 'future',
+    at:
+      rung.key === 'PENDING_BATCH' && batched
+        ? batchFormedAt
+        : i <= currentIdx
+          ? rungTime(rung.key)
+          : null,
+  }))
+
+  if (offLadder) {
+    stages.push({
+      key: last.status,
+      label: last.status === 'RETURNED' ? 'Returned to origin' : statusMeta(last.status).label,
+      icon: last.status === 'RETURNED' ? Undo2 : AlertTriangle,
+      state: 'current',
+      at: last.courierTimestamp,
+      terminal: true,
+    })
+  }
+  return stages
 }

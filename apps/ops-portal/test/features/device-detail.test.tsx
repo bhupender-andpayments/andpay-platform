@@ -6,12 +6,19 @@ import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { DeviceDetailPage } from '../../src/features/inventory/DeviceDetailPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
-// The per-device page (2026-08-12, SIM unmasked and QR auto-loaded
-// 2026-08-13): facts left, lifecycle timeline main, QR in its own card below.
-// Nothing on this page is gated behind a click anymore - the SIM is on the
-// LIST row and shown directly, and the manufacturer QR (GET
-// /ops/devices/:unitId, not on the list row at all) is fetched automatically
-// the moment a unit id is known, no Reveal button.
+// The per-device page, redesigned 2026-08-14: a horizontal lifecycle rail owns
+// the top, three fact cards (Device, Assignment, Activity) sit under it.
+//
+// THE QR CARD IS GONE, and with it the GET /ops/devices/:unitId detail read this
+// page used to fire on mount. A raw payload blob nobody eyeballs was taking a
+// card's worth of space on the page an operator opens to check a device's
+// progress. The tests below assert that read no longer happens, so it cannot
+// creep back in unnoticed.
+//
+// TWO EDIT ACTIONS, and they stay separate: "Change status" on the rail (a
+// lifecycle move), the Device card's pencil (a correction to what intake
+// recorded). There is no third "Mark damaged" button anymore - DAMAGED is one of
+// the choices "Change status" already offers.
 
 const ROW = {
   id: 'unit_1',
@@ -25,10 +32,10 @@ const ROW = {
   asgnId: 'asgn_1',
   location: null,
   simNo: '89910000000000456789',
+  activatedAt: null,
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-02T00:00:00.000Z',
 }
-const DETAIL = { ...ROW, deviceQr: { raw: 'upi://pay?pa=test@bank' } }
 const DAMAGED_ROW = { ...ROW, id: 'unit_2', status: 'DAMAGED' }
 
 function jsonResponse(body: unknown): Response {
@@ -40,8 +47,6 @@ function stub(): { url: string }[] {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     calls.push({ url })
     if (url.includes('/ops/units/') && url.endsWith('/status')) return jsonResponse({ deduped: false, advanced: true })
-    if (url.includes('/ops/devices/unit_1')) return jsonResponse(DETAIL)
-    if (url.includes('/ops/devices/unit_2')) return jsonResponse({ ...DAMAGED_ROW, deviceQr: null })
     if (url.includes('/ops/devices')) return jsonResponse([ROW, DAMAGED_ROW])
     if (url.includes('/ops/merchants')) return jsonResponse([])
     if (url.includes('/ops/vendors')) return jsonResponse([])
@@ -76,20 +81,20 @@ describe('DeviceDetailPage', () => {
     expect(screen.getByText('89910000000000456789')).toBeTruthy()
   })
 
-  it('fetches the manufacturer QR payload automatically, no click required', async () => {
+  it('never reads the per-device detail route, and shows no QR payload', async () => {
     const calls = stub()
     renderAt('unit_1', { row: ROW })
-    expect(await screen.findByText('upi://pay?pa=test@bank')).toBeTruthy()
-    expect(calls.some((c) => c.url.includes('/ops/devices/unit_1'))).toBe(true)
+    await screen.findAllByText('9990000001001')
+    expect(calls.some((c) => c.url.includes('/ops/devices/unit_1'))).toBe(false)
+    expect(screen.queryByText(/upi:\/\//)).toBeNull()
+    expect(document.body.textContent).not.toMatch(/qr payload/i)
   })
 
-  it('recovers the row from the LIST read on a direct URL, and still auto-fetches the QR', async () => {
+  it('recovers the row from the LIST read on a direct URL', async () => {
     const calls = stub()
     renderAt('unit_1')
     expect((await screen.findAllByText('9990000001001')).length).toBeGreaterThan(0)
-    await vi.waitFor(() => {
-      expect(calls.some((c) => c.url.includes('/ops/devices/unit_1'))).toBe(true)
-    })
+    expect(calls.some((c) => c.url.includes('/ops/devices'))).toBe(true)
   })
 
   it('says plainly when no such device exists', async () => {
@@ -98,32 +103,48 @@ describe('DeviceDetailPage', () => {
     expect(await screen.findByText(/no device with this id exists/i)).toBeTruthy()
   })
 
-  it('shows the lifecycle with the current stage marked and the forward-only rule stated', async () => {
+  it('shows the lifecycle rail with every rung, and states the forward-only rule', async () => {
     stub()
     renderAt('unit_1', { row: ROW })
     await screen.findAllByText('9990000001001')
     expect(screen.getByText(/only moves forward/i)).toBeTruthy()
-    // "Dispatched" renders twice on purpose: once in the header status pill,
-    // once as the current timeline rung. Both are correct, so the count is
-    // what is asserted rather than uniqueness.
-    expect(screen.getAllByText('Dispatched').length).toBe(2)
-    // A future rung still renders, muted, so the operator sees what is left.
-    expect(screen.getByText('Delivered')).toBeTruthy()
-    expect(screen.getByText(/courier confirmed delivery/i)).toBeTruthy()
+    // The whole spine renders, reached and future alike, so the operator sees
+    // what is left as well as what is done. PRINTED displays as a place, not a
+    // thing that happened to paper. Activated is the ladder's end for a
+    // device: a rail rung read off the activation axis, not a status.
+    for (const label of ['In stock', 'Allocated', 'At print vendor', 'Delivered', 'Activated']) {
+      expect(screen.getByText(label)).toBeTruthy()
+    }
+    // "Dispatched" is deliberately on screen more than once: the header pill,
+    // the current rung, and the Activity card's current-status fact.
+    expect(screen.getAllByText('Dispatched').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('shows the three fact cards, and no Mark damaged shortcut', async () => {
+    stub()
+    renderAt('unit_1', { row: ROW })
+    await screen.findAllByText('9990000001001')
+    expect(screen.getByText('Device')).toBeTruthy()
+    expect(screen.getByText('Assignment')).toBeTruthy()
+    expect(screen.getByText('Activity')).toBeTruthy()
+    // Activation is its own axis, reported here rather than as a rung.
+    expect(screen.getByText(/not activated/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /mark damaged/i })).toBeNull()
   })
 
   it('a DAMAGED device shows the terminal stop, in plain words and with no release jargon', async () => {
     stub()
     renderAt('unit_2', { row: DAMAGED_ROW })
     await screen.findAllByText('9990000001001')
-    expect(screen.getByText(/this device cannot be reverted/i)).toBeTruthy()
+    expect(screen.getAllByText('Damaged').length).toBeGreaterThanOrEqual(2)
     // No release-planning language on an operator screen (2026-08-12 review).
     expect(document.body.textContent).not.toMatch(/phase 1|phase 2/i)
   })
 
   // Manual status edit (2026-08-13): forward-only, mirroring the server's own
-  // canAdvanceUnitStatus rule. DISPATCHED can move to DELIVERED, ACTIVATED,
-  // DAMAGED or RETURNED, never back to IN_STOCK/ALLOCATED/PRINTED.
+  // canAdvanceUnitStatus rule. DISPATCHED can move to DELIVERED, DAMAGED or
+  // RETURNED, never back to IN_STOCK/ALLOCATED/PRINTED. ACTIVATED is absent on
+  // purpose (D-16): it is not a unit status, and the server would reject it.
   it('the edit dialog offers only forward-legal statuses from the current one', async () => {
     stub()
     renderAt('unit_1', { row: ROW })
@@ -131,7 +152,7 @@ describe('DeviceDetailPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /change status/i }))
     await userEvent.click(await screen.findByLabelText(/new status/i))
     const options = (await screen.findAllByRole('option')).map((o) => o.textContent)
-    expect(options).toEqual(['Delivered', 'Activated', 'Damaged', 'Returned'])
+    expect(options).toEqual(['Delivered', 'Damaged', 'Returned'])
   })
 
   it('a terminal device (DAMAGED) has no edit control at all', async () => {
@@ -153,10 +174,27 @@ describe('DeviceDetailPage', () => {
     await vi.waitFor(() => {
       expect(calls.some((c) => c.url.includes('/ops/units/unit_1/status'))).toBe(true)
     })
-    // The dialog closes and "Delivered" now appears (the status pill; the
-    // timeline's own "Delivered" rung label was already on screen before the
-    // save, so a count rather than uniqueness is what changed).
+    // The dialog closes and "Delivered" now appears more than once (the pill and
+    // the Activity card's fact join the rung label that was already there).
     expect(screen.queryByLabelText(/new status/i)).toBeNull()
-    expect(screen.getAllByText('Delivered').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Delivered').length).toBeGreaterThan(1)
+  })
+
+  // The other half of the two-action split: correcting what the intake file
+  // recorded, from the Device card's own pencil.
+  it('the device-details pencil opens the field editor and posts only what changed', async () => {
+    const calls = stub()
+    renderAt('unit_1', { row: ROW })
+    await screen.findAllByText('9990000001001')
+    await userEvent.click(screen.getByRole('button', { name: /edit device details/i }))
+    const sim = await screen.findByLabelText('SIM')
+    await userEvent.clear(sim)
+    await userEvent.type(sim, '89910000000000999999')
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/units/unit_1/edit'))).toBe(true)
+    })
+    expect(screen.getByText('89910000000000999999')).toBeTruthy()
   })
 })

@@ -15,6 +15,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
+import { createHash } from 'node:crypto'
 import { authorize, requireStepUp, OPS_STEP_UP_CATALOG } from '@andpay/authz'
 import {
   correctStatus,
@@ -42,6 +43,8 @@ import {
   correctUnitStatus,
   previewOpsUnitStatus,
   ingestOpsUnitStatus,
+  parseReturnWorkbook,
+  ingestReturnSheetOps,
   UNIT_STATUS_ORDER,
   UNIT_TERMINAL_STATUSES,
   type ActivationFileRowError,
@@ -51,6 +54,8 @@ import {
   type OpsCourierStatusResult,
   type OpsUnitStatusPreview,
   type OpsUnitStatusResult,
+  type OpsReturnResult,
+  type ReturnSheetParseResult,
 } from '@andpay/fulfillment-service'
 import {
   previewBankFile,
@@ -677,6 +682,56 @@ export class OpsController {
       actorId: g.actorId,
       traceId: g.traceId,
     })
+  }
+
+  // D-25 (13 Aug 2026; escalation decided 2026-08-11, option A). The print
+  // vendor's return sheet, uploaded by an OPERATOR. BRD FR-05 para 322 makes
+  // this the Phase-1 channel outright: "In Phase 1, return file would be sent
+  // via email and uploaded into system by AndPayments team." POST /vendor/return
+  // stays exactly as it is and remains the Phase-2 surface; the two channels
+  // share one ingest body so they cannot drift.
+  //
+  // Same posture as every other ops upload here: the SERVER re-parses the bytes
+  // and never trusts client-sent rows, and the print vendor is resolved inside
+  // the fulfillment service from batch.print_vndr, so there is no @Body() and
+  // nothing an operator can assert about whose sheet this is (M7, S16, 105c).
+  //
+  // The preview writes nothing, so like the device-inventory and unit-status
+  // previews it takes no Idempotency-Key and runs no gate beyond the controller
+  // guard. It exists so a mixed-vendor or unbound-batch file is refused on
+  // screen before the operator commits it.
+  @Post('uploads/return/preview')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async previewReturnUpload(@UploadedFile() file: UploadedSheet | undefined): Promise<ReturnSheetParseResult> {
+    if (!file) throw new BadRequestException('missing file')
+    return parseReturnWorkbook(new Uint8Array(file.buffer), file.originalname ?? '')
+  }
+
+  @Post('uploads/return')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @HttpCode(200)
+  async uploadReturn(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<OpsReturnResult & { invalidRows: ReturnSheetParseResult['invalidRows'] }> {
+    const g = await this.gate(req, 'ops:upload-return-file', idem, [])
+    if (!file) throw new BadRequestException('missing file')
+    const parsed = await parseReturnWorkbook(new Uint8Array(file.buffer), file.originalname ?? '')
+    // A structural failure is a whole-file refusal, and it is the operator's to
+    // fix in the spreadsheet, so it answers 400 with the reasons rather than 200
+    // with a zero-count success that reads like the file was accepted.
+    if (parsed.structuralErrors.length > 0) {
+      throw new BadRequestException(parsed.structuralErrors.map((e) => e.message).join(' '))
+    }
+    // The file identity is the bytes, so an ops upload and the vendor's own
+    // upload of the same attachment dedup against each other rather than pairing
+    // every device twice.
+    const fileId = createHash('sha256').update(file.buffer).digest('hex')
+    const result = await ingestReturnSheetOps(this.deps.fulfillmentDb, { fileId, rows: parsed.validRows })
+    void g
+    return { ...result, invalidRows: parsed.invalidRows }
   }
 
   @Post('shipments/:id/correct')

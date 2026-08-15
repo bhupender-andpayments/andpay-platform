@@ -1,9 +1,34 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Upload } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { getReport, markActivated, markActivatedBulk, type ReportCell, type ReportRow } from '../../api/endpoints.js'
+import {
+  getBankMasters,
+  getReport,
+  markActivated,
+  markActivatedBulk,
+  type BankMasterRow,
+  type ReportCell,
+  type ReportRow,
+} from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
-import { PageHeader, Card, CardHeader, Button, ErrorNote, InfoNote, SkeletonRows, StatusPill } from '../../ui/primitives.js'
+import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
+import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import { Checkbox } from '@/components/ui/checkbox'
+import { MultiSelect } from '../../components/Picker.js'
+import {
+  PageHeader,
+  Card,
+  CardHeader,
+  Field,
+  Input,
+  Button,
+  Toolbar,
+  ErrorNote,
+  InfoNote,
+  StatusPill,
+  CodeChip,
+} from '../../ui/primitives.js'
 import { fmtDateTime } from '../../ui/format.js'
 
 // FR-07 Phase-1 MANUAL activation SUCCESS mark (Phase 7 Task 11, D-H.1). CWD
@@ -27,6 +52,14 @@ import { fmtDateTime } from '../../ui/format.js'
 // mirrored by the report's own filter, so an ineligible row never reaches this
 // table at all. The edge stays the authority either way (S24/T14: no
 // client-side authz or business-rule shortcut).
+//
+// EVERY WRITE HERE PASSES THROUGH A CONFIRMATION (2026-08-15). Marking a
+// record activated is a fact the platform acts on and there is no un-activate,
+// so both the row button and the bulk button open the shared ConfirmDialog
+// first. There is deliberately NO remark box in those dialogs: neither
+// activate route accepts a remark on the wire, and a box whose text the
+// server silently drops would be a lie. If operations ever needs a remark
+// recorded, that is a backend ask, not a frontend field.
 //
 // C3 FENCE (hard constraint): SUCCESS path only. No failure-mark button, no
 // failure-reason input, no distinct SIM-activation control anywhere on this
@@ -71,7 +104,31 @@ function isDelivered(row: ReportRow): boolean {
 
 export function ActivationPage() {
   const { client } = useAuth()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [rows, setRows] = useState<ReportRow[]>([])
+  const [banks, setBanks] = useState<readonly BankMasterRow[]>([])
+
+  // Filters live in the URL, the Inventory idiom: a filtered worklist survives
+  // a reload and can be pasted to a teammate.
+  const q = searchParams.get('q') ?? ''
+  const bankSel = useMemo(() => searchParams.get('bank')?.split(',').filter(Boolean) ?? [], [searchParams])
+
+  const setParam = useCallback(
+    (key: string, value: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (value === '') next.delete(key)
+          else next.set(key, value)
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+  const anyFilter = q !== '' || bankSel.length > 0
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -102,6 +159,10 @@ export function ActivationPage() {
   // through, so the result is shown per row rather than as one verdict.
   const [bulkOutcome, setBulkOutcome] = useState<ReadonlyMap<string, string>>(new Map())
   const [bulkBusy, setBulkBusy] = useState(false)
+  // The row awaiting its are-you-sure, and the bulk equivalent. Activation has
+  // no undo, so nothing on this page writes on the first click.
+  const [confirmingRow, setConfirmingRow] = useState<ReportRow | null>(null)
+  const [confirmingBulk, setConfirmingBulk] = useState(false)
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -119,6 +180,28 @@ export function ActivationPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // Names for bank codes, silent on failure: a lookup that does not arrive
+  // costs the filter its names, not the worklist its rows.
+  useEffect(() => {
+    let cancelled = false
+    getBankMasters(client)
+      .then((list) => {
+        if (!cancelled && Array.isArray(list)) setBanks(list)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [client])
+
+  const bankName = useCallback(
+    (code: string | null): string => {
+      if (code === null) return '-'
+      return banks.find((b) => b.bankReferenceCode === code)?.displayName ?? code
+    },
+    [banks],
+  )
 
   function toggle(dispatchId: string): void {
     setSelected((prev) => {
@@ -154,8 +237,11 @@ export function ActivationPage() {
           : `${activated.length} of ${results.length} marked activated. The rest are listed below with their reason.`,
       )
       setSelected(new Set())
+      // Only now, once the write has returned, does the confirmation close.
+      setConfirmingBulk(false)
       await load()
     } catch (err) {
+      // Stays inside the open dialog, pinned to the button that caused it.
       setActionError(err instanceof Error ? err.message : 'Failed to mark the selected records activated.')
     } finally {
       setBulkBusy(false)
@@ -177,15 +263,17 @@ export function ActivationPage() {
       // "Flow Alpha Store" and telling them "asgn_01kz... marked activated"
       // makes them go back and match an opaque string to be sure it was theirs.
       setActionNote(`${stringField(row, 'merchantDisplay') ?? dispatchId} marked activated.`)
+      setConfirmingRow(null)
       await load()
     } catch (err) {
+      // Stays inside the open dialog, pinned to the button that caused it.
       setActionError(err instanceof Error ? err.message : 'Failed to mark activated.')
     } finally {
       setBusyId(null)
     }
   }
 
-  const columns: DataTableColumn<ReportRow>[] = [
+  const columns: GridColumn<ReportRow>[] = [
     {
       key: 'select',
       header: 'Select',
@@ -193,30 +281,78 @@ export function ActivationPage() {
         const dispatchId = stringField(row, 'dispatchId')
         if (dispatchId === null) return null
         return (
-          <input
-            type="checkbox"
+          <Checkbox
             aria-label={`Select ${stringField(row, 'merchantDisplay') ?? dispatchId}`}
             checked={selected.has(dispatchId)}
-            onChange={() => toggle(dispatchId)}
+            onCheckedChange={() => toggle(dispatchId)}
+            onClick={(e) => e.stopPropagation()}
             disabled={bulkBusy}
           />
         )
       },
     },
-    { key: 'dispatchId', header: 'Dispatch ID', cell: (row) => stringField(row, 'dispatchId') ?? '-' },
-    { key: 'bankCode', header: 'Bank', cell: (row) => stringField(row, 'bankCode') ?? '-' },
-    { key: 'merchantDisplay', header: 'Merchant', cell: (row) => stringField(row, 'merchantDisplay') ?? '-' },
+    {
+      key: 'dispatchId',
+      header: 'Dispatch ID',
+      sortValue: (row) => stringField(row, 'dispatchId') ?? '',
+      // A real link, the interlinking rule of the whole portal: the worklist
+      // names a dispatch, so it opens that dispatch.
+      cell: (row) => {
+        const id = stringField(row, 'dispatchId')
+        if (id === null) return <span className="text-muted-foreground">-</span>
+        return (
+          <Link
+            to={`/dispatches/${id}`}
+            className="underline underline-offset-2"
+            onClick={(e) => e.stopPropagation()}
+            state={{ fromSearch: searchParams.toString() }}
+          >
+            <CodeChip>{id}</CodeChip>
+          </Link>
+        )
+      },
+    },
+    {
+      key: 'bankCode',
+      header: 'Bank',
+      sortValue: (row) => bankName(stringField(row, 'bankCode')),
+      cell: (row) => bankName(stringField(row, 'bankCode')),
+    },
+    {
+      key: 'merchantDisplay',
+      header: 'Merchant',
+      sortValue: (row) => stringField(row, 'merchantDisplay') ?? '',
+      cell: (row) => <span className="font-medium text-foreground">{stringField(row, 'merchantDisplay') ?? '-'}</span>,
+    },
     {
       key: 'deviceIds',
       header: 'Device IDs',
       cell: (row) => {
         const ids = arrayField(row, 'deviceIds')
-        return ids.length === 0 ? '-' : ids.join(', ')
+        if (ids.length === 0) return <span className="text-muted-foreground">-</span>
+        // Each serial jumps to the Inventory list already filtered to it: the
+        // report carries serials, not unit ids, and the search box is the one
+        // door that accepts a serial.
+        return (
+          <span className="flex flex-wrap gap-1">
+            {ids.map((id) => (
+              <Link
+                key={id}
+                to={`/inventory?q=${encodeURIComponent(id)}`}
+                className="underline underline-offset-2"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <CodeChip>{id}</CodeChip>
+              </Link>
+            ))}
+          </span>
+        )
       },
     },
     {
       key: 'deliveryDate',
       header: 'Delivered',
+      sortValue: (row) => stringField(row, 'deliveryDate') ?? '',
       // Was the raw ISO string, so this column read "2026-08-09T06:30:00.000Z".
       // fmtDateTime already existed and is what every other table on the portal
       // uses; there was no reason for this one to show the wire format.
@@ -276,8 +412,13 @@ export function ActivationPage() {
             variant="secondary"
             disabled={dispatchId === null || busy}
             loading={busy}
-            onClick={() => {
-              void handleActivate(row)
+            onClick={(e) => {
+              // The row itself navigates to the dispatch; acting here must not
+              // also do that. The write fires from the confirmation, never here.
+              e.stopPropagation()
+              setActionError(null)
+              setActionNote(null)
+              setConfirmingRow(row)
             }}
           >
             Mark activated
@@ -288,22 +429,43 @@ export function ActivationPage() {
   ]
 
   // What the operator should actually see: the worklist minus anything they
-  // have already actioned in this session. The count is derived from the SAME
-  // list, so the header can never claim a number the table does not show.
-  const visibleRows = rows.filter((row) => {
-    const id = stringField(row, 'dispatchId')
-    return id === null || !locallyActivated.has(id)
-  })
+  // have already actioned in this session, then the URL filters. The count is
+  // derived from the SAME list, so the header can never claim a number the
+  // table does not show.
+  const visibleRows = useMemo(() => {
+    const needle = q.toLowerCase()
+    return rows.filter((row) => {
+      const id = stringField(row, 'dispatchId')
+      if (id !== null && locallyActivated.has(id)) return false
+      if (bankSel.length > 0 && !bankSel.includes(stringField(row, 'bankCode') ?? '')) return false
+      if (needle === '') return true
+      return [
+        id,
+        stringField(row, 'merchantDisplay'),
+        ...arrayField(row, 'deviceIds'),
+      ].some((v) => v !== null && v.toLowerCase().includes(needle))
+    })
+  }, [rows, locallyActivated, q, bankSel])
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Activation"
         description="Soundboxes awaiting activation. Mark a device+SIM activated once the CWD confirms it out of band."
+        actions={
+          // The activation section owns its own inbound file: the CWD's
+          // confirmation sheet. Same ruling as Inventory owning its upload.
+          <Button onClick={() => navigate('/uploads/activation')}>
+            <Upload className="size-4" aria-hidden="true" /> Upload activation file
+          </Button>
+        }
       />
 
       {loadError !== null && <ErrorNote>{loadError}</ErrorNote>}
-      {actionError !== null && <ErrorNote>{actionError}</ErrorNote>}
+      {/* An error from an OPEN confirmation renders inside it, next to the
+          button that caused it; this line only carries one left behind after
+          a dialog was dismissed. */}
+      {actionError !== null && confirmingRow === null && !confirmingBulk && <ErrorNote>{actionError}</ErrorNote>}
       {actionNote !== null && <InfoNote>{actionNote}</InfoNote>}
 
       <Card>
@@ -314,26 +476,114 @@ export function ActivationPage() {
             <Button
               size="sm"
               disabled={selected.size === 0 || bulkBusy}
-              loading={bulkBusy}
               onClick={() => {
-                void handleActivateSelected()
+                setActionError(null)
+                setActionNote(null)
+                setConfirmingBulk(true)
               }}
             >
               {selected.size === 0 ? 'Mark selected activated' : `Mark ${selected.size} activated`}
             </Button>
           }
         />
-        {loading ? (
-          <SkeletonRows rows={6} cols={8} />
-        ) : (
-          <DataTable
-            columns={columns}
-            rows={visibleRows}
-            getRowKey={(row, index) => stringField(row, 'dispatchId') ?? String(index)}
-            emptyMessage="Nothing is awaiting activation."
-          />
-        )}
+        <Toolbar className="px-5 pb-1">
+          <Field label="Search" htmlFor="actSearch" className="w-full sm:w-52">
+            <Input
+              id="actSearch"
+              placeholder="Dispatch, merchant or device…"
+              value={q}
+              onChange={(e) => setParam('q', e.target.value)}
+            />
+          </Field>
+          <Field label="Bank" htmlFor="actBank" className="w-full sm:w-48">
+            <MultiSelect
+              id="actBank"
+              placeholder="All banks"
+              options={[...new Set(rows.map((r) => stringField(r, 'bankCode') ?? ''))]
+                .filter(Boolean)
+                .map((code) => ({
+                  value: code,
+                  label: bankName(code),
+                  count: rows.filter((r) => stringField(r, 'bankCode') === code).length,
+                }))}
+              selected={bankSel}
+              onChange={(next) => setParam('bank', next.join(','))}
+            />
+          </Field>
+          {anyFilter && (
+            <Button variant="ghost" onClick={() => setSearchParams(new URLSearchParams(), { replace: true })}>
+              Clear filters
+            </Button>
+          )}
+        </Toolbar>
+        <DataGrid
+          columns={columns}
+          rows={visibleRows}
+          loading={loading}
+          getRowKey={(row, index) => stringField(row, 'dispatchId') ?? String(index)}
+          searchable={false}
+          pageSize={20}
+          pageSizeOptions={[20, 50, 100]}
+          stickyFirstColumn
+          onRowClick={(row) => {
+            const id = stringField(row, 'dispatchId')
+            if (id !== null) navigate(`/dispatches/${id}`, { state: { fromSearch: searchParams.toString() } })
+          }}
+          emptyTitle={anyFilter ? 'No rows match these filters' : 'Nothing is awaiting activation'}
+          emptyMessage={
+            anyFilter
+              ? 'Loosen or clear the filters above to see the rest of the worklist.'
+              : 'Rows appear once a dispatched soundbox is waiting on the CWD confirmation.'
+          }
+        />
       </Card>
+
+      {confirmingRow !== null && (
+        <ConfirmDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) {
+              setConfirmingRow(null)
+              setActionError(null)
+            }
+          }}
+          // The thing being activated is the DEVICE and its SIM, so the title
+          // names the device serial(s); the merchant is context in the line
+          // below. A row with no serial paired yet falls back to the merchant.
+          title={`Mark ${
+            arrayField(confirmingRow, 'deviceIds').length > 0
+              ? arrayField(confirmingRow, 'deviceIds').join(', ')
+              : (stringField(confirmingRow, 'merchantDisplay') ?? 'this record')
+          } activated?`}
+          description={`Records that the CWD confirmed this device and its SIM for ${
+            stringField(confirmingRow, 'merchantDisplay') ?? 'this merchant'
+          }. This cannot be undone from here.`}
+          confirmLabel="Mark activated"
+          busy={busyId !== null}
+          error={actionError}
+          onConfirm={() => {
+            void handleActivate(confirmingRow)
+          }}
+        />
+      )}
+
+      <ConfirmDialog
+        open={confirmingBulk}
+        onOpenChange={(next) => {
+          if (!next) {
+            setConfirmingBulk(false)
+            setActionError(null)
+          }
+        }}
+        title={`Mark ${String(selected.size)} ${selected.size === 1 ? 'record' : 'records'} activated?`}
+        description="Records that the CWD confirmed each device and SIM. This cannot be undone from here; each record reports its own result in the list."
+        confirmLabel="Mark activated"
+        busy={bulkBusy}
+        error={actionError}
+        onConfirm={() => {
+          void handleActivateSelected()
+        }}
+      />
     </div>
   )
 }

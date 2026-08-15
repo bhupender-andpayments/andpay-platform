@@ -1,95 +1,109 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { UserPlus } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
+import { MultiSelect } from '../../components/Picker.js'
 import { getMerchants, type MerchantRow } from '../../api/endpoints.js'
-import { Card, PageHeader, ErrorNote, StatusPill, CodeChip, SkeletonRows, Input, Field } from '../../ui/primitives.js'
+import {
+  PageHeader,
+  Card,
+  Field,
+  Input,
+  Button,
+  Toolbar,
+  ErrorNote,
+  StatusPill,
+  CodeChip,
+} from '../../ui/primitives.js'
 import { fmtDate } from '../../ui/format.js'
+import { MerchantCreateDialog } from './MerchantCreateDialog.js'
 
 // REDESIGN STEP 7 (ruling 1b): the primary entity an entity-first nav was
-// shipping without. "Find the merchant" is the most common ops entry point, and
-// until this page there was no way to answer it in the portal at all.
+// shipping without. "Find the merchant" is the most common ops entry point.
 //
-// The wire id is DISPLAYED as a copyable chip and never asked for. That is the
-// whole point of the redesign: the operator searches by the name they call the
-// merchant, and the id is an output, not an input. Do not add an id box here.
+// 2026-08-14: brought fully onto the Inventory pattern. The URL-backed Toolbar
+// replaces the grid's own search box (a filtered list can be linked and
+// returned to), the grid sits in the shared Card, and every row OPENS: the
+// merchant profile at /merchants/:mrchId, which is where their dispatch history
+// lives. "Add merchant" opens a dialog; the endpoint contract it posts to is
+// stated in api/endpoints.ts for the backend team.
 //
-// DELIBERATELY ABSENT: any VPA column or "one merchant per VPA" framing. The
-// reference design treats that as settled; for us it is D1, an INTERIM key with
-// a re-key merge migration expected, and the UI must not deepen an assumption we
-// marked temporary.
+// The wire id is DISPLAYED as a copyable chip and never asked for: the operator
+// searches by the name they call the merchant, and the id is an output, not an
+// input. Do not add an id box here.
 //
-// Search filters client-side over rows already fetched, matching the phase-1
-// EntityPicker rule. Server-side search is a later change behind the same
-// surface, so no consumer changes.
+// DELIBERATELY ABSENT: any VPA column or "one merchant per VPA" framing. For us
+// that is D1, an INTERIM key with a re-key merge migration expected, and the UI
+// must not deepen an assumption we marked temporary.
 
-const MERCHANT_COLUMNS: ReadonlyArray<DataTableColumn<MerchantRow>> = [
+const MERCHANT_COLUMNS: ReadonlyArray<GridColumn<MerchantRow>> = [
   {
     key: 'displayName',
     header: 'Merchant',
-    // D-2: the additional-soundbox tag sits ON the merchant name rather than in
-    // a column of its own. A dedicated column would be empty for most rows,
-    // which reads as missing data instead of as a distinction; a badge beside
-    // the name is only present when it means something.
-    cell: (r) => (
-      <span className="flex items-center gap-2">
-        <span className="font-medium text-foreground">{r.displayName}</span>
-        {r.hasAdditionalRequests && (
-          <span
-            className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-900"
-            title="More than one soundbox request: at least one was an additional order, not a first one."
-          >
-            Additional
-          </span>
-        )}
-      </span>
-    ),
+    cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
+    sortValue: (r) => r.displayName,
   },
   {
     key: 'legalName',
     header: 'Legal name',
     cell: (r) => <span className="text-muted-foreground">{r.legalName}</span>,
+    sortValue: (r) => r.legalName,
   },
-  { key: 'mcc', header: 'MCC', cell: (r) => <span className="num text-muted-foreground">{r.mcc}</span> },
-  { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
+  {
+    key: 'mcc',
+    header: 'MCC',
+    cell: (r) => <span className="num text-muted-foreground">{r.mcc}</span>,
+    sortValue: (r) => r.mcc,
+  },
+  { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} />, sortValue: (r) => r.status },
   {
     key: 'mrchId',
     header: 'Merchant ID',
     cell: (r) => <CodeChip>{r.mrchId}</CodeChip>,
+    sortValue: (r) => r.mrchId,
   },
   {
     key: 'updatedAt',
     header: 'Updated',
     cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span>,
+    sortValue: (r) => r.updatedAt,
   },
 ]
 
-// Matches on the three things an operator actually knows: what they call the
-// merchant, its registered legal name, and the category code. The id is
-// searchable too, because an id pasted from elsewhere is a legitimate way IN;
-// that is different from REQUIRING one, which is what the redesign removed.
-function matches(row: MerchantRow, query: string): boolean {
-  const q = query.trim().toLowerCase()
-  if (q === '') return true
-  return (
-    row.displayName.toLowerCase().includes(q) ||
-    row.legalName.toLowerCase().includes(q) ||
-    row.mcc.toLowerCase().includes(q) ||
-    row.mrchId.toLowerCase().includes(q)
-  )
-}
-
 export function MerchantsPage() {
   const { client } = useAuth()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [rows, setRows] = useState<MerchantRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
+  const [adding, setAdding] = useState(false)
+
+  const q = searchParams.get('q') ?? ''
+  const statusSel = useMemo(() => searchParams.get('status')?.split(',').filter(Boolean) ?? [], [searchParams])
+
+  const setParam = useCallback(
+    (key: string, value: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (value === '') next.delete(key)
+          else next.set(key, value)
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+  const anyFilter = q !== '' || statusSel.length > 0
 
   useEffect(() => {
     let cancelled = false
     getMerchants(client)
       .then((res) => {
         if (cancelled) return
-        // A non-array here would throw inside .filter and take down the whole
+        // A non-array here would throw inside the grid and take down the whole
         // page, which is exactly how EntityPicker broke its host screen.
         setRows(Array.isArray(res) ? res : [])
       })
@@ -102,16 +116,20 @@ export function MerchantsPage() {
     }
   }, [client])
 
-  const visible = useMemo(() => (rows ?? []).filter((r) => matches(r, query)), [rows, query])
+  const statuses = useMemo(() => [...new Set((rows ?? []).map((r) => r.status))].sort(), [rows])
 
-  // Says WHICH number is on screen when a search is narrowing the list, so a
-  // filtered view can never be mistaken for the whole merchant master.
-  const subtitle =
-    rows === null
-      ? undefined
-      : query.trim() === ''
-        ? `${rows.length} ${rows.length === 1 ? 'merchant' : 'merchants'}`
-        : `${visible.length} of ${rows.length} merchants`
+  const tableRows = useMemo(() => {
+    const needle = q.toLowerCase()
+    return (rows ?? []).filter((r) => {
+      if (statusSel.length > 0 && !statusSel.includes(r.status)) return false
+      if (needle === '') return true
+      return [r.displayName, r.legalName, r.mcc, r.mrchId].some((v) => v.toLowerCase().includes(needle))
+    })
+  }, [rows, q, statusSel])
+
+  function openMerchant(r: MerchantRow): void {
+    navigate(`/merchants/${r.mrchId}`, { state: { row: r, fromSearch: searchParams.toString() } })
+  }
 
   return (
     <div className="space-y-4">
@@ -119,42 +137,65 @@ export function MerchantsPage() {
           titles are not headings, and the shell smoke test routes by heading. */}
       <PageHeader
         title="Merchants"
-        description={subtitle}
+        description="Every merchant we hold, from the bank request files. Open one for their profile and dispatch history."
         actions={
-          /* The header actions slot is shrink-to-fit, so an unsized input
-             truncated its own placeholder to "Name, legal name or M". Sized
-             here rather than in the shared Input, which other screens rely on
-             being full-width. Caught in a browser; jsdom lays nothing out. */
-          <Field label="Search" htmlFor="merchant-search">
-            <Input
-              id="merchant-search"
-              type="search"
-              className="w-64"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Name, legal name or MCC"
-              autoComplete="off"
-            />
-          </Field>
+          <Button onClick={() => setAdding(true)}>
+            <UserPlus className="size-4" aria-hidden="true" /> Add merchant
+          </Button>
         }
       />
       {error !== null && <ErrorNote>{error}</ErrorNote>}
-      <Card>
-        {rows === null ? (
-          <SkeletonRows rows={5} cols={6} />
-        ) : (
-          <DataTable
-            columns={MERCHANT_COLUMNS}
-            rows={visible}
-            getRowKey={(r) => r.mrchId}
-            emptyMessage={
-              rows.length === 0
-                ? 'No merchants yet. They appear once a bank request file has been ingested.'
-                : 'No merchant matches that search.'
-            }
+
+      <Toolbar>
+        <Field label="Search" htmlFor="mrchSearch" className="w-full sm:w-52">
+          <Input
+            id="mrchSearch"
+            placeholder="Name, legal name, MCC or id…"
+            value={q}
+            onChange={(e) => setParam('q', e.target.value)}
           />
+        </Field>
+        <Field label="Status" htmlFor="mrchStatus" className="w-full sm:w-44">
+          <MultiSelect
+            id="mrchStatus"
+            placeholder="All statuses"
+            options={statuses.map((s) => ({
+              value: s,
+              label: s,
+              count: (rows ?? []).filter((r) => r.status === s).length,
+            }))}
+            selected={statusSel}
+            onChange={(next) => setParam('status', next.join(','))}
+          />
+        </Field>
+        {anyFilter && (
+          <Button variant="ghost" onClick={() => setSearchParams(new URLSearchParams(), { replace: true })}>
+            Clear filters
+          </Button>
         )}
+      </Toolbar>
+
+      <Card>
+        <DataGrid
+          columns={MERCHANT_COLUMNS}
+          rows={tableRows}
+          loading={rows === null}
+          getRowKey={(r) => r.mrchId}
+          searchable={false}
+          onRowClick={openMerchant}
+          stickyFirstColumn
+          emptyTitle={anyFilter ? 'No merchants match these filters' : 'No merchants yet'}
+          emptyMessage={
+            anyFilter
+              ? 'Loosen or clear the filters above to see the rest.'
+              : 'They appear once a bank request file has been ingested.'
+          }
+          pageSize={20}
+          pageSizeOptions={[20, 50, 100]}
+        />
       </Card>
+
+      <MerchantCreateDialog open={adding} onOpenChange={setAdding} />
     </div>
   )
 }

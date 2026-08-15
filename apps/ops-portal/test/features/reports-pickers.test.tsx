@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { pickOption, openAndListOptions } from '../helpers/pickers.js'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { ReportPage } from '../../src/features/dashboards/ReportPage.js'
@@ -119,25 +120,27 @@ describe('Reports: filters over a known value set are pickers, not free text', (
   it('offers the real banks rather than asking the operator to type one', async () => {
     stub()
     renderAt('/reports')
-    const bank = await screen.findByLabelText(/bank/i)
-    expect(bank.tagName).toBe('SELECT')
-    expect(await screen.findByRole('option', { name: 'GSCB' })).toBeTruthy()
-    expect(screen.getByRole('option', { name: 'Rajkot Nagarik' })).toBeTruthy()
+    // The COMMON picker, not a native select and not a text box: the real
+    // banks are read out of its own listbox.
+    await screen.findByText(/any bank/i)
+    const options = await openAndListOptions(/any bank/i)
+    expect(options).toContain('GSCB')
+    expect(options).toContain('Rajkot Nagarik')
   })
 
   it('offers the real courier statuses rather than asking the operator to type one', async () => {
     stub()
     renderAt('/reports')
-    const status = await screen.findByLabelText(/status/i)
-    expect(status.tagName).toBe('SELECT')
-    expect(screen.getByRole('option', { name: 'DELIVERED' })).toBeTruthy()
-    expect(screen.getByRole('option', { name: 'OUT_FOR_DELIVERY' })).toBeTruthy()
+    await screen.findByText(/any status/i)
+    const options = await openAndListOptions(/any status/i)
+    expect(options).toContain('DELIVERED')
+    expect(options).toContain('OUT_FOR_DELIVERY')
   })
 
   it('sends the picked bank code, not its display name, to the edge', async () => {
     const calls = stub()
     renderAt('/reports')
-    await userEvent.selectOptions(await screen.findByLabelText(/bank/i), '3')
+    await pickOption(/any bank/i, /GSCB/i)
     await userEvent.click(screen.getByRole('button', { name: /search/i }))
     await vi.waitFor(() => {
       expect(calls.some((c) => c.url.includes('bank=3'))).toBe(true)
@@ -147,7 +150,8 @@ describe('Reports: filters over a known value set are pickers, not free text', (
   it('keeps an "any" choice so a filter can be cleared', async () => {
     stub()
     renderAt('/reports')
-    const bank = await screen.findByLabelText(/bank/i)
-    expect(bank.querySelector('option[value=""]')).toBeTruthy()
+    await screen.findByText(/any bank/i)
+    const options = await openAndListOptions(/any bank/i)
+    expect(options.some((o) => /any bank/i.test(o))).toBe(true)
   })
 })

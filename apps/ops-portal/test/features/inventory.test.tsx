@@ -184,7 +184,7 @@ describe('InventoryPage', () => {
     // against the real control rather than the <select> an earlier version of
     // this screen had.
     expect(options.map((o) => o.textContent?.replace(/\d+$/, '').trim())).toEqual([
-      'In stock', 'Allocated', 'Printed', 'Dispatched', 'Delivered', 'Damaged', 'Returned',
+      'In stock', 'Allocated', 'At print vendor', 'Dispatched', 'Delivered', 'Damaged', 'Returned',
     ])
   })
 

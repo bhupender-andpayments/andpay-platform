@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
@@ -17,7 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ErrorNote } from '../../ui/primitives.js'
 import { FileDropZone } from '../../components/FileDropZone.js'
 import { kindBySlug, ACTIVATION_COLUMNS, type StepKey } from './uploadKinds.js'
-import { UploadStepper } from './UploadStepper.js'
+import { BackLink } from '../../ui/DetailFacts.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
 
 // D-19 (T5.5, 13 Aug 2026): the CWD's activation file. The single-record mark
@@ -86,7 +85,6 @@ function rowErrorLabel(code: string): string {
 
 export function ActivationUploadPage() {
   const { client } = useAuth()
-  const navigate = useNavigate()
   const [file, setFile] = useState<File | null>(null)
   const [result, setResult] = useState<ActivationUploadResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -131,32 +129,14 @@ export function ActivationUploadPage() {
 
   const step: StepKey = result !== null || confirming ? 'submit' : 'upload'
   const KIND = kindBySlug('activation')!
-  const unlocked: StepKey[] = ['choose', 'upload', ...(file !== null || result !== null ? (['submit'] as const) : [])]
 
-  function onStepClick(key: StepKey): void {
-    if (key === 'choose') {
-      navigate('/uploads', { replace: true })
-      return
-    }
-    if (key === 'upload') {
-      setConfirming(false)
-      setResult(null)
-      // A prior structural rejection belongs to the file that caused it.
-      setStructuralErrors([])
-      return
-    }
-    if (key === 'submit') setConfirming(true)
-  }
 
   return (
     <div className="flex flex-col gap-6">
-      <UploadStepper
-        steps={KIND.steps}
-        current={step}
-        unlocked={unlocked}
-        onStepClick={onStepClick}
-        guidance={KIND.guidanceByStep?.[step]}
-      />
+      {/* The step rail is gone (2026-08-14 ruling): the page itself shows what
+          is possible next, and the rail restated it in a second visual system.
+          The back link goes to the section whose data this upload feeds. */}
+      <BackLink to="/activation" label="Activation" />
 
       <Card>
         <CardHeader>

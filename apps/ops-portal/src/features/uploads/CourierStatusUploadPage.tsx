@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
@@ -15,12 +14,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Select } from '../../ui/primitives.js'
+import { SearchSelect } from '../../components/Picker.js'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ErrorNote, StatusPill } from '../../ui/primitives.js'
 import { FileDropZone } from '../../components/FileDropZone.js'
 import { kindBySlug, COURIER_STATUS_COLUMNS, type StepKey } from './uploadKinds.js'
-import { UploadStepper } from './UploadStepper.js'
+import { BackLink } from '../../ui/DetailFacts.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
 
 // D-17 (T5.1, 13 Aug 2026): the ops COURIER-STATUS upload, the fourth upload
@@ -144,41 +143,15 @@ export function CourierStatusUploadPage() {
   const canContinue = file !== null && courierVndrId !== ''
   const step: StepKey = result !== null || confirming ? 'submit' : 'upload'
   const KIND = kindBySlug('courier-status')!
-  const navigate = useNavigate()
-  const unlocked: StepKey[] = ['choose', 'upload', ...(canContinue || result !== null ? (['submit'] as const) : [])]
   const selectedCourier = couriers.find((c) => c.id === courierVndrId) ?? null
 
-  function onStepClick(key: StepKey): void {
-    if (key === 'choose') {
-      navigate('/uploads', { replace: true })
-      return
-    }
-    if (key === 'upload') {
-      // Clearing `confirming` alone is not enough: with a result standing,
-      // the step derivation above always reads 'submit', so Upload is only
-      // reachable again by clearing the result itself, the same correction
-      // Task 3 landed for the bank page's Review pill.
-      setConfirming(false)
-      setResult(null)
-      // A prior structural rejection belongs to the file that caused it. Left
-      // standing, clicking Upload then Continue without picking a new file
-      // would re-render that rejection above a fresh confirm line, a screen
-      // asserting a rejection that has not happened this time.
-      setStructuralErrors([])
-      return
-    }
-    if (key === 'submit') setConfirming(true)
-  }
 
   return (
     <div className="flex flex-col gap-6">
-      <UploadStepper
-        steps={KIND.steps}
-        current={step}
-        unlocked={unlocked}
-        onStepClick={onStepClick}
-        guidance={KIND.guidanceByStep?.[step]}
-      />
+      {/* The step rail is gone (2026-08-14 ruling): the page itself shows what
+          is possible next, and the rail restated it in a second visual system.
+          The back link goes to the section whose data this upload feeds. */}
+      <BackLink to="/dispatches" label="Dispatches" />
 
       <Card>
         <CardHeader>
@@ -195,27 +168,18 @@ export function CourierStatusUploadPage() {
             <>
               <div className="space-y-2">
                 <Label htmlFor="courier-status-courier">Courier</Label>
-                {/* Uses the SHARED Select primitive rather than a hand-styled raw
-                    select. It was raw, with its own copy of the class list, and the
-                    copy had already drifted: it kept rounded-lg on an opaque
-                    background while the spec (4.6) asks for the Input's rounded-3xl
-                    bg-input/50, so this control looked different from every other
-                    field on the screen. Sharing the primitive is what stops that
-                    happening again. Still a native select underneath: the spec's
-                    Radix composite changes how the control is driven in tests, so it
-                    lands with its test rewrite rather than as a drive-by. */}
-                <Select
+                {/* The COMMON dropdown (user's standing rule, 13 Aug 2026):
+                    every picker in the portal is the Picker.tsx SearchSelect the
+                    Inventory pages use, never a native select. The native one
+                    rendered the browser's own blue popup and matched nothing
+                    else on the screen. */}
+                <SearchSelect
                   id="courier-status-courier"
+                  placeholder="Select a courier…"
                   value={courierVndrId}
-                  onChange={(e) => setCourierVndrId(e.target.value)}
-                >
-                  <option value="">Select a courier...</option>
-                  {couriers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.displayName}
-                    </option>
-                  ))}
-                </Select>
+                  onChange={(v) => setCourierVndrId(v)}
+                  options={couriers.map((c) => ({ value: c.id, label: c.displayName }))}
+                />
                 <p className="text-xs text-muted-foreground">
                   Required. Naming the wrong courier holds every row instead of moving a parcel.
                 </p>

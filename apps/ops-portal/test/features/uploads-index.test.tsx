@@ -12,12 +12,11 @@ import { UploadsPage } from '../../src/features/uploads/UploadsPage.js'
 //   2. There is no way to link someone to "the damage upload". Every upload
 //      shares one URL.
 //
-// Three equal choices became three equal cards, each on its own route. The
-// 2026-08-11 ruling moved the bank upload into the workflow workspace, and the
-// 2026-08-12 ruling moved device inventory into its own section
-// (/inventory/upload): the inventory team owns its own insertion. So /uploads
-// now offers ONLY damage reports, and both former slugs redirect somewhere
-// true rather than 404ing.
+// Three equal choices became three equal cards, each on its own route. As of
+// 13 Aug 2026 the index is the CATALOGUE of every file the platform ingests,
+// including the two whose pages another section owns (device inventory and the
+// status correction, both under /inventory): listing is not owning, and those
+// cards navigate to the owning route.
 afterEach(() => { cleanup() })
 
 function renderAt(path: string) {
@@ -33,12 +32,29 @@ function renderAt(path: string) {
 }
 
 describe('Uploads step 1: the remaining choice, none preselected', () => {
-  it('offers the damage upload as a link, and no device inventory card', () => {
+  // THE CATALOGUE (13 Aug 2026): every file the platform ingests is offered
+  // here, including the two whose pages another section owns. The card for one
+  // of those navigates to the owning route rather than duplicating the page,
+  // which is what keeps "listed" from becoming "a second entry point".
+  it('offers every upload kind as a link', () => {
     renderAt('/uploads')
-    expect(screen.getByRole('link', { name: /damage report/i })).toBeTruthy()
-    // Device inventory moved to /inventory/upload (2026-08-12): a card here
-    // would be a second entry point to a flow another section now owns.
-    expect(screen.queryByRole('link', { name: /device inventory/i })).toBeNull()
+    // The six-card index, replicated from the pdf-generation branch on the
+    // user's ruling (13 Aug 2026). Exactly these six, no seventh card.
+    for (const name of [
+      /bank requests/i,
+      /damage reports/i,
+      /device inventory/i,
+      /print vendor return/i,
+      /courier statuses/i,
+      /cwd activation results/i,
+    ]) {
+      expect(screen.getByRole('link', { name })).toBeTruthy()
+    }
+  })
+
+  it('points the kind another section owns at that section, not at a copy here', () => {
+    renderAt('/uploads')
+    expect(screen.getByRole('link', { name: /device inventory/i }).getAttribute('href')).toBe('/inventory/upload')
   })
 
   // THE load-bearing assertion, carried over from the tabs-era fix: arriving
@@ -52,35 +68,35 @@ describe('Uploads step 1: the remaining choice, none preselected', () => {
     expect(screen.queryByText(/device inventory upload/i)).toBeNull()
   })
 
-  it('shows the rail at step 1, and does NOT assert Review or Commit before a type exists', () => {
+  it('shows no step rail on the index: six equal cards, nothing preselected', () => {
+    // The replicated index has no stepper (the pdf original had none); each
+    // sub-page renders its own rail. What must NOT appear is any step name
+    // asserting a flow before a file type exists.
     renderAt('/uploads')
-    expect(screen.getByText(/choose file/i)).toBeTruthy()
-    // The index rail is Choose file plus Upload only: whether Review and
-    // Commit or Submit exist depends on the file, which is not chosen yet.
+    expect(screen.queryByText(/choose file/i)).toBeNull()
     expect(screen.queryByText(/^review$/i)).toBeNull()
     expect(screen.queryByText(/^commit$/i)).toBeNull()
     expect(screen.queryByText(/^submit$/i)).toBeNull()
   })
 
-  // Bank moved to the workflow workspace and device inventory to its own
-  // section, so the only remaining source line is damage's own.
   it('says who sends the file, so the operator knows which one they hold', () => {
     renderAt('/uploads')
-    expect(screen.getAllByText(/from the bank/i).length).toBe(1)
-    // Device inventory is NOT on this index any more: it moved to its own
-    // section on 2026-08-12 because the inventory team owns its own insertion.
-    expect(screen.queryByText(/from the manufacturer/i)).toBeNull()
+    // TWO bank lines: the request file ("From the bank") and the damage report
+    // ("From the bank, after delivery"). Both are the bank, at different points.
+    expect(screen.getAllByText(/from the bank/i).length).toBe(2)
+    expect(screen.getByText(/from the manufacturer/i)).toBeTruthy()
+    expect(screen.getByText(/from the print vendor/i)).toBeTruthy()
+    expect(screen.getByText(/from the courier/i)).toBeTruthy()
+    expect(screen.getByText(/^from cwd$/i)).toBeTruthy()
   })
 
   it('states the required columns up front for the kinds that can name them', () => {
     renderAt('/uploads')
-    // TWO, not three: device inventory could name its one required column but is
-    // no longer on this index, so the courier status and activation files are the
-    // ones left that can. Bank and damage name none, because their layout is
-    // resolved by source profile at ingest and the portal has no constant to
-    // state.
+    // Bank and damage name none, because their layout is resolved by source
+    // profile at ingest and the portal has no constant to state. The other four
+    // can: device inventory, return, courier statuses, activation.
     const stated = screen.getAllByText(/required columns:/i).map((el) => el.textContent)
-    expect(stated).toHaveLength(2)
+    expect(stated).toHaveLength(4)
     expect(stated.some((t) => /required columns: awb, status, status date$/i.test(t ?? ''))).toBe(true)
     expect(stated.some((t) => /required columns: device id, status$/i.test(t ?? ''))).toBe(true)
   })
@@ -91,24 +107,12 @@ describe('Uploads: each upload keeps its own linkable route', () => {
   // redirect. It must not 404 and must not land on the uploads index: a
   // bookmark or a runbook link has to arrive somewhere true.
   //
-  // The workspace route is a SENTINEL here, not the real WorkflowPage. What is
-  // under test is the redirect TARGET, and mounting the real page would drag its
-  // four mount-time reads into a suite that stubs no network at all, so a
-  // failure would stop being about upload routing. The real page rendering at
-  // /workflow is pinned in routes.test.tsx and portal-smoke.test.tsx.
-  it('redirects /uploads/bank into the workflow workspace', async () => {
-    render(
-      <MemoryRouter initialEntries={['/uploads/bank']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AuthProvider>
-          <Routes>
-            <Route path="/uploads/*" element={<UploadsPage />} />
-            <Route path="/workflow" element={<div>workflow workspace</div>} />
-          </Routes>
-        </AuthProvider>
-      </MemoryRouter>,
-    )
-    expect(screen.queryByText(/bank request upload/i)).toBeNull()
-    expect(await screen.findByText(/workflow workspace/i)).toBeTruthy()
+  // /uploads/bank RENDERS the bank ingest again as of 13 Aug 2026. It used to
+  // redirect into the Workflow workspace, which owned the bank flow; that
+  // workspace is gone and the flow is back where the file arrives.
+  it('deep-links the bank upload', async () => {
+    renderAt('/uploads/bank')
+    expect(await screen.findByText(/bank request upload/i)).toBeTruthy()
   })
   it('deep-links the damage upload', async () => {
     renderAt('/uploads/damage')

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Package } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { getBatches, type BatchRow } from '../../api/endpoints.js'
 import { Card, CardHeader, ErrorNote, SkeletonRows, CodeChip, EmptyState } from '../../ui/primitives.js'
@@ -82,8 +83,11 @@ export function RecentBatches() {
                   clickable on a small link is a row most people will not click. */}
               <Link
                 to={`/batches/${encodeURIComponent(b.id)}`}
-                className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 transition-colors hover:bg-primary/5"
+                className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 transition-colors hover:bg-primary/5"
               >
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                  <Package className="size-4 text-primary" aria-hidden="true" />
+                </span>
                 {/* NO STATUS PILL. There was one here, bound to `b.status`, and
                     it rendered EMPTY in the running app for every row: the
                     2026-08-10 ruling ("derive a batch's state from its children,

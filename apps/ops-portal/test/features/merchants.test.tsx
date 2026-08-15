@@ -56,7 +56,7 @@ describe('MerchantsPage', () => {
   // the signal was computed during projection and thrown away. It is now derived
   // on read and tagged here, so "is this an additional soundbox order" is
   // answerable by looking rather than by asking someone.
-  it('tags a merchant that has ordered more than once, and only that one', async () => {
+  it('carries no Additional pill (removed by ruling, 13 Aug 2026)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -68,11 +68,8 @@ describe('MerchantsPage', () => {
     )
     renderPage()
     await screen.findByText('Kirana Corner')
-
-    // Exactly one tag, on the repeat buyer. A tag on every row would tell an
-    // operator nothing.
-    const tags = screen.getAllByText(/additional/i)
-    expect(tags).toHaveLength(1)
+    // The wire field still arrives; the list deliberately does not render it.
+    expect(screen.queryByText('Additional')).toBeNull()
   })
 
   it('shows no tag at all when every merchant ordered once', async () => {
@@ -121,18 +118,16 @@ describe('MerchantsPage', () => {
     }
   })
 
-  it('filters client-side and says how many of the total are showing', async () => {
+  it('filters through the common grid, narrowing the visible rows', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(ROWS)))
     renderPage()
     await screen.findByText('Kirana Corner')
-    expect(screen.getByText('2 merchants')).toBeTruthy()
 
-    await userEvent.type(screen.getByLabelText('Search'), 'tea')
+    // The one search surface is the URL-backed Toolbar (2026-08-14), the same
+    // filter idiom as Inventory; the grid's own search row is off.
+    await userEvent.type(screen.getByPlaceholderText(/name, legal name/i), 'tea')
     expect(screen.queryByText('Kirana Corner')).toBeNull()
     expect(screen.getByText('Tea Stall Junction')).toBeTruthy()
-    // The count must name the narrowing, so a filtered view cannot be mistaken
-    // for the whole merchant master.
-    expect(screen.getByText('1 of 2 merchants')).toBeTruthy()
   })
 
   it('matches on legal name and MCC, not only the display name', async () => {
@@ -165,5 +160,63 @@ describe('MerchantsPage', () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ code: 'boom', message: 'nope' }, 500)))
     renderPage()
     expect(await screen.findByRole('alert')).toBeTruthy()
+  })
+
+  // The Add-merchant form carries the BRD's own merchant record (section 5.1):
+  // identity, contact and the dispatch address block. The POST body is the
+  // contract the backend team implements; nothing typed may silently vanish
+  // from it.
+  it('posts every BRD field from the Add merchant form, and stays disabled until they are valid', async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init })
+        if (url.includes('/ops/merchants') && init.method === 'POST') return jsonResponse({ mrchId: 'mrch_new' })
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+    await userEvent.click(screen.getByRole('button', { name: /add merchant/i }))
+
+    const type = async (label: RegExp, value: string) => {
+      await userEvent.type(screen.getByLabelText(label), value)
+    }
+    await type(/business name/i, 'Chai Point')
+    await type(/legal name/i, 'CHAI POINT LLP')
+    await type(/mcc/i, '5812')
+    await type(/vpa/i, 'chaipoint@gscb')
+    await type(/contact name/i, 'Asha')
+    await type(/mobile/i, '9876543210')
+    await type(/^address$/i, '12 MG Road')
+    await type(/city/i, 'Pune')
+    await type(/state/i, 'MH')
+
+    // Pincode still empty: the save must not be offered yet.
+    const save = screen.getAllByRole('button', { name: /add merchant/i }).at(-1) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    await type(/pincode/i, '411001')
+    expect(save.disabled).toBe(false)
+
+    await userEvent.click(save)
+    const write = await vi.waitFor(() => {
+      const found = calls.find((c) => c.url.includes('/ops/merchants') && c.init.method === 'POST')
+      expect(found).toBeTruthy()
+      return found!
+    })
+    const body = JSON.parse(String(write.init.body)) as Record<string, unknown>
+    expect(body).toMatchObject({
+      displayName: 'Chai Point',
+      legalName: 'CHAI POINT LLP',
+      mcc: '5812',
+      vpa: 'chaipoint@gscb',
+      contactName: 'Asha',
+      mobile: '9876543210',
+      address: '12 MG Road',
+      city: 'Pune',
+      state: 'MH',
+      pincode: '411001',
+    })
   })
 })

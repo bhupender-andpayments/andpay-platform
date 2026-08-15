@@ -84,9 +84,19 @@ export interface ReturnResult {
   deduped: boolean
 }
 
-function emptyResult(rejected: 'unauthorized' | 'schema_invalid'): ReturnResult {
+// Generic in the reason so a caller's return type can be NARROWER than the union.
+// That is load-bearing for the shared body below: it performs no authorization,
+// so it can never answer 'unauthorized', and the types now say so rather than
+// leaving every caller to widen and then explain the impossible case away.
+function emptyResult<R extends NonNullable<ReturnResult['rejected']>>(
+  rejected: R,
+): Omit<ReturnResult, 'rejected'> & { rejected: R } {
   return { rejected, pairedUnitIds: [], quarantined: 0, shptIds: [], collateralLinked: 0, deduped: false }
 }
+
+// What the shared ingest body can answer: everything ReturnResult carries, but
+// 'schema_invalid' is its only possible rejection.
+type ReturnBodyResult = Omit<ReturnResult, 'rejected'> & { rejected?: 'schema_invalid' }
 
 // Whole-file schema validation: a row missing a required field fails the
 // WHOLE file (mirrors intake.ts's isStructurallyValid). This must NEVER throw
@@ -192,6 +202,25 @@ export async function ingestReturnSheet(
   )
   if (!decision.allowed) return emptyResult('unauthorized')
 
+  return ingestReturnSheetBody(db, sheet)
+}
+
+// Everything after the identity gate, shared by the two channels that may
+// deliver this file (D-25, 13 Aug 2026):
+//
+//   * the print vendor's own upload, via POST /vendor/return, gated class-6
+//     own-vendor-only on `sheet:submit-return` (ingestReturnSheet above);
+//   * an operator's upload of the sheet the vendor emailed back, gated class-3
+//     on `ops:upload-return-file` (ingestReturnSheetOps below).
+//
+// The split is exactly at the identity boundary, which is why it is safe: this
+// body reads only sheet.vndrId, sheet.fileId and sheet.rows. It never reads the
+// claim and never reads sheet.workQueue, so the two callers differ ONLY in how
+// they prove who they are and how the vendor is established. Neither channel
+// gets a private path through the pairing, quarantine, shipment-birth or
+// dispatch-advance logic, which is the point: the two uploads of one file must
+// produce one outcome, not two similar ones.
+async function ingestReturnSheetBody(db: FulfillmentDb, sheet: ReturnSheet): Promise<ReturnBodyResult> {
   // STEP B: whole-file schema validation BEFORE any transaction opens. One
   // structurally invalid row rejects the WHOLE file: no pairing, no
   // intake_exception rows, no partial credit.
@@ -784,4 +813,100 @@ export async function ingestReturnSheet(
     collateralLinked,
     deduped: !ran,
   }
+}
+
+// The OPS channel for the same file (D-25, 13 Aug 2026; escalation decided
+// 2026-08-11, option A, grounded in BRD FR-05 para 322: "In Phase 1, return
+// file would be sent via email and uploaded into system by AndPayments team").
+//
+// The print vendor fills in Device ID and AWB on the dispatch sheet we generated
+// for them and emails it back. In Phase 1 there is no vendor login, so an
+// operator uploads it. That operator is class-3 and holds no vendor scope, so
+// `sheet:submit-return` can never authorize them: the edge gates this on
+// `ops:upload-return-file` instead, and the vendor identity the body needs is
+// RESOLVED SERVER-SIDE here rather than accepted from the request (M7, S16,
+// 105c). An operator cannot nominate which vendor returned a sheet.
+//
+// Resolution: the rows' own dispatch ids to pending_pool_entry.batch to
+// batch.print_vndr. That is the vendor the platform itself bound when it handed
+// the batch over, so it is the only answer that cannot be spoofed or guessed.
+// Three whole-file refusals rather than a guess, because each one means the
+// sheet does not describe work we can attribute:
+//   * no_resolvable_dispatch: none of the dispatch ids belong to a batch here.
+//   * mixed_vendors: the rows span batches bound to DIFFERENT print vendors, so
+//     there is no single sheet author. Ingesting under either would misattribute
+//     half the file.
+//   * batch_has_no_vendor: the batch exists but was never bound to a vendor, so
+//     nothing has been handed over yet and a return is premature.
+//
+// The file idempotency key stays {vndrId}|{fileId} inside the body, which is
+// deliberate: it means an ops upload and the vendor's own later upload of the
+// SAME bytes dedup against each other instead of pairing everything twice.
+export type OpsReturnRejection = 'schema_invalid' | 'no_resolvable_dispatch' | 'mixed_vendors' | 'batch_has_no_vendor'
+
+export interface OpsReturnResult extends Omit<ReturnResult, 'rejected'> {
+  rejected?: OpsReturnRejection
+  /** The print vendor the sheet resolved to, once resolution succeeds. */
+  vndrId?: string
+}
+
+function emptyOpsResult(rejected: OpsReturnRejection): OpsReturnResult {
+  return { rejected, pairedUnitIds: [], quarantined: 0, shptIds: [], collateralLinked: 0, deduped: false }
+}
+
+interface PrintVendorRow {
+  print_vndr: string | null
+}
+
+export async function ingestReturnSheetOps(
+  db: FulfillmentDb,
+  args: { fileId: string; rows: ReturnRow[] },
+): Promise<OpsReturnResult> {
+  // Same whole-file schema gate the vendor channel applies, run here too so a
+  // malformed sheet is refused before we go looking for a vendor to blame it on.
+  // An empty row set is schema_invalid rather than a silent no-op: a file that
+  // parsed to nothing is a file the operator should re-check, not one we should
+  // report as successfully ingested.
+  if (
+    !Array.isArray(args.rows) ||
+    args.rows.length === 0 ||
+    args.rows.some((row) => row === null || typeof row !== 'object' || !isStructurallyValid(row as ReturnRow))
+  )
+    return emptyOpsResult('schema_invalid')
+
+  // A row whose dispatch id is not a well-formed asgn_ is left OUT of the
+  // resolution set rather than failing the file: the per-row loop in the body
+  // already quarantines it with a reason the operator can act on, which is more
+  // useful than refusing 200 good rows over one typo.
+  const asgnUuids: string[] = []
+  for (const row of args.rows) {
+    try {
+      asgnUuids.push(toUuid(row.asgnId))
+    } catch (err) {
+      if (!(err instanceof InvalidIdError)) throw err
+    }
+  }
+  if (asgnUuids.length === 0) return emptyOpsResult('no_resolvable_dispatch')
+
+  const vendors = await db.$queryRaw<PrintVendorRow[]>`
+    SELECT DISTINCT b.print_vndr::text AS print_vndr
+    FROM pending_pool_entry p
+    JOIN batch b ON b.id = p.batch
+    WHERE p.asgn_id = ANY(${asgnUuids}::uuid[])
+  `
+  if (vendors.length === 0) return emptyOpsResult('no_resolvable_dispatch')
+  if (vendors.length > 1) return emptyOpsResult('mixed_vendors')
+  const printVndr = vendors[0]!.print_vndr
+  if (printVndr === null) return emptyOpsResult('batch_has_no_vendor')
+
+  const vndrId = fromUuid('vndr', printVndr)
+  // workQueue is a call-shape placeholder: the body never reads it, and the ops
+  // channel has no work queue because it has no vendor operator behind it.
+  const result = await ingestReturnSheetBody(db, {
+    fileId: args.fileId,
+    vndrId,
+    workQueue: 'ops-upload',
+    rows: args.rows,
+  })
+  return { ...result, vndrId }
 }

@@ -51,10 +51,12 @@ describe('DataTable', () => {
     expect(screen.getByRole('button', { name: 'Resolve' })).toBeTruthy()
   })
 
-  it('renders the empty message across the full column span', () => {
+  it('renders the empty message', () => {
+    // Since the delegation to the common DataGrid (13 Aug 2026) the empty
+    // state is the grid's own EmptyState block, not a colspan cell, so the
+    // assertion is about the message being visible, not about table geometry.
     render(<DataTable columns={columns} rows={[]} emptyMessage="No status exceptions." />)
-    const cell = screen.getByText('No status exceptions.')
-    expect(cell.getAttribute('colspan')).toBe(String(columns.length))
+    expect(screen.getByText('No status exceptions.')).toBeTruthy()
   })
 
   // A non-array body has now taken a whole page down three times in two days
@@ -83,6 +85,6 @@ describe('DataTable', () => {
     // know WHY the body is not a list, but it can refuse to say "none".
     render(<DataTable columns={columns} rows={undefined as never} emptyMessage="No vendors." />)
     expect(screen.queryByText('No vendors.')).toBeNull()
-    expect(screen.getByText('Could not display these rows.')).toBeTruthy()
+    expect(screen.getByText(/could not display these rows/i)).toBeTruthy()
   })
 })

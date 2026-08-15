@@ -68,10 +68,10 @@ function stub(entries: PoolEntryRow[], triggerResult: unknown = { btchId: 'btch_
   return calls
 }
 
-// BRD 5.3.4 force dispatch: the trigger now REQUIRES a reason, and the button
-// is disabled until one is typed. Every test below that means to trigger fills
-// the row's Reason box first; the tests that assert the disabled state and the
-// posted body are further down.
+// TRIGGERING IS TWO STEPS NOW. Forming a batch cannot be undone, so the row's
+// "Trigger batch" opens a confirmation, and the confirmation is where the reason
+// the edge requires (BRD 5.3.4 force dispatch) is typed and where "Create batch"
+// actually posts. Every test that means to trigger goes through both.
 //
 // Note what did NOT come back: the free-text tnnt_/prog_ boxes. A reason is
 // prose an operator writes from their own head, not an id they have to go and
@@ -79,10 +79,27 @@ function stub(entries: PoolEntryRow[], triggerResult: unknown = { btchId: 'btch_
 // removed.
 const A_REASON = 'bank collection cut-off is today'
 
-async function typeReason(text = A_REASON): Promise<HTMLElement> {
-  const boxes = await screen.findAllByLabelText(/reason/i)
-  await userEvent.type(boxes[0]!, text)
-  return boxes[0]!
+/** Open the confirmation for a pool (the first one unless told otherwise). */
+async function openTrigger(which = 0): Promise<void> {
+  const buttons = await screen.findAllByRole('button', { name: /trigger batch/i })
+  await userEvent.click(buttons[which]!)
+}
+
+/** Open the confirmation and type the reason into it. */
+async function typeReason(text = A_REASON, which = 0): Promise<HTMLElement> {
+  await openTrigger(which)
+  const box = await screen.findByLabelText(/reason/i)
+  await userEvent.type(box, text)
+  return box
+}
+
+/** The button inside the confirmation that actually posts. */
+function confirmButton(): HTMLButtonElement {
+  return screen.getByRole('button', { name: /create batch/i }) as HTMLButtonElement
+}
+
+async function confirmTrigger(): Promise<void> {
+  await userEvent.click(confirmButton())
 }
 
 describe('BatchablePools: trigger a batch without typing an id', () => {
@@ -99,19 +116,40 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     expect(await screen.findAllByRole('button', { name: /trigger/i })).toHaveLength(1)
   })
 
-  it('counts the records waiting in the pool', async () => {
+  it('counts the records waiting as two big stats against the two thresholds', async () => {
     stub([entry({ asgnId: 'asgn_a' }), entry({ asgnId: 'asgn_b' })])
-    render(withProviders(<BatchablePools />))
-    expect(await screen.findByText(/2 records/i)).toBeTruthy()
+    render(
+      withProviders(<BatchablePools lotSizeFor={() => 50} maxWaitSeconds={7 * 86_400} />),
+    )
+    // The pdf-generation design: "2/50 records pooled" and "0/7 days queued",
+    // two sub-cards, not one dense sentence to parse.
+    expect(await screen.findByText('records pooled')).toBeTruthy()
+    expect(screen.getByText('/50')).toBeTruthy()
+    expect(screen.getByText('days queued')).toBeTruthy()
+    expect(screen.getByText('/7')).toBeTruthy()
   })
 
-  it('shows how many aggregator banks the pool spans, as context', async () => {
+  it('renders both stats without denominators when no thresholds are known', async () => {
+    stub([entry({ asgnId: 'asgn_a' }), entry({ asgnId: 'asgn_b' })])
+    render(withProviders(<BatchablePools />))
+    // A caller that holds no config shows the live numbers alone rather than
+    // denominators this component invented.
+    expect(await screen.findByText('records pooled')).toBeTruthy()
+    expect(screen.queryByText(/^\//)).toBeNull()
+  })
+
+  it('groups by (tenant, program) even when the pool spans many aggregator banks', async () => {
     stub([
-      entry({ asgnId: 'asgn_a', bankReferenceCode: '3' }),
-      entry({ asgnId: 'asgn_b', bankReferenceCode: '18' }),
+      entry({ asgnId: 'asgn_a', bankReferenceCode: '3', bankDisplayName: 'Bank A' }),
+      entry({ asgnId: 'asgn_b', bankReferenceCode: '18', bankDisplayName: 'Bank B' }),
     ])
     render(withProviders(<BatchablePools />))
-    expect(await screen.findByText(/2 banks/i)).toBeTruthy()
+    // Only one row (one Trigger button) covers both aggregators, and the bank
+    // names appear in the CONFIRMATION, where the operator is deciding what to
+    // claim - the row itself leads with the two threshold stats now.
+    expect(await screen.findAllByRole('button', { name: /trigger/i })).toHaveLength(1)
+    await openTrigger()
+    expect(await screen.findByText(/Bank A, Bank B/)).toBeTruthy()
   })
 
   it('separates two genuinely different pools', async () => {
@@ -128,7 +166,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     const calls = stub([entry({ tenantId: 'tnnt_real', programId: 'prog_real' })])
     render(withProviders(<BatchablePools />))
     await typeReason()
-    await userEvent.click(await screen.findByRole('button', { name: /trigger/i }))
+    await confirmTrigger()
 
     const call = calls.find((c) => c.url.includes('/ops/batches/trigger'))
     expect(call).toBeTruthy()
@@ -142,7 +180,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     const calls = stub([entry()])
     render(withProviders(<BatchablePools />))
     await typeReason()
-    await userEvent.click(await screen.findByRole('button', { name: /trigger/i }))
+    await confirmTrigger()
     const call = calls.find((c) => c.url.includes('/ops/batches/trigger'))
     const headers = new Headers(call!.init.headers)
     expect(headers.get('Idempotency-Key')).toBeTruthy()
@@ -152,7 +190,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     stub([entry()])
     render(withProviders(<BatchablePools />))
     await typeReason()
-    await userEvent.click(await screen.findByRole('button', { name: /trigger/i }))
+    await confirmTrigger()
     expect(await screen.findByText(/btch_50000000008008000000000009/)).toBeTruthy()
   })
 
@@ -161,7 +199,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     stub([entry()], null)
     render(withProviders(<BatchablePools />))
     await typeReason()
-    await userEvent.click(await screen.findByRole('button', { name: /trigger/i }))
+    await confirmTrigger()
     expect(await screen.findByText(/nothing to batch/i)).toBeTruthy()
   })
 
@@ -195,7 +233,7 @@ describe('BatchablePools: telling the rest of the page that the pool changed', (
     render(withProviders(<BatchablePools onTriggered={onTriggered} />))
 
     await typeReason()
-    await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
+    await confirmTrigger()
 
     await vi.waitFor(() => {
       expect(onTriggered).toHaveBeenCalledTimes(1)
@@ -216,7 +254,7 @@ describe('BatchablePools: telling the rest of the page that the pool changed', (
     render(withProviders(<BatchablePools onTriggered={onTriggered} />))
 
     await typeReason()
-    await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
+    await confirmTrigger()
 
     await vi.waitFor(() => {
       expect(calls.some((c) => c.url.includes('/ops/batches/trigger'))).toBe(true)
@@ -228,15 +266,15 @@ describe('BatchablePools: telling the rest of the page that the pool changed', (
     stub([entry()])
     render(withProviders(<BatchablePools />))
     await typeReason()
-    await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
+    await confirmTrigger()
     expect(await screen.findByText(/btch_50000000008008000000000009/)).toBeTruthy()
   })
 
   it('counts in words that agree with the number, including at one', async () => {
     stub([entry()])
     render(withProviders(<BatchablePools />))
-    // One record, one bank: "1 records across 1 banks" was what it said.
-    expect(await screen.findByText(/1 record across 1 bank,/)).toBeTruthy()
+    // The stat label goes singular where the count is one.
+    expect(await screen.findByText('record pooled')).toBeTruthy()
   })
 })
 
@@ -247,29 +285,41 @@ describe('BatchablePools: the force-dispatch reason', () => {
   beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup(); clearAccessToken() })
 
-  it('disables the trigger until a reason is typed, so the field is discovered by looking, not by being rejected', async () => {
+  // The guard moved WITH the field: the row's button now opens the confirmation
+  // (it can always do that), and the confirmation cannot be confirmed until the
+  // reason is there. Same rule, asserted where it now lives.
+  it('cannot be confirmed until a reason is typed, so the field is discovered by looking, not by being rejected', async () => {
     stub([entry()])
     render(withProviders(<BatchablePools />))
-    const button = await screen.findByRole('button', { name: /trigger batch/i })
-    expect((button as HTMLButtonElement).disabled).toBe(true)
+    await openTrigger()
+    expect(confirmButton().disabled).toBe(true)
 
-    await typeReason()
-    expect((button as HTMLButtonElement).disabled).toBe(false)
+    await userEvent.type(await screen.findByLabelText(/reason/i), A_REASON)
+    expect(confirmButton().disabled).toBe(false)
   })
 
   it('treats a whitespace-only reason as no reason at all', async () => {
     stub([entry()])
     render(withProviders(<BatchablePools />))
-    const button = await screen.findByRole('button', { name: /trigger batch/i })
     await typeReason('   ')
-    expect((button as HTMLButtonElement).disabled).toBe(true)
+    expect(confirmButton().disabled).toBe(true)
+  })
+
+  it('states what the batch will claim before it is created', async () => {
+    stub([entry({ asgnId: 'asgn_a' }), entry({ asgnId: 'asgn_b' })])
+    render(withProviders(<BatchablePools />))
+    await openTrigger()
+    // The dialog names the consequence and the size, because the pool list it
+    // was read from is behind the overlay by now.
+    expect(await screen.findByText(/records that arrive afterwards go into the next batch/i)).toBeTruthy()
+    expect(screen.getByRole('dialog')).toBeTruthy()
   })
 
   it('posts the typed reason in the body, trimmed', async () => {
     const calls = stub([entry()])
     render(withProviders(<BatchablePools />))
     await typeReason('  courier is collecting at 4pm  ')
-    await userEvent.click(await screen.findByRole('button', { name: /trigger batch/i }))
+    await confirmTrigger()
 
     const call = calls.find((c) => c.url.includes('/ops/batches/trigger'))
     expect(call).toBeTruthy()
@@ -287,18 +337,19 @@ describe('BatchablePools: the force-dispatch reason', () => {
     ])
     render(withProviders(<BatchablePools />))
 
-    const boxes = await screen.findAllByLabelText(/reason/i)
-    expect(boxes).toHaveLength(2)
-    await userEvent.type(boxes[1]!, 'only the second pool')
+    // The reason typed for the SECOND pool belongs to that pool alone.
+    await typeReason('only the second pool', 1)
+    await confirmTrigger()
 
-    const buttons = await screen.findAllByRole('button', { name: /trigger batch/i })
-    expect((buttons[0] as HTMLButtonElement).disabled).toBe(true)
-    expect((buttons[1] as HTMLButtonElement).disabled).toBe(false)
-
-    await userEvent.click(buttons[1]!)
     const call = calls.find((c) => c.url.includes('/ops/batches/trigger'))
     const body = JSON.parse(String(call!.init.body)) as Record<string, string>
     expect(body.tenantWire).toBe('tnnt_2')
     expect(body.reason).toBe('only the second pool')
+
+    // And the first pool's confirmation opens empty, unarmed: one shared box
+    // would have carried that reason into a different batch's audit record.
+    await openTrigger(0)
+    expect((await screen.findByLabelText(/reason/i)).getAttribute('value')).not.toBe('only the second pool')
+    expect(confirmButton().disabled).toBe(true)
   })
 })

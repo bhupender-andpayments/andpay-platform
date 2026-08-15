@@ -1,9 +1,16 @@
 import type { ReactNode } from 'react'
+import { DataGrid, type GridColumn } from '../ui/DataGrid.js'
 
 export interface DataTableColumn<T> {
   key: string
   header: string
   cell(row: T, index: number): ReactNode
+  /**
+   * Opt this column into the grid's sorting and global search. Optional so the
+   * many existing callers keep compiling; a column without it renders but is
+   * not sortable and does not feed the search box, exactly DataGrid's own rule.
+   */
+  sortValue?(row: T): string | number
 }
 
 export interface DataTableProps<T> {
@@ -11,46 +18,68 @@ export interface DataTableProps<T> {
   rows: readonly T[]
   getRowKey?: (row: T, index: number) => string | number
   emptyMessage?: string
+  /** Forwarded to the grid. Search only finds columns that carry sortValue. */
+  searchPlaceholder?: string
+  pageSize?: number
 }
 
-// A generic, presentational table for the read views the feature tasks
-// (10 to 14) render (tiles/report rows, queue rows, vendor rows, upload
-// results). It owns no data fetching and no authorization logic: callers
-// supply already-fetched rows and column definitions.
-export function DataTable<T>({ columns, rows, getRowKey, emptyMessage = 'No records.' }: DataTableProps<T>) {
-  // A NON-ARRAY `rows` MUST NOT TAKE THE PAGE DOWN, AND MUST NOT READ AS EMPTY.
-  //
-  // `rows` is typed `readonly T[]`, but the value is whatever a fetch returned,
-  // so the type is an assertion and not a check. When a read fails, the body is
-  // an error envelope or undefined, the caller assigns it into state, and this
-  // component throws during render: `.length` on undefined, or `.map` on an
-  // object. React then unmounts the tree, so the operator loses the WHOLE
-  // screen rather than one table. That happened three times in two days, in
-  // VendorSuspendButton, the Dispatches shipments region and Inventory.
-  //
-  // Guarding at the call site works but has to be remembered every time, and it
-  // was not. Guarding here covers every caller that exists and every one that
-  // will.
-  //
-  // The second half matters as much as the first: coercing quietly to [] would
-  // render the caller's emptyMessage, and a failed read would then be
-  // indistinguishable from a genuinely empty list. The table would state
-  // something false. This component cannot know WHY the body is not a list, so
-  // it says only what it knows: these rows could not be displayed. Callers that
-  // CAN tell the operator more (Inventory sets a load error) still should.
+// DELEGATES TO THE COMMON DataGrid (user's standing rule, 13 Aug 2026): every
+// data list in the portal is the one grid the Inventory page uses - same look,
+// same filter row, same pagination - never a second table implementation that
+// drifts. This component survives only as an adapter so its many callers keep
+// their simpler column shape; new surfaces should use DataGrid directly.
+//
+// The non-array guard this component was famous for is preserved: `rows` is
+// typed `readonly T[]` but the value is whatever a fetch returned, and a
+// non-array reaching the grid throws during render and takes the whole screen
+// down (it happened three times in two days). Coercing quietly to [] would
+// render the caller's emptyMessage and make a failed read indistinguishable
+// from a genuinely empty list, so the non-array case says what it knows and
+// nothing more.
+export function DataTable<T>({
+  columns,
+  rows,
+  getRowKey,
+  emptyMessage = 'No records.',
+  searchPlaceholder,
+  pageSize,
+}: DataTableProps<T>) {
   const usable = Array.isArray(rows)
   const safeRows: readonly T[] = usable ? rows : []
 
+  const gridColumns: ReadonlyArray<GridColumn<T>> = columns.map((c, colIndex) => ({
+    key: c.key,
+    header: c.header,
+    // DataGrid's cell takes only the row; no existing caller reads the index
+    // (verified before the delegation), so it is supplied as the column's own
+    // position which is stable per render.
+    cell: (row: T) => c.cell(row, colIndex),
+    sortValue: c.sortValue,
+  }))
+
   return (
-    // THE TABLE MUST SCROLL INSIDE ITS OWN CONTAINER. Every caller renders this
-    // inside a Card, and Card is `overflow-hidden`; the page itself is capped at
-    // max-w-[1200px]. So a table wider than the card was CLIPPED with no
-    // scrollbar, and the clipped region was unreachable at ANY viewport width,
-    // because the cap means the card can never grow to meet it. Found in the
-    // browser on Status Exceptions (11 columns, 1401px in a 1200px card): the
-    // trailing Actions column, which holds Resolve, sat past the right edge and
-    // an operator simply could not reach the control the queue exists for.
-    // DataGrid, the sibling primitive, already wraps its table exactly this way.
+    <DataGrid
+      columns={gridColumns}
+      rows={safeRows}
+      getRowKey={getRowKey ? (row, index) => String(getRowKey(row, index)) : undefined}
+      emptyTitle={usable ? 'Nothing here' : 'Could not display these rows'}
+      emptyMessage={usable ? emptyMessage : 'The response was not a list. A load error above says more if the caller caught one.'}
+      searchPlaceholder={searchPlaceholder}
+      pageSize={pageSize ?? 20}
+    />
+  )
+}
+
+// The legacy presentational table, kept for the ONE case the grid delegation
+// cannot serve: rows that hold FOCUSED INPUTS (the damage-case note box). The
+// grid rebuilds its rows through TanStack on each render, which remounts a
+// row's input mid-typing and drops focus after the first character. A plain
+// keyed <tr> map does not. Use this only for input-bearing rows; every plain
+// data list uses DataTable (the grid) above.
+export function PlainTable<T>({ columns, rows, getRowKey, emptyMessage = 'No records.' }: DataTableProps<T>) {
+  const usable = Array.isArray(rows)
+  const safeRows: readonly T[] = usable ? rows : []
+  return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-left text-sm">
         <thead>

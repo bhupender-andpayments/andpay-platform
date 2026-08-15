@@ -310,7 +310,7 @@ export function DeviceInventoryUploadPage() {
   // (Pipeline / Inventory / Upload) already says where they are. One screen:
   // pick a manufacturer, drop a file, press the button.
   //
-  // UploadStepper itself stays: the damage flow has a real Review step, where a
+  // (2026-08-14: the UploadStepper rail is gone portal-wide now, so the
   // rail earns its place.
   const navigate = useNavigate()
 
@@ -351,6 +351,7 @@ export function DeviceInventoryUploadPage() {
                   options={manufacturers.map((m) => ({ value: m.id, label: m.displayName }))}
                   value={manufacturerVndrId}
                   onChange={setManufacturerVndrId}
+                  className="w-full sm:w-[35%]"
                 />
                 <p className="text-xs text-muted-foreground">Required before the file can be submitted.</p>
               </div>

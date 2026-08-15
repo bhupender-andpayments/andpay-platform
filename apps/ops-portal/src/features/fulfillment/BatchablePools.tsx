@@ -3,7 +3,8 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { getPoolEntries, triggerBatch, getDevices, type PoolEntryRow } from '../../api/endpoints.js'
 import { Card, CardHeader, Button, ErrorNote, InfoNote, CodeChip, SkeletonRows, Field, Input } from '../../ui/primitives.js'
-import { fmtNumber, fmtDays } from '../../ui/format.js'
+import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import { fmtNumber } from '../../ui/format.js'
 
 // The cap the ops-edge enforces on the trigger reason (BRD 5.3.4). Mirrored
 // here so the operator hits a maxLength on the keyboard rather than a 400 after
@@ -64,36 +65,6 @@ export function groupBatchablePools(entries: readonly PoolEntryRow[]): Batchable
   })
 }
 
-/**
- * When this pool will batch itself without anybody here, for a caller that
- * resolved the configured lot size. Says the lot size is not configured rather
- * than printing one: the domain's ultimate fallback is a code default inside the
- * fulfillment service, and restating it here would make the portal a second
- * source of truth for it.
- *
- * IT DELIBERATELY RENDERS NO RATIO, and that is a correction rather than a
- * simplification. It used to read "N of M ready" with N being `pool.records`,
- * the number of pending_pool_entry ROWS. The gate it was claiming to track
- * counts something else entirely: batching.ts:382 evaluates
- * `count(DISTINCT source_event_id) >= minLotSize`, so the lot size is measured
- * in BANK REQUESTS while the numerator was measured in dispatch records. One
- * bank request becomes up to two records, a SOUNDBOX and a COLLATERAL, so the
- * ratio overstated progress by up to a factor of two and told an operator the
- * pool was about to batch itself when it was nowhere near. That is the one
- * defect on this screen that misleads somebody about when the machine will act.
- *
- * The ratio cannot be repaired here: source_event_id is not in
- * POOL_ENTRY_COLUMNS and therefore not on PoolEntryRow, so the browser cannot
- * count distinct requests, and an aggregate in ops-read.ts is forbidden by
- * test/architecture.test.ts. Exposing the number properly is an analytics-rail
- * question, so until it is answered this line states the threshold and names its
- * unit rather than asserting a position against it.
- */
-function lotProgress(lot: number | null): string {
-  return lot === null
-    ? 'No lot size configured, so this pool will not batch itself on size.'
-    : `Batches itself at ${fmtNumber(lot)} bank requests. The count above is dispatch records, and one request becomes up to two of them, so the two are not the same number.`
-}
 
 function ageInDays(iso: string): number {
   const ms = Date.now() - new Date(iso).getTime()
@@ -115,7 +86,10 @@ export function BatchablePools({
   onTriggered,
   reloadKey,
   lotSizeFor,
+  maxWaitSeconds,
   emptyHint,
+  viewPoolCount,
+  onViewPool,
 }: {
   onTriggered?: () => void
   /**
@@ -140,6 +114,13 @@ export function BatchablePools({
    */
   lotSizeFor?: (tenantId: string, programId: string) => number | null
   /**
+   * The effective max-wait, in seconds. Same display-only posture as
+   * lotSizeFor: it turns "1 day queued" into "1/7 days queued", the second of
+   * the two thresholds the auto-trigger panel beside this card promises. The
+   * gate itself lives server-side.
+   */
+  maxWaitSeconds?: number
+  /**
    * What to tell an operator whose pool is EMPTY, when the caller knows how this
    * particular screen gets records into it. Given nothing, the empty state says
    * only that nothing is waiting, which is what /batches wants.
@@ -153,6 +134,10 @@ export function BatchablePools({
    * an empty pool actually needs.
    */
   emptyHint?: string
+  /** Count for the "View pool (N)" secondary button in the card header. */
+  viewPoolCount?: number
+  /** Opens the pending-pool dialog, replacing the always-visible table below. */
+  onViewPool?: () => void
 }) {
   const { client } = useAuth()
   const [pools, setPools] = useState<BatchablePool[] | null>(null)
@@ -165,6 +150,11 @@ export function BatchablePools({
   // trigger for another, which is precisely the audit trail this field exists to
   // stop being wrong.
   const [reasons, setReasons] = useState<Record<string, string>>({})
+  // Which pool's confirmation is open. Forming a batch cannot be undone: the
+  // records it claims are BATCHED from that moment and a later request forms its
+  // own batch, so the click that does it asks first, and the dialog spells out
+  // exactly what is about to be claimed.
+  const [confirming, setConfirming] = useState<BatchablePool | null>(null)
   // How many devices are actually in the warehouse. null means we could not
   // find out, which is deliberately different from zero: an unknown stock level
   // must never render as "0 in stock".
@@ -208,12 +198,21 @@ export function BatchablePools({
         newIdempotencyKey(),
       )
       setOutcome(res)
+      // Only now, once the write has actually returned, does the dialog close:
+      // dismissing it on click would have left the operator watching a page that
+      // had not changed yet with no idea whether the batch was forming.
+      setConfirming(null)
+      // The reason has done its job and must not be carried into the next
+      // trigger for this pool, which is a different decision needing its own.
+      setReasons((prev) => ({ ...prev, [key]: '' }))
       // The pool has changed either way, so re-read rather than guess at it.
       await load()
       // And tell the page, so the table below re-reads too. Without this the
       // two halves of one screen disagree about what is still pooled.
       onTriggered?.()
     } catch (err) {
+      // Stays inside the open dialog, pinned to the button that caused it: the
+      // operator can fix the reason and retry without losing what they typed.
       setError(err instanceof Error ? err.message : 'Failed to trigger the batch.')
     } finally {
       setBusyKey(null)
@@ -238,122 +237,110 @@ export function BatchablePools({
     <Card>
       <CardHeader
         title="Ready to batch"
-        subtitle="Everything pooled and waiting. One pool per tenant and program, never per bank, so a single pool can span many bank codes. Triggering creates the batch for that pool."
+        subtitle="Everything pooled and waiting. One pool per tenant and program, never per bank."
+        actions={
+          onViewPool !== undefined ? (
+            <Button variant="secondary" size="sm" onClick={onViewPool}>
+              View pool{viewPoolCount !== undefined && ` (${fmtNumber(viewPoolCount)})`}
+            </Button>
+          ) : undefined
+        }
       />
 
       {pools === null ? (
-        <SkeletonRows rows={2} cols={3} />
+        <div className="px-5 pb-5">
+          <SkeletonRows rows={2} cols={3} />
+        </div>
       ) : pools.length === 0 ? (
         <p className="px-5 pb-5 text-sm text-muted-foreground">
           Nothing waiting to be batched.{emptyHint !== undefined && ` ${emptyHint}`}
         </p>
       ) : (
-        <ul className="divide-y divide-border">
+        <div className="flex flex-col gap-3 px-5 pb-5">
           {pools.map((pool) => {
             const key = `${pool.tenantId}|${pool.programId}`
             const days = ageInDays(pool.oldestCreatedAt)
+            const lot = lotSizeFor?.(pool.tenantId, pool.programId) ?? null
+            const maxWaitDays = maxWaitSeconds !== undefined ? Math.round(maxWaitSeconds / 86_400) : null
+            const shortfall = inStock !== null && pool.records > inStock
             return (
-              <li key={key} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
-                <div className="flex min-w-0 flex-col gap-1">
-                  <span className="font-medium text-foreground">
-                    {pool.bankNames.join(', ')}
-                  </span>
-                  {/* Every count here is pluralised. It read "6 records across
-                      1 banks, oldest 0 days old" on the very first pool an
-                      operator sees, and text that cannot count reads as a
-                      screen nobody checked.
-                      Counts go through fmtNumber and the age through fmtDays,
-                      because this card became the LANDING surface of the workflow
-                      workspace when the trigger moved onto it. Both were bare
-                      here, which was invisible while every pool was small: a
-                      four-figure pool printed "1234 records". The age phrasing
-                      matches TilesPage's "Oldest 3d in queue" rather than reading
-                      "oldest 3d old", which is what fmtDays produces if it is
-                      dropped into the old sentence unchanged. */}
-                  <span className="text-sm text-muted-foreground">
-                    {fmtNumber(pool.records)} {pool.records === 1 ? 'record' : 'records'} across {fmtNumber(pool.banks)}{' '}
-                    {pool.banks === 1 ? 'bank' : 'banks'},{' '}
-                    {days === 0 ? 'oldest added today' : `oldest ${fmtDays(days)} in the pool`}
-                  </span>
-                  {/* How close this pool is to forming a batch WITHOUT anybody
-                      here, which is the one question that decides whether the
-                      trigger beside it should be used at all. Rendered only when
-                      the caller resolved the configured lot size: a screen that
-                      does not know says nothing rather than printing a default
-                      the fulfillment service owns. */}
-                  {lotSizeFor !== undefined && (
-                    <span className="num text-sm text-muted-foreground">
-                      {lotProgress(lotSizeFor(pool.tenantId, pool.programId))}
-                    </span>
-                  )}
-                  {/* A STOCK WARNING, NOT A BLOCK, and the distinction is the
-                      ruling. Batching never touched `unit` and still does not:
-                      no device is reserved here, and the print vendor chooses
-                      the physical devices when it fulfils the batch. So a batch
-                      formed against thin stock is not INVALID, it is just
-                      likely to stall, and refusing it would invent a rule the
-                      domain does not have.
-                      What was actually wrong was silence: a batch for 6
-                      merchants could be formed with 0 devices in stock and
-                      nothing said a word, so the shortfall surfaced days later
-                      as a print vendor who could not fulfil.
-                      Shown only when we KNOW stock is short. An unreadable
-                      stock level says nothing rather than crying wolf. */}
-                  {inStock !== null && pool.records > inStock && (
-                    <span className="text-sm font-medium text-destructive">
+              // Each pool is its own PANEL: a subtle primary top accent
+              // borrows the "layout selector" pattern from the batch generate
+              // page (border-primary bg-primary/5 for the active state), which
+              // matches this section's visual grammar without inventing one.
+              <div
+                key={key}
+                className="overflow-hidden rounded-xl border border-border/70 bg-primary/[0.04] shadow-sm"
+              >
+                <div className="h-1 w-full bg-primary/40" aria-hidden="true" />
+                <div className="flex flex-col gap-4 p-4">
+                  {/* TWO STATS, not a bank code and not a sentence to parse.
+                      This used to lead with `pool.bankNames.join(', ')`, and
+                      for a demo tenant with no real Bank Master entry that
+                      string IS the bare aggregator code ("3"), so the row
+                      opened with an unlabeled number that looked like a broken
+                      count sitting above the real count. Bank identity is not
+                      the batching decision here; lot size and wait time are
+                      (BRD FR-033), and the auto-trigger panel beside this card
+                      already states both thresholds, so this row shows the
+                      LIVE numbers against those exact two thresholds, giant
+                      and legible. The bank still appears in the confirm
+                      dialog and the pool table, where it answers a question. */}
+                  <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                    <div className="rounded-xl border bg-card px-4 py-3">
+                      <p className="num text-3xl font-bold leading-none tracking-tight">
+                        {fmtNumber(pool.records)}
+                        {lot !== null && (
+                          <span className="text-lg font-medium text-muted-foreground">/{fmtNumber(lot)}</span>
+                        )}
+                      </p>
+                      <p className="mt-1.5 text-[12.5px] font-medium text-foreground">
+                        {pool.records === 1 ? 'record' : 'records'} pooled
+                      </p>
+                      <p className="text-[11.5px] text-muted-foreground">toward the minimum lot</p>
+                    </div>
+                    <div className="rounded-xl border bg-card px-4 py-3">
+                      <p className="num text-3xl font-bold leading-none tracking-tight">
+                        {days}
+                        {maxWaitDays !== null && (
+                          <span className="text-lg font-medium text-muted-foreground">/{maxWaitDays}</span>
+                        )}
+                      </p>
+                      <p className="mt-1.5 text-[12.5px] font-medium text-foreground">
+                        {days === 1 ? 'day' : 'days'} queued
+                      </p>
+                      <p className="text-[11.5px] text-muted-foreground">
+                        {days === 0 ? 'oldest record added today' : 'until the max-wait auto-trigger'}
+                      </p>
+                    </div>
+                  </div>
+                  {shortfall && (
+                    <span className="rounded-md bg-amber-500/10 px-2 py-1 text-[12px] font-medium text-amber-700 dark:text-amber-400">
                       {inStock === 0
-                        ? 'No devices in stock. This batch can still be formed, but nothing can be printed against it yet.'
-                        : `Only ${inStock} ${inStock === 1 ? 'device' : 'devices'} in stock for ${pool.records} records. This batch can still be formed; the shortfall will stall at the print vendor.`}
+                        ? 'No devices in stock. The batch can still form; nothing prints against it yet.'
+                        : `Only ${inStock} of ${pool.records} devices in stock. The shortfall will stall at the print vendor.`}
                     </span>
                   )}
-                </div>
-                {/* BRD 5.3.4 force dispatch. A manual trigger forms a batch
-                    BELOW the lot size the pool was configured for, so it is an
-                    operator overriding the pool's own economics, and the reason
-                    is the only part of that decision a reader can reconstruct
-                    later. The button is disabled until it is typed rather than
-                    letting the click 400: the operator finds out the field is
-                    required by looking at the row, not by being rejected.
-                    Per pool, never one shared box (see `reasons` above). */}
-                <div className="flex flex-wrap items-end gap-3">
-                  <Field
-                    label="Reason"
-                    htmlFor={`trigger-reason-${pool.tenantId}-${pool.programId}`}
-                    hint="Recorded on the batch for audit."
-                  >
-                    <Input
-                      id={`trigger-reason-${pool.tenantId}-${pool.programId}`}
-                      value={reasons[key] ?? ''}
-                      maxLength={MAX_REASON_LENGTH}
-                      placeholder="Why this pool is being batched now"
-                      onChange={(e) => {
-                        const next = e.target.value
-                        setReasons((prev) => ({ ...prev, [key]: next }))
-                      }}
-                    />
-                  </Field>
                   <Button
-                    disabled={busyKey !== null || (reasons[key] ?? '').trim() === ''}
-                    loading={busyKey === key}
+                    className="self-start"
+                    disabled={busyKey !== null}
                     onClick={() => {
-                      void handleTrigger(pool)
+                      setError(null)
+                      setOutcome(undefined)
+                      setConfirming(pool)
                     }}
                   >
                     Trigger batch
                   </Button>
                 </div>
-              </li>
+              </div>
             )
           })}
-        </ul>
-      )}
-
-      {error !== null && (
-        <div className="px-5 pb-5">
-          <ErrorNote>{error}</ErrorNote>
         </div>
       )}
 
+      {/* A trigger error stays in the dialog it came from, so this only carries
+          the outcome of one that got through. */}
       {outcome !== undefined && (
         <div className="px-5 pb-5">
           {outcome === null ? (
@@ -365,6 +352,63 @@ export function BatchablePools({
             </p>
           )}
         </div>
+      )}
+
+      {confirming !== null && (
+        <ConfirmDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) {
+              setConfirming(null)
+              setError(null)
+            }
+          }}
+          title="Create this batch?"
+          description="Forming the batch claims every pooled record below into it and mints their Dispatch IDs. Records that arrive afterwards go into the next batch, not this one."
+          confirmLabel="Create batch"
+          busy={busyKey !== null}
+          confirmDisabled={(reasons[`${confirming.tenantId}|${confirming.programId}`] ?? '').trim() === ''}
+          error={error}
+          onConfirm={() => {
+            void handleTrigger(confirming)
+          }}
+        >
+          {/* WHAT IS ABOUT TO BE CLAIMED, in the dialog, because this is the
+              moment it stops being reversible and the pool list is behind the
+              overlay by then. */}
+          <dl className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/20 p-3 text-sm">
+            <div>
+              <dt className="text-[11.5px] text-muted-foreground">Records</dt>
+              <dd className="num font-semibold">{fmtNumber(confirming.records)}</dd>
+            </div>
+            <div>
+              <dt className="text-[11.5px] text-muted-foreground">
+                {confirming.banks === 1 ? 'Bank' : 'Banks'}
+              </dt>
+              <dd className="font-semibold">{confirming.bankNames.join(', ')}</dd>
+            </div>
+          </dl>
+          <Field
+            label="Reason"
+            htmlFor="trigger-reason"
+            hint="Required, and recorded on the batch for audit."
+          >
+            <Input
+              id="trigger-reason"
+              // Autofocus is right here and wrong on a bare confirmation: the
+              // dialog cannot be confirmed until this is filled, so the keyboard
+              // belongs in it the moment the dialog opens.
+              autoFocus
+              value={reasons[`${confirming.tenantId}|${confirming.programId}`] ?? ''}
+              maxLength={MAX_REASON_LENGTH}
+              placeholder="Why this pool is being batched now"
+              onChange={(e) => {
+                const next = e.target.value
+                setReasons((prev) => ({ ...prev, [`${confirming.tenantId}|${confirming.programId}`]: next }))
+              }}
+            />
+          </Field>
+        </ConfirmDialog>
       )}
     </Card>
   )

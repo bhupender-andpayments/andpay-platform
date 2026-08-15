@@ -110,6 +110,20 @@ const OPS_PERMISSIONS = [
   // The bulk sheet-upload sibling of the above: many devices, one file. Same
   // tier, same guard, per-row tolerant like every other upload in this bundle.
   'ops:upload-unit-status',
+  // D-25 (13 Aug 2026; escalation decided 2026-08-11, option A). The print
+  // vendor fills Device ID and AWB into the dispatch sheet we generated and
+  // emails it back, and in Phase 1 there is no vendor login, so an operator
+  // uploads it. BRD FR-05 para 322 grants exactly this: "In Phase 1, return
+  // file would be sent via email and uploaded into system by AndPayments team."
+  //
+  // Its own permission rather than reuse of the class-6 sheet:submit-return,
+  // which is own-vendor-only and can never authorize a class-3 operator, and
+  // rather than reuse of another ops upload, because pairing devices to
+  // dispatches and birthing shipments is not the same authority as loading
+  // stock or moving parcels. The vendor is resolved server-side from
+  // batch.print_vndr (ingestReturnSheetOps), never from the request, so holding
+  // this permission does not let an operator nominate who returned a sheet.
+  'ops:upload-return-file',
 ]
 
 // Phase 3 Task 6 (BRD 5.3.2): the FIRST per-role permission differentiation.

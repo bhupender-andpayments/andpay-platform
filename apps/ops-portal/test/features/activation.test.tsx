@@ -39,6 +39,13 @@ function headerValue(call: Call, name: string): string | null {
   return headers[name] ?? null
 }
 
+// Every write now passes through the shared ConfirmDialog: the first click
+// opens it, and the write fires only from its confirm button.
+async function confirmInDialog(): Promise<void> {
+  const dialog = await screen.findByRole('dialog')
+  await userEvent.click(within(dialog).getByRole('button', { name: /mark activated/i }))
+}
+
 function renderActivationPage() {
   return render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -126,6 +133,9 @@ describe('ActivationPage', () => {
     expect((button as HTMLButtonElement).disabled).toBe(false)
 
     await userEvent.click(button)
+    // The first click only opens the confirmation; nothing is written yet.
+    expect(calls.some((c) => c.url.includes('/ops/assignments/activate'))).toBe(false)
+    await confirmInDialog()
 
     const call = await vi.waitFor(() => {
       const found = calls.find((c) => c.url.includes('/ops/assignments/activate'))
@@ -175,9 +185,13 @@ describe('ActivationPage', () => {
     expect(button.disabled).toBe(false)
 
     await userEvent.click(button)
+    await confirmInDialog()
 
-    const write = calls.find((c) => c.url.includes('/ops/assignments/activate'))
-    expect(write).toBeTruthy()
+    const write = await vi.waitFor(() => {
+      const found = calls.find((c) => c.url.includes('/ops/assignments/activate'))
+      expect(found).toBeTruthy()
+      return found
+    })
     expect(JSON.parse(String(write!.init.body)).dispatchId).toBe('asgn_not_delivered')
   })
 
@@ -236,9 +250,15 @@ describe('ActivationPage', () => {
       // The label counts the selection, so an operator can see what they are
       // about to act on before they act on it.
       await userEvent.click(await screen.findByRole('button', { name: /mark 1 activated/i }))
+      // The bulk button also only opens the confirmation.
+      expect(calls.some((c) => c.url.includes('/ops/assignments/activate-bulk'))).toBe(false)
+      await confirmInDialog()
 
-      const write = calls.find((c) => c.url.includes('/ops/assignments/activate-bulk'))
-      expect(write).toBeTruthy()
+      const write = await vi.waitFor(() => {
+        const found = calls.find((c) => c.url.includes('/ops/assignments/activate-bulk'))
+        expect(found).toBeTruthy()
+        return found
+      })
       expect(parseBody(write!).dispatchIds).toEqual(['asgn_a'])
     })
 
@@ -252,6 +272,7 @@ describe('ActivationPage', () => {
       await userEvent.click(await screen.findByLabelText('Select Alpha Store'))
       await userEvent.click(screen.getByLabelText('Select Beta Store'))
       await userEvent.click(screen.getByRole('button', { name: /mark 2 activated/i }))
+      await confirmInDialog()
 
       // 1 of 2, not 2. Claiming both is the exact failure the refusal named.
       expect(await screen.findByText(/1 of 2 marked activated/i)).toBeTruthy()
@@ -347,6 +368,7 @@ describe('ActivationPage: a row the operator has just actioned', () => {
 
     expect(await screen.findByText('Stale Projection Store')).toBeTruthy()
     await userEvent.click(screen.getByRole('button', { name: /mark activated/i }))
+    await confirmInDialog()
 
     await vi.waitFor(() => {
       expect(screen.queryByText('Stale Projection Store')).toBeNull()
@@ -360,6 +382,7 @@ describe('ActivationPage: a row the operator has just actioned', () => {
     expect(await screen.findByText('Stale Projection Store')).toBeTruthy()
     expect(screen.getByText('1 row')).toBeTruthy()
     await userEvent.click(screen.getByRole('button', { name: /mark activated/i }))
+    await confirmInDialog()
 
     await vi.waitFor(() => {
       expect(screen.getByText('0 rows')).toBeTruthy()
@@ -372,6 +395,7 @@ describe('ActivationPage: a row the operator has just actioned', () => {
 
     expect(await screen.findByText('Stale Projection Store')).toBeTruthy()
     await userEvent.click(screen.getByRole('button', { name: /mark activated/i }))
+    await confirmInDialog()
 
     await vi.waitFor(() => {
       expect(screen.getByText(/Stale Projection Store marked activated/)).toBeTruthy()

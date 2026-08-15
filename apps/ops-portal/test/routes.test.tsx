@@ -83,7 +83,7 @@ describe('ops-portal routing', () => {
     expect(await screen.findByRole('heading', { name: /queues/i })).toBeTruthy()
 
     // The nav lists every feature section.
-    expect(screen.getByRole('link', { name: /workflow/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /merchants/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /command center/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /reports/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /master data/i })).toBeTruthy()
@@ -98,13 +98,14 @@ describe('ops-portal routing', () => {
   // WHERE DOES THE OPERATOR LAND. Three separate definitions of that existed in
   // routes.tsx (the `/` redirect, the `*` catch-all, and LoginRoute's post-login
   // destination) and NOT ONE of them was tested, so they could be changed one at
-  // a time and drift apart in silence. All three now point at the workflow
-  // workspace, and all three are pinned here.
+  // a time and drift apart in silence. All three now point at UPLOADS (13 Aug
+  // 2026, replacing the deleted Workflow workspace), and all three are pinned
+  // here.
   //
   // The blanket stub answers every url with `{ accessToken }`, which is not an
-  // array, so the workspace's own mount-time reads land on its non-array guard
-  // and it renders its empty state. That is deliberate: what is under test is
-  // the DESTINATION, and the workspace's data behaviour has its own suite.
+  // array, so any mount-time read lands on its non-array guard and the page
+  // renders its empty state. That is deliberate: what is under test is the
+  // DESTINATION, and each page's data behaviour has its own suite.
   async function renderAuthedAt(initialEntry: string): Promise<void> {
     const fakeToken = makeFakeJwt({ sub: 'ops-1', psr: 'role:ops' })
     vi.stubGlobal('fetch', vi.fn(async () => new Response(
@@ -123,21 +124,21 @@ describe('ops-portal routing', () => {
     )
   }
 
-  it('lands on the workflow workspace from the root path', async () => {
+  it('lands on uploads from the root path', async () => {
     await renderAuthedAt('/')
-    expect(await screen.findByRole('heading', { name: /^workflow$/i })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: /^uploads$/i })).toBeTruthy()
   })
 
-  it('sends an unknown path to the workflow workspace, the same place as the root', async () => {
+  it('sends an unknown path to uploads, the same place as the root', async () => {
     await renderAuthedAt('/nonsense')
-    expect(await screen.findByRole('heading', { name: /^workflow$/i })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: /^uploads$/i })).toBeTruthy()
   })
 
-  it('lands on the workflow workspace after signing in', async () => {
+  it('lands on uploads after signing in', async () => {
     // LoginRoute redirects away from itself once a principal exists, which is
     // the post-login destination: it used to be /command-center, disagreeing
     // with nothing because nothing checked.
     await renderAuthedAt('/login')
-    expect(await screen.findByRole('heading', { name: /^workflow$/i })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: /^uploads$/i })).toBeTruthy()
   })
 })

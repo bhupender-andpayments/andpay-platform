@@ -14,7 +14,7 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   // device lifecycle (unit-lifecycle.ts spine + terminals)
   IN_STOCK: { variant: 'positive', label: 'In stock' },
   ALLOCATED: { variant: 'pending', label: 'Allocated' },
-  PRINTED: { variant: 'info', label: 'Printed' },
+  PRINTED: { variant: 'info', label: 'At print vendor' },
   DAMAGED: { variant: 'negative', label: 'Damaged' },
   // pipeline
   RECEIVED: { variant: 'neutral', label: 'Received' },

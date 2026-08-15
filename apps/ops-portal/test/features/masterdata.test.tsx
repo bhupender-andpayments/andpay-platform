@@ -264,7 +264,7 @@ describe('master data views', () => {
     // The count is the falsehood being guarded. Nothing on the card may say it.
     expect(screen.queryByText(/undefined/i)).toBeNull()
     // And the table says it could not show the rows, never "No vendors."
-    expect(screen.getByText('Could not display these rows.')).toBeTruthy()
+    expect(screen.getByText(/could not display these rows/i)).toBeTruthy()
     expect(screen.queryByText('No vendors.')).toBeNull()
   })
 
@@ -289,7 +289,7 @@ describe('master data views', () => {
 
     expect(await screen.findByText('Unexpected response shape.')).toBeTruthy()
     expect(screen.queryByText(/undefined/i)).toBeNull()
-    expect(screen.getByText('Could not display these rows.')).toBeTruthy()
+    expect(screen.getByText(/could not display these rows/i)).toBeTruthy()
   })
 
   it('has NO write controls anywhere and issues only GET reads across every tab', async () => {

@@ -1,33 +1,8 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
-import { UploadStepper } from '../../src/features/uploads/UploadStepper.js'
+import { describe, it, expect, afterEach } from 'vitest'
+import { cleanup } from '@testing-library/react'
 import { UPLOAD_KINDS, DEVICE_INVENTORY_KIND, kindBySlug } from '../../src/features/uploads/uploadKinds.js'
 
 afterEach(() => { cleanup() })
-
-const DAMAGE = kindBySlug('damage')!
-
-describe('UploadStepper: the numbered rail', () => {
-  it('renders every step for the kind, in order, with its number', () => {
-    render(<UploadStepper steps={DAMAGE.steps} current="upload" unlocked={['choose', 'upload']} onStepClick={() => {}} />)
-    const labels = screen.getAllByRole('listitem').map((li) => li.textContent)
-    expect(labels.join(' ')).toMatch(/1.*Choose file.*2.*Upload.*3.*Review.*4.*Commit/s)
-  })
-
-  it('an unlocked, non-current step is a clickable button; a locked one is not', () => {
-    const onClick = vi.fn()
-    render(<UploadStepper steps={DAMAGE.steps} current="upload" unlocked={['choose', 'upload']} onStepClick={onClick} />)
-    fireEvent.click(screen.getByRole('button', { name: /choose file/i }))
-    expect(onClick).toHaveBeenCalledWith('choose')
-    // Review is not unlocked yet: it must not be a button at all.
-    expect(screen.queryByRole('button', { name: /review/i })).toBeNull()
-  })
-
-  it('marks the current step for assistive tech', () => {
-    render(<UploadStepper steps={DAMAGE.steps} current="review" unlocked={['choose', 'upload', 'review']} onStepClick={() => {}} />)
-    expect(screen.getByText(/review/i).closest('[aria-current]')).toBeTruthy()
-  })
-})
 
 describe('uploadKinds: the step honesty rules', () => {
   it('device inventory has NO review step and ends in Submit', () => {
@@ -52,10 +27,13 @@ describe('uploadKinds: the step honesty rules', () => {
   // portal cannot check.
   it('states columns ONLY where the portal shares a real constant with the parser', () => {
     const withColumns = UPLOAD_KINDS.filter((k) => k.columns !== undefined).map((k) => k.slug)
-    // device-inventory is absent because it is no longer IN this index: it moved
-    // to its own section on 2026-08-12 and is exported as DEVICE_INVENTORY_KIND.
-    // It still states its column; it just does not state it from here.
-    expect(withColumns.sort()).toEqual(['activation', 'courier-status'])
+    // bank and damage are the two absences, and they are the point of this test:
+    // their layout is resolved by source profile at ingest, so naming columns for
+    // them would invent a contract the portal cannot check.
+    // 'unit-status' left this list on 2026-08-14 with the bulk status-upload
+    // page itself: the one manual status write left is a single-device
+    // correction, made from the Inventory row it corrects.
+    expect(withColumns.sort()).toEqual(['activation', 'courier-status', 'device-inventory', 'return'])
   })
 
   it('device inventory still states its one required column, from its own descriptor', () => {

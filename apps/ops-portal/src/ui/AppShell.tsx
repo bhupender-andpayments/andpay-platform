@@ -13,7 +13,6 @@ import {
   IconCheck,
   IconLogout,
   IconMerchants,
-  IconWorkflow,
 } from './icons.js'
 import { shortId } from './format.js'
 
@@ -63,12 +62,14 @@ interface Section {
 // the condition that kept it out is gone. It leads the Pipeline group because
 // the merchant is the entity the rest of the pipeline acts ON.
 //
-// THE 2026-08-11 RULING ADDS `Workflow` AND PUTS IT FIRST. It is the operator's
-// own job (a bank request from the file that carries it to the activated
-// soundbox) rather than one of the objects that job passes through, so it leads
-// the Pipeline group and is the portal's landing route.
+// `Workflow` was removed on 13 Aug 2026. It had been added as the operator's own
+// job rather than one of the objects that job passes through, which is a real
+// distinction, but in practice it became a second home for surfaces that already
+// had one: the bank upload lived inside it, so did the print stage's downloads,
+// and an operator had two routes to the same work with no rule for choosing. The
+// job is now told by the sections it passes through, and Uploads is the front
+// door because a day starts with a file somebody emailed us.
 const SECTIONS: readonly Section[] = [
-  { to: '/workflow', label: 'Workflow', icon: IconWorkflow },
   { to: '/command-center', label: 'Command Center', icon: IconDashboard },
   { to: '/merchants', label: 'Merchants', icon: IconMerchants },
   { to: '/inventory', label: 'Inventory', icon: IconMasterData },
@@ -92,11 +93,14 @@ const SECTIONS: readonly Section[] = [
 // rather than silently vanishing from the sidebar.
 const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = [
   { title: 'Overview', routes: ['/command-center'] },
-  // `/workflow` FIRST: line 95 maps `g.routes` in order, so array position here
-  // is render order in the sidebar.
-  { title: 'Pipeline', routes: ['/workflow', '/merchants', '/inventory', '/batches', '/dispatches', '/activation'] },
-  // Damage cases sit beside Queues: both are work an operator picks up and
-  // moves along, as opposed to an object they look at.
+  // Array position here IS render order in the sidebar, and this order is the
+  // order the work happens in: merchants ask, stock is held, a batch forms,
+  // parcels move, devices go live.
+  { title: 'Pipeline', routes: ['/merchants', '/inventory', '/batches', '/dispatches', '/activation'] },
+  // Uploads FIRST in Operations: it is the front door and the landing route, so
+  // the eye should find it without reading the group. Damage cases sit beside
+  // Queues because both are work an operator picks up and moves along, as
+  // opposed to an object they look at.
   { title: 'Operations', routes: ['/uploads', '/queues', '/damage-cases'] },
   { title: 'Insights', routes: ['/reports'] },
   { title: 'Setup', routes: ['/masterdata'] },

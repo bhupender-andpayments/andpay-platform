@@ -1,26 +1,93 @@
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
+import { BankIngestPage } from './BankIngestPage.js'
+import { ReturnUploadPage } from './ReturnUploadPage.js'
 import { DamageUploadPage } from './DamageUploadPage.js'
 import { CourierStatusUploadPage } from './CourierStatusUploadPage.js'
 import { ActivationUploadPage } from './ActivationUploadPage.js'
-import { UPLOAD_KINDS, INDEX_STEPS } from './uploadKinds.js'
-import { UploadStepper } from './UploadStepper.js'
+import {
+  ACTIVATION_COLUMNS,
+  COURIER_STATUS_COLUMNS,
+  DEVICE_INVENTORY_COLUMNS,
+  RETURN_COLUMNS,
+} from './uploadKinds.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
-// Redesign step 4 made this three equal CARDS after the tabs-era page
-// preselected "Bank Requests" and shared one url; see the git history of this
-// comment for that story. The 2026-08-11 ruling keeps both fixes, removes the
-// remaining drill-in-and-back (uploads is now ONE continuous flow with a
-// numbered step rail per kind), AND moves the bank upload out entirely: it is
-// now stages 1 and 2 of the workflow workspace, so there are only two cards
-// left here. This file is only the router plus step 1 (the choice); each
-// upload page renders its own rail and step bodies, because the two are
-// different workflows sharing a step shape, not one workflow with a type
-// switch.
+// The six-card index, replicated from the pdf-generation branch on the user's
+// ruling (13 Aug 2026): do not invent, replicate. Six equal cards, each a FILE
+// ARRIVING FROM OUTSIDE - that is the organising idea: the dispatch BRD's
+// Phase-1 exchanges are all files sent by email (bank request, manufacturer
+// inventory, print vendor return, courier statuses, CWD activation results),
+// so the operator's mental model is "I have a file, I go to Uploads". What each
+// file SETS IN MOTION lives on the page that owns it (Batches, Dispatches,
+// Activation), and those pages link back here.
+//
+// Two departures from the replicated original, both because this branch's
+// backend is newer, neither visible in the design:
+//   * the device-inventory card navigates to /inventory/upload, the page the
+//     Inventory section owns here (DEMO.md step 5);
+//   * the columns lines state THIS branch's real parser contracts (help text
+//     follows code), so the courier card says Status Date and the activation
+//     card says Device ID.
 //
 // Still binding, from the tabs-era defects: NOTHING is preselected here, and
 // each upload keeps its own url so "the damage upload" stays a sendable link.
-// Choosing navigates with REPLACE: moving between steps of one flow should
-// not stack history entries.
+
+interface UploadCard {
+  slug: string
+  title: string
+  /** Who hands us this file. The operator knows the source, not our jargon. */
+  source: string
+  description: string
+  columns?: readonly string[]
+  /** Where the card navigates when another section owns the page. */
+  route?: string
+}
+
+const UPLOAD_CARDS: readonly UploadCard[] = [
+  {
+    slug: 'bank',
+    title: 'Bank requests',
+    source: 'From the bank',
+    description: 'New soundbox requests. Check the per-row verdict, commit; the rows pool toward the next batch.',
+  },
+  {
+    slug: 'damage',
+    title: 'Damage reports',
+    source: 'From the bank, after delivery',
+    description: 'Damaged devices to be replaced. Every row is matched to an existing dispatch.',
+  },
+  {
+    slug: 'device-inventory',
+    title: 'Device inventory',
+    source: 'From the manufacturer',
+    description: 'Devices received into stock, before anything can be printed or shipped.',
+    columns: DEVICE_INVENTORY_COLUMNS,
+    route: '/inventory/upload',
+  },
+  {
+    slug: 'return',
+    title: 'Print vendor return',
+    source: 'From the print vendor',
+    description:
+      'The dispatch sheet returned with Device ID and AWB filled in. Pairs devices and creates the shipments.',
+    columns: RETURN_COLUMNS,
+  },
+  {
+    slug: 'courier-status',
+    title: 'Courier statuses',
+    source: 'From the courier',
+    description:
+      'Batch status updates while no webhook is integrated: picked up, in transit, out for delivery, delivered.',
+    columns: COURIER_STATUS_COLUMNS,
+  },
+  {
+    slug: 'activation',
+    title: 'CWD activation results',
+    source: 'From CWD',
+    description: 'The activation outcomes CWD returns by email. Marks delivered dispatches activated.',
+    columns: ACTIVATION_COLUMNS,
+  },
+]
 
 function UploadsIndex() {
   return (
@@ -33,20 +100,11 @@ function UploadsIndex() {
         </p>
       </div>
 
-      <UploadStepper
-        steps={INDEX_STEPS}
-        current="choose"
-        unlocked={['choose']}
-        onStepClick={() => {}}
-        guidance="Pick the file you have. The remaining steps appear once you choose."
-      />
-
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {UPLOAD_KINDS.map((kind) => (
+        {UPLOAD_CARDS.map((kind) => (
           <Link
             key={kind.slug}
-            to={kind.slug}
-            replace
+            to={kind.route ?? kind.slug}
             className="rounded-4xl transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:-translate-y-0.5"
           >
             <Card className="h-full">
@@ -76,21 +134,17 @@ export function UploadsPage() {
   return (
     <Routes>
       <Route index element={<UploadsIndex />} />
-      {/* The bank flow moved into the workflow workspace (2026-08-11 ruling): it
-          is stages 1 and 2 of one continuous lifecycle, not a standalone upload.
-          Declared HERE rather than in routes.tsx because this file's own
-          path="*" catch-all below already matches /uploads/bank, and a redirect
-          in the parent <Routes> tree does not reliably win against it. */}
-      <Route path="bank" element={<Navigate to="/workflow" replace />} />
+      <Route path="bank" element={<BankIngestPage />} />
+      <Route path="return" element={<ReturnUploadPage />} />
       <Route path="damage" element={<DamageUploadPage />} />
-      {/* Device inventory moved into its own section on 2026-08-12 (the
-          inventory team owns its own insertion). Old links keep working. */}
-      <Route path="device-inventory" element={<Navigate to="/inventory/upload" replace />} />
-      {/* These two STAY here: the courier's status file and the CWD's
-          activation file are not inventory insertion, and no other section
-          claims them. */}
       <Route path="courier-status" element={<CourierStatusUploadPage />} />
       <Route path="activation" element={<ActivationUploadPage />} />
+      {/* Kinds another section owns, plus the old pdf-era slug. Declared HERE
+          rather than in routes.tsx because this file's own path="*" catch-all
+          below already matches these paths, and a redirect in the parent
+          <Routes> tree does not reliably win against it. */}
+      <Route path="device-inventory" element={<Navigate to="/inventory/upload" replace />} />
+      <Route path="statuses" element={<Navigate to="/uploads/courier-status" replace />} />
       {/* An unknown upload slug lands on the choices rather than a dead end. */}
       <Route path="*" element={<Navigate to="/uploads" replace />} />
     </Routes>

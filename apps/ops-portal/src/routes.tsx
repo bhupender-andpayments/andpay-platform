@@ -8,18 +8,18 @@ import { ReportPage } from './features/dashboards/ReportPage.js'
 import { QueuesPage } from './features/queues/QueuesPage.js'
 import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
 import { UploadsPage } from './features/uploads/UploadsPage.js'
-import { WorkflowPage } from './features/workflow/WorkflowPage.js'
 import { DispatchesPage } from './features/dispatches/DispatchesPage.js'
 import { DispatchDetailPage } from './features/dispatches/DispatchDetailPage.js'
+import { ShipmentDetailPage } from './features/dispatches/ShipmentDetailPage.js'
 import { DamageCasesPage } from './features/damage/DamageCasesPage.js'
 import { InventoryPage } from './features/inventory/InventoryPage.js'
 import { DeviceDetailPage } from './features/inventory/DeviceDetailPage.js'
-import { UnitStatusUploadPage } from './features/inventory/UnitStatusUploadPage.js'
 import { DeviceInventoryUploadPage } from './features/uploads/DeviceInventoryUploadPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
 import { MerchantsPage } from './features/merchants/MerchantsPage.js'
+import { MerchantDetailPage } from './features/merchants/MerchantDetailPage.js'
 import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
-import { BatchDetailPage } from './features/fulfillment/BatchDetailPage.js'
+import { BatchGeneratePage } from './features/fulfillment/generate/BatchGeneratePage.js'
 
 // Router-agnostic route tree (no <BrowserRouter> here) so tests can wrap it
 // in a <MemoryRouter> with a chosen initialEntries, per Task 9's test plan.
@@ -33,9 +33,14 @@ function LoginRoute() {
   // The post-login destination, and ONE OF THREE definitions of where an operator
   // lands. The other two are the `/` redirect and the `*` catch-all at the bottom
   // of this file. None of the three was tested, so they were free to be changed
-  // one at a time and disagree in silence; all three now name the workspace and
-  // all three are pinned in test/routes.test.tsx.
-  if (principal !== null) return <Navigate to="/workflow" replace />
+  // one at a time and disagree in silence; all three now name Uploads and all
+  // three are pinned in test/routes.test.tsx.
+  //
+  // UPLOADS, since 13 Aug 2026. The landing page should be where the day starts,
+  // and a day starts with a file somebody emailed us. It was /workflow, a
+  // workspace built around a batch that does not exist yet at the moment an
+  // operator signs in.
+  if (principal !== null) return <Navigate to="/uploads" replace />
   return <LoginPage />
 }
 
@@ -64,16 +69,17 @@ export function AppRoutes() {
               its own list rather than an unrelated sibling. That is what fixed
               the breadcrumb reading "Ops Console" on a batch detail page. */}
           <Route path="/command-center" element={<TilesPage />} />
-          {/* The 2026-08-11 workspace, and the portal's front door. Registered as
-              a splat because the feature owns its own two-mode router: /workflow
-              is the pool (live work) and /workflow/:btchId follows one batch.
-              Placed here so route order mirrors sidebar order. */}
-          <Route path="/workflow/*" element={<WorkflowPage />} />
           <Route path="/batches" element={<FulfillmentPage />} />
-          <Route path="/batches/:btchId" element={<BatchDetailPage />} />
+          {/* ONE batch page (13 Aug 2026). The collateral generator IS the batch
+              page: an operator opening a batch is there to see the cards, print
+              them, and hand the vendor its workbook. The former detail page's
+              summary is folded into this one's header, so there is nothing left
+              behind a second route. */}
+          <Route path="/batches/:btchId" element={<BatchGeneratePage />} />
           <Route path="/activation" element={<ActivationPage />} />
           {/* Redesign step 7: the entity the object-first nav was missing. */}
           <Route path="/merchants" element={<MerchantsPage />} />
+          <Route path="/merchants/:mrchId" element={<MerchantDetailPage />} />
           {/* Step 4: uploads are linkable routes behind an index of cards, so
               `/uploads/*` is delegated to the feature. TWO of them now, not
               three: the 2026-08-11 ruling moved the bank upload into the
@@ -87,6 +93,11 @@ export function AppRoutes() {
           {/* D-16 (T4.5): one Dispatch ID's two branches. Nested under
               /dispatches because that list is where an operator arrives from,
               the same relationship /batches/:btchId has to /batches. */}
+          {/* The AWB's own page, registered BEFORE the :asgnId route so the
+              literal segment wins: a shipment id is not a dispatch id, and
+              /dispatches/shipment/... must never be read as a dispatch called
+              "shipment". */}
+          <Route path="/dispatches/shipment/:shptId" element={<ShipmentDetailPage />} />
           <Route path="/dispatches/:asgnId" element={<DispatchDetailPage />} />
           {/* The Inventory section the redesign deferred under option B for
               want of a read. GET /ops/devices exists now, so the condition
@@ -102,7 +113,6 @@ export function AppRoutes() {
               the statuses were stale: nobody could see them. */}
           <Route path="/damage-cases" element={<DamageCasesPage />} />
           <Route path="/inventory/upload" element={<DeviceInventoryUploadPage />} />
-          <Route path="/inventory/status-upload" element={<UnitStatusUploadPage />} />
           <Route path="/inventory/device/:unitId" element={<DeviceDetailPage />} />
           {/* The queue tab is IN THE URL (2026-08-12). It was `useState`, so
               every link into this page landed on Quarantine no matter which
@@ -126,8 +136,8 @@ export function AppRoutes() {
               tiles say how much is happening, and the workspace is the work.
               /dashboards above still redirects to /command-center, whose tiles
               stay exactly where they are (FR-09 keeps them). */}
-          <Route path="/" element={<Navigate to="/workflow" replace />} />
-          <Route path="*" element={<Navigate to="/workflow" replace />} />
+          <Route path="/" element={<Navigate to="/uploads" replace />} />
+          <Route path="*" element={<Navigate to="/uploads" replace />} />
         </Route>
       </Route>
     </Routes>
