@@ -186,11 +186,18 @@ const BATCHING_CONFIG_COLUMNS: ReadonlyArray<DataTableColumn<BatchingConfigRow>>
     header: 'Program',
     cell: (r) => (r.programWire ? <CodeChip>{shortId(r.programWire)}</CodeChip> : <span className="text-muted-foreground">-</span>),
   },
+  {
+    key: 'bankReferenceCode',
+    header: 'Bank',
+    cell: (r) => (r.bankReferenceCode ? <CodeChip>{r.bankReferenceCode}</CodeChip> : <span className="text-muted-foreground">-</span>),
+  },
   { key: 'minLotSize', header: 'Min lot size', cell: (r) => <span className="num text-foreground">{fmtNumber(r.minLotSize)}</span> },
   {
     key: 'maxWaitSeconds',
     header: 'Max wait (s)',
-    cell: (r) => <span className="num text-foreground">{fmtNumber(r.maxWaitSeconds)}</span>,
+    // A BANK-scope row carries min lot only (R-7); its wait is the pool
+    // tier's, so a number here would claim a rule that does not exist.
+    cell: (r) => (r.maxWaitSeconds == null ? <span className="text-muted-foreground">pool tier</span> : <span className="num text-foreground">{fmtNumber(r.maxWaitSeconds)}</span>),
   },
   { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
   { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },

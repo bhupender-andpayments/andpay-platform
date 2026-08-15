@@ -1489,8 +1489,18 @@ export interface UpsertBatchingConfigInput {
   // actor / traceId / idempotency-key still come from the gate, never here.
   tenantWire?: string
   programWire?: string
+  /**
+   * R-7 (16 Aug 2026): the per-bank MIN LOT override tier. Set -> the row is a
+   * bank-tier row: it REQUIRES tenantWire and REFUSES maxWaitSeconds (max wait
+   * stays pool-tier, where the timer that reads it is armed; accepting and
+   * ignoring a bank-tier wait would be a silent lie). Like the two scope wires
+   * this IS a legitimate request input: platform master data an AndPayments
+   * admin configures, not principal-scoped tenant data (unlike M7/S16).
+   */
+  bankReferenceCode?: string
   minLotSize: number
-  maxWaitSeconds: number
+  /** Required on a pool-tier write; forbidden on a bank-tier write (R-7). */
+  maxWaitSeconds?: number
   clientKey: string
   actorId: string
   traceId: string
@@ -1530,18 +1540,35 @@ export async function upsertBatchingConfig(
   if (!Number.isInteger(args.minLotSize) || args.minLotSize < 1) {
     throw new OpsClientError('invalid', 'minLotSize must be an integer >= 1')
   }
-  if (!Number.isInteger(args.maxWaitSeconds) || args.maxWaitSeconds < 1) {
-    throw new OpsClientError('invalid', 'maxWaitSeconds must be an integer >= 1')
+  const bankReferenceCode = args.bankReferenceCode ?? ''
+  if (bankReferenceCode !== '') {
+    // R-7: a bank-tier row. It carries min lot ONLY; refusing (rather than
+    // dropping) a supplied max wait is what keeps the tier honest, because the
+    // max-wait timer is armed per pool and would never read a bank-tier value.
+    if (args.tenantWire === undefined) {
+      throw new OpsClientError('invalid', 'bankReferenceCode requires tenantWire (bank codes are a tenant\'s member-bank codes)')
+    }
+    if (args.maxWaitSeconds !== undefined) {
+      throw new OpsClientError('invalid', 'a bank-tier row carries minLotSize only; max wait stays on the pool tiers (R-7)')
+    }
+  } else {
+    if (args.maxWaitSeconds === undefined || !Number.isInteger(args.maxWaitSeconds) || args.maxWaitSeconds < 1) {
+      throw new OpsClientError('invalid', 'maxWaitSeconds must be an integer >= 1')
+    }
   }
 
   const tenantWire = args.tenantWire ?? ''
   const programWire = args.programWire ?? ''
   const scopeResourceIds =
-    tenantWire === ''
-      ? ['scope:global']
-      : programWire === ''
-        ? ['scope:tenant', tenantWire]
-        : ['scope:tenant-program', tenantWire, programWire]
+    bankReferenceCode !== ''
+      ? programWire === ''
+        ? ['scope:tenant-bank', tenantWire, `bank:${bankReferenceCode}`]
+        : ['scope:tenant-program-bank', tenantWire, programWire, `bank:${bankReferenceCode}`]
+      : tenantWire === ''
+        ? ['scope:global']
+        : programWire === ''
+          ? ['scope:tenant', tenantWire]
+          : ['scope:tenant-program', tenantWire, programWire]
 
   let id: string | null = null
   const ran = await db.$transaction(async (tx: Tx) => {
@@ -1550,17 +1577,18 @@ export async function upsertBatchingConfig(
       // Capture the OLD values for this exact scope (BRD 271). A scope with no
       // explicit row was effectively running on the code DEFAULT, so that
       // DEFAULT is the correct "old value" to audit for a first-time write.
-      const prior = await tx.$queryRaw<{ min_lot_size: number; max_wait_seconds: number }[]>`
+      const prior = await tx.$queryRaw<{ min_lot_size: number; max_wait_seconds: number | null }[]>`
         SELECT min_lot_size, max_wait_seconds FROM batching_config
-        WHERE tenant_wire = ${tenantWire} AND program_wire = ${programWire}
+        WHERE tenant_wire = ${tenantWire} AND program_wire = ${programWire} AND bank_reference_code = ${bankReferenceCode}
       `
       const oldMin = prior[0] !== undefined ? Number(prior[0].min_lot_size) : DEFAULT_POOL_CFG.minLotSize
-      const oldMax = prior[0] !== undefined ? Number(prior[0].max_wait_seconds) : DEFAULT_POOL_CFG.maxWaitSeconds
+      const oldMax = prior[0]?.max_wait_seconds != null ? Number(prior[0].max_wait_seconds) : DEFAULT_POOL_CFG.maxWaitSeconds
 
+      // A bank-tier row persists NULL max_wait_seconds by table CHECK (R-7).
       const rows = await tx.$queryRaw<{ id: string }[]>`
-        INSERT INTO batching_config (id, tenant_wire, program_wire, min_lot_size, max_wait_seconds, updated_at)
-        VALUES (gen_random_uuid(), ${tenantWire}, ${programWire}, ${args.minLotSize}, ${args.maxWaitSeconds}, now())
-        ON CONFLICT (tenant_wire, program_wire)
+        INSERT INTO batching_config (id, tenant_wire, program_wire, bank_reference_code, min_lot_size, max_wait_seconds, updated_at)
+        VALUES (gen_random_uuid(), ${tenantWire}, ${programWire}, ${bankReferenceCode}, ${args.minLotSize}, ${args.maxWaitSeconds ?? null}, now())
+        ON CONFLICT (tenant_wire, program_wire, bank_reference_code)
         DO UPDATE SET min_lot_size = EXCLUDED.min_lot_size, max_wait_seconds = EXCLUDED.max_wait_seconds, updated_at = now()
         RETURNING id::text AS id
       `
@@ -1578,7 +1606,11 @@ export async function upsertBatchingConfig(
               id,
               ...scopeResourceIds,
               `min-lot-size:old=${oldMin}:new=${args.minLotSize}`,
-              `max-wait-seconds:old=${oldMax}:new=${args.maxWaitSeconds}`,
+              // A bank-tier row has no wait ceiling (R-7), so auditing one
+              // would record a change that did not happen.
+              ...(bankReferenceCode === ''
+                ? [`max-wait-seconds:old=${oldMax}:new=${args.maxWaitSeconds}`]
+                : []),
             ],
             traceId: args.traceId,
           }),

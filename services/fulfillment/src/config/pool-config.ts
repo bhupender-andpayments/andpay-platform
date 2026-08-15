@@ -44,6 +44,11 @@ interface BatchingConfigDbRow {
   max_wait_seconds: number
 }
 
+interface BankLotOverrideDbRow {
+  program_wire: string
+  min_lot_size: number
+}
+
 /**
  * The DB-backed batching config for one (tenant, program) pool (Phase 3 Task
  * 6). Reads `batching_config` and applies the precedence
@@ -69,12 +74,17 @@ export async function resolvePoolConfig(
   tenantWire: string,
   programWire: string,
 ): Promise<PoolCfg> {
+  // bank_reference_code = '' on every arm (R-7): a bank-tier row is a MIN LOT
+  // override consulted by resolveBankLotOverride below, never a pool config,
+  // so the pool ladder must not match it. Its max_wait_seconds is NULL by
+  // CHECK, which is the table saying the same thing.
   const rows = await db.$queryRaw<BatchingConfigDbRow[]>`
     SELECT tenant_wire, program_wire, min_lot_size, max_wait_seconds
     FROM batching_config
-    WHERE (tenant_wire = ${tenantWire} AND program_wire = ${programWire})
+    WHERE ((tenant_wire = ${tenantWire} AND program_wire = ${programWire})
        OR (tenant_wire = ${tenantWire} AND program_wire = '')
-       OR (tenant_wire = '' AND program_wire = '')
+       OR (tenant_wire = '' AND program_wire = ''))
+      AND bank_reference_code = ''
   `
 
   const exact = rows.find((r) => r.tenant_wire === tenantWire && r.program_wire === programWire)
@@ -83,4 +93,34 @@ export async function resolvePoolConfig(
   const chosen = exact ?? tenant ?? global
   if (chosen === undefined) return DEFAULT_POOL_CFG
   return { minLotSize: Number(chosen.min_lot_size), maxWaitSeconds: Number(chosen.max_wait_seconds) }
+}
+
+/**
+ * The per-bank MIN LOT override (R-7, 16 Aug 2026), or null when the bank has
+ * no override row and inherits the pool config. Precedence within the bank
+ * tier mirrors the pool ladder: (tenant, program, bank) beats (tenant, '',
+ * bank). Returning null rather than falling through to the pool value is
+ * deliberate: the CALLER's behavior differs (a bank with an override batches
+ * its own entries by its own threshold; a bank without one participates in the
+ * pool-wide count exactly as before this tier existed), so "no row" must stay
+ * distinguishable from "a row that happens to equal the pool value".
+ */
+export async function resolveBankLotOverride(
+  db: FulfillmentDb | Tx,
+  tenantWire: string,
+  programWire: string,
+  bankReferenceCode: string,
+): Promise<number | null> {
+  if (bankReferenceCode === '' || tenantWire === '') return null
+  const rows = await db.$queryRaw<BankLotOverrideDbRow[]>`
+    SELECT program_wire, min_lot_size
+    FROM batching_config
+    WHERE tenant_wire = ${tenantWire}
+      AND bank_reference_code = ${bankReferenceCode}
+      AND (program_wire = ${programWire} OR program_wire = '')
+  `
+  const exact = rows.find((r) => r.program_wire === programWire)
+  const tenant = rows.find((r) => r.program_wire === '')
+  const chosen = exact ?? tenant
+  return chosen === undefined ? null : Number(chosen.min_lot_size)
 }

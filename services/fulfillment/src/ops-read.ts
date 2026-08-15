@@ -300,11 +300,14 @@ export async function listBankCompositionConfigs(
 // discriminated scope + nullable wire ids for the admin UI.
 export interface BatchingConfigRow {
   id: string
-  scope: 'GLOBAL' | 'TENANT' | 'TENANT_PROGRAM'
+  scope: 'GLOBAL' | 'TENANT' | 'TENANT_PROGRAM' | 'BANK'
   tenantWire: string | null
   programWire: string | null
+  /** R-7 (16 Aug 2026): set on a BANK-scope row, null on the pool tiers. */
+  bankReferenceCode: string | null
   minLotSize: number
-  maxWaitSeconds: number
+  /** Null on a BANK-scope row (a bank tier carries min lot only, R-7). */
+  maxWaitSeconds: number | null
   createdAt: Date
   updatedAt: Date
 }
@@ -313,22 +316,30 @@ interface BatchingConfigDbRow {
   id: string
   tenant_wire: string
   program_wire: string
+  bank_reference_code: string
   min_lot_size: number
-  max_wait_seconds: number
+  max_wait_seconds: number | null
   created_at: Date
   updated_at: Date
 }
 
 function toBatchingConfigDto(r: BatchingConfigDbRow): BatchingConfigRow {
   const scope: BatchingConfigRow['scope'] =
-    r.tenant_wire === '' ? 'GLOBAL' : r.program_wire === '' ? 'TENANT' : 'TENANT_PROGRAM'
+    r.bank_reference_code !== ''
+      ? 'BANK'
+      : r.tenant_wire === ''
+        ? 'GLOBAL'
+        : r.program_wire === ''
+          ? 'TENANT'
+          : 'TENANT_PROGRAM'
   return {
     id: r.id,
     scope,
     tenantWire: r.tenant_wire === '' ? null : r.tenant_wire,
     programWire: r.program_wire === '' ? null : r.program_wire,
+    bankReferenceCode: r.bank_reference_code === '' ? null : r.bank_reference_code,
     minLotSize: Number(r.min_lot_size),
-    maxWaitSeconds: Number(r.max_wait_seconds),
+    maxWaitSeconds: r.max_wait_seconds == null ? null : Number(r.max_wait_seconds),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -338,9 +349,9 @@ export async function listBatchingConfigs(db: FulfillmentDb): Promise<BatchingCo
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     return tx.$queryRaw<BatchingConfigDbRow[]>`
-      SELECT id::text AS id, tenant_wire, program_wire, min_lot_size, max_wait_seconds, created_at, updated_at
+      SELECT id::text AS id, tenant_wire, program_wire, bank_reference_code, min_lot_size, max_wait_seconds, created_at, updated_at
       FROM batching_config
-      ORDER BY tenant_wire, program_wire
+      ORDER BY tenant_wire, program_wire, bank_reference_code
     `
   })
   return rows.map(toBatchingConfigDto)

@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId, toUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
 import { onDemandAccrued } from '../src/batching.js'
-import { resolvePoolConfig, DEFAULT_POOL_CFG } from '../src/config/pool-config.js'
+import { resolvePoolConfig, resolveBankLotOverride, DEFAULT_POOL_CFG } from '../src/config/pool-config.js'
 import { upsertBatchingConfig, OpsClientError } from '../src/ops.js'
 
 // Phase 3 Task 6 (BRD 5.3.2): the DB-backed batching-parameter store, revising
@@ -45,7 +45,15 @@ async function seedConfig(
   `
 }
 
-async function seedPooled(tenantUuid: string, programUuid: string, traceId: string, createdAt: Date): Promise<void> {
+async function seedPooled(
+  tenantUuid: string,
+  programUuid: string,
+  traceId: string,
+  createdAt: Date,
+  // R-7: the entry's bank, so the per-bank tests can pool two banks side by
+  // side. The default keeps every pre-R-7 call site byte-identical.
+  bankReferenceCode = 'HDFC',
+): Promise<void> {
   const asgnUuid = toUuid(newId('asgn'))
   await db.$executeRaw`
     INSERT INTO pending_pool_entry (
@@ -54,7 +62,7 @@ async function seedPooled(tenantUuid: string, programUuid: string, traceId: stri
       ship_to_address, qr_value, vpa_value, pool_status, source_event_id, trace_id, created_at, updated_at
     ) VALUES (
       ${asgnUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, true, 1, 1, true,
-      'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
+      'Acme', 'Acme Pvt Ltd', '5814', ${bankReferenceCode}, 'HDFC Bank', '221B Baker Street',
       'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'POOLED', ${'file-' + traceId}, ${traceId}, ${createdAt}, now()
     )
   `
@@ -279,5 +287,161 @@ describe('upsertBatchingConfig (Phase 3 Task 6, admin write, BRD 271 old+new aud
     const n = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM batching_config`
     expect(Number(n[0]!.n)).toBe(0)
     expect(await auditRowsFor('ops:batching-config-set')).toHaveLength(0)
+  })
+})
+
+// R-7 (16 Aug 2026, docs/plan/UAT_DECISIONS_2026-08-16.md): the per-bank MIN
+// LOT override tier, revising D-10. A bank WITH a row batches its own entries
+// by its own threshold; a bank WITHOUT one participates in the pool-wide count
+// exactly as before the tier existed; max wait never lives on a bank row.
+describe('per-bank batching overrides (R-7)', () => {
+  async function seedBankLot(tenantWire: string, programWire: string, bank: string, minLotSize: number): Promise<void> {
+    await db.$executeRaw`
+      INSERT INTO batching_config (id, tenant_wire, program_wire, bank_reference_code, min_lot_size, max_wait_seconds, updated_at)
+      VALUES (gen_random_uuid(), ${tenantWire}, ${programWire}, ${bank}, ${minLotSize}, NULL, now())
+    `
+  }
+
+  it('a bank-tier row never leaks into the POOL ladder (resolvePoolConfig is bank-blind)', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    await seedBankLot(tenantWire, programWire, '019', 2)
+    const cfg = await resolvePoolConfig(db, tenantWire, programWire)
+    expect(cfg).toEqual(DEFAULT_POOL_CFG)
+  })
+
+  it('resolveBankLotOverride: no row is null, (tenant, program, bank) beats (tenant, "", bank), an empty bank is null', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    expect(await resolveBankLotOverride(db, tenantWire, programWire, '019')).toBeNull()
+    await seedBankLot(tenantWire, '', '019', 30)
+    expect(await resolveBankLotOverride(db, tenantWire, programWire, '019')).toBe(30)
+    await seedBankLot(tenantWire, programWire, '019', 20)
+    expect(await resolveBankLotOverride(db, tenantWire, programWire, '019')).toBe(20)
+    expect(await resolveBankLotOverride(db, tenantWire, programWire, '')).toBeNull()
+    expect(await resolveBankLotOverride(db, '', programWire, '019')).toBeNull()
+  })
+
+  it('the DB refuses a bank row carrying a wait ceiling, and a pool row missing one', async () => {
+    const tenantWire = newId('tnnt')
+    await expect(
+      db.$executeRaw`
+        INSERT INTO batching_config (id, tenant_wire, program_wire, bank_reference_code, min_lot_size, max_wait_seconds, updated_at)
+        VALUES (gen_random_uuid(), ${tenantWire}, '', '019', 5, 60, now())
+      `,
+    ).rejects.toThrowError(/batching_config_bank_tier_wait/)
+    await expect(
+      db.$executeRaw`
+        INSERT INTO batching_config (id, tenant_wire, program_wire, bank_reference_code, min_lot_size, max_wait_seconds, updated_at)
+        VALUES (gen_random_uuid(), ${tenantWire}, '', '', 5, NULL, now())
+      `,
+    ).rejects.toThrowError(/batching_config_bank_tier_wait/)
+    await expect(
+      db.$executeRaw`
+        INSERT INTO batching_config (id, tenant_wire, program_wire, bank_reference_code, min_lot_size, max_wait_seconds, updated_at)
+        VALUES (gen_random_uuid(), '', '', '019', 5, NULL, now())
+      `,
+    ).rejects.toThrowError(/batching_config_bank_tier_scope/)
+  })
+
+  it('a bank at its override triggers a batch of ITS OWN entries only; the other bank stays POOLED', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    await seedBankLot(tenantWire, programWire, '019', 2)
+
+    await seedPooled(tenantUuid, programUuid, 'trace-a1', new Date(BASE.getTime() + 1000), '019')
+    await seedPooled(tenantUuid, programUuid, 'trace-b1', new Date(BASE.getTime() + 2000), '042')
+    await seedPooled(tenantUuid, programUuid, 'trace-a2', new Date(BASE.getTime() + 3000), '019')
+
+    const res = await onDemandAccrued(db, tenantWire, programWire, 'dedup-bank-1', 'trace-a2', '019')
+    expect(res.triggered).toBe(true) // 2 >= the bank override; the pool DEFAULT (50) would say no
+
+    const batches = await db.$queryRaw<{ id: string; unit_count: number }[]>`SELECT id::text AS id, unit_count FROM batch`
+    expect(batches).toHaveLength(1)
+    expect(batches[0]!.unit_count).toBe(2)
+
+    const banks = await db.$queryRaw<{ bank_reference_code: string; pool_status: string }[]>`
+      SELECT bank_reference_code, pool_status FROM pending_pool_entry ORDER BY created_at
+    `
+    expect(banks.filter((b) => b.bank_reference_code === '019').every((b) => b.pool_status === 'BATCHED')).toBe(true)
+    expect(banks.filter((b) => b.bank_reference_code === '042').every((b) => b.pool_status === 'POOLED')).toBe(true)
+  })
+
+  it('a bank BELOW its override does not trigger, even when the pool total would clear a lower pool tier', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    // Pool tier would batch at 2; the bank's own override demands 5.
+    await seedConfig(tenantWire, programWire, 2, 3600)
+    await seedBankLot(tenantWire, programWire, '019', 5)
+
+    await seedPooled(tenantUuid, programUuid, 'trace-a1', new Date(BASE.getTime() + 1000), '019')
+    await seedPooled(tenantUuid, programUuid, 'trace-b1', new Date(BASE.getTime() + 2000), '042')
+
+    const res = await onDemandAccrued(db, tenantWire, programWire, 'dedup-bank-2', 'trace-a1', '019')
+    expect(res.triggered).toBe(false)
+    const n = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM batch`
+    expect(Number(n[0]!.n)).toBe(0)
+  })
+
+  it('a bank WITHOUT an override still batches pool-wide (pre-R-7 behavior, byte for byte)', async () => {
+    const tenantWire = newId('tnnt')
+    const programWire = newId('prog')
+    const tenantUuid = toUuid(tenantWire)
+    const programUuid = toUuid(programWire)
+    await seedConfig(tenantWire, programWire, 2, 3600)
+    await seedBankLot(tenantWire, programWire, '019', 50)
+
+    await seedPooled(tenantUuid, programUuid, 'trace-a1', new Date(BASE.getTime() + 1000), '019')
+    await seedPooled(tenantUuid, programUuid, 'trace-b1', new Date(BASE.getTime() + 2000), '042')
+
+    // Bank 042 has no override: the pool-wide count (2) clears the pool tier
+    // (2), and the batch claims EVERYTHING pooled, the 019 entry included.
+    const res = await onDemandAccrued(db, tenantWire, programWire, 'dedup-bank-3', 'trace-b1', '042')
+    expect(res.triggered).toBe(true)
+    const batches = await db.$queryRaw<{ unit_count: number }[]>`SELECT unit_count FROM batch`
+    expect(batches).toHaveLength(1)
+    expect(batches[0]!.unit_count).toBe(2)
+  })
+
+  it('upsertBatchingConfig writes a bank row (NULL wait), audits min lot only, and refuses the two invalid shapes', async () => {
+    const tenantWire = newId('tnnt')
+    const base = { clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-cfg-bank' }
+    const res = await upsertBatchingConfig(db, {
+      tenantWire,
+      bankReferenceCode: '019',
+      minLotSize: 25,
+      ...base,
+    })
+    expect(res.deduped).toBe(false)
+
+    const rows = await db.$queryRaw<{ bank_reference_code: string; min_lot_size: number; max_wait_seconds: number | null }[]>`
+      SELECT bank_reference_code, min_lot_size, max_wait_seconds FROM batching_config WHERE tenant_wire = ${tenantWire}
+    `
+    expect(rows).toEqual([{ bank_reference_code: '019', min_lot_size: 25, max_wait_seconds: null }])
+
+    const audits = await auditRowsFor('ops:batching-config-set')
+    expect(audits).toHaveLength(1)
+    expect(audits[0]!.resourceIds).toContain('scope:tenant-bank')
+    expect(audits[0]!.resourceIds).toContain('bank:019')
+    expect(audits[0]!.resourceIds.some((r) => r.startsWith('min-lot-size:old=50:new=25'))).toBe(true)
+    expect(audits[0]!.resourceIds.some((r) => r.startsWith('max-wait-seconds:'))).toBe(false)
+
+    // A bank scope without a tenant, and a bank scope carrying a wait ceiling:
+    // both 4xx before any transaction opens.
+    await expect(
+      upsertBatchingConfig(db, { bankReferenceCode: '019', minLotSize: 5, clientKey: randomUUID(), actorId: base.actorId, traceId: base.traceId }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+    await expect(
+      upsertBatchingConfig(db, { tenantWire, bankReferenceCode: '019', minLotSize: 5, maxWaitSeconds: 60, clientKey: randomUUID(), actorId: base.actorId, traceId: base.traceId }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+    // A POOL-tier write still requires the wait ceiling now that the field is
+    // optional on the shape.
+    await expect(
+      upsertBatchingConfig(db, { tenantWire, minLotSize: 5, clientKey: randomUUID(), actorId: base.actorId, traceId: base.traceId }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
   })
 })
