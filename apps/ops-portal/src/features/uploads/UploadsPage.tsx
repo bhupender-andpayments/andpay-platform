@@ -7,7 +7,7 @@ import { ActivationUploadPage } from './ActivationUploadPage.js'
 import {
   ACTIVATION_COLUMNS,
   COURIER_STATUS_COLUMNS,
-  DEVICE_INVENTORY_COLUMNS,
+  DEVICE_INVENTORY_REQUIRED_COLUMNS,
   RETURN_COLUMNS,
 } from './uploadKinds.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -61,7 +61,13 @@ const UPLOAD_CARDS: readonly UploadCard[] = [
     title: 'Device inventory',
     source: 'From the manufacturer',
     description: 'Devices received into stock, before anything can be printed or shipped.',
-    columns: DEVICE_INVENTORY_COLUMNS,
+    // The card's line reads "Required columns", so it must carry the REQUIRED
+    // set (Device ID alone, the Workflow A frozen rule), not the sheet shape.
+    // Passing DEVICE_INVENTORY_COLUMNS here told an operator all three were
+    // required while the upload page itself said the opposite, which is the
+    // exact two-claims conflation the 13 Aug split of these constants fixed
+    // (found again on this card, 16 Aug UAT walkthrough, finding A5).
+    columns: DEVICE_INVENTORY_REQUIRED_COLUMNS,
     route: '/inventory/upload',
   },
   {

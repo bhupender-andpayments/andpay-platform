@@ -240,6 +240,7 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
     goodToKnow: [
       ...SHARED_GOOD_TO_KNOW,
       `Required columns: ${COURIER_STATUS_COLUMNS.join(', ')}. Names are matched ignoring case and extra spaces.`,
+      'Statuses the ladder knows: Picked Up, In Transit, Out For Delivery, Delivered, Failed, Returned. Case and spaces do not matter; anything else is held to the exceptions queue rather than guessed at.',
       'Dates must be YYYY-MM-DD. A day/month date is refused rather than guessed at, because the two readings are indistinguishable for most of every month.',
       'Naming the wrong courier moves nothing: every row is held instead, so a mistake here costs an upload, never a parcel.',
     ],

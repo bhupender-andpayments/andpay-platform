@@ -83,6 +83,19 @@ describe('parseCourierStatusFile (T5.1)', () => {
     ])
   })
 
+  // 16 Aug 2026 UAT walkthrough (finding B8): a courier's own export writes
+  // "In Transit" and the row was held as an unknown status. Spaces are
+  // spelling, not meaning, so they normalize to the ladder's underscore
+  // exactly as case already did.
+  it('a human-styled status ("In Transit", "out for delivery") normalizes to the ladder token', async () => {
+    const parsed = await parseCourierStatusFile(
+      csv(['AWB,Status,Status Date', 'AWB1,In Transit,2026-08-12', 'AWB2,out for delivery,2026-08-12']),
+      'morning.csv',
+    )
+    expect(parsed.structuralErrors).toEqual([])
+    expect(parsed.validRows.map((r) => r.status)).toEqual(['IN_TRANSIT', 'OUT_FOR_DELIVERY'])
+  })
+
   it('a missing required COLUMN fails the whole file, naming the column and nothing else', async () => {
     const parsed = await parseCourierStatusFile(csv(['AWB,Status', 'AWB1,DELIVERED']), 'morning.csv')
     expect(parsed.validRows).toEqual([])

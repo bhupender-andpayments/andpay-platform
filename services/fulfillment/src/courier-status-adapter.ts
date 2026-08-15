@@ -107,7 +107,12 @@ export async function parseCourierStatusFile(
   dataRows.forEach((cells, idx) => {
     const rowNo = idx + 1
     const awb = (cells[awbIdx] ?? '').trim()
-    const status = (cells[statusIdx] ?? '').trim().toUpperCase()
+    // A courier's own export writes "In Transit"; the ladder speaks
+    // IN_TRANSIT. Whitespace-to-underscore is spelling, not meaning, so it is
+    // normalized here exactly as case already is (16 Aug 2026 UAT walkthrough,
+    // finding B8: a human-styled status was held as unknown). An actually
+    // unknown status still lands in the exceptions queue downstream.
+    const status = (cells[statusIdx] ?? '').trim().toUpperCase().replace(/\s+/g, '_')
     const rawDate = (cells[dateIdx] ?? '').trim()
 
     // EVERY failing check on a row is reported, not just the first. An operator
