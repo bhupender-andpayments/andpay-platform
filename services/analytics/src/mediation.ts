@@ -435,11 +435,26 @@ function ageingBucket(d: Date): string {
  * rows whose relevant date column happens to be null: the window only bites
  * when the caller actually narrows by date.
  */
+// A date-only `to` (the portal's date inputs send yyyy-mm-dd) means "through
+// the END of that day". `new Date('2026-08-16')` is midnight at the START of
+// the day, so comparing against it excluded the entire final day the window
+// claimed to include, and a from=to=today window matched only events at
+// exactly 00:00:00 UTC. Found live 16 Aug 2026: a dispatch RETURNED late on
+// the window's last day was on the Dispatches page but missing from every
+// Command Center count. A full-timestamp `to` keeps its exact meaning.
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+const DAY_MS = 86_400_000
+
 function withinReportWindow(d: Date | null, filters: ReportFilters): boolean {
   if (filters.from === undefined && filters.to === undefined) return true
   if (d === null) return false
   if (filters.from !== undefined && d.getTime() < new Date(filters.from).getTime()) return false
-  if (filters.to !== undefined && d.getTime() > new Date(filters.to).getTime()) return false
+  if (filters.to !== undefined) {
+    const t = new Date(filters.to).getTime()
+    // Date-only: exclusive of the NEXT day's first instant (the whole end day
+    // is in). Full timestamp: inclusive of that exact instant, unchanged.
+    if (DATE_ONLY.test(filters.to) ? d.getTime() >= t + DAY_MS : d.getTime() > t) return false
+  }
   return true
 }
 
