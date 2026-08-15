@@ -83,6 +83,11 @@ export {
   type ReturnSheet,
   type ReturnResult,
   ingestReturnSheet,
+  // D-25: the ops channel for the same sheet, gated ops:upload-return-file at
+  // the edge with the vendor resolved server-side.
+  ingestReturnSheetOps,
+  type OpsReturnResult,
+  type OpsReturnRejection,
 } from './return-sheet.js'
 export {
   advanceShipmentStatus,

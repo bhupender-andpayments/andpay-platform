@@ -304,38 +304,10 @@ describe('uploads', () => {
     expect(screen.getByRole('button', { name: /commit damage report file/i })).toBeTruthy()
   })
 
-  // Review fix, round 1: a committed file's preview is stale, so Review must
-  // LOCK rather than stay clickable with the click going nowhere. Upload
-  // stays a real, clickable way to start over.
-  it('damage: once committed, the Review rail pill locks (renders inert, not a button); Upload stays clickable', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (url.includes('/ops/uploads/damage/preview')) return jsonResponse(DAMAGE_PREVIEW_RESULT)
-        if (url.includes('/ops/uploads/damage/commit')) return jsonResponse({ replaced: 1, quarantined: 1, duplicate: 0, fileId: 'file-2' })
-        return jsonResponse({})
-      }),
-    )
-
-    renderWithProviders(<DamageUploadPage />)
-
-    const input = screen.getByLabelText(/damage report file/i) as HTMLInputElement
-    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'damage.csv'))
-    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
-    await userEvent.click(screen.getByRole('button', { name: /commit damage report file/i }))
-    expect(await screen.findByText('Replaced')).toBeTruthy()
-
-    const railPill = (label: string) => new RegExp(`^\\d\\s*${label}$`, 'i')
-    // Locked: Review's own label text still renders in the rail, but it is
-    // no longer a button (UploadStepper renders a locked step as an inert
-    // span).
-    expect(screen.getByText(/^review$/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: railPill('review') })).toBeNull()
-    // Still a real move: Upload remains clickable so a new file can be picked.
-    expect(screen.getByRole('button', { name: railPill('upload') })).toBeTruthy()
-  })
+  // (2026-08-14: the step rail itself is gone from every upload page, so the
+  // lock-the-Review-pill behaviour it enforced went with it. The stale-preview
+  // protection survives in the page's own state machine: a committed file
+  // clears its preview.)
 
   // 2026-08-13 review: the rail is GONE. It had three pills whose third,
   // "Submit", only restated the screen the operator was already on, behind one
@@ -825,10 +797,16 @@ describe('uploads', () => {
     renderWithProviders(<CourierStatusUploadPage />)
 
     // Sourced from the REAL vendor read, filtered to COURIER: a manufacturer
-    // must never be offerable as the sender of a status file.
-    const select = (await screen.findByLabelText(/^courier$/i)) as HTMLSelectElement
-    expect(within(select).getByText('Blue Dart')).toBeTruthy()
-    expect(within(select).queryByText('Acme Devices')).toBeNull()
+    // must never be offerable as the sender of a status file. Driven through
+    // the COMMON SearchSelect: open it, read its own listbox.
+    await screen.findByText(/select a courier/i)
+    await userEvent.click(screen.getByText(/select a courier/i))
+    const courierListbox = await screen.findByRole('listbox')
+    expect(within(courierListbox).getByRole('option', { name: 'Blue Dart' })).toBeTruthy()
+    expect(within(courierListbox).queryByRole('option', { name: 'Acme Devices' })).toBeNull()
+    // Close without picking: the disabled-until-both assertion below needs
+    // the courier still unset.
+    await userEvent.keyboard('{Escape}')
 
     const continueButton = screen.getByRole('button', { name: /continue to submit/i }) as HTMLButtonElement
     expect(continueButton.disabled).toBe(true)
@@ -838,7 +816,8 @@ describe('uploads', () => {
     expect(continueButton.disabled).toBe(true)
     expect(calls.some((c) => c.url.includes('/ops/uploads/courier-status'))).toBe(false)
 
-    await userEvent.selectOptions(select, 'vndr_cour1')
+    await userEvent.click(screen.getByText(/select a courier/i))
+    await userEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: 'Blue Dart' }))
     expect(continueButton.disabled).toBe(false)
     await userEvent.click(continueButton)
 
@@ -866,9 +845,10 @@ describe('uploads', () => {
     )
 
     renderWithProviders(<CourierStatusUploadPage />)
-    const select = (await screen.findByLabelText(/^courier$/i)) as HTMLSelectElement
+    await screen.findByText(/select a courier/i)
     await userEvent.upload(screen.getByLabelText(/courier status file/i), makeFile('x', 'morning.csv'))
-    await userEvent.selectOptions(select, 'vndr_cour1')
+    await userEvent.click(screen.getByText(/select a courier/i))
+    await userEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: 'Blue Dart' }))
     await userEvent.click(screen.getByRole('button', { name: /continue to submit/i }))
     await userEvent.click(await screen.findByRole('button', { name: /upload courier status file/i }))
 

@@ -3,7 +3,9 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { getDamageCases, updateDamageCaseStatus, type DamageCaseView } from '../../api/endpoints.js'
-import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
+// PlainTable, not the grid: these rows hold a focused note input, which the
+// grid's TanStack re-render remounts mid-typing. See DataTable.tsx.
+import { PlainTable as DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import {
   PageHeader,
   Card,

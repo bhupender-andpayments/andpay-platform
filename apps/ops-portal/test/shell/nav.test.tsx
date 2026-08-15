@@ -25,8 +25,8 @@ vi.mock('../../src/features/dashboards/TilesPage.js', () => ({
 vi.mock('../../src/features/fulfillment/FulfillmentPage.js', () => ({
   FulfillmentPage: () => <div>batches stub</div>,
 }))
-vi.mock('../../src/features/fulfillment/BatchDetailPage.js', () => ({
-  BatchDetailPage: () => <div>batch detail stub</div>,
+vi.mock('../../src/features/fulfillment/generate/BatchGeneratePage.js', () => ({
+  BatchGeneratePage: () => <div>batch detail stub</div>,
 }))
 
 // Same fake-JWT approach as test/routes.test.tsx: the real /session/login
@@ -127,7 +127,7 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 12 real sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 11 real sections, no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
@@ -142,15 +142,16 @@ describe('ops-portal app shell + navigation', () => {
     // these links under headings, so document order is a presentation choice
     // while "which sections exist" is the invariant worth guarding.
     //
-    // The 2026-08-11 ruling ADDS Workflow, the lifecycle workspace, which leads
-    // the Pipeline group in the sidebar and sorts last here.
+    // Workflow was REMOVED on 13 Aug 2026: it had become a second home for
+    // surfaces that already had one (the bank upload lived inside it), so an
+    // operator had two routes to the same work with no rule for choosing.
     //
     // D-24 (T6.6) ADDS Damage cases, beside Queues under Operations: both are
     // work an operator picks up and moves along, as opposed to an object they
     // look at. The read had existed at the edge since FR08-2 with no surface at
     // all, which is most of why those statuses were stale.
     expect([...names].sort()).toEqual(
-      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads', 'Workflow'],
+      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })
@@ -232,7 +233,7 @@ describe('ops-portal app shell + navigation', () => {
   // names the section's ACTUAL group.
   it.each([
     ['/command-center', 'Overview'],
-    ['/workflow', 'Pipeline'],
+    ['/merchants', 'Pipeline'],
     ['/batches', 'Pipeline'],
     ['/reports', 'Insights'],
     ['/masterdata', 'Setup'],

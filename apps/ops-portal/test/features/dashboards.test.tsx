@@ -1,40 +1,75 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, within, cleanup } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { TilesPage } from '../../src/features/dashboards/TilesPage.js'
-import { ReportPage } from '../../src/features/dashboards/ReportPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
-// The confirmed edge contract (apps/ops-edge/src/reports.controller.ts +
-// services/analytics/src/mediation.ts): GET /ops/reports/tiles returns
-// { tiles: TileSet, watermark }, GET /ops/reports/tiles/:tile and
-// GET /ops/reports/:name return { rows, watermark }. D100: the watermark
-// rides the JSON body, never a header the client cannot read.
+// The Command Center, rebuilt 2026-08-15: one date window on top, six cards
+// and one chart derived from the soundbox-delivery report INSIDE that window
+// (the same read and definitions the Dispatches page uses), and a separate
+// "Right now" strip from the live tiles aggregate, explicitly labelled as not
+// on the date filter. The old 8-tile all-time grid is gone: an all-time
+// number sitting under a date filter it ignores is a lie of layout.
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
-// A dashboard shell that renders TilesPage at /dashboards and ReportPage at
-// /reports, mirroring routes.tsx exactly (both routes, no AppShell wrapper,
-// since neither page depends on it). Used to prove a tile click drives a real
-// drilldown fetch whose rows are consistent with the tile it came from.
-function renderDashboardShell(initialPath: string) {
+const DAY_MS = 86_400_000
+const iso = (daysBack: number) => new Date(Date.now() - daysBack * DAY_MS).toISOString()
+const isoDay = (daysBack: number) => iso(daysBack).slice(0, 10)
+
+const TILES_FIXTURE = {
+  requestsReceived: 5,
+  totalBatches: 12,
+  pendingQrAwaitingBatch: { count: 2, oldestAgeDays: 1.5 },
+  pendingPrintVendorPickup: 3,
+  dispatchedNotDelivered: 4,
+  deliveredNotActivated: 9,
+  damagedReplacementOpen: 1,
+  activatedSuccessfully: 7,
+}
+
+// Three dispatches inside the last week: one still with the vendor (no AWB),
+// one on the road, one delivered.
+const REPORT_ROWS = [
+  { dispatchId: 'asgn_a', awb: null, courierStatus: null, dispatchDate: null, deliveryDate: null },
+  { dispatchId: 'asgn_b', awb: 'AWB1', courierStatus: 'DISPATCHED_BY_VENDOR', dispatchDate: iso(2), deliveryDate: null },
+  { dispatchId: 'asgn_c', awb: 'AWB2', courierStatus: 'DELIVERED', dispatchDate: iso(3), deliveryDate: iso(1) },
+]
+
+function stub(): string[] {
+  const urls: string[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      urls.push(url)
+      if (url.includes('/ops/reports/soundbox-delivery')) {
+        return jsonResponse({ rows: REPORT_ROWS, watermark: { asOf: '2026-08-15T08:00:00.000Z', perTopic: {} } })
+      }
+      if (url.includes('/ops/reports/tiles')) {
+        return jsonResponse({ tiles: TILES_FIXTURE, watermark: { asOf: '2026-08-15T08:00:00.000Z', perTopic: {} } })
+      }
+      return jsonResponse({})
+    }),
+  )
+  return urls
+}
+
+function renderAt(path = '/dashboards') {
   return render(
-    <MemoryRouter initialEntries={[initialPath]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
         <Routes>
           <Route path="/dashboards" element={<TilesPage />} />
-          <Route path="/reports" element={<ReportPage />} />
         </Routes>
       </AuthProvider>
     </MemoryRouter>,
   )
 }
 
-describe('TilesPage', () => {
+describe('TilesPage (Command Center)', () => {
   beforeEach(() => {
     clearAccessToken()
     setAccessToken('tok-1')
@@ -44,137 +79,67 @@ describe('TilesPage', () => {
     cleanup()
   })
 
-  const TILES_FIXTURE = {
-    requestsReceived: 5,
-    totalBatches: 12, // distinct from every other fixture value, so a text assertion is unambiguous
-    pendingQrAwaitingBatch: { count: 2, oldestAgeDays: 1.5 },
-    pendingPrintVendorPickup: 3,
-    dispatchedNotDelivered: 4,
-    deliveredNotActivated: 9,
-    damagedReplacementOpen: 1,
-    activatedSuccessfully: 7,
-  }
+  it('derives the window cards from the date-filtered delivery report, with the Dispatches-page definitions', async () => {
+    const urls = stub()
+    renderAt()
 
-  // D-16 (T4.2): this used to assert that the two activation tiles rendered
-  // "Not available yet" instead of their backend values, and that was right
-  // while nothing wrote activation_status: one tile equalled the whole delivered
-  // set and the other was always zero. Both have real data behind them now, so
-  // hiding them would suppress the numbers an operator came here for.
-  it('renders every tile from the real analytics aggregate, activation included', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          tiles: TILES_FIXTURE,
-          watermark: { asOf: '2026-07-29T12:00:00.000Z', perTopic: {} },
-        }),
-      ),
-    )
+    // The six cards, values straight from the three fixture rows.
+    expect(await screen.findByText('created in this window')).toBeTruthy()
+    const card = (hint: string) => screen.getByText(hint).closest('button')!
+    expect(within(card('created in this window')).getByText('3')).toBeTruthy()
+    expect(within(card('no AWB reported yet')).getByText('1')).toBeTruthy()
+    expect(within(card('handed to the courier')).getByText('1')).toBeTruthy()
+    expect(within(card('courier confirmed delivery')).getByText('1')).toBeTruthy()
 
-    render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AuthProvider>
-          <TilesPage />
-        </AuthProvider>
-      </MemoryRouter>,
-    )
-
-    const grid = await screen.findByTestId('tile-grid')
-    // Every value asserted below comes straight from TILES_FIXTURE above: if
-    // the component ever hardcoded a tile value, changing the fixture would
-    // stop changing the render, which is exactly what this test guards.
-    expect(within(grid).getByText('5')).toBeTruthy()
-    expect(within(grid).getByText('2')).toBeTruthy()
-    expect(within(grid).getByText('3')).toBeTruthy()
-    expect(within(grid).getByText('4')).toBeTruthy()
-    expect(within(grid).getByText('1')).toBeTruthy()
-    // The two activation tiles now render their real values.
-    expect(within(grid).getAllByText('9').length).toBeGreaterThan(0)
-    expect(within(grid).getByText('7')).toBeTruthy()
-    expect(screen.queryByText(/not available/i)).toBeNull()
-    // The watermark badge reflects the body's watermark.asOf, not a header.
-    // The badge renders the instant in the reader's locale rather than as a raw
-    // ISO string, and keeps the exact instant on the title attribute. Asserting
-    // the title is both locale-independent and a tighter check than matching
-    // formatted text.
-    const badge = screen.getByTitle('2026-07-29T12:00:00.000Z')
-    expect(badge.textContent).toMatch(/^as of /)
+    // And the read was WINDOWED: the default is the last 30 days, sent as
+    // from/to on the wire, never fetched all-time and trimmed client-side.
+    const reportUrl = urls.find((u) => u.includes('/ops/reports/soundbox-delivery'))
+    expect(reportUrl).toBeTruthy()
+    expect(reportUrl).toContain('from=')
+    expect(reportUrl).toContain('to=')
   })
 
-  it('emphasizes exactly one tile with a filled accent treatment; every other tile stays neutral (E design cue)', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          tiles: TILES_FIXTURE,
-          watermark: { asOf: '2026-07-29T12:00:00.000Z', perTopic: {} },
-        }),
-      ),
-    )
+  it('buckets the chart by the window width: days for a week, weeks for two months, months for a year', async () => {
+    stub()
+    const today = isoDay(0)
 
-    render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AuthProvider>
-          <TilesPage />
-        </AuthProvider>
-      </MemoryRouter>,
-    )
+    renderAt(`/dashboards?from=${isoDay(6)}&to=${today}`)
+    expect(await screen.findByText('per day')).toBeTruthy()
+    cleanup()
 
-    const grid = await screen.findByTestId('tile-grid')
-    const links = within(grid).getAllByRole('link')
-    // 8 since design D8 added the total-batches tile, which counts BATCHES
-    // where the other seven count records.
-    expect(links).toHaveLength(8)
-    // Exactly ONE anchor tile, still. The mechanism moved with the design system
-    // port: section 6.4 has no solid-fill card, so emphasis is the brand amber
-    // left border on the same card shape rather than a navy fill.
-    const emphasized = links.filter((l) => l.className.includes('border-l-primary'))
-    expect(emphasized).toHaveLength(1)
-    // and it must not be expressed as a filled tile any more
-    expect(links.filter((l) => l.className.includes('bg-brand'))).toHaveLength(0)
+    stub()
+    renderAt(`/dashboards?from=${isoDay(29)}&to=${today}`)
+    expect(await screen.findByText('per week')).toBeTruthy()
+    cleanup()
+
+    stub()
+    renderAt(`/dashboards?from=${isoDay(364)}&to=${today}`)
+    expect(await screen.findByText('per month')).toBeTruthy()
   })
 
-  it('a tile click drives the real tile-drilldown fetch, and the rendered drilldown rows are consistent with the tile it came from', async () => {
-    const urls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        urls.push(url)
-        if (url.includes('/ops/reports/tiles/damagedReplacementOpen')) {
-          return jsonResponse({
-            rows: [
-              { dispatchId: 'asgn_1', bankCode: 'HDFC', replacementStatus: 'RAISED' },
-              { dispatchId: 'asgn_2', bankCode: 'ICICI', replacementStatus: 'RAISED' },
-            ],
-            watermark: { asOf: '2026-07-30T09:00:00.000Z', perTopic: {} },
-          })
-        }
-        return jsonResponse({
-          tiles: { ...TILES_FIXTURE, damagedReplacementOpen: 2 },
-          watermark: { asOf: '2026-07-29T12:00:00.000Z', perTopic: {} },
-        })
-      }),
-    )
+  it('keeps the live pipeline strip on its own time-base, and says so', async () => {
+    stub()
+    renderAt()
 
-    renderDashboardShell('/dashboards')
+    const rail = await screen.findByTestId('lifecycle-rail')
+    // Values from the tiles aggregate, not the report rows.
+    expect(within(rail).getByText('2')).toBeTruthy()
+    expect(within(rail).getByText('3')).toBeTruthy()
+    expect(within(rail).getByText('4')).toBeTruthy()
+    expect(within(rail).getByText('9')).toBeTruthy()
+    // The label that keeps the two time-bases from being confused.
+    expect(within(rail).getByText(/not affected by the date filter/i)).toBeTruthy()
+    // Each stage stays a door into its drilldown.
+    const links = within(rail).getAllByRole('link')
+    expect(links.length).toBe(4)
+    expect(links[0]!.getAttribute('href')).toBe('/reports?tile=pendingQrAwaitingBatch')
+  })
 
-    await screen.findByTestId('tile-grid')
-    const tileLink = screen.getByRole('link', { name: /damaged, replacement open/i })
-    // The tile shows the real count (2) before the click, confirming the
-    // drilldown's row count below is not an independent coincidence.
-    expect(within(tileLink).getByText('2')).toBeTruthy()
-
-    await userEvent.click(tileLink)
-
-    expect(await screen.findByText('asgn_1')).toBeTruthy()
-    expect(screen.getByText('asgn_2')).toBeTruthy()
-    expect(screen.getAllByText(/^asgn_\d$/)).toHaveLength(2)
-    // 2 rendered drilldown rows === the damagedReplacementOpen tile's own
-    // count of 2: the drilldown is a real filtered read, not a fabricated list.
-    expect(urls.some((u) => u.includes('/ops/reports/tiles/damagedReplacementOpen'))).toBe(true)
+  it('offers the date presets and reflects the chosen range in the URL idiom', async () => {
+    stub()
+    renderAt()
+    for (const label of ['Today', '7 days', '30 days', '90 days', 'All time']) {
+      expect(await screen.findByRole('button', { name: label })).toBeTruthy()
+    }
   })
 })
-
-// The ReportPage-specific test suite lives in test/features/reports.test.tsx
-// (Task 5); ReportPage is still imported/rendered above only as the drilldown
-// target inside renderDashboardShell's route table.

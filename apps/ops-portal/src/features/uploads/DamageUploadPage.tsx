@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
@@ -18,7 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ErrorNote, StatusPill } from '../../ui/primitives.js'
 import { FileDropZone } from '../../components/FileDropZone.js'
 import { kindBySlug, type StepKey } from './uploadKinds.js'
-import { UploadStepper } from './UploadStepper.js'
+import { BackLink } from '../../ui/DetailFacts.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
 
 // Rewired to the D-K multipart contract (Phase 2 Task 4) and given preview
@@ -92,7 +91,6 @@ export function DamageUploadPage() {
   const previewOk = preview !== null && preview.structuralErrors.length === 0
   const step: StepKey = commitResult !== null || (confirming && previewOk) ? 'commit' : previewOk ? 'review' : 'upload'
   const KIND = kindBySlug('damage')!
-  const navigate = useNavigate()
   // Review locks the instant a commit lands: the preview it would show is
   // stale the moment the commit writes, so leaving it unlocked would render a
   // clickable rail pill whose click the `step` formula above silently
@@ -107,38 +105,14 @@ export function DamageUploadPage() {
   // it. Gating on `confirming || commitResult !== null` here was circular
   // (both already force step === 'commit'), which is what made the pill
   // dead in the first place.
-  const unlocked: StepKey[] = ['choose', 'upload', ...(previewOk && commitResult === null ? (['review'] as const) : []), ...(previewOk ? (['commit'] as const) : [])]
 
-  function onStepClick(key: StepKey): void {
-    if (key === 'choose') {
-      navigate('/uploads', { replace: true })
-      return
-    }
-    if (key === 'upload') {
-      // Clearing `confirming` alone is not enough: with a clean preview
-      // standing, the step derivation above always reads 'review', so Upload
-      // is only reachable again by clearing the preview itself. The picked
-      // `file` is untouched, so the drop zone still shows what was staged;
-      // picking a new file (or re-previewing the same one) is what reopens
-      // Review.
-      setConfirming(false)
-      setPreview(null)
-      setCommitResult(null)
-      return
-    }
-    if (key === 'review') setConfirming(false)
-    if (key === 'commit') setConfirming(true)
-  }
 
   return (
     <div className="flex flex-col gap-6">
-      <UploadStepper
-        steps={KIND.steps}
-        current={step}
-        unlocked={unlocked}
-        onStepClick={onStepClick}
-        guidance={KIND.guidanceByStep?.[step]}
-      />
+      {/* The step rail is gone (2026-08-14 ruling): the page itself shows what
+          is possible next, and the rail restated it in a second visual system.
+          The back link goes to the section whose data this upload feeds. */}
+      <BackLink to="/uploads" label="Uploads" />
 
       <Card>
         <CardHeader>

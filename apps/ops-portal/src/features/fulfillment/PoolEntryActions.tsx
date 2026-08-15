@@ -2,7 +2,15 @@ import { useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { holdRecord, releaseHold, type PoolEntryRow } from '../../api/endpoints.js'
-import { Button, ErrorNote, Field, Input } from '../../ui/primitives.js'
+import { Button, ErrorNote, Field, Input, CodeChip } from '../../ui/primitives.js'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog'
 
 // Redesign step 8: the last of the typed wire ids.
 //
@@ -30,6 +38,11 @@ import { Button, ErrorNote, Field, Input } from '../../ui/primitives.js'
 // as long as it stands, so asking for a sentence is the point rather than
 // friction. Release is unchanged and stays one click: it returns the record to
 // the ordinary pool, so there is no equivalent claim to justify.
+//
+// 2026-08-14: the reason is collected in a DIALOG rather than a form that
+// expanded inside the table cell. The in-cell form re-flowed every row under it
+// while the operator typed, and every other reasoned write in this portal is a
+// dialog now, so this one stopped being the exception.
 //
 // The cap mirrors the edge's own MAX_TRIGGER_REASON_LENGTH. Two checks, one
 // number: this one gives immediate feedback, the edge is the guarantee.
@@ -95,13 +108,29 @@ export function PoolEntryActions({ row, onChanged }: { row: PoolEntryRow; onChan
   const trimmed = reason.trim()
 
   return (
-    <div className="flex flex-col items-start gap-1">
-      {!holding ? (
-        <Button variant="secondary" size="sm" disabled={busy} onClick={() => setHolding(true)}>
-          Hold
-        </Button>
-      ) : (
-        <div className="flex flex-col items-start gap-1">
+    <>
+      <Button variant="secondary" size="sm" disabled={busy} onClick={() => setHolding(true)}>
+        Hold
+      </Button>
+      <Dialog
+        open={holding}
+        onOpenChange={(next) => {
+          setHolding(next)
+          if (!next) {
+            setReason('')
+            setError(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Hold this record</DialogTitle>
+            <DialogDescription>
+              {row.merchantDisplayName} <CodeChip>{row.asgnId}</CodeChip> stays out of every batch until the hold is
+              released. The reason is recorded.
+            </DialogDescription>
+          </DialogHeader>
+          {error !== null && <ErrorNote>{error}</ErrorNote>}
           <Field label="Reason for holding" htmlFor={`hold-reason-${row.asgnId}`}>
             <Input
               id={`hold-reason-${row.asgnId}`}
@@ -110,20 +139,9 @@ export function PoolEntryActions({ row, onChanged }: { row: PoolEntryRow; onChan
               onChange={(e) => setReason(e.target.value)}
             />
           </Field>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              disabled={busy || trimmed === ''}
-              loading={busy}
-              onClick={() => {
-                void run('hold')
-              }}
-            >
-              Hold this record
-            </Button>
+          <DialogFooter>
             <Button
               variant="secondary"
-              size="sm"
               disabled={busy}
               onClick={() => {
                 setHolding(false)
@@ -133,10 +151,18 @@ export function PoolEntryActions({ row, onChanged }: { row: PoolEntryRow; onChan
             >
               Cancel
             </Button>
-          </div>
-        </div>
-      )}
-      {error !== null && <ErrorNote>{error}</ErrorNote>}
-    </div>
+            <Button
+              disabled={busy || trimmed === ''}
+              loading={busy}
+              onClick={() => {
+                void run('hold')
+              }}
+            >
+              Hold this record
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }

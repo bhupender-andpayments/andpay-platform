@@ -224,7 +224,7 @@ export function SearchSelect({
         disabled={disabled}
         {...(labelledBy !== undefined ? { labelledBy } : {})}
       />
-      <PopoverContent align="start" className="w-64 p-2">
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-64 p-2">
         <PickerPanel
           options={options}
           selected={value === '' ? [] : [value]}

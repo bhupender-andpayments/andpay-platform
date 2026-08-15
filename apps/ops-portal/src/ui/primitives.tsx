@@ -66,7 +66,9 @@ export function Card({ className, children }: { className?: string; children: Re
 }
 export function CardHeader({ title, subtitle, actions }: { title: ReactNode; subtitle?: ReactNode; actions?: ReactNode }) {
   return (
-    <ShadCardHeader>
+    // gap-0.5 overrides the shadcn default gap-1.5: a title and its own
+    // subtitle are one thought and read wrong with daylight between them.
+    <ShadCardHeader className="gap-0.5">
       <CardTitle>{title}</CardTitle>
       {subtitle !== undefined && <CardDescription>{subtitle}</CardDescription>}
       {actions !== undefined && <div className="col-start-2 row-span-2 row-start-1 flex shrink-0 items-center gap-2 self-start justify-self-end">{actions}</div>}

@@ -113,7 +113,6 @@ async function renderAuthedShell(): Promise<void> {
 // ReportPage/QueuesPage/MasterDataPage/UploadsPage/OperationsPage/
 // ActivationPage/MerchantsPage).
 const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
-  { label: 'Workflow', heading: /^workflow$/i },
   { label: 'Command Center', heading: /^command center$/i },
   { label: 'Merchants', heading: /^merchants$/i },
   { label: 'Reports', heading: /^reports$/i },
@@ -144,7 +143,7 @@ describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
     consoleErrorSpy.mockRestore()
   })
 
-  it('mounts the shell authenticated and routes through all 12 sections with no thrown errors and no console.error', async () => {
+  it('mounts the shell authenticated and routes through all 11 sections with no thrown errors and no console.error', async () => {
     await renderAuthedShell()
 
     const nav = screen.getByRole('navigation', { name: /main/i })

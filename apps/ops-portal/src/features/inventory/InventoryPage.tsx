@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Boxes, Check, Copy, PackageCheck, PackageX, Repeat2, Smartphone, Truck, Upload } from 'lucide-react'
+import { Boxes, Check, Copy, PackageCheck, PackageX, Pencil, Repeat2, Smartphone, Truck, Upload } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
+import { UnitStatusEditDialog } from './UnitStatusEditDialog.js'
+import { UNIT_STATUS_ORDER as STATUS_ORDER, STATUS_LABEL, legalNextStatuses } from './unitStatus.js'
 import { MultiSelect } from '../../components/Picker.js'
 import {
   getDevices,
@@ -34,40 +36,18 @@ import { cn } from '@/lib/utils'
 // ARE the status breakdown - a card that hid itself when its status was
 // filtered out would read as data loss.
 //
-// THE STATUS ORDER IS THE LIFECYCLE, not alphabetical (unit-lifecycle.ts
-// spine + terminals). ALLOCATED stays listed even though nothing reaches it
-// yet: hiding it would quietly disagree with the domain.
+// THE STATUS VOCABULARY IS NOT DEFINED HERE. The spine, the terminals, the
+// labels and the legal forward moves all live in ./unitStatus.ts, mirroring the
+// server's unit-lifecycle.ts, so this screen's facet and the edit dialog can
+// never offer a status the write would reject. Read that file's header for why
+// ACTIVATED is absent from it (D-16: activation is its own axis, `activatedAt`,
+// which the Activated stat card and the Activation column below both read).
 //
-// ACTIVATED IS NOT A STATUS (D-16, T4.4, merged 13 Aug 2026). It was one when
-// this screen was written, and it stopped being one: activation is now its own
-// axis, `activatedAt`, because a device reads DISPATCHED and Activated at the
-// same time whenever the CWD gets there before the courier's update does, and
-// collapsing those into one column is the defect D-16 was written to fix. So it
-// is gone from this list, from the label map and from the status facet: leaving
-// it would have shown an operator a filter that matched nothing, forever, while
-// implying the platform had lost every activated device.
-//
-// It is NOT gone from the screen. The Activated stat card and the Activation
-// column below both survive, reading the activation axis instead of the status.
-const STATUS_ORDER = [
-  'IN_STOCK',
-  'ALLOCATED',
-  'PRINTED',
-  'DISPATCHED',
-  'DELIVERED',
-  'DAMAGED',
-  'RETURNED',
-] as const
-
-const STATUS_LABEL: Record<string, string> = {
-  IN_STOCK: 'In stock',
-  ALLOCATED: 'Allocated',
-  PRINTED: 'Printed',
-  DISPATCHED: 'Dispatched',
-  DELIVERED: 'Delivered',
-  DAMAGED: 'Damaged',
-  RETURNED: 'Returned',
-}
+// STATUS IS EDITABLE IN PLACE, from the Status column. The bulk status-upload
+// tool that used to sit in this header is gone (2026-08-14): device and dispatch
+// statuses move together in the flows that own them, so the only status write an
+// operator still makes by hand is the one-device correction, which belongs on
+// the row it corrects rather than behind a file upload.
 
 interface StatCardDef {
   key: string
@@ -115,6 +95,9 @@ export function InventoryPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [rows, setRows] = useState<UnitInventoryRow[]>([])
+  // The row whose status is being corrected, or null. One dialog for the whole
+  // grid: mounting one per row would mount a hundred.
+  const [editingUnit, setEditingUnit] = useState<UnitInventoryRow | null>(null)
   const [merchantNames, setMerchantNames] = useState<ReadonlyMap<string, string>>(new Map())
   const [vendors, setVendors] = useState<VendorRow[]>([])
   const [replacementAsgnIds, setReplacementAsgnIds] = useState<ReadonlySet<string>>(new Set())
@@ -447,12 +430,31 @@ export function InventoryPage() {
       header: 'Status',
       sortValue: (r) => STATUS_ORDER.indexOf(r.status as (typeof STATUS_ORDER)[number]),
       cell: (r) => (
-        <span className="flex items-center gap-1.5">
+        <span className="group/status flex items-center gap-1.5">
           <StatusPill value={r.status} />
           {r.asgnId !== null && replacementAsgnIds.has(r.asgnId) && (
             <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
               Replacement
             </span>
+          )}
+          {/* The correction lives on the value it corrects. Hidden outright on a
+              terminal device rather than shown disabled: there is no forward
+              move left, so an affordance would only promise one. */}
+          {legalNextStatuses(r.status).length > 0 && (
+            <button
+              type="button"
+              title="Change status"
+              aria-label={`Change status of ${r.deviceSerial ?? r.id}`}
+              className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground group-hover/status:text-muted-foreground"
+              onClick={(e) => {
+                // The row itself navigates to the device page; editing here
+                // must not also do that.
+                e.stopPropagation()
+                setEditingUnit(r)
+              }}
+            >
+              <Pencil className="size-3.5" aria-hidden="true" />
+            </button>
           )}
         </span>
       ),
@@ -527,9 +529,6 @@ export function InventoryPage() {
           // and a dedicated button for it was one more thing on the screen an
           // operator never reached for.
           <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={() => navigate('/inventory/status-upload')}>
-              Update statuses
-            </Button>
             <Button onClick={() => navigate('/inventory/upload')}>
               <Upload className="size-4" aria-hidden="true" /> Upload inventory
             </Button>
@@ -610,6 +609,23 @@ export function InventoryPage() {
           }
         />
       </Card>
+
+      {/* Patched in place rather than refetched: the operator stays where they
+          were, on the same page of the same filtered list, and the stat cards
+          recompute from `rows` anyway so they follow the change for free. */}
+      {editingUnit !== null && (
+        <UnitStatusEditDialog
+          unit={editingUnit}
+          open
+          onOpenChange={(next) => {
+            if (!next) setEditingUnit(null)
+          }}
+          onSaved={(status) => {
+            const editedId = editingUnit.id
+            setRows((prev) => prev.map((r) => (r.id === editedId ? { ...r, status } : r)))
+          }}
+        />
+      )}
     </div>
   )
 }

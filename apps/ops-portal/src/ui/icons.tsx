@@ -49,9 +49,6 @@ export const IconFulfillment = (p: P) => (
 // rail is a thing that HANDS OFF, and a hand-off is what an operator recognises.
 // Same visual language as the rest: 1.6 stroke, round caps, currentColor, drawn
 // inside the shared 24 viewBox.
-export const IconWorkflow = (p: P) => (
-  <svg {...base(p)}><rect x="3" y="4" width="8" height="5" rx="1.5" /><rect x="13" y="15" width="8" height="5" rx="1.5" /><path d="M7 9v5.5a3 3 0 0 0 3 3h3" /></svg>
-)
 export const IconChevron = (p: P) => (
   <svg {...base(p)}><path d="m9 6 6 6-6 6" /></svg>
 )

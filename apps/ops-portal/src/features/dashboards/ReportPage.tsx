@@ -17,7 +17,8 @@ import {
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { downloadCsv } from './exportCsv.js'
-import { PageHeader, Card, CardHeader, Field, Select, Input, Button, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
+import { PageHeader, Card, CardHeader, Field, Input, Button, ErrorNote, SkeletonRows } from '../../ui/primitives.js'
+import { SearchSelect } from '../../components/Picker.js'
 import { IconSearch, IconDownload } from '../../ui/icons.js'
 import { humanHeader } from '../../ui/format.js'
 import { COURIER_STATUSES } from './courierStatuses.js'
@@ -334,24 +335,22 @@ export function ReportPage() {
                   reference code the edge filters on; its LABEL is the name a
                   human uses. */}
               <Field label="Bank" htmlFor="filter-bank">
-                <Select id="filter-bank" value={bank} onChange={(e) => setBank(e.target.value)}>
-                  <option value="">Any bank</option>
-                  {banks.map((b) => (
-                    <option key={b.tnntId} value={b.bankReferenceCode}>
-                      {b.displayName}
-                    </option>
-                  ))}
-                </Select>
+                <SearchSelect
+                  id="filter-bank"
+                  placeholder="Any bank"
+                  value={bank}
+                  onChange={(v) => setBank(v)}
+                  options={[{ value: '', label: 'Any bank' }, ...banks.map((b) => ({ value: b.bankReferenceCode, label: b.displayName }))]}
+                />
               </Field>
               <Field label="Status" htmlFor="filter-status">
-                <Select id="filter-status" value={status} onChange={(e) => setStatus(e.target.value)}>
-                  <option value="">Any status</option>
-                  {COURIER_STATUSES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </Select>
+                <SearchSelect
+                  id="filter-status"
+                  placeholder="Any status"
+                  value={status}
+                  onChange={(v) => setStatus(v)}
+                  options={[{ value: '', label: 'Any status' }, ...COURIER_STATUSES.map((cs) => ({ value: cs, label: cs }))]}
+                />
               </Field>
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">

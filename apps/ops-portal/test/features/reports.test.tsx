@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { pickOption } from '../helpers/pickers.js'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { ReportPage } from '../../src/features/dashboards/ReportPage.js'
@@ -105,8 +106,8 @@ describe('ReportPage', () => {
     // Step 5: both are pickers now. Selecting by VALUE proves the option's
     // value (the bank reference code the edge filters on) is what travels,
     // not the display name the operator reads.
-    await userEvent.selectOptions(await screen.findByLabelText(/bank/i), 'HDFC')
-    await userEvent.selectOptions(screen.getByLabelText(/^status/i), 'DELIVERED')
+    await pickOption(/any bank/i, /HDFC/i)
+    await pickOption(/any status/i, 'DELIVERED')
     await userEvent.click(screen.getByRole('button', { name: /search/i }))
 
     const requeried = urls[urls.length - 1]!

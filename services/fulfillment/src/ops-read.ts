@@ -489,6 +489,15 @@ export interface BatchArtifactRow {
   artifactType: string
   assetReference: string
   supersededAt: Date | null
+  // The exact payload and merchant name the STORED artifact was composed with,
+  // so the ops console's on-screen card proof cannot drift from what was
+  // printed. Both are already-existing columns and the ops read role already
+  // holds SELECT on them, so this is a projection widening only: no migration,
+  // no new grant. Read-only either way, and no secret rides here (a UPI payload
+  // and a display name are both already on the bank request the operator
+  // uploaded).
+  labelQr: string
+  labelDisplayName: string
 }
 
 interface BatchArtifactDbRow {
@@ -496,6 +505,8 @@ interface BatchArtifactDbRow {
   artifact_type: string
   asset_reference: string
   superseded_at: Date | null
+  label_qr: string
+  label_display_name: string
 }
 
 export interface BatchDetailView {
@@ -569,7 +580,8 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
     // package.ts: this read projects supersededAt precisely so an operator can
     // see that an artifact was recomposed.
     const artifacts = await tx.$queryRaw<BatchArtifactDbRow[]>`
-      SELECT ca.asgn_id::text AS asgn_id, ca.artifact_type, ca.asset_reference, ca.superseded_at
+      SELECT ca.asgn_id::text AS asgn_id, ca.artifact_type, ca.asset_reference, ca.superseded_at,
+             ca.label_qr, ca.label_display_name
       FROM composed_artifact ca
       LEFT JOIN pending_pool_entry ppe ON ppe.asgn_id = ca.asgn_id
       WHERE ca.btch_id = ${btchUuid}::uuid
@@ -583,6 +595,8 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
         artifactType: a.artifact_type,
         assetReference: a.asset_reference,
         supersededAt: a.superseded_at,
+        labelQr: a.label_qr,
+        labelDisplayName: a.label_display_name,
       })),
       printLayout: header[0]!.print_layout,
     }

@@ -513,6 +513,11 @@ export interface BatchArtifactRow {
   artifactType: string
   assetReference: string
   supersededAt: string | null
+  // What the STORED artifact was composed with. The collateral page renders its
+  // card proof and its print PDFs from these, so the screen and the press run
+  // agree with the artifact rather than with a second lookup that could drift.
+  labelQr: string
+  labelDisplayName: string
 }
 
 /** services/fulfillment/src/ops-read.ts BatchDetailView. */
@@ -573,6 +578,45 @@ export function getMerchants(c: Client) {
   return c.request<MerchantRow[]>({ method: 'GET', path: '/ops/merchants' })
 }
 
+/**
+ * Add a merchant by hand (2026-08-14): for the merchant no bank file has
+ * carried yet. The normal door stays the bank request upload, which creates
+ * merchants on its own.
+ *
+ * THE EDGE ROUTE IS NOT BUILT YET, by decision: the backend team owns
+ * POST /ops/merchants and is adding it separately. This contract IS the
+ * request for it: the three fields below (status is the server's to default,
+ * identity context comes from the authenticated principal per M7/S16, never
+ * the body), an Idempotency-Key, a 200 carrying the new row's wire mrchId.
+ * Until it lands, the Add-merchant dialog surfaces the edge's 404 inline,
+ * which is the honest failure and not a silent one.
+ */
+// The BRD's own merchant record (section 5.1, the bank-file field table),
+// minus the fields that belong to a REQUEST rather than a merchant (bank,
+// branch, QR string, kit quantities). Mandatory flags follow the BRD. This
+// interface IS the contract for the backend team's POST /ops/merchants; the
+// route is theirs to land (UI-first decision, 2026-08-14).
+export interface MerchantCreateBody {
+  displayName: string
+  legalName: string
+  mcc: string
+  /** The BRD's unique merchant key: a new Merchant ID is minted per VPA. */
+  vpa: string
+  contactName: string
+  mobile: string
+  email?: string
+  address: string
+  address2?: string
+  address3?: string
+  city: string
+  state: string
+  pincode: string
+}
+
+export function createMerchant(c: Client, body: MerchantCreateBody, idempotencyKey: string) {
+  return c.request<{ mrchId: string }>({ method: 'POST', path: '/ops/merchants', body, idempotencyKey })
+}
+
 // 404 when the batch does not exist; the edge throws NotFoundException rather
 // than returning an empty-but-valid-looking detail, so the caller can tell
 // "no such batch" from "a batch with no entries".
@@ -629,11 +673,57 @@ export function getDeviceDetail(c: Client, unitId: string) {
 // Manual unit-status correction (2026-08-13 ruling): the device page's edit
 // control. Forward-only, same rule as everywhere else; the edge/domain reject
 // an illegal move rather than trusting the picker's own option list.
-export function correctUnitStatus(c: Client, unitId: string, status: string, idempotencyKey: string) {
+//
+// `occurredAt` (2026-08-15): when the move REALLY happened, for the operator
+// updating days late. Sent on the wire so the contract is ready, but the
+// route does not store it yet - `unit` keeps no per-status history (the
+// already-escalated unit_status_event gap), so this is a NAMED BACKEND ASK,
+// and the dialog's hint says so rather than implying a backdate was recorded.
+export function correctUnitStatus(
+  c: Client,
+  unitId: string,
+  status: string,
+  idempotencyKey: string,
+  occurredAt?: string,
+) {
   return c.request<{ deduped: boolean; advanced: boolean }>({
     method: 'POST',
     path: `/ops/units/${encodeURIComponent(unitId)}/status`,
-    body: { status },
+    body: { status, ...(occurredAt !== undefined && occurredAt !== '' ? { occurredAt } : {}) },
+    idempotencyKey,
+  })
+}
+
+/**
+ * Correct a device's OWN master data (2026-08-14): what the manufacturer's
+ * intake file got wrong. A PARTIAL patch - omit a key to leave that field
+ * alone, send null to clear it.
+ *
+ * Deliberately cannot reach status (that is correctUnitStatus above, which
+ * carries the forward-only guard) or any pipeline field (batch, shipment,
+ * merchant, dispatch), which are owned by the flows that set them.
+ *
+ * THE EDGE ROUTE IS NOT BUILT YET, by decision (2026-08-14): the backend team
+ * owns POST /ops/units/:id/edit and is adding it separately. The portal side
+ * ships first so the screen is real, and the contract this file states IS the
+ * request for it: a partial body of the four fields below, an Idempotency-Key,
+ * a 200 of { deduped }, device_serial uniqueness enforced server-side (a
+ * collision answers 4xx, never a 500), and no pipeline field reachable at all.
+ * Until it lands, the Device card's pencil saves and reports the edge's 404
+ * inline, which is the honest failure and not a silent one.
+ */
+export interface UnitDetailsPatch {
+  deviceSerial?: string
+  simNo?: string | null
+  manufacturerVndr?: string
+  location?: string | null
+}
+
+export function editUnitDetails(c: Client, unitId: string, patch: UnitDetailsPatch, idempotencyKey: string) {
+  return c.request<{ deduped: boolean }>({
+    method: 'POST',
+    path: `/ops/units/${encodeURIComponent(unitId)}/edit`,
+    body: patch,
     idempotencyKey,
   })
 }
@@ -1068,6 +1158,47 @@ export function commitBank(c: Client, file: File, idempotencyKey: string): Promi
   return postFile<BankCommitResult>(c, '/ops/uploads/bank/commit', file, idempotencyKey)
 }
 
+/**
+ * The print vendor's return sheet, uploaded by an OPERATOR (D-25, BRD FR-05
+ * para 322: in Phase 1 the vendor emails it and our team uploads it).
+ *
+ * services/fulfillment/src/return-sheet-adapter.ts ReturnSheetParseResult, plus
+ * the ops ingest outcome. Note what is NOT on the wire: the print vendor. It is
+ * resolved server-side from the batch these dispatch ids belong to, so there is
+ * nothing for an operator to pick and nothing for a caller to assert.
+ */
+export interface ReturnSheetRowError {
+  rowNo: number
+  message: string
+}
+
+export interface ReturnPreviewResult {
+  validRows: Array<{ asgnId: string; deviceSerial?: string; awb: string; courierCode?: string }>
+  invalidRows: ReturnSheetRowError[]
+  structuralErrors: StructuralParseError[]
+}
+
+export interface ReturnCommitResult {
+  /** Whole-file refusals. Absent on a (possibly partial) accept. */
+  rejected?: 'schema_invalid' | 'no_resolvable_dispatch' | 'mixed_vendors' | 'batch_has_no_vendor'
+  /** The print vendor the sheet resolved to, once resolution succeeded. */
+  vndrId?: string
+  pairedUnitIds: string[]
+  quarantined: number
+  shptIds: string[]
+  collateralLinked: number
+  deduped: boolean
+  invalidRows: ReturnSheetRowError[]
+}
+
+export function previewReturnUpload(c: Client, file: File): Promise<ReturnPreviewResult> {
+  return postFile<ReturnPreviewResult>(c, '/ops/uploads/return/preview', file)
+}
+
+export function commitReturnUpload(c: Client, file: File, idempotencyKey: string): Promise<ReturnCommitResult> {
+  return postFile<ReturnCommitResult>(c, '/ops/uploads/return', file, idempotencyKey)
+}
+
 export function previewDamage(c: Client, file: File): Promise<DamagePreviewResult> {
   return postFile<DamagePreviewResult>(c, '/ops/uploads/damage/preview', file)
 }
@@ -1500,11 +1631,35 @@ export interface BatchJourneyView {
 // D-16 (T4.5): ONE Dispatch ID's two branches with the full history under each.
 // The edge composes it from three contexts; the shape below mirrors that
 // response and invents nothing.
-export interface DispatchTrailEntry {
+// TWO CLOCKS PER TRAIL ROW (S22), and both are now mirrored. The edge has always
+// sent `sourceRef` and `receivedAt` on a courier event and `recordedAt` on an
+// activation event; this interface dropped all three, so the page could not tell
+// WHEN A COURIER SAYS something happened from WHEN WE WERE TOLD, which is exactly
+// the distinction those columns exist to keep. A backdated file import looks
+// identical to a live webhook without it.
+//
+// (The former `DispatchTrailEntry` type sat here unused by anything, describing a
+// third shape neither trail has. Removed rather than left to be copied.)
+export interface DeliveryTrailEntry {
   status: string
-  /** When the thing HAPPENED (reported time), not when we recorded it. */
-  at: string
+  /** The courier's own reported instant. */
+  courierTimestamp: string
   statusSource: string
+  /** The channel's reference: a vendor and file id, an event id, or an actor. */
+  sourceRef: string
+  /** When the platform recorded it. */
+  receivedAt: string
+  overrideReason: string | null
+}
+
+export interface ActivationTrailEntry {
+  status: string
+  /** The reported instant (the CWD's own). */
+  occurredAt: string
+  statusSource: string
+  actorId: string | null
+  /** When the platform recorded it. */
+  recordedAt: string
 }
 
 export interface DispatchDetailView {
@@ -1522,8 +1677,8 @@ export interface DispatchDetailView {
   deliveryDate: string | null
   activationStatus: string | null
   activationDate: string | null
-  deliveryTrail: { status: string; courierTimestamp: string; statusSource: string; overrideReason: string | null }[]
-  activationTrail: { status: string; occurredAt: string; statusSource: string; actorId: string | null }[]
+  deliveryTrail: DeliveryTrailEntry[]
+  activationTrail: ActivationTrailEntry[]
   watermark: Watermark
 }
 
