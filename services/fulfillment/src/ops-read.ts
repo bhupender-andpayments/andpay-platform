@@ -972,6 +972,33 @@ export async function resolveAssignmentsByDeviceSerial(
   return out
 }
 
+// R-5 (16 Aug 2026, docs/plan/UAT_DECISIONS_2026-08-16.md): the ICCID for the
+// activation report, keyed by device serial. The report itself is an analytics
+// read; the SIM deliberately never reaches analytics (S7, migration
+// 20260803120000), so the ops edge fans out HERE, under fulfillment_ops_read,
+// whose column grant carries sim_no (20260812150000). Same posture as
+// resolveAssignmentsByDeviceSerial above: guard-only read, no 6e of its own,
+// the route's analytics 6e already records the access.
+export async function readUnitSimsBySerialsOps(
+  db: FulfillmentDb,
+  deviceSerials: readonly string[],
+): Promise<Map<string, string>> {
+  if (deviceSerials.length === 0) return new Map()
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<{ device_serial: string; sim_no: string | null }[]>`
+      SELECT device_serial, sim_no
+      FROM unit
+      WHERE device_serial = ANY(${deviceSerials}::text[])
+    `
+  })
+  const out = new Map<string, string>()
+  for (const r of rows) {
+    if (r.sim_no !== null && r.sim_no !== '') out.set(r.device_serial, r.sim_no)
+  }
+  return out
+}
+
 // One device, by wire unit id, with the on-demand device_qr payload. Null when
 // the id decodes but no such unit exists; the edge maps that to a 404. An
 // undecodable id is the caller's error and throws InvalidIdError for the edge
