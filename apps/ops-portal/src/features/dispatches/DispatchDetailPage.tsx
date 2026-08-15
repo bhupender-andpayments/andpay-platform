@@ -12,10 +12,12 @@ import {
   Printer,
   QrCode,
   Route,
+  Send,
   Smartphone,
   Store,
   Truck,
   Undo2,
+  Zap,
 } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import {
@@ -23,11 +25,15 @@ import {
   getDevices,
   getDispatchDetail,
   getPoolEntries,
+  markActivated,
+  requestActivation,
   type BatchEntryRow,
   type DispatchDetailView,
   type UnitInventoryRow,
 } from '../../api/endpoints.js'
-import { Card, CardBody, ErrorNote, EmptyState, SkeletonRows, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { newIdempotencyKey } from '../../api/idempotency.js'
+import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import { Button, Card, CardBody, ErrorNote, EmptyState, SkeletonRows, StatusPill, CodeChip } from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
 import { BackLink, FactRow, NoValue, SectionHeading } from '../../ui/DetailFacts.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
@@ -166,6 +172,30 @@ export function DispatchDetailPage() {
     [detail, entry, batchFormedAt],
   )
 
+  // D-16: the activation BRANCH, independent of delivery. The two writes are
+  // the same ones the Activation worklist uses; this page offers them beside
+  // the dispatch's own facts so an operator on a dispatch never has to walk
+  // back to the worklist to act on what they are looking at.
+  const [activationAction, setActivationAction] = useState<'request' | 'mark' | null>(null)
+  const [activationBusy, setActivationBusy] = useState(false)
+  const [activationError, setActivationError] = useState<string | null>(null)
+
+  const runActivationAction = useCallback(async (): Promise<void> => {
+    if (asgnId === undefined || activationAction === null) return
+    setActivationBusy(true)
+    setActivationError(null)
+    try {
+      if (activationAction === 'request') await requestActivation(client, [asgnId], newIdempotencyKey())
+      else await markActivated(client, asgnId, newIdempotencyKey())
+      setActivationAction(null)
+      await load()
+    } catch (e) {
+      setActivationError(e instanceof Error ? e.message : 'The write failed.')
+    } finally {
+      setActivationBusy(false)
+    }
+  }, [asgnId, activationAction, client, load])
+
   if (loading) return <SkeletonRows rows={6} />
   if (error !== null) return <ErrorNote>{error}</ErrorNote>
   if (detail === null) return <EmptyState title="No such dispatch" />
@@ -290,7 +320,76 @@ export function DispatchDetailPage() {
             </FactRow>
           </CardBody>
         </Card>
+
+        {/* D-16: the SECOND axis. A soundbox's activation is independent of its
+            delivery; a COLLATERAL consignment has no activation at all and its
+            lifecycle ends at Delivered, which this card says instead of
+            offering a write that would 409. */}
+        <Card>
+          <CardBody>
+            <SectionHeading>Activation</SectionHeading>
+            {detail.dispatchGroup === 'COLLATERAL' ? (
+              <p className="text-sm text-muted-foreground">
+                Not applicable: a collateral consignment ends at Delivered. Activation belongs to the soundbox dispatch.
+              </p>
+            ) : (
+              <>
+                <FactRow icon={Zap} label="Status">
+                  {detail.activationStatus === null ? (
+                    <NoValue>no request sent yet</NoValue>
+                  ) : (
+                    <StatusPill value={detail.activationStatus} />
+                  )}
+                </FactRow>
+                <FactRow icon={PackageCheck} label="Activated">
+                  {detail.activationDate === null ? <NoValue>not yet</NoValue> : fmtDateTime(detail.activationDate)}
+                </FactRow>
+                {detail.activationTrail.length > 0 && (
+                  <div className="mt-3 space-y-1">
+                    {detail.activationTrail.map((e, i) => (
+                      <p key={i} className="text-[12.5px] text-muted-foreground">
+                        <StatusPill value={e.status} /> <span className="num">{fmtDateTime(e.occurredAt)}</span>
+                        <span className="ml-1">via {e.statusSource}</span>
+                      </p>
+                    ))}
+                  </div>
+                )}
+                {activationError !== null && <ErrorNote>{activationError}</ErrorNote>}
+                {detail.activationStatus !== 'ACTIVATED' && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {detail.activationStatus === null && (
+                      <Button variant="secondary" onClick={() => setActivationAction('request')}>
+                        <Send className="mr-1.5 h-3.5 w-3.5" /> Record request sent to CWD
+                      </Button>
+                    )}
+                    <Button onClick={() => setActivationAction('mark')}>
+                      <Zap className="mr-1.5 h-3.5 w-3.5" /> Mark activated
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
+          </CardBody>
+        </Card>
       </div>
+
+      <ConfirmDialog
+        open={activationAction !== null}
+        onOpenChange={(open) => {
+          if (!open) setActivationAction(null)
+        }}
+        title={activationAction === 'request' ? 'Record that the activation request went to the CWD?' : `Mark ${detail.merchantDisplay} activated?`}
+        description={
+          activationAction === 'request'
+            ? 'Records that the activation sheet for this dispatch was sent to the CWD. The audit carries this as your action.'
+            : 'Records that the CWD confirmed this device and its SIM. This cannot be undone from here.'
+        }
+        confirmLabel={activationAction === 'request' ? 'Record request' : 'Mark activated'}
+        busy={activationBusy}
+        onConfirm={() => {
+          void runActivationAction()
+        }}
+      />
     </div>
   )
 }

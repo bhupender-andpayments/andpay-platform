@@ -34,6 +34,8 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   // label says RTO because that is what an operator calls it.
   RETURNED: { variant: 'negative', label: 'RTO' },
   FAILED: { variant: 'negative', label: 'Failed' },
+  // D-16 activation branch: the request half. ACTIVATED is already above.
+  REQUEST_SENT_TO_CWD: { variant: 'pending', label: 'Request sent to CWD' },
   // activation
   ACTIVE: { variant: 'positive', label: 'Active' },
   PENDING: { variant: 'pending', label: 'Pending' },
