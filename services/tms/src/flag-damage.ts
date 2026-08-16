@@ -178,7 +178,14 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
       // NULL: no bank wrote anything, and pretending otherwise would put words
       // in the bank's mouth. ON CONFLICT mirrors the old mint as a structural
       // net under the (source_event_id, dispatch_group) unique.
-      const won = await tx.$queryRaw<{ id: string }[]>`
+      // The read above cannot see a CONCURRENT transaction's uncommitted
+      // child, so the one-live-case rule is ultimately the partial unique
+      // index assignment_one_live_case (migration 20260816210000). A racing
+      // flag surfaces here as a 23505 on that index, mapped to the SAME
+      // conflict the read raises, so the caller sees one 409 either way.
+      let won: { id: string }[]
+      try {
+        won = await tx.$queryRaw<{ id: string }[]>`
         INSERT INTO assignment (
           id, merchant_id, program_id, tenant_id,
           merchant_display_name, merchant_legal_name, merchant_mcc,
@@ -197,6 +204,17 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
         ON CONFLICT (source_event_id, dispatch_group) DO NOTHING
         RETURNING id
       `
+      } catch (err) {
+        // Prisma surfaces the raw Postgres failure as text carrying the
+        // SQLSTATE and the violated key, NOT the index name. 23505 on
+        // replacement_of can only be assignment_one_live_case here: the
+        // (source_event_id, dispatch_group) unique is absorbed by the ON
+        // CONFLICT arbiter above and the PK is a fresh uuid.
+        if (err instanceof Error && err.message.includes('23505') && err.message.includes('replacement_of')) {
+          throw new OpsClientError('conflict', 'this dispatch already has a live damage case')
+        }
+        throw err
+      }
       if (won.length === 0) return // the child already exists (idempotent net)
 
       const childId = fromUuid('asgn', childUuid)

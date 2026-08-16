@@ -308,3 +308,43 @@ describe('DP-4: idempotency on the client key', () => {
     expect(Number(audit[0]!.n)).toBe(1)
   })
 })
+
+describe('the one-live-case rule is a DATABASE guard, not just a read (F2, DP-3)', () => {
+  // The service's read-check cannot see a concurrent transaction's
+  // uncommitted child, so the rule itself is the partial unique index
+  // assignment_one_live_case. These tests pin the index, the only guard the
+  // race cannot slip past; flag-damage.ts maps its 23505 to the same
+  // conflict the read raises.
+  async function rawChild(parentUuid: string, caseStatus: string): Promise<void> {
+    await db.$executeRaw`INSERT INTO assignment (
+      id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
+      bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count,
+      billable, replacement_of, case_status, demand_state, source_event_id, dispatch_group, updated_at
+    ) VALUES (
+      ${toUuid(newId('asgn'))}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
+      'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'Addr', 'upi://pay', 'race@hdfcbank',
+      false, 1, 0, false, ${parentUuid}::uuid, ${caseStatus}, 'received', ${`race|${randomUUID()}`}, 'COLLATERAL', now()
+    )`
+  }
+
+  it('a second LIVE child for one parent is rejected by the index, whatever path tries to insert it', async () => {
+    const parent = await seedLeg('COLLATERAL')
+    const parentUuid = toUuid(parent)
+    await rawChild(parentUuid, 'Open')
+    // Prisma reports the raw 23505 with the violated KEY, not the index name;
+    // the production mapping in flag-damage.ts keys on the same shape.
+    await expect(rawChild(parentUuid, 'In-Progress')).rejects.toThrow(/23505[\s\S]*replacement_of/)
+  })
+
+  it('closed children never collide: many resolved complaints plus one live case coexist', async () => {
+    const parent = await seedLeg('COLLATERAL')
+    const parentUuid = toUuid(parent)
+    await rawChild(parentUuid, 'Closed')
+    await rawChild(parentUuid, 'Closed')
+    await rawChild(parentUuid, 'Open')
+    const n = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM assignment WHERE replacement_of = ${parentUuid}::uuid
+    `
+    expect(Number(n[0]!.n)).toBe(3)
+  })
+})

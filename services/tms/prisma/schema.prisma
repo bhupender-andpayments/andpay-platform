@@ -108,7 +108,11 @@ model Assignment {
   /// the concept and are deliberately not backfilled. An id and not free text
   /// (S4/S7): the why lives in ops_remarks above, the who lives here.
   flaggedBy           String?   @map("flagged_by")
-  caseStatus          String?   @map("case_status") // Open | In-Progress | Closed (replacements only)
+  /// Open | In-Progress | Closed, replacements only. One LIVE (non-Closed)
+  /// child per parent is enforced by the migration-only partial unique index
+  /// assignment_one_live_case (20260816210000, DP-3/F2); Prisma cannot
+  /// express partial indexes, so it does not appear in this schema.
+  caseStatus          String?   @map("case_status")
   demandState         String    @map("demand_state") // received | pooled-for-fulfillment | closed | replacement-raised | activated
   activatedAt         DateTime? @map("activated_at") @db.Timestamptz(6)
   /// D-16 activation branch: the LATEST activation status, denormalized off
