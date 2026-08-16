@@ -22,7 +22,7 @@ import {
   type ReportFilters,
   type TileName,
 } from '@andpay/analytics-service'
-import { readShipmentTrailOps } from '@andpay/fulfillment-service'
+import { readShipmentTrailOps, readUnitSimsBySerialsOps } from '@andpay/fulfillment-service'
 import { readActivationTrailOps } from '@andpay/tms-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
@@ -215,6 +215,29 @@ export class ReportsController {
     await this.authorize(req, 'analytics:read-report')
     const scope: ReadScope = { kind: 'crossTenant' }
     const result = await readReport(this.deps.analyticsDb, scope, name as ReportName, toFilters(q))
+
+    // R-5 (16 Aug 2026, docs/plan/UAT_DECISIONS_2026-08-16.md): D-19 asks for
+    // the ICCID on the activation report, and the SIM deliberately never
+    // reaches analytics (S7, migration 20260803120000). So the EDGE merges it
+    // here from the fulfillment ops read, whose column grant carries sim_no
+    // (20260812150000), and the analytics row shape stays SIM-free. simNos is
+    // positional against deviceIds; a device with no captured SIM renders ''
+    // rather than shifting its neighbours. The corpus confirmation of the
+    // underlying grant is STILL OWED (UAT_DECISIONS item 12); this route rides
+    // that grant, it does not widen it.
+    if (name === 'activation') {
+      const serials = new Set<string>()
+      for (const row of result.rows) {
+        const ids = row['deviceIds']
+        if (Array.isArray(ids)) for (const id of ids) serials.add(id)
+      }
+      const sims = await readUnitSimsBySerialsOps(this.deps.fulfillmentDb, [...serials])
+      result.rows = result.rows.map((row) => {
+        const ids = Array.isArray(row['deviceIds']) ? (row['deviceIds'] as string[]) : []
+        return { ...row, simNos: ids.map((id) => sims.get(id) ?? '') }
+      })
+    }
+
     res.setHeader('x-analytics-watermark', result.watermark.asOf ?? 'none')
     if (q['format'] === 'csv') {
       res.setHeader('Content-Type', 'text/csv; charset=utf-8')

@@ -71,7 +71,16 @@ describe('DispatchDetailPage (D-16, T4.5)', () => {
     cleanup()
   })
 
-  it('renders the delivery ladder as one rail, and no activation anywhere on the page', async () => {
+  // REVISED 16 Aug 2026 (UAT walkthrough finding A3/A4). This test used to pin
+  // "no activation anywhere on the page", reasoning that a dispatch does not
+  // activate, its devices do, on the device page. Half of that held: the RAIL
+  // is the parcel's and activation must never be a rung on it, which this test
+  // still pins. The other half did not: the device page never gained the
+  // actions, requestActivation had no consumer anywhere, so the D-16 state
+  // REQUEST_SENT_TO_CWD was unreachable from the whole UI, and D-16/T4.5
+  // records that the per-dispatch page carries BOTH axes. Activation is back
+  // as its OWN CARD beside the facts, never on the rail.
+  it('renders the delivery ladder as one rail, with activation as its own card and never a rung', async () => {
     stub(DETAIL)
     renderPage()
 
@@ -89,11 +98,51 @@ describe('DispatchDetailPage (D-16, T4.5)', () => {
     // In transit is the current rung AND the header pill, so it appears twice.
     expect(screen.getAllByText(/in transit/i).length).toBeGreaterThan(0)
 
-    // A dispatch does not activate; its devices do, on the device page. The
-    // activation trail the read still carries must render nowhere here.
-    expect(screen.queryByText(/activation/i)).toBeNull()
-    expect(screen.queryByText(/request sent to cwd/i)).toBeNull()
-    expect(screen.queryByText(/^activated$/i)).toBeNull()
+    // The activation CARD is present (this DETAIL is ACTIVATED, so no buttons).
+    expect(screen.getByText('Activation')).toBeTruthy()
+    expect(screen.queryByText(/mark activated/i)).toBeNull()
+    expect(screen.queryByText(/record request sent to cwd/i)).toBeNull()
+
+    // The rail itself stays the parcel's: no activation rung inside it.
+    const rail = screen.getByText('Dispatch lifecycle').closest('div')?.parentElement
+    expect(rail?.textContent ?? '').not.toMatch(/request sent to cwd/i)
+  })
+
+  it('an unactivated soundbox offers BOTH activation actions; a request-sent one offers mark only', async () => {
+    stub({ ...DETAIL, activationStatus: null, activationDate: null, activationTrail: [] })
+    renderPage()
+    expect(await screen.findByText('Activation')).toBeTruthy()
+    expect(screen.getByText(/record request sent to cwd/i)).toBeTruthy()
+    expect(screen.getByText(/mark activated/i)).toBeTruthy()
+    expect(screen.getByText('no request sent yet')).toBeTruthy()
+
+    cleanup()
+    stub({ ...DETAIL, activationStatus: 'REQUEST_SENT_TO_CWD', activationDate: null, activationTrail: [] })
+    renderPage()
+    expect(await screen.findByText('Activation')).toBeTruthy()
+    expect(screen.queryByText(/record request sent to cwd/i)).toBeNull()
+    expect(screen.getByText(/mark activated/i)).toBeTruthy()
+    expect(screen.getByText('Request sent to CWD')).toBeTruthy()
+  })
+
+  it('a request the ANALYTICS fold has not seen still shows: the TMS trail wins over a null fold', async () => {
+    // No activation-request fact exists (PLAN.md section 7 item 8), so the
+    // fold's activationStatus stays null forever for this state; the trail is
+    // the TMS read and is the truth the card must follow (V-4 posture).
+    stub({
+      ...DETAIL,
+      activationStatus: null,
+      activationDate: null,
+      activationTrail: [
+        { status: 'REQUEST_SENT_TO_CWD', occurredAt: '2026-08-16T04:24:00.000Z', statusSource: 'ops:request-activation', actorId: null, recordedAt: '2026-08-16T04:24:00.000Z' },
+      ],
+    })
+    renderPage()
+    expect(await screen.findByText('Activation')).toBeTruthy()
+    // The status line reports the request, and the request button is GONE.
+    expect(screen.getAllByText('Request sent to CWD').length).toBeGreaterThan(0)
+    expect(screen.queryByText(/record request sent to cwd/i)).toBeNull()
+    expect(screen.getByText(/mark activated/i)).toBeTruthy()
   })
 
   it('an activated device does not move the parcel: the rail stays on the courier axis', async () => {
@@ -109,15 +158,16 @@ describe('DispatchDetailPage (D-16, T4.5)', () => {
     expect(screen.getByText('not yet')).toBeTruthy()
   })
 
-  it('a COLLATERAL dispatch renders the same ladder with no activation apology card', async () => {
+  it('a COLLATERAL dispatch states that activation is not applicable and offers NO write', async () => {
     stub({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null, activationTrail: [] })
     renderPage()
 
     expect(await screen.findByText('Dispatch lifecycle')).toBeTruthy()
-    // The old page had to explain that paper does not activate. With activation
-    // gone from this page there is nothing to apologise for.
-    expect(screen.queryByText(/collateral does not activate/i)).toBeNull()
-    expect(screen.queryByText(/activation/i)).toBeNull()
+    // D-16: standee-only is terminal at Delivered. Saying so beats an operator
+    // hunting for a button that would only ever 409.
+    expect(screen.getByText(/a collateral consignment ends at Delivered/i)).toBeTruthy()
+    expect(screen.queryByText(/mark activated/i)).toBeNull()
+    expect(screen.queryByText(/record request sent to cwd/i)).toBeNull()
   })
 
   it('a dispatch the courier has not touched still shows the whole ladder, early rungs reached', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { Building2, Calendar, Landmark, Store } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
@@ -49,14 +49,17 @@ export function MerchantDetailPage() {
   const [history, setHistory] = useState<ReportRow[] | null>(null)
   const [banks, setBanks] = useState<readonly BankMasterRow[]>([])
 
-  // Direct-URL entry: recover the row from the list read. One shot, guarded by
-  // a ref (the DeviceDetailPage lesson: with `row` in the deps this refires on
-  // its own setRow and can strand the page on the spinner).
-  const recoveryAttempted = useRef(false)
+  // Direct-URL entry: recover the row from the list read. NO one-shot ref
+  // guard here, and that is the fix (16 Aug 2026 UAT walkthrough, N1): under
+  // StrictMode's double-fired effect the first run consumed the ref, its
+  // cleanup discarded the response as cancelled, and the second run refused to
+  // refetch, stranding every direct-URL entry on the spinner forever. The
+  // refire hazard the ref was guarding against (the DeviceDetailPage lesson)
+  // was `row` in the deps refiring on its own setRow; `row` is not in these
+  // deps, so the cancelled-cleanup alone is the correct amount of guarding.
   useEffect(() => {
     if (handedRow !== undefined && handedRow !== null) return
-    if (recoveryAttempted.current || mrchId === undefined) return
-    recoveryAttempted.current = true
+    if (mrchId === undefined) return
     let cancelled = false
     getMerchants(client)
       .then((list) => {

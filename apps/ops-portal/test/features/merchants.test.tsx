@@ -1,9 +1,11 @@
+import { StrictMode } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { MerchantsPage } from '../../src/features/merchants/MerchantsPage.js'
+import { MerchantDetailPage } from '../../src/features/merchants/MerchantDetailPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
 // Redesign step 7. Row shapes are copied from services/tms/src/ops-read.ts
@@ -218,5 +220,81 @@ describe('MerchantsPage', () => {
       state: 'MH',
       pincode: '411001',
     })
+  })
+})
+
+// N1 (16 Aug 2026 UAT walkthrough): direct-URL entry hung on the spinner
+// forever under StrictMode. The recovery effect's one-shot ref guard and its
+// cancelled-cleanup were mutually destructive when the effect double-fires:
+// run one consumed the ref and discarded its own response, run two refused to
+// refetch. UAT runs the dev server, where StrictMode is on, so this test
+// renders under StrictMode deliberately.
+describe('MerchantDetailPage (direct URL entry, N1)', () => {
+  beforeEach(() => {
+    clearAccessToken()
+    setAccessToken('tok-1')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('recovers the row from the list read under StrictMode instead of stranding the spinner', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/ops/reports/')) return jsonResponse({ rows: [], watermark: { asOf: null } })
+        if (url.includes('/ops/bank-masters')) return jsonResponse([])
+        return jsonResponse(ROWS)
+      }),
+    )
+
+    render(
+      <StrictMode>
+        <MemoryRouter
+          initialEntries={['/merchants/mrch_2a']}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
+          <AuthProvider>
+            <Routes>
+              <Route path="/merchants/:mrchId" element={<MerchantDetailPage />} />
+            </Routes>
+          </AuthProvider>
+        </MemoryRouter>
+      </StrictMode>,
+    )
+
+    expect(await screen.findByText('Kirana Corner')).toBeTruthy()
+    expect(screen.queryByText(/loading merchant/i)).toBeNull()
+  })
+
+  it('says so honestly when no merchant carries the id', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/ops/reports/')) return jsonResponse({ rows: [], watermark: { asOf: null } })
+        if (url.includes('/ops/bank-masters')) return jsonResponse([])
+        return jsonResponse(ROWS)
+      }),
+    )
+
+    render(
+      <StrictMode>
+        <MemoryRouter
+          initialEntries={['/merchants/mrch_nosuch']}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
+          <AuthProvider>
+            <Routes>
+              <Route path="/merchants/:mrchId" element={<MerchantDetailPage />} />
+            </Routes>
+          </AuthProvider>
+        </MemoryRouter>
+      </StrictMode>,
+    )
+
+    expect(await screen.findByText(/no merchant with this id exists/i)).toBeTruthy()
   })
 })

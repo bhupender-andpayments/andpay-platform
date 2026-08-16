@@ -158,6 +158,16 @@ say "Fact rail (relay plus the four consumers)"
 node "$HARNESS/rail.mjs" &
 PIDS+=($!)
 
+# UAT P0-3 (16 Aug 2026, docs/plan/UAT_DECISIONS_2026-08-16.md): the MAX_WAIT
+# scheduler. Without this process a pool's max-wait timer is armed but nothing
+# ever fires it, so batching happens only on lot size or a manual trigger and
+# a UAT tester filing "max wait does nothing" would be right. Same DB URL
+# defaulting as rail.mjs; SCHEDULER_TICK_SECONDS defaults to 60 in the app.
+say "Scheduler (max-wait batching timers)"
+FULFILLMENT_DATABASE_URL="${FULFILLMENT_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment}" \
+  node apps/scheduler/dist/main.js &
+PIDS+=($!)
+
 # serve.mjs co-boots auth-edge :3000, ops-edge :3001 and vendor-edge :3002 in
 # ONE process sharing ONE ephemeral ES256 signer. They cannot be separate
 # processes and still interoperate: auth-edge exposes no JWKS endpoint and mints

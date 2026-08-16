@@ -455,12 +455,18 @@ model BatchingConfig {
   id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantWire     String   @default("") @map("tenant_wire")
   programWire    String   @default("") @map("program_wire")
+  /// R-7 (16 Aug 2026): the per-bank override tier. '' sentinel = a pool-tier
+  /// row (global / tenant / tenant-program); a bank code = a per-bank MIN LOT
+  /// override under that tenant scope. A bank row carries min_lot_size ONLY;
+  /// max_wait_seconds is NULL on it by CHECK (the max-wait timer is armed per
+  /// pool, so a bank-tier wait ceiling would be a value nothing reads).
+  bankReferenceCode String @default("") @map("bank_reference_code")
   minLotSize     Int      @map("min_lot_size")
-  maxWaitSeconds Int      @map("max_wait_seconds")
+  maxWaitSeconds Int?     @map("max_wait_seconds")
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@unique([tenantWire, programWire])
+  @@unique([tenantWire, programWire, bankReferenceCode])
   @@map("batching_config")
 }
 

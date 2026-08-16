@@ -291,6 +291,53 @@ describe('ops reports edge: GET /ops/reports/activation carries Device ID(s) (Ta
     const auditRows = await analyticsAuditRows()
     expect(auditRows).toHaveLength(2)
   })
+
+  // R-5 (16 Aug 2026, docs/plan/UAT_DECISIONS_2026-08-16.md): the ICCID on the
+  // activation report. The SIM never reaches analytics; the edge merges it from
+  // the fulfillment ops read, positionally against deviceIds, '' for a device
+  // whose SIM was never captured.
+  it('simNos rides the activation report from FULFILLMENT, aligned to deviceIds, blank when uncaptured', async () => {
+    const progA = randomUUID()
+    const worklistId = `asgn_${randomUUID()}`
+    await insertDeliveredRow(worklistId, progA, 'HDFC')
+    // SB-DEV-1 has a captured SIM; SB-DEV-2 exists with none.
+    await fulfillmentDb.$executeRaw`
+      INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, sim_no, device_qr, updated_at)
+      VALUES (${randomUUID()}::uuid, 'SERIALIZED', 'SOUNDBOX', ${randomUUID()}::uuid, 'IN_STOCK', 'SB-DEV-1', '89910000000000000001', '{}'::jsonb, now()),
+             (${randomUUID()}::uuid, 'SERIALIZED', 'SOUNDBOX', ${randomUUID()}::uuid, 'IN_STOCK', 'SB-DEV-2', NULL, '{}'::jsonb, now())
+    `
+
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get('/ops/reports/activation')
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    const row = res.body.rows.find((r: { dispatchId: string }) => r.dispatchId === worklistId)
+    expect(row.deviceIds).toEqual(['SB-DEV-1', 'SB-DEV-2'])
+    expect(row.simNos).toEqual(['89910000000000000001', ''])
+
+    const csv = await request(app.getHttpServer())
+      .get('/ops/reports/activation?format=csv')
+      .set('Authorization', `Bearer ${token}`)
+    expect(csv.status).toBe(200)
+    const lines = csv.text.trim().split('\r\n')
+    expect(lines[0]).toContain('simNos')
+    expect(lines.filter((l) => l.includes('89910000000000000001;'))).toHaveLength(1)
+
+    await fulfillmentDb.$executeRaw`DELETE FROM unit WHERE device_serial IN ('SB-DEV-1', 'SB-DEV-2')`
+  })
+
+  it('a non-activation report is untouched by the SIM merge (no simNos column)', async () => {
+    // The shared beforeEach seed() rows are enough; the point is the column set.
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get('/ops/reports/soundbox-delivery')
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    for (const row of res.body.rows as Record<string, unknown>[]) {
+      expect('simNos' in row).toBe(false)
+    }
+  })
 })
 
 describe('ops-edge FR-03/FR-04 dispatch-package download (Phase 4 Task 4a, P4-D6)', () => {

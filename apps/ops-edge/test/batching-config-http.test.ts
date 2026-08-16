@@ -139,6 +139,48 @@ describe('POST /ops/batching-config (Phase 3 Task 6)', () => {
     ])
   })
 
+  // R-7 (16 Aug 2026, docs/plan/UAT_DECISIONS_2026-08-16.md): the per-bank
+  // MIN LOT override tier over the same route. A bank row carries min lot
+  // only; supplying a wait ceiling with a bank scope is a 400, not a silent drop.
+  it('a bank-tier upsert -> 200, NULL wait persisted, 6e carries the bank scope and min lot only', async () => {
+    const token = await mint()
+    const tenantWire = 'tnnt_01hzr8v9k2m3n4p5q6r7s8t9u0'
+    const res = await request(app.getHttpServer())
+      .post('/ops/batching-config')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ tenantWire, bankReferenceCode: '019', minLotSize: 25 })
+    expect(res.status).toBe(200)
+    expect(res.body.deduped).toBe(false)
+
+    const rows = await fulfillmentDb.$queryRaw<
+      { bank_reference_code: string; min_lot_size: number; max_wait_seconds: number | null }[]
+    >`SELECT bank_reference_code, min_lot_size, max_wait_seconds FROM batching_config`
+    expect(rows).toEqual([{ bank_reference_code: '019', min_lot_size: 25, max_wait_seconds: null }])
+
+    const audits = await auditRowsFor('ops:batching-config-set')
+    expect(audits).toHaveLength(1)
+    expect(audits[0]!.resourceIds).toEqual([
+      res.body.id,
+      'scope:tenant-bank',
+      tenantWire,
+      'bank:019',
+      'min-lot-size:old=50:new=25',
+    ])
+  })
+
+  it('a bank-tier upsert carrying maxWaitSeconds -> 400, no row (min lot only, R-7)', async () => {
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .post('/ops/batching-config')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ tenantWire: 'tnnt_01hzr8v9k2m3n4p5q6r7s8t9u0', bankReferenceCode: '019', minLotSize: 25, maxWaitSeconds: 60 })
+    expect(res.status).toBe(400)
+    const n = await fulfillmentDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM batching_config`
+    expect(Number(n[0]!.n)).toBe(0)
+  })
+
   it('missing Idempotency-Key -> 400, no 6e', async () => {
     const token = await mint()
     const res = await request(app.getHttpServer())

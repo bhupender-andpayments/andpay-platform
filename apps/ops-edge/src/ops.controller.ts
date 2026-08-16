@@ -211,8 +211,13 @@ interface BankConfigUpsertBody {
 interface BatchingConfigSetBody {
   tenantWire?: string
   programWire?: string
+  // R-7 (16 Aug 2026): the per-bank MIN LOT override tier. When set, the
+  // domain write requires tenantWire and refuses maxWaitSeconds (a bank tier
+  // carries min lot only; max wait stays on the pool tiers, where the timer
+  // that reads it is armed).
+  bankReferenceCode?: string
   minLotSize: number
-  maxWaitSeconds: number
+  maxWaitSeconds?: number
 }
 // Task 12 (W-6): the PRINT vendor print_layout admin write body. The target
 // vndr is the route param, never here; layout is the only field and is
@@ -1475,8 +1480,9 @@ export class OpsController {
     return upsertBatchingConfig(this.deps.fulfillmentDb, {
       ...(body.tenantWire !== undefined ? { tenantWire: body.tenantWire } : {}),
       ...(body.programWire !== undefined ? { programWire: body.programWire } : {}),
+      ...(body.bankReferenceCode !== undefined ? { bankReferenceCode: body.bankReferenceCode } : {}),
       minLotSize: body.minLotSize,
-      maxWaitSeconds: body.maxWaitSeconds,
+      ...(body.maxWaitSeconds !== undefined ? { maxWaitSeconds: body.maxWaitSeconds } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

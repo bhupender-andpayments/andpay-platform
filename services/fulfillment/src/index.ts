@@ -230,6 +230,9 @@ export {
   readDeviceDetail,
   readShipmentTrailOps,
   resolveAssignmentsByDeviceSerial,
+  // R-5: the activation report's ICCID fan-out (the SIM never reaches
+  // analytics; the ops edge merges it from here).
+  readUnitSimsBySerialsOps,
   type DispatchStatusEventRow,
   type DispatchRow,
   type UnitInventoryRow,

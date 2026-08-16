@@ -153,6 +153,11 @@ export function tmsRoutes(db: TmsClient): ConsumerRoute {
 interface DemandPayload {
   tnntId: string
   progId: string
+  // R-7 (16 Aug 2026): the row's bank reference code, consumed by the per-bank
+  // LOT_SIZE evaluation. Optional here because the accrual must keep working
+  // for a fact without it (onDemandAccrued's own default is the pool-wide
+  // path), not because the fact ever omits it today.
+  bankReferenceCode: string
 }
 
 function demandTargetOf(envelope: Envelope): DemandPayload {
@@ -160,7 +165,11 @@ function demandTargetOf(envelope: Envelope): DemandPayload {
   if (typeof p?.tnntId !== 'string' || typeof p.progId !== 'string') {
     throw new Error(`${envelope.type}: demand fact is missing tnntId or progId`)
   }
-  return { tnntId: p.tnntId, progId: p.progId }
+  return {
+    tnntId: p.tnntId,
+    progId: p.progId,
+    bankReferenceCode: typeof p.bankReferenceCode === 'string' ? p.bankReferenceCode : '',
+  }
 }
 
 /**
@@ -186,7 +195,7 @@ export function fulfillmentRoutes(db: FulfillmentClient, assetStore: AssetStore)
         case 'fct.tms.assignment.v1': {
           const res = await projectDemandFact(db, envelope as Parameters<typeof projectDemandFact>[1])
           if (res.deduped) return
-          const { tnntId, progId } = demandTargetOf(envelope)
+          const { tnntId, progId, bankReferenceCode } = demandTargetOf(envelope)
           // THE DEDUP KEY IS THE DEMAND FACT'S OWN, exactly as onDemandAccrued
           // documents ("epoch = triggerDedupKey ... so a redelivered demand
           // fact can never double-trigger a LOT_SIZE batch"). The demo pump
@@ -195,7 +204,7 @@ export function fulfillmentRoutes(db: FulfillmentClient, assetStore: AssetStore)
           //
           // Called per message rather than batched: it is idempotent by that
           // key, so the pump's accrual map is unnecessary here.
-          await onDemandAccrued(db, tnntId, progId, envelope.dedupKey, envelope.traceId ?? envelope.dedupKey)
+          await onDemandAccrued(db, tnntId, progId, envelope.dedupKey, envelope.traceId ?? envelope.dedupKey, bankReferenceCode)
           return
         }
         case 'fct.tms.assignment.activated.v1':

@@ -805,11 +805,14 @@ export function getDamageReasons(c: Client) {
  */
 export interface BatchingConfigRow {
   id: string
-  scope: 'GLOBAL' | 'TENANT' | 'TENANT_PROGRAM'
+  scope: 'GLOBAL' | 'TENANT' | 'TENANT_PROGRAM' | 'BANK'
   tenantWire: string | null
   programWire: string | null
+  /** R-7: set on a BANK-scope row (a per-bank min-lot override), else null. */
+  bankReferenceCode: string | null
   minLotSize: number
-  maxWaitSeconds: number
+  /** Null on a BANK-scope row: a bank tier carries min lot only (R-7). */
+  maxWaitSeconds: number | null
   createdAt: string
   updatedAt: string
 }

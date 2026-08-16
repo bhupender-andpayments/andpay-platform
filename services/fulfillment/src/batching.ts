@@ -4,7 +4,7 @@ import { setTimer, claimAndFireDueTimers } from '@andpay/engine'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 import { enterWriteScope, enterWriteRole } from './write-context.js'
-import { resolvePoolConfig } from './config/pool-config.js'
+import { resolvePoolConfig, resolveBankLotOverride } from './config/pool-config.js'
 import { BATCH_TOPIC, batchFactEnvelope } from './events.js'
 import type { OpsActor } from './vendor.js'
 
@@ -223,6 +223,14 @@ export interface TriggerBatchOpts {
    */
   triggerNote?: string
   /**
+   * R-7 (16 Aug 2026): claim ONLY this bank's POOLED entries. Set by the
+   * per-bank LOT_SIZE path in onDemandAccrued when the accrued row's bank has
+   * its own min-lot override; absent everywhere else (MAX_WAIT and MANUAL stay
+   * pool-wide, and a bank with no override participates in the pool-wide
+   * count exactly as before the tier existed).
+   */
+  bankReferenceCode?: string
+  /**
    * The triggering demand fact's traceId (LOT_SIZE only). Deliberately NOT
    * used for the batch fact's traceId: to keep trace derivation uniform and
    * testable across every trigger reason, triggerBatch always derives the
@@ -308,6 +316,7 @@ export async function triggerBatchWithinTx(
           UPDATE pending_pool_entry
           SET pool_status = 'BATCHED', batch = ${btchUuid}::uuid, updated_at = now()
           WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid AND pool_status = 'POOLED'
+            AND (${opts.bankReferenceCode ?? null}::text IS NULL OR bank_reference_code = ${opts.bankReferenceCode ?? null})
           RETURNING id::text AS id, asgn_id::text AS asgn_id, trace_id, created_at
         `
         if (claimed.length === 0) {
@@ -424,11 +433,42 @@ export async function onDemandAccrued(
   programWire: string,
   triggerDedupKey: string,
   traceId: string,
+  // R-7 (16 Aug 2026): the accrued row's bank reference code, off the demand
+  // fact. OPTIONAL and defaulting to the no-override path, so a caller that
+  // predates the bank tier (or a fact without the field) behaves exactly as
+  // before the tier existed.
+  bankReferenceCode = '',
 ): Promise<{ triggered: boolean; btchId?: string }> {
   await ensurePool(db, tenantWire, programWire)
 
   const tenantUuid = toUuid(tenantWire)
   const programUuid = toUuid(programWire)
+
+  // R-7: a bank WITH its own min-lot override is evaluated on ITS OWN pooled
+  // count and, on trigger, claims ONLY its own entries, which is BRD 5.3.3's
+  // "evaluates the pending pool for each bank" without re-graining the pool.
+  // A bank WITHOUT an override falls through to the pool-wide path below,
+  // byte-for-byte the pre-R-7 behavior. The override path deliberately does
+  // NOT also run the pool-wide check: its entries still count toward the
+  // pool-wide total, so the next no-override accrual sweeps the remainder.
+  const bankLot = await resolveBankLotOverride(db, tenantWire, programWire, bankReferenceCode)
+  if (bankLot !== null) {
+    const counted = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(DISTINCT source_event_id) AS n FROM pending_pool_entry
+      WHERE tenant_id = ${tenantUuid}::uuid AND program_id = ${programUuid}::uuid AND pool_status = 'POOLED'
+        AND bank_reference_code = ${bankReferenceCode}
+    `
+    if (Number(counted[0]?.n ?? 0) < bankLot) {
+      return { triggered: false }
+    }
+    const res = await triggerBatch(db, tenantWire, programWire, 'LOT_SIZE', {
+      epoch: triggerDedupKey,
+      traceId,
+      bankReferenceCode,
+    })
+    return { triggered: res != null, btchId: res?.btchId }
+  }
+
   // W-5: Minimum Lot Size counts MERCHANT REQUESTS (the BRD's own unit), not
   // dispatch groups. Both dispatch groups of one bank row share source_event_id, so DISTINCT
   // restores the pre-split meaning; legacy rows count once by construction.

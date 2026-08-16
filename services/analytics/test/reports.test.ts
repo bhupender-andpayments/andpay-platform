@@ -308,6 +308,49 @@ describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
     expect(rows[0]!.ageingBucket).toBe('1-3d')
   })
 
+  // Found live 16 Aug 2026 during the UAT walkthrough: a dispatch RETURNED at
+  // 22:19 UTC on the window's last day was missing from every windowed count
+  // on the Command Center while the unwindowed Dispatches page showed it. The
+  // `to` bound parsed as MIDNIGHT AT THE START of that day, so a date-only
+  // window excluded the entire final day it claimed to include, and a
+  // from=to=today window matched only events at exactly 00:00:00 UTC.
+  it('a date-only `to` includes the WHOLE end day, not just its first instant', async () => {
+    const p1 = toUuid(newId('prog'))
+    const lateOnEndDay = new Date('2026-08-16T22:19:40.000Z')
+    const nextDay = new Date('2026-08-17T01:00:00.000Z')
+    const inId = newId('asgn')
+    await insertRow({
+      dispatchId: inId,
+      programId: p1,
+      pipelineState: 'DISPATCHED',
+      receivedAt: lateOnEndDay,
+      dispatchedAt: lateOnEndDay,
+      dispatchDate: lateOnEndDay,
+      courierStatus: 'RETURNED',
+    })
+    await insertRow({
+      dispatchId: newId('asgn'),
+      programId: p1,
+      pipelineState: 'DISPATCHED',
+      receivedAt: nextDay,
+      dispatchedAt: nextDay,
+      dispatchDate: nextDay,
+      courierStatus: 'IN_TRANSIT',
+    })
+
+    const scope: ReadScope = { kind: 'own', programIds: [p1] }
+    const { rows } = await readReport(db, scope, 'soundbox-delivery', { from: '2026-08-16', to: '2026-08-16' })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.dispatchId).toBe(inId)
+
+    // A full-timestamp `to` keeps its exact meaning: no day-widening.
+    const exact = await readReport(db, scope, 'soundbox-delivery', {
+      from: '2026-08-16T00:00:00.000Z',
+      to: '2026-08-16T12:00:00.000Z',
+    })
+    expect(exact.rows).toHaveLength(0)
+  })
+
   it('bank/status filters narrow the report result', async () => {
     const p1 = toUuid(newId('prog'))
     const now = new Date()

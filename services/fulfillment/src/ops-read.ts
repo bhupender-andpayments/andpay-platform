@@ -300,11 +300,14 @@ export async function listBankCompositionConfigs(
 // discriminated scope + nullable wire ids for the admin UI.
 export interface BatchingConfigRow {
   id: string
-  scope: 'GLOBAL' | 'TENANT' | 'TENANT_PROGRAM'
+  scope: 'GLOBAL' | 'TENANT' | 'TENANT_PROGRAM' | 'BANK'
   tenantWire: string | null
   programWire: string | null
+  /** R-7 (16 Aug 2026): set on a BANK-scope row, null on the pool tiers. */
+  bankReferenceCode: string | null
   minLotSize: number
-  maxWaitSeconds: number
+  /** Null on a BANK-scope row (a bank tier carries min lot only, R-7). */
+  maxWaitSeconds: number | null
   createdAt: Date
   updatedAt: Date
 }
@@ -313,22 +316,30 @@ interface BatchingConfigDbRow {
   id: string
   tenant_wire: string
   program_wire: string
+  bank_reference_code: string
   min_lot_size: number
-  max_wait_seconds: number
+  max_wait_seconds: number | null
   created_at: Date
   updated_at: Date
 }
 
 function toBatchingConfigDto(r: BatchingConfigDbRow): BatchingConfigRow {
   const scope: BatchingConfigRow['scope'] =
-    r.tenant_wire === '' ? 'GLOBAL' : r.program_wire === '' ? 'TENANT' : 'TENANT_PROGRAM'
+    r.bank_reference_code !== ''
+      ? 'BANK'
+      : r.tenant_wire === ''
+        ? 'GLOBAL'
+        : r.program_wire === ''
+          ? 'TENANT'
+          : 'TENANT_PROGRAM'
   return {
     id: r.id,
     scope,
     tenantWire: r.tenant_wire === '' ? null : r.tenant_wire,
     programWire: r.program_wire === '' ? null : r.program_wire,
+    bankReferenceCode: r.bank_reference_code === '' ? null : r.bank_reference_code,
     minLotSize: Number(r.min_lot_size),
-    maxWaitSeconds: Number(r.max_wait_seconds),
+    maxWaitSeconds: r.max_wait_seconds == null ? null : Number(r.max_wait_seconds),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -338,9 +349,9 @@ export async function listBatchingConfigs(db: FulfillmentDb): Promise<BatchingCo
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     return tx.$queryRaw<BatchingConfigDbRow[]>`
-      SELECT id::text AS id, tenant_wire, program_wire, min_lot_size, max_wait_seconds, created_at, updated_at
+      SELECT id::text AS id, tenant_wire, program_wire, bank_reference_code, min_lot_size, max_wait_seconds, created_at, updated_at
       FROM batching_config
-      ORDER BY tenant_wire, program_wire
+      ORDER BY tenant_wire, program_wire, bank_reference_code
     `
   })
   return rows.map(toBatchingConfigDto)
@@ -957,6 +968,33 @@ export async function resolveAssignmentsByDeviceSerial(
   const out = new Map<string, string>()
   for (const r of rows) {
     if (r.device_serial !== null && r.asgn_id !== null) out.set(r.device_serial, fromUuid('asgn', r.asgn_id))
+  }
+  return out
+}
+
+// R-5 (16 Aug 2026, docs/plan/UAT_DECISIONS_2026-08-16.md): the ICCID for the
+// activation report, keyed by device serial. The report itself is an analytics
+// read; the SIM deliberately never reaches analytics (S7, migration
+// 20260803120000), so the ops edge fans out HERE, under fulfillment_ops_read,
+// whose column grant carries sim_no (20260812150000). Same posture as
+// resolveAssignmentsByDeviceSerial above: guard-only read, no 6e of its own,
+// the route's analytics 6e already records the access.
+export async function readUnitSimsBySerialsOps(
+  db: FulfillmentDb,
+  deviceSerials: readonly string[],
+): Promise<Map<string, string>> {
+  if (deviceSerials.length === 0) return new Map()
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<{ device_serial: string; sim_no: string | null }[]>`
+      SELECT device_serial, sim_no
+      FROM unit
+      WHERE device_serial = ANY(${deviceSerials}::text[])
+    `
+  })
+  const out = new Map<string, string>()
+  for (const r of rows) {
+    if (r.sim_no !== null && r.sim_no !== '') out.set(r.device_serial, r.sim_no)
   }
   return out
 }

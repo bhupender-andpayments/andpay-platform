@@ -28,9 +28,18 @@ const BANK_REQUEST_ROW_FIELDS: ReadonlyArray<{
   key: keyof Omit<BankRequestRowForm, 'soundbox'>
   label: string
   type: 'text' | 'number'
+  /**
+   * The two identity fields are PREFILLED from the clicked row and read-only:
+   * the resolve is keyed by the row's own id in the URL, so these ride the
+   * corrected payload as identity, and an edit would mis-key the resubmission
+   * against a row the operator is not looking at. The BUSINESS fields stay a
+   * re-key because the held row's content is deliberately redacted (Q6, the
+   * PII retention ruling); prefilled cure waits on that ruling, not on code.
+   */
+  readOnly?: boolean
 }> = [
-  { key: 'fileId', label: 'File ID', type: 'text' },
-  { key: 'rowNo', label: 'Row number', type: 'number' },
+  { key: 'fileId', label: 'File ID', type: 'text', readOnly: true },
+  { key: 'rowNo', label: 'Row number', type: 'number', readOnly: true },
   { key: 'bankMerchantReference', label: 'Bank merchant reference', type: 'text' },
   { key: 'displayName', label: 'Display name', type: 'text' },
   { key: 'legalName', label: 'Legal name', type: 'text' },
@@ -288,7 +297,11 @@ export function QuarantineTab() {
                     id={`qr-form-${f.key}`}
                     type={f.type}
                     value={form[f.key]}
+                    readOnly={f.readOnly === true}
+                    aria-readonly={f.readOnly === true || undefined}
+                    className={f.readOnly === true ? 'bg-muted text-muted-foreground' : undefined}
                     onChange={(e) => {
+                      if (f.readOnly === true) return
                       const value = e.target.value
                       setForm((prev) => (prev === null ? prev : { ...prev, [f.key]: value }))
                     }}
