@@ -361,5 +361,6 @@ All four lanes landed on contract. The deliberate deviations, kept:
       billable_flag false. Collateral DELIVERED to Closed is test-verified
       (eight-case listener suite), not live-driven.
 - [x] DAMAGE_SUMMARY.md
-- [ ] Commits on feature/damage-workflow (no merge, no push without the
-      exact phrase)
+- [x] Commits on feature/damage-workflow: de8b409 plan, f434634 tms,
+      0b88047 edge and role, 4b2b5ca analytics, e072b32 portal, 2ca2341
+      summary. Not merged, not pushed without the exact phrase.
