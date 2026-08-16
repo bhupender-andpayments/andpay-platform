@@ -482,6 +482,12 @@ function soundboxDeliveryRow(r: DispatchDbRow): ReportRow {
     dispatchDate: iso(r.dispatch_date),
     courierStatus: r.courier_status,
     deliveryDate: iso(r.delivery_date),
+    // B8 (D-28 tail, OQ-4): billing excludes replacements by READING this flag,
+    // never by this report hiding rows. billable_flag is folded from the
+    // assignment fact's own billable field (a replacement child is minted
+    // billable=false at source), so the flag is authoritative per row. toCsv
+    // serializes the boolean as true/false, same as isReplacement elsewhere.
+    billable: r.billable_flag,
   }
 }
 
@@ -514,6 +520,11 @@ function damagedReplacementRow(r: DispatchDbRow): ReportRow {
     damageReason: r.damage_reason,
     replacementDispatchId: r.replacement_dispatch_id,
     replacementStatus: r.replacement_status,
+    // B8 (D-28 tail, OQ-4): same contract as soundboxDeliveryRow's billable.
+    // On this report the false rows are exactly the replacement children (their
+    // own assignment fact carries billable=false); the replaced originals keep
+    // billable=true and stay visible, because no row is ever hidden here.
+    billable: r.billable_flag,
   }
 }
 
