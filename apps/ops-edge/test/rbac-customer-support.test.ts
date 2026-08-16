@@ -281,4 +281,24 @@ describe('the restriction must not leak onto full roles', () => {
       .set('Authorization', `Bearer ${token}`)
     expect(batching.status).toBe(200)
   })
+
+  // The 200 side of DP-9 (REVIEW_REPORT.md F5): the three previews that
+  // GAINED authorizePreview must keep working for the full roles. A minimal
+  // one-column sheet is enough; the point is that authorize passes and the
+  // parser answers, so a future permission edit that broke the previews for
+  // everyone would fail here instead of only being visible as a CS 403.
+  it('an ops-role principal still gets 200 from the three newly gated previews', async () => {
+    const token = await mint({ psr: 'role:ops_portal' })
+    for (const [path, csv] of [
+      ['/ops/uploads/device-inventory/preview', 'Device ID\nSB-F5-1\n'],
+      ['/ops/uploads/unit-status/preview', 'Device ID,Status\nSB-F5-1,DAMAGED\n'],
+      ['/ops/uploads/return/preview', 'Dispatch ID,Device ID,AWB\n,,\n'],
+    ] as const) {
+      const res = await request(app.getHttpServer())
+        .post(path)
+        .set('Authorization', `Bearer ${token}`)
+        .attach('file', Buffer.from(csv), 'preview.csv')
+      expect(res.status, path).toBe(200)
+    }
+  })
 })

@@ -698,10 +698,9 @@ export async function activateDamageReasonOps(
 }
 
 // The reason this task exists (FR-08, FR-11): once a reason is deactivated,
-// any LATER damage-file row still using its label quarantines
-// (invalid_damage_reason, damage.ts) instead of creating a replacement, even
-// though the label string itself is unchanged; only rows already replaced
-// before deactivation are unaffected (this never touches assignment).
+// any LATER flag rejects it (flagDamageOps validates the CODE against active
+// rows, flag-damage.ts) instead of creating a replacement; only replacements
+// minted before deactivation are unaffected (this never touches assignment).
 export async function deactivateDamageReasonOps(
   db: TmsDb,
   args: { id: string; clientKey: string; actorId: string; traceId: string },
