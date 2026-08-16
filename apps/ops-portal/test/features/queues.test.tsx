@@ -114,6 +114,19 @@ describe('QueuesPage', () => {
     // code, submit, and assert the real BankRequestRow shape (with branchCode)
     // rode the POST body, not a bare id.
     await userEvent.click(screen.getByRole('button', { name: /resolve quarantine row qr-1/i }))
+
+    // The two identity fields are PREFILLED from the clicked row and read-only
+    // (16 Aug 2026): the resolve is keyed by the row id in the URL, so editing
+    // these would mis-key the resubmission. Typing into them must change nothing.
+    const fileIdInput = screen.getByLabelText(/file id/i) as HTMLInputElement
+    const rowNoInput = screen.getByLabelText(/row number/i) as HTMLInputElement
+    expect(fileIdInput.value).toBe('file-1')
+    expect(rowNoInput.value).toBe('3')
+    expect(fileIdInput.readOnly).toBe(true)
+    expect(rowNoInput.readOnly).toBe(true)
+    await userEvent.type(fileIdInput, 'tamper')
+    expect(fileIdInput.value).toBe('file-1')
+
     await userEvent.type(screen.getByLabelText(/bank merchant reference/i), 'BMR-1')
     await userEvent.type(screen.getByLabelText(/display name/i), 'Acme Store')
     await userEvent.type(screen.getByLabelText(/legal name/i), 'Acme Pvt Ltd')
