@@ -4,7 +4,30 @@ import type { Envelope } from '@andpay/envelope'
 import type { TmsDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 import { enterWriteRole } from './write-context.js'
-import { CASE_STATUS_VALUES, type CaseStatus } from './damage.js'
+
+// The replacement case-status lifecycle values.
+//
+// D-24 (T6.2): a case ALWAYS opens at 'Open'. Where a replacement has got to is
+// something only this platform watches, so nothing outside it (once a bank
+// file, now nobody) may assert the lifecycle at birth. Moved here from the
+// deleted damage.ts (D-25): the case overlay lives on the replacement
+// assignment, and this module is its lifecycle.
+export const CASE_STATUS_VALUES = ['Open', 'In-Progress', 'Closed'] as const
+export type CaseStatus = (typeof CASE_STATUS_VALUES)[number]
+
+/**
+ * Read a caller-supplied case status against the closed vocabulary.
+ *
+ * D-24 (T6.5) spells the middle state "In Progress" and this schema stores it
+ * "In-Progress", so the comparison is normalized on whitespace and case rather
+ * than making every caller learn which spelling this particular column chose.
+ * Returns undefined for anything outside the vocabulary; a caller decides
+ * whether that is a client error or a silent skip.
+ */
+export function normalizeCaseStatus(raw: string): CaseStatus | undefined {
+  const norm = raw.trim().toLowerCase().replace(/\s+/g, '-')
+  return CASE_STATUS_VALUES.find((v) => v.toLowerCase() === norm)
+}
 
 // D-24 (T6.5, 13 Aug 2026): the damage case moves ITSELF.
 //
@@ -112,6 +135,70 @@ export async function projectDispatchToCases(
         if (target.length === 0) continue
         await setProgramContext(tx as unknown as Tx, target[0]!.program_id)
         if (await advanceCaseStatusWithinTx(tx as unknown as Tx, asgnUuid, 'In-Progress')) advanced++
+      }
+    })
+  })
+  return { advanced }
+}
+
+// The consumer view of the fulfillment shipment fact (T7). Declared LOCALLY,
+// never imported from the fulfillment service (C4), exactly like
+// DispatchFactView above: drift is caught by the wire schema (D120), not by a
+// cross-context import. Only the fields this projection reads are declared;
+// asgnIds and collateral are optional on the wire because only a COLLATERAL
+// consignment carries them.
+export interface ShipmentFactView {
+  status: string
+  asgnIds?: string[]
+}
+
+/**
+ * fct.fulfillment.shipment.v1: a courier consignment has moved.
+ *
+ * B4 (D-24, DP-11): DELIVERED is the COLLATERAL replacement's terminal, the
+ * moment the merchant physically holds the new standee or sticker, so the case
+ * it answers closes here. The soundbox terminal is different on purpose: a
+ * device is only done when it ACTIVATES, and activateAssignmentWithinTx
+ * already closes that case, so this projection refuses to touch a SOUNDBOX
+ * row even when a fact names it.
+ *
+ * The fact carries asgnIds only on a collateral consignment, which is exactly
+ * the population that needs this close; any other shipment fact has nothing
+ * for us and returns without opening a transaction. Same sanctioned
+ * integration as projectDispatchToCases above (T7, a fact, never a
+ * cross-context read), same forward-only guarantee (a late redelivery cannot
+ * reopen anything), same E6 inbox dedup.
+ */
+export async function projectShipmentToCases(
+  db: TmsDb,
+  env: Envelope<ShipmentFactView>,
+): Promise<{ advanced: number }> {
+  const asgnIds = env.payload.asgnIds
+  if (env.payload.status !== 'DELIVERED' || !Array.isArray(asgnIds) || asgnIds.length === 0) {
+    return { advanced: 0 }
+  }
+
+  let advanced = 0
+  await db.$transaction(async (tx) => {
+    // Role FIRST, before onceWithin's inbox INSERT (the leading write in this
+    // transaction), so no statement runs as the table owner.
+    await enterWriteRole(tx as unknown as Tx, 'tms_write')
+    await onceWithin(tx as unknown as Tx, CONSUMER, `${env.dedupKey}|case_closed`, async () => {
+      for (const asgnId of asgnIds) {
+        const asgnUuid = toUuid(asgnId)
+        // One consignment can span programs, so the scope is re-pinned PER
+        // ASSIGNMENT from that assignment's OWN row (D99, never from the
+        // fact), the identical shape projectDispatchToCases uses above. The
+        // predicate is the whole rule: only a REPLACEMENT (a case exists) and
+        // only a COLLATERAL leg (delivery is its terminal); everything else
+        // named on the fact is silently not ours to move.
+        const target = await tx.$queryRaw<{ program_id: string }[]>`
+          SELECT program_id::text AS program_id FROM assignment
+          WHERE id = ${asgnUuid}::uuid AND replacement_of IS NOT NULL AND dispatch_group = 'COLLATERAL'
+        `
+        if (target.length === 0) continue
+        await setProgramContext(tx as unknown as Tx, target[0]!.program_id)
+        if (await advanceCaseStatusWithinTx(tx as unknown as Tx, asgnUuid, 'Closed')) advanced++
       }
     })
   })

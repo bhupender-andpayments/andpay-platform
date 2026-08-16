@@ -6,15 +6,15 @@ import { PrismaClient } from '../generated/client/index.js'
 import {
   previewBankFile,
   commitBankFile,
-  commitDamageFile,
   resolveQuarantineRow,
   closeQuarantineRow,
   updateDamageCaseStatusOps,
   OpsClientError,
   BankFileParseError,
 } from '../src/ops.js'
+import { flagDamageOps } from '../src/flag-damage.js'
 import { readQuarantineQueue, readDamageCases } from '../src/ops-read.js'
-import { DEFAULT_REQUEST_COLUMN_MAPPING, DEFAULT_DAMAGE_COLUMN_MAPPING } from '../src/bank-file-adapter.js'
+import { DEFAULT_REQUEST_COLUMN_MAPPING } from '../src/bank-file-adapter.js'
 import type { BankRequestRow } from '../src/ingest.js'
 
 const url =
@@ -24,7 +24,6 @@ const db = new PrismaClient({ datasourceUrl: url })
 
 // The identity-mapping headers (canonical field name == source header today).
 const REQUEST_HEADERS = Object.values(DEFAULT_REQUEST_COLUMN_MAPPING)
-const DAMAGE_HEADERS = Object.values(DEFAULT_DAMAGE_COLUMN_MAPPING)
 
 // A recipient-contact value that is PII: the preview must return it in the
 // response object yet never log it.
@@ -51,26 +50,9 @@ const BASE_REQUEST: Record<string, string> = {
   vpaHint: 'acme@hdfcbank',
 }
 
-// Phase 3 Task 1 (BRD FR-08, FR-11): must be one of the four seeded
-// damage_reason master examples (services/tms/prisma/migrations/
-// 20260804163403_add_damage_reason_master), or the damage ingest now
-// quarantines it (invalid_damage_reason) instead of replacing.
-const BASE_DAMAGE: Record<string, string> = {
-  tenantReference: 'HDFC',
-  vpaValue: 'acme@hdfcbank',
-  damageReason: 'battery issue',
-  bankRemarks: 'replace asap',
-  shipToAddress: 'New Addr',
-}
-
 function requestCells(over: Record<string, string> = {}): string[] {
   const rec = { ...BASE_REQUEST, ...over }
   return REQUEST_HEADERS.map((h) => rec[h] ?? '')
-}
-
-function damageCells(over: Record<string, string> = {}): string[] {
-  const rec = { ...BASE_DAMAGE, ...over }
-  return DAMAGE_HEADERS.map((h) => rec[h] ?? '')
 }
 
 function toCsv(header: string[], rows: string[][]): Uint8Array {
@@ -214,7 +196,7 @@ describe('tms ops preview (spec P2 Task 2): previewBankFile persists nothing and
   })
 })
 
-describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile parse server-side', () => {
+describe('tms ops commit (spec P2 Task 2): commitBankFile parses server-side', () => {
   it('runs the S8 ingest under tms_write from a .csv: a valid row posts, a malformed row quarantines (partial-accept)', async () => {
     const clientKey = randomUUID()
     const csv = toCsv(REQUEST_HEADERS, [requestCells(), requestCells({ contactName: '', bankMerchantReference: 'BM-2' })])
@@ -461,39 +443,6 @@ describe('tms ops commit (spec P2 Task 2): commitBankFile / commitDamageFile par
     }
   })
 
-  it('commitDamageFile runs the damage ingest under tms_write: a matched row replaces, an unmatched row quarantines', async () => {
-    // Task 4 (W-5): seedOriginalAssignment is the LEGACY combined shape (one
-    // row, soundbox=true AND standee_count/sticker_count > 0), so the matched
-    // row's like-for-like clone mints TWO replacement groups (SOUNDBOX +
-    // COLLATERAL) for the one matched ROW, not one; `r.replaced` still counts
-    // 1 because it is a per-ROW outcome.
-    await seedOriginalAssignment('acme@hdfcbank', 'HDFC')
-    const clientKey = randomUUID()
-    const csv = toCsv(DAMAGE_HEADERS, [
-      damageCells(),
-      damageCells({ vpaValue: 'unknown@hdfcbank', damageReason: 'x', bankRemarks: '', shipToAddress: 'A' }),
-    ])
-    const r = await commitDamageFile(db, { fileBytes: csv, filename: 'damage.csv', clientKey, actorId: randomUUID(), traceId: 't3' })
-    expect(r.replaced).toBe(1)
-    expect(r.quarantined).toBe(1)
-    expect(r.duplicate).toBe(0)
-    expect(r.fileId).toBe(clientKey)
-
-    const repl = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
-    expect(Number(repl[0]!.n)).toBe(2)
-  })
-
-  it('commitDamageFile is idempotent on the client key (replay is a no-op)', async () => {
-    await seedOriginalAssignment('acme@hdfcbank', 'HDFC')
-    const clientKey = randomUUID()
-    const csv = toCsv(DAMAGE_HEADERS, [damageCells({ bankRemarks: '' })])
-    const first = await commitDamageFile(db, { fileBytes: csv, filename: 'damage.csv', clientKey, actorId: randomUUID(), traceId: 't4' })
-    const replay = await commitDamageFile(db, { fileBytes: csv, filename: 'damage.csv', clientKey, actorId: randomUUID(), traceId: 't4' })
-    expect(first.replaced).toBe(1)
-    expect(replay.replaced).toBe(0)
-    expect(replay.quarantined).toBe(0)
-    expect(replay.duplicate).toBe(0)
-  })
 })
 
 // ---------------------------------------------------------------------------
@@ -922,18 +871,20 @@ describe('soundbox duplicate-VPA hold (ruling 2026-08-10): previewBankFile parit
 })
 
 describe('FR08-2: damage case-status transition + ops-read working list', () => {
-  // Seed an original, then commit a damage row so a replacement (case_status
-  // Open) exists; return one WIRE asgn id (what the edge passes). Task 4
-  // (W-5): seedOriginalAssignment is the legacy combined shape, so this
-  // actually mints TWO replacement groups (SOUNDBOX + COLLATERAL); either one
-  // is a valid case_status target for the tests in this describe block, which
-  // only exercise a single case by its wire id.
+  // Seed an original, then flag it (D-26, the only mint left after D-25) so a
+  // replacement (case_status Open) exists; return the child's WIRE asgn id
+  // (what the edge passes).
   async function seedOneReplacement(vpa = 'acme@hdfcbank'): Promise<string> {
-    await seedOriginalAssignment(vpa, 'HDFC')
-    const csv = toCsv(DAMAGE_HEADERS, [damageCells({ vpaValue: vpa })])
-    await commitDamageFile(db, { fileBytes: csv, filename: 'damage.csv', clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-seed' })
-    const repl = await db.$queryRaw<{ id: string }[]>`SELECT id FROM assignment WHERE replacement_of IS NOT NULL AND vpa_value = ${vpa} ORDER BY dispatch_group LIMIT 1`
-    return fromUuid('asgn', repl[0]!.id)
+    const parent = await seedOriginalAssignment(vpa, 'HDFC')
+    const res = await flagDamageOps(db, {
+      asgnId: parent,
+      reasonCode: 'battery_issue',
+      remarks: 'replace asap',
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-seed',
+    })
+    return res.childAsgnId
   }
 
   it('transitions case_status Open -> Closed and co-commits an ALLOW 6e (wire id only)', async () => {

@@ -5,6 +5,7 @@ import {
   projectTenantFact,
   createAssignmentFromEnrollment,
   projectDispatchToCases,
+  projectShipmentToCases,
   type PrismaClient as TmsClient,
 } from '@andpay/tms-service'
 import {
@@ -126,6 +127,10 @@ export function tmsRoutes(db: TmsClient): ConsumerRoute {
       // learns it the only sanctioned way (T7): by consuming the fact it
       // already publishes. No new topic, no cross-context read.
       'fct.fulfillment.dispatch.v1',
+      // B4 (D-24, DP-11): a COLLATERAL replacement's case closes when its
+      // consignment is DELIVERED. Same sanctioned integration as the dispatch
+      // fact above: an existing topic consumed, never a cross-context read.
+      'fct.fulfillment.shipment.v1',
     ],
     handle: async (envelope: Envelope) => {
       switch (envelope.type) {
@@ -134,6 +139,9 @@ export function tmsRoutes(db: TmsClient): ConsumerRoute {
           return
         case 'fct.fulfillment.dispatch.v1':
           await projectDispatchToCases(db, envelope as Parameters<typeof projectDispatchToCases>[1])
+          return
+        case 'fct.fulfillment.shipment.v1':
+          await projectShipmentToCases(db, envelope as Parameters<typeof projectShipmentToCases>[1])
           return
         case 'fct.identity.tenant.v1':
           await projectTenantFact(db, envelope as Parameters<typeof projectTenantFact>[1])

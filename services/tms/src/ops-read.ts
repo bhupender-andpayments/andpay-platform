@@ -176,6 +176,119 @@ export async function readDamageCases(
   return rows.map(toDamageCaseDto)
 }
 
+// D-26 (DP-6): the by-VPA dispatch search, the customer-support entry point
+// for "this merchant called about a damaged device". Returns the TMS side of
+// every dispatch leg on the VPA (identity, dispatch group, product columns,
+// billable, the parent link, the case overlay, demand and activation state);
+// the courier branch status is analytics-held, and the portal enriches rows
+// via the existing per-dispatch detail read instead of a new cross-context
+// merge at the edge. Same posture as every read above: tms_ops_read, the tms
+// schema only (C4), wire ids out (D-A), parameters always bound and never
+// concatenated. Timestamps go out as ISO strings per the pinned contract.
+export interface VpaDispatchRow {
+  asgnId: string
+  dispatchGroup: 'SOUNDBOX' | 'COLLATERAL'
+  bankReferenceCode: string
+  bankDisplayName: string
+  merchantDisplayName: string
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  billable: boolean
+  replacementOfAsgnId: string | null
+  caseStatus: string | null
+  demandState: string
+  activationStatus: string | null
+  activatedAt: string | null
+  createdAt: string
+}
+
+interface VpaDispatchDbRow {
+  id: string
+  dispatch_group: 'SOUNDBOX' | 'COLLATERAL'
+  bank_reference_code: string
+  bank_display_name: string
+  merchant_display_name: string
+  soundbox: boolean
+  standee_count: number
+  sticker_count: number
+  billable: boolean
+  replacement_of: string | null
+  case_status: string | null
+  demand_state: string
+  activation_status: string | null
+  activated_at: Date | null
+  created_at: Date
+}
+
+// The match is LOWER(TRIM(...)) on both sides: the operator types what the
+// merchant reads out, and neither casing nor a stray space should hide a
+// record. Newest first, because the leg the merchant is calling about is
+// almost always the most recent one.
+export async function searchDispatchesByVpa(db: TmsDb, vpa: string): Promise<VpaDispatchRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<VpaDispatchDbRow[]>`
+      SELECT id, dispatch_group, bank_reference_code, bank_display_name, merchant_display_name,
+             soundbox, standee_count, sticker_count, billable, replacement_of, case_status,
+             demand_state, activation_status, activated_at, created_at
+      FROM assignment
+      WHERE LOWER(TRIM(vpa_value)) = LOWER(TRIM(${vpa}))
+      ORDER BY created_at DESC
+    `
+  })
+  return rows.map((r) => ({
+    asgnId: fromUuid('asgn', r.id),
+    dispatchGroup: r.dispatch_group,
+    bankReferenceCode: r.bank_reference_code,
+    bankDisplayName: r.bank_display_name,
+    merchantDisplayName: r.merchant_display_name,
+    soundbox: r.soundbox,
+    standeeCount: r.standee_count,
+    stickerCount: r.sticker_count,
+    billable: r.billable,
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
+    caseStatus: r.case_status,
+    demandState: r.demand_state,
+    activationStatus: r.activation_status,
+    activatedAt: r.activated_at === null ? null : r.activated_at.toISOString(),
+    createdAt: r.created_at.toISOString(),
+  }))
+}
+
+// D-31 (DP-7): the damage-case tile numbers, per status, over every
+// replacement (replacement_of IS NOT NULL). This reads tms and not analytics,
+// because case_status is deliberately never projected into analytics (the
+// frozen damagedReplacementOpen tile stays frozen).
+export interface DamageCaseSummary {
+  open: number
+  inProgress: number
+  closed: number
+}
+
+// The SELECT is row-level (one case_status token per replacement) and the
+// tally is folded in code, deliberately: this module carries no SQL aggregate
+// calls, a DO-NOT enforced by a static net in test/architecture.test.ts that
+// also reads comments, which is why this note cannot spell the banned
+// function names. A replacement population of tens of rows a day makes the
+// fold free. A row whose status is outside the vocabulary (null included)
+// lands in no bucket rather than being guessed into one.
+export async function countDamageCasesByStatus(db: TmsDb): Promise<DamageCaseSummary> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<{ case_status: string | null }[]>`
+      SELECT case_status FROM assignment WHERE replacement_of IS NOT NULL
+    `
+  })
+  const summary: DamageCaseSummary = { open: 0, inProgress: 0, closed: 0 }
+  for (const r of rows) {
+    if (r.case_status === 'Open') summary.open += 1
+    else if (r.case_status === 'In-Progress') summary.inProgress += 1
+    else if (r.case_status === 'Closed') summary.closed += 1
+  }
+  return summary
+}
+
 // Redesign step 7 (ruling 1b): the class-3 ops Merchants list. "Find the
 // merchant" is the most common ops entry point, and until now the portal had no
 // merchant read at all, which is why an entity-first nav shipped without its
