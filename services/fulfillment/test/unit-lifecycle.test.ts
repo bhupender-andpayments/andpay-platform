@@ -231,19 +231,33 @@ describe('the cross-context consumers (C4: TMS cannot write fulfillment)', () =>
     expect((await projectActivationToUnits(db, envelope(asgnWire, key))).advanced).toBe(0)
   })
 
-  it('a replacement-raised fact writes the device off as DAMAGED', async () => {
-    const asgnWire = newId('asgn')
-    const { unitUuid } = await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(asgnWire) })
-    const res = await projectReplacementToUnits(db, envelope(asgnWire, `${asgnWire}|replace`))
+  // The replacement fact names TWO assignments and the tests seed them the
+  // way production does (REVIEW_REPORT.md F4): the PARENT owns the damaged
+  // device, the CHILD owns nothing at flag time. The old tests seeded the
+  // unit on the fact's asgnId, a payload the producer never sends, and hid a
+  // projector that targeted the child and never wrote anything off.
+  function replacementEnvelope(childWire: string, parentWire: string, dedupKey: string): never {
+    return {
+      payload: { asgnId: childWire, replacedAsgnId: parentWire, damageReason: 'physical_damage', bankRemarks: '' },
+      dedupKey,
+    } as never
+  }
+
+  it('a replacement-raised fact writes the PARENT device off as DAMAGED, and touches no child unit', async () => {
+    const parentWire = newId('asgn')
+    const childWire = newId('asgn')
+    const { unitUuid } = await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(parentWire) })
+    const res = await projectReplacementToUnits(db, replacementEnvelope(childWire, parentWire, `${childWire}|replace`))
     expect(res.advanced).toBe(1)
     expect(await statusOf(unitUuid)).toBe('DAMAGED')
   })
 
   it('a damaged device stays damaged even if an activation fact arrives after', async () => {
-    const asgnWire = newId('asgn')
-    const { unitUuid } = await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(asgnWire) })
-    await projectReplacementToUnits(db, envelope(asgnWire, `${asgnWire}|replace`))
-    const late = await projectActivationToUnits(db, envelope(asgnWire, `${asgnWire}|activate`))
+    const parentWire = newId('asgn')
+    const childWire = newId('asgn')
+    const { unitUuid } = await seedUnit({ status: 'DELIVERED', asgnUuid: toUuid(parentWire) })
+    await projectReplacementToUnits(db, replacementEnvelope(childWire, parentWire, `${childWire}|replace`))
+    const late = await projectActivationToUnits(db, envelope(parentWire, `${parentWire}|activate`))
     expect(late.advanced).toBe(0)
     expect(await statusOf(unitUuid)).toBe('DAMAGED')
     expect(await activatedAtOf(unitUuid)).toBeNull()

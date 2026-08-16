@@ -216,12 +216,22 @@ export async function projectActivationToUnits(
 }
 
 export interface ReplacementRaisedFactView {
+  // the CHILD, the replacement the flag minted. Not the damaged device's
+  // assignment; reading this field here was REVIEW_REPORT.md F4.
   asgnId: string
+  // the PARENT, the flagged dispatch whose device is being replaced. THIS is
+  // the assignment whose units the damage writes off.
+  replacedAsgnId: string
 }
 
 /**
- * fct.tms.replacement.raised.v1: the bank reported this kit damaged, so the
- * device it replaces is written off.
+ * fct.tms.replacement.raised.v1: a damage was flagged, so the device it
+ * replaces is written off. The fact names two assignments and the write-off
+ * targets `replacedAsgnId`, the parent: the child has no units at flag time
+ * (its device pairs later, when the replacement ships), so targeting
+ * `asgnId` made this projector a permanent no-op and the damaged device
+ * stayed DELIVERED or ACTIVATED in inventory (F4, found 16 Aug 26; the fault
+ * predates the in-screen flag, the file ingest emitted the same shape).
  *
  * DAMAGED is a terminal branch, reachable from anywhere on the spine (a device
  * can be damaged in transit or in the field) and never left, so a later stale
@@ -235,7 +245,7 @@ export async function projectReplacementToUnits(
   await db.$transaction(async (tx) => {
     await enterWriteRole(tx as unknown as Tx, 'fulfillment_write')
     await onceWithin(tx as unknown as Tx, CONSUMER, `${env.dedupKey}|unit_damaged`, async () => {
-      advanced = await advanceUnitsForAssignment(tx as unknown as Tx, toUuid(env.payload.asgnId), 'DAMAGED')
+      advanced = await advanceUnitsForAssignment(tx as unknown as Tx, toUuid(env.payload.replacedAsgnId), 'DAMAGED')
     })
   })
   return { advanced }
