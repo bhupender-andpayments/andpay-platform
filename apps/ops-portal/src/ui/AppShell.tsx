@@ -120,6 +120,23 @@ if (UNGROUPED.length > 0) {
   throw new Error(`nav sections missing from every group: ${UNGROUPED.map((s) => s.to).join(', ')}`)
 }
 
+// D-29: the sections hidden from a customer_support operator's sidebar. This
+// is DISPLAY CONVENIENCE ONLY, never an authorization decision (S24/T14, the
+// same posture as RequireAuth): CS works dispatches, merchants and damage
+// cases, so the file-ingestion and configuration sections are dropped from
+// the nav to keep that screen honest, and nothing more. The edge still
+// independently authorizes every request; a CS user typing /uploads into the
+// bar reaches whatever the edge decides they reach, exactly as before.
+const CS_HIDDEN_ROUTES: readonly string[] = ['/uploads', '/masterdata']
+
+function navGroupsFor(roleLabel: string | undefined): typeof GROUPED_NAV {
+  if (roleLabel !== 'customer_support') return GROUPED_NAV
+  return GROUPED_NAV.map((g) => ({
+    ...g,
+    items: g.items.filter((s) => !CS_HIDDEN_ROUTES.includes(s.to)),
+  })).filter((g) => g.items.length > 0)
+}
+
 // The real logo asset (public/logo). This previously drew an invented chevron
 // glyph because no logo asset existed in the repo.
 function BrandMark({ collapsed = false }: { collapsed?: boolean }) {
@@ -213,7 +230,7 @@ function Sidebar({
         )}
       </div>
       <nav aria-label="Main" className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-4">
-        {GROUPED_NAV.map((group) => (
+        {navGroupsFor(principal?.roleLabel).map((group) => (
           <div key={group.title} className="mb-5 last:mb-0">
             {!collapsed && (
               <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-foreground/60">

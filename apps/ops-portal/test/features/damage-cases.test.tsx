@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { DamageCasesPage } from '../../src/features/damage/DamageCasesPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
@@ -9,6 +9,10 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 // D-24 (T6.6): the damage cases screen. The read has existed at the edge since
 // FR08-2 with no portal surface at all, which is most of why those statuses were
 // stale: nobody could see them.
+//
+// D-26/D-31 (damage workflow, B7) add the summary chips (one per case status,
+// each a filter synced to ?status= so the dashboard tile can deep-link) and
+// the by-VPA dispatch search, which is how a phone call becomes a flag.
 
 interface Call {
   url: string
@@ -37,12 +41,43 @@ const CASES = [
   },
 ]
 
-function stub(cases: unknown = CASES): Call[] {
+const CLOSED_CASE = {
+  ...CASES[0],
+  asgnId: 'asgn_repl2',
+  replacementOf: 'asgn_orig2',
+  merchantDisplayName: 'Beta Kirana',
+  caseStatus: 'Closed',
+}
+
+const SUMMARY = { open: 3, inProgress: 1, closed: 2 }
+
+const VPA_ROW = {
+  asgnId: 'asgn_v1',
+  dispatchGroup: 'SOUNDBOX',
+  bankReferenceCode: 'HDFC',
+  bankDisplayName: 'HDFC Bank',
+  merchantDisplayName: 'Acme Traders',
+  soundbox: true,
+  standeeCount: 2,
+  stickerCount: 0,
+  billable: false,
+  replacementOfAsgnId: 'asgn_orig9',
+  caseStatus: 'Open',
+  demandState: 'pooled-for-fulfillment',
+  activationStatus: null,
+  activatedAt: null,
+  createdAt: '2026-08-12T09:00:00.000Z',
+}
+
+function stub(cases: unknown = CASES, vpaRows: unknown[] = [VPA_ROW]): Call[] {
   const calls: Call[] = []
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init: RequestInit) => {
       calls.push({ url, init })
+      // ORDER MATTERS: /ops/damage-cases/summary contains /ops/damage-cases.
+      if (url.includes('/ops/damage-cases/summary')) return jsonResponse(SUMMARY)
+      if (url.includes('/ops/dispatches/by-vpa')) return jsonResponse({ rows: vpaRows })
       if (url.includes('/ops/records/')) return jsonResponse({ deduped: false })
       return jsonResponse(cases)
     }),
@@ -50,11 +85,13 @@ function stub(cases: unknown = CASES): Call[] {
   return calls
 }
 
-function renderPage() {
+function renderPage(initialEntry = '/damage-cases') {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={[initialEntry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
-        <DamageCasesPage />
+        <Routes>
+          <Route path="/damage-cases" element={<DamageCasesPage />} />
+        </Routes>
       </AuthProvider>
     </MemoryRouter>,
   )
@@ -140,5 +177,86 @@ describe('DamageCasesPage (D-24, T6.6)', () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'nope' }, 500)))
     renderPage()
     expect(await screen.findByText(/could not read the damage cases/i)).toBeTruthy()
+  })
+
+  // ---- D-31: the summary chips and the ?status= deep link ------------ //
+
+  it('renders the three summary counts as chips, and clicking one filters the grid by that status', async () => {
+    const calls = stub([CASES[0], CLOSED_CASE])
+    renderPage()
+
+    // Both fixtures on screen before any filter.
+    await screen.findByText('Flow Alpha Store')
+    await screen.findByText('Beta Kirana')
+
+    // The chips carry the summary read's counts, not a client-side count of
+    // the (possibly closed-excluded) grid.
+    const openChip = await screen.findByRole('button', { name: /open\s*3/i })
+    expect(screen.getByRole('button', { name: /in progress\s*1/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /closed\s*2/i })).toBeTruthy()
+
+    await userEvent.click(openChip)
+    // A filtered read always asks the server for everything (Closed is one of
+    // the filters), then narrows to the chip's status.
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes('includeClosed=true'))).toBe(true)
+    })
+    expect(await screen.findByText('Flow Alpha Store')).toBeTruthy()
+    expect(screen.queryByText('Beta Kirana')).toBeNull()
+  })
+
+  it('deep-links: ?status=Closed lands filtered, so the dashboard tile can point at its own rows', async () => {
+    stub([CASES[0], CLOSED_CASE])
+    renderPage('/damage-cases?status=Closed')
+
+    expect(await screen.findByText('Beta Kirana')).toBeTruthy()
+    expect(screen.queryByText('Flow Alpha Store')).toBeNull()
+    // The active chip reads as pressed, and the card names the filter.
+    expect((await screen.findByRole('button', { name: /closed\s*2/i })).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText('Closed cases')).toBeTruthy()
+  })
+
+  it('accepts the hyphenless spelling too: ?status=In Progress filters the same rows', async () => {
+    stub([{ ...CASES[0], caseStatus: 'In-Progress' }])
+    renderPage('/damage-cases?status=In%20Progress')
+    // The column stores 'In-Progress'; the walkthrough writes 'In Progress'.
+    // Both spell the same state, so the filter must match across them.
+    expect(await screen.findByText('Flow Alpha Store')).toBeTruthy()
+  })
+
+  // ---- D-26: find dispatches by VPA ---------------------------------- //
+
+  it('VPA search runs on SUBMIT, not per keystroke, and renders the dispatches with a link and the billing pill', async () => {
+    const calls = stub()
+    renderPage()
+    await screen.findByText('Flow Alpha Store')
+
+    await userEvent.type(screen.getByLabelText(/upi id/i), 'acme@hdfcbank')
+    // Nothing fires while typing.
+    expect(calls.some((c) => c.url.includes('/ops/dispatches/by-vpa'))).toBe(false)
+
+    await userEvent.click(screen.getByRole('button', { name: /^search$/i }))
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/dispatches/by-vpa?vpa=acme%40hdfcbank'))).toBe(true)
+    })
+
+    // The row: dispatch id as a link into the page that owns the flag, the
+    // group chip, and D-28's billing answer in words.
+    const link = await screen.findByRole('link', { name: /asgn_v1/ })
+    expect(link.getAttribute('href')).toBe('/dispatches/asgn_v1')
+    expect(screen.getByText('Acme Traders')).toBeTruthy()
+    expect(screen.getByText('Non-billable')).toBeTruthy()
+    expect(screen.getByLabelText('Soundbox dispatch')).toBeTruthy()
+  })
+
+  it('an empty VPA result says so honestly instead of rendering a blank grid', async () => {
+    stub(CASES, [])
+    renderPage()
+    await screen.findByText('Flow Alpha Store')
+
+    await userEvent.type(screen.getByLabelText(/upi id/i), 'nobody@nowhere')
+    await userEvent.click(screen.getByRole('button', { name: /^search$/i }))
+
+    expect(await screen.findByText(/no dispatches carry that upi id/i)).toBeTruthy()
   })
 })

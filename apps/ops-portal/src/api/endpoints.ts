@@ -822,21 +822,18 @@ export function getBatchingConfig(c: Client) {
 }
 
 // -----------------------------------------------------------------------
-// Bank and damage uploads (Phase 2 Task 4; damage preview added Phase 7 Task
-// 7, L11/FR08-3). The confirmed ops-edge contract
-// (apps/ops-edge/src/ops.controller.ts's previewBank/commitBank/
-// previewDamage/commitDamage, grounded against services/tms/src/ops.ts and
-// bank-file-adapter.ts): the upload surface is MULTIPART raw-file routes
-// with server-side parsing (D-K); no client-side parsing of the picked file
-// remains authoritative.
+// Bank upload (Phase 2 Task 4). The confirmed ops-edge contract
+// (apps/ops-edge/src/ops.controller.ts's previewBank/commitBank, grounded
+// against services/tms/src/ops.ts and bank-file-adapter.ts): the upload
+// surface is MULTIPART raw-file routes with server-side parsing (D-K); no
+// client-side parsing of the picked file remains authoritative.
 //   POST /ops/uploads/bank/preview     multipart `file`, no Idempotency-Key,
 //     writes nothing -> BankPreviewResult { rows, summary, structuralErrors }
 //   POST /ops/uploads/bank/commit      multipart `file`, Idempotency-Key
 //     -> { accepted, quarantined, duplicate, qrMalformed, fileId }
-//   POST /ops/uploads/damage/preview   multipart `file`, no Idempotency-Key,
-//     writes nothing -> DamagePreviewResult { rows, summary, structuralErrors }
-//   POST /ops/uploads/damage/commit    multipart `file`, Idempotency-Key
-//     -> { replaced, quarantined, duplicate, fileId }
+// (The damage upload surface that used to sit beside these is GONE: D-25
+// voided damage file ingestion entirely, and D-26 replaced it with the
+// operator flagging a dispatch directly. See flagDamage below.)
 // This is a raw `fetch`, not the JSON api client (createApiClient/
 // client.request), which only ever sends application/json bodies: it mirrors
 // apps/vendor-portal ReturnUploadPage.tsx's multipart-from-SPA pattern
@@ -936,48 +933,6 @@ export interface BankCommitResult {
   // two merchants sharing a contact number.
   duplicateMobile: number
   fileId: string
-}
-
-export interface DamageCommitResult {
-  replaced: number
-  quarantined: number
-  duplicate: number
-  fileId: string
-}
-
-/** services/tms/src/damage.ts BankDamageRow (the decoded row shape a damage preview/commit carries). */
-export interface BankDamageRow {
-  fileId: string
-  rowNo: number
-  tenantReference: string
-  vpaValue: string
-  damageReason: string
-  bankRemarks: string
-  shipToAddress: string
-  items?: { soundbox: boolean; standeeCount: number; stickerCount: number }
-  deliveryStatus?: string
-}
-
-/**
- * Phase 7 Task 7 (L11, FR08-3 decision item 11): services/tms/src/ops.ts
- * DamagePreviewRowResult / DamagePreviewResult, the preview-parity
- * counterpart to BankPreviewResult above. `reasonCode` is present only when
- * `valid` is false: a matched row with a recognized damage reason has no
- * reason code (mirrors bank preview's `errors: []` on a valid row).
- */
-export type DamagePreviewReasonCode = 'no_match' | 'ambiguous_match' | 'invalid_damage_reason' | 'ambiguous_damage_reason'
-
-export interface DamagePreviewRowResult {
-  rowNo: number
-  valid: boolean
-  reasonCode?: DamagePreviewReasonCode
-  row: BankDamageRow
-}
-
-export interface DamagePreviewResult {
-  rows: DamagePreviewRowResult[]
-  summary: { total: number; valid: number; invalid: number }
-  structuralErrors: StructuralParseError[]
 }
 
 // -----------------------------------------------------------------------
@@ -1200,14 +1155,6 @@ export function previewReturnUpload(c: Client, file: File): Promise<ReturnPrevie
 
 export function commitReturnUpload(c: Client, file: File, idempotencyKey: string): Promise<ReturnCommitResult> {
   return postFile<ReturnCommitResult>(c, '/ops/uploads/return', file, idempotencyKey)
-}
-
-export function previewDamage(c: Client, file: File): Promise<DamagePreviewResult> {
-  return postFile<DamagePreviewResult>(c, '/ops/uploads/damage/preview', file)
-}
-
-export function commitDamage(c: Client, file: File, idempotencyKey: string): Promise<DamageCommitResult> {
-  return postFile<DamageCommitResult>(c, '/ops/uploads/damage/commit', file, idempotencyKey)
 }
 
 /**
@@ -1720,6 +1667,81 @@ export function getDamageCases(c: Client, includeClosed = true) {
   return c.request<DamageCaseView[]>({
     method: 'GET',
     path: `/ops/damage-cases${includeClosed ? '?includeClosed=true' : ''}`,
+  })
+}
+
+// D-26/D-27/D-28 (damage workflow, B7): the operator flags a specific
+// dispatch leg as damaged, straight from the dispatch page. The confirmed
+// ops-edge contract (DAMAGE_PLAN.md section 4): POST
+// /ops/records/:asgnId/flag-damage, op ops:flag-damage, Idempotency-Key
+// required, body { reasonCode, remarks, standeeCount?, stickerCount? }.
+// reasonCode is a damage_reason master CODE (validated active server-side,
+// DP-5); remarks is required, trimmed non-empty, max 500. The counts belong
+// to a COLLATERAL leg only (ints 0..99, total at least 1); a SOUNDBOX leg
+// takes NO counts because its replacement quantity is fixed at one (D-27).
+// 201 { childAsgnId, caseStatus: 'Open' }; 404 unknown asgn; 409 while a
+// live (non-Closed) case already exists for the dispatch (DP-3).
+export interface FlagDamageBody {
+  reasonCode: string
+  remarks: string
+  standeeCount?: number
+  stickerCount?: number
+}
+
+export function flagDamage(c: Client, asgnId: string, body: FlagDamageBody, idempotencyKey: string) {
+  return c.request<{ childAsgnId: string; caseStatus: string }>({
+    method: 'POST',
+    path: `/ops/records/${encodeURIComponent(asgnId)}/flag-damage`,
+    body,
+    idempotencyKey,
+  })
+}
+
+/**
+ * services/tms/src/ops-read.ts VpaDispatchRow (DAMAGE_PLAN.md section 4,
+ * copied field for field): every dispatch leg carrying the searched UPI ID,
+ * newest first. The tms side only (DP-6): identity, groups, counts,
+ * billable, the parent link, case and demand state, activation status. The
+ * courier branch lives on the per-dispatch page each row links to.
+ */
+export interface VpaDispatchRow {
+  asgnId: string
+  dispatchGroup: 'SOUNDBOX' | 'COLLATERAL'
+  bankReferenceCode: string
+  bankDisplayName: string
+  merchantDisplayName: string
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  billable: boolean
+  replacementOfAsgnId: string | null
+  caseStatus: string | null
+  demandState: string
+  activationStatus: string | null
+  activatedAt: string | null
+  createdAt: string
+}
+
+// D-26: find the dispatches behind a customer complaint by the one thing the
+// caller can read out, the UPI ID. Guard-only read; the edge matches on
+// LOWER(TRIM(vpa_value)) and answers { rows }, unwrapped here so callers get
+// the list itself. 400 when vpa is blank, so callers should not send one.
+export async function searchDispatchesByVpa(c: Client, vpa: string): Promise<VpaDispatchRow[]> {
+  const res = await c.request<{ rows: VpaDispatchRow[] }>({
+    method: 'GET',
+    path: `/ops/dispatches/by-vpa?vpa=${encodeURIComponent(vpa)}`,
+  })
+  return res.rows
+}
+
+// D-31: the damage-case counts by status, for the dashboard tile and the
+// case screen's chips. A TMS ops-read, deliberately NOT analytics: case
+// status is never projected into analytics (DP-7), so tms is the only
+// context that can answer this honestly.
+export function getDamageCaseSummary(c: Client) {
+  return c.request<{ open: number; inProgress: number; closed: number }>({
+    method: 'GET',
+    path: '/ops/damage-cases/summary',
   })
 }
 

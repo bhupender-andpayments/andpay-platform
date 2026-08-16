@@ -120,7 +120,12 @@ function buildColumns(rows: ReportRow[]): DataTableColumn<ReportRow>[] {
 }
 
 export function ReportPage() {
-  const { client } = useAuth()
+  const { client, principal } = useAuth()
+  // D-29/DP-8 display gating: the edge denies customer_support the CSV export
+  // (format=csv), so the button is not shown to them. Display convenience
+  // only, never authorization (S24/T14): the edge decides the request either
+  // way, this just avoids offering a button that can only fail.
+  const exportHidden = principal?.roleLabel === 'customer_support'
   const [searchParams, setSearchParams] = useSearchParams()
   const tileParam = searchParams.get('tile')
   const initialTile = isTileName(tileParam) ? tileParam : null
@@ -354,15 +359,17 @@ export function ReportPage() {
               </Field>
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  void handleExport()
-                }}
-              >
-                <IconDownload width={16} height={16} />
-                Export CSV
-              </Button>
+              {!exportHidden && (
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    void handleExport()
+                  }}
+                >
+                  <IconDownload width={16} height={16} />
+                  Export CSV
+                </Button>
+              )}
               <Button
                 onClick={() => {
                   void load()

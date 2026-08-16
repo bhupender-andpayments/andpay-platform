@@ -86,8 +86,8 @@ function stubBody(token: string): string {
   })
 }
 
-async function renderAuthed(initialEntry: string): Promise<void> {
-  const fakeToken = makeFakeJwt({ sub: 'ops-1', psr: 'role:ops' })
+async function renderAuthed(initialEntry: string, psr = 'role:ops'): Promise<void> {
+  const fakeToken = makeFakeJwt({ sub: 'ops-1', psr })
   vi.stubGlobal('fetch', vi.fn(async () => new Response(
     stubBody(fakeToken),
     { status: 200, headers: { 'content-type': 'application/json' } },
@@ -248,6 +248,35 @@ describe('ops-portal app shell + navigation', () => {
     )
     const header = document.querySelector('header')
     expect(header?.textContent).toContain(group)
+  })
+
+  // D-29 (damage workflow, B7): customer_support's sidebar drops the sections
+  // that role cannot use. DISPLAY CONVENIENCE ONLY, never authorization
+  // (S24/T14): the edge still decides every request, and the nav grants or
+  // revokes nothing. The role rides the token's psr the same way every role
+  // does, so the test mints it the same way.
+  it('customer_support sees no Uploads or Master Data nav item, while the work views stay', async () => {
+    await renderAuthed('/queues', 'role:customer_support')
+    const nav = screen.getByRole('navigation', { name: /main/i })
+    const names = within(nav).getAllByRole('link').map((link) => link.textContent?.trim())
+
+    expect(names).not.toContain('Uploads')
+    expect(names).not.toContain('Master Data')
+    // The views D-29 keeps for CS are all still offered.
+    for (const kept of ['Dispatches', 'Merchants', 'Damage cases', 'Reports']) {
+      expect(names).toContain(kept)
+    }
+    // The Setup group held only Master Data, so its heading goes with it
+    // rather than titling an empty list.
+    expect(within(nav).queryByText('Setup')).toBeNull()
+  })
+
+  it('an admin still sees Uploads and Master Data: the gate is the CS role, not a new default', async () => {
+    await renderAuthed('/queues', 'role:admin')
+    const nav = screen.getByRole('navigation', { name: /main/i })
+    const names = within(nav).getAllByRole('link').map((link) => link.textContent?.trim())
+    expect(names).toContain('Uploads')
+    expect(names).toContain('Master Data')
   })
 
   it('routing switches the content region between two routes', async () => {

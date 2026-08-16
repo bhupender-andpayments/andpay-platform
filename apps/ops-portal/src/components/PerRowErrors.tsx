@@ -2,9 +2,10 @@ import { Link } from 'react-router-dom'
 
 // The per-row outcome breakdown returned by the ops upload endpoints:
 // POST /ops/uploads/bank/commit             -> {accepted,quarantined,duplicate}
-// POST /ops/uploads/damage/commit           -> {replaced,quarantined,duplicate}
 // POST /ops/uploads/device-inventory        -> {accepted,flagged,invalid}
-// `quarantined` (bank/damage) and `flagged` (device-inventory) both name a
+// (The damage commit route that used to sit here is gone: D-25 ended damage
+// file ingestion, so `replaced` no longer arrives from any endpoint.)
+// `quarantined` (bank) and `flagged` (device-inventory) both name a
 // count of rows that landed in a review queue rather than committing clean;
 // they route to different queues (quarantine vs intake exceptions, both
 // under task 11's /queues route) so each renders its own labeled link.
@@ -21,7 +22,6 @@ import { Link } from 'react-router-dom'
 // read a clean upload as broken.
 export interface UploadResultBreakdown {
   accepted?: number
-  replaced?: number
   quarantined?: number
   flagged?: number
   invalid?: number
@@ -66,12 +66,6 @@ export function PerRowErrors({ result }: { result: UploadResultBreakdown }) {
         <div>
           <dt className="text-muted-foreground">Accepted</dt>
           <dd className="text-lg font-semibold text-foreground">{result.accepted}</dd>
-        </div>
-      )}
-      {result.replaced !== undefined && (
-        <div>
-          <dt className="text-muted-foreground">Replaced</dt>
-          <dd className="text-lg font-semibold text-foreground">{result.replaced}</dd>
         </div>
       )}
       {result.quarantined !== undefined && (
