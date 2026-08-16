@@ -229,8 +229,10 @@ describe('courier carrier-status advance', () => {
 
     const f = await facts()
     expect(f).toHaveLength(1)
-    const payload = f[0]!.payload.payload as Record<string, unknown>
-    expect('collateral' in payload).toBe(false)
-    expect('asgnIds' in payload).toBe(false)
+    const payload = f[0]!.payload.payload
+    // The envelope is JSON out of the outbox, so an absent key reads as
+    // undefined; the two optional fields simply must not be there.
+    expect(payload.collateral).toBeUndefined()
+    expect(payload.asgnIds).toBeUndefined()
   })
 })

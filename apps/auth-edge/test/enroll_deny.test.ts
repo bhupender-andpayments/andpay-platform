@@ -156,6 +156,28 @@ describe('auth-edge POST /enroll emits a synchronous 6e DENY on every rejection 
     expect(await auditRows(target.principalId, { operation: 'mfa-enroll', decision: 'DENY' })).toHaveLength(0)
   })
 
+  // D-29 (16 Aug 2026): customer_support is the first DELIBERATELY restricted
+  // role, so its boundary here gets its own pin. The review that shipped it
+  // (REVIEW_REPORT.md F3) briefly read this route as guard-only; it is not,
+  // the authorize below the step-up is what this test exercises, and the role
+  // holds only principal:read on the auth plane.
+  it('a customer_support token (valid, lacks mfa:enroll) -> 403 AND exactly one authz-DENY row', async () => {
+    const cs = await seed('customer_support')
+    const csToken = await freshTokenFor(cs)
+    const target = await seed('ops')
+
+    const res = await request(app.getHttpServer())
+      .post('/enroll')
+      .set('Authorization', `Bearer ${csToken}`)
+      .send({ targetPrincipalId: target.principalId, targetAccountLabel: target.handle })
+    expect(res.status).toBe(403)
+
+    const rows = await auditRows(cs.principalId, { operation: 'mfa-enroll', decision: 'DENY' })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.reasonCode).toBe('permission-denied')
+    expect(await auditRows(target.principalId, { operation: 'mfa-enroll', decision: 'DENY' })).toHaveLength(0)
+  })
+
   it('a refreshed admin token (no fresh auth_time) -> 403 AND exactly one authz-DENY row (step-up-required)', async () => {
     const admin = await seed('admin')
     const loginRes = await request(app.getHttpServer())

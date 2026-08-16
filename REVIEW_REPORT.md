@@ -1,5 +1,30 @@
 # REVIEW_REPORT.md. Damage workflow branch and whole-system review, 16 Aug 26
 
+## Outcomes (fix pass, same day, commits babc014..e5b9e4e plus the pin below)
+
+- F1 FIXED (babc014): both transition emitters enrich collateral parcels with
+  collateral + asgnIds; pinned by emitter-contract tests on both sites and a
+  root end-to-end test (test/damage_replacement_close.test.ts) driving the
+  real emitter's outbox envelope into the real consumer.
+- F4 FIXED (f929824): the projector targets replacedAsgnId; the tests seed
+  the two assignments the way production does.
+- F2 FIXED (a8b9d5b): partial unique index assignment_one_live_case plus the
+  23505-to-409 mapping; the index is pinned against any insert path.
+- F5 + N1 FIXED (e5b9e4e): full-role 200s on the three gated previews; the
+  stale damage.ts comment retargeted.
+- F3 WITHDRAWN, a false positive. Verified in full: POST /enroll runs
+  authorize(claim, 'mfa:enroll') after the step-up
+  (apps/auth-edge/src/enroll.controller.ts) and only enrollment_pending,
+  admin, and super_admin hold that permission; customer_support and ops are
+  denied with an audited DENY. The finding rested on a review agent's partial
+  output and a truncated file read. A customer_support pin test was added to
+  enroll_deny.test.ts so the boundary is regression-guarded, but no defect
+  existed and no product-code change was made.
+- F6 and the remaining nits (N2 to N6) stay open pending the product answers
+  in the questions section.
+- Merge recommendation upgraded accordingly: MERGE, pending the F6 product
+  call and the parked OQ rulings, none of which block the code.
+
 Scope: `feature/damage-workflow` at `9ca54b2`, reviewed against decisions
 D-24 to D-31 and the system as a whole with the branch applied. Method:
 adversarial code verification with file citations (the summary docs were used
