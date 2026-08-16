@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { newId, toUuid } from '@andpay/ids'
+import { newId, toUuid, fromUuid } from '@andpay/ids'
 import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
 import { correctStatus, overrideTerminal } from '../src/ops.js'
@@ -14,7 +14,7 @@ const TENANT = toUuid(newId('tnnt'))
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE shpt_status_event, courier_status_exception, shpt, outbox, inbox CASCADE',
+    'TRUNCATE shpt_status_event, courier_status_exception, shpt, pending_pool_entry, outbox, inbox CASCADE',
   )
 })
 afterAll(async () => { await db.$disconnect() })
@@ -204,5 +204,43 @@ describe('ops status correction and privileged terminal override (spec 10c Task 
     expect(Number(events[0]!.n)).toBe(1)
     const f = await facts()
     expect(f).toHaveLength(1)
+  })
+
+  // The override is the SECOND transition emitter, and the D-24 close must
+  // fire from it too: an operator hand-marking a collateral parcel DELIVERED
+  // is exactly the expedite path a phone complaint takes (REVIEW_REPORT.md F1).
+  it('an overridden DELIVERED on a collateral parcel carries collateral + asgnIds on its fact', async () => {
+    const seeded = await seedShipment('IN_TRANSIT')
+    const asgnUuid = toUuid(newId('asgn'))
+    await db.$executeRaw`
+      INSERT INTO pending_pool_entry (
+        asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable,
+        merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+        ship_to_address, qr_value, vpa_value, pool_status, source_event_id, trace_id,
+        dispatch_group, collateral_shipment, created_at, updated_at
+      ) VALUES (
+        ${asgnUuid}::uuid, ${TENANT}::uuid, ${seeded.programId}::uuid, false, 1, 0, false,
+        'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
+        'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${`f1o-${asgnUuid}`}, 'trace-f1o',
+        'COLLATERAL', ${seeded.shptUuid}::uuid, now(), now()
+      )
+    `
+    const ok = await overrideTerminal(db, {
+      shptId: seeded.shptWire,
+      status: 'DELIVERED',
+      courierTimestamp: new Date('2026-08-16T12:00:00.000Z'),
+      overrideReason: 'courier portal shows delivered, feed missed it',
+      clientKey: randomUUID(),
+      actorId: 'op-1',
+      traceId: 't-f1o',
+    })
+    expect(ok.overridden).toBe(true)
+
+    const f = await facts()
+    expect(f).toHaveLength(1)
+    const payload = f[0]!.payload.payload
+    expect(payload.status).toBe('DELIVERED')
+    expect(payload.collateral).toBe(true)
+    expect(payload.asgnIds).toEqual([fromUuid('asgn', asgnUuid)])
   })
 })
