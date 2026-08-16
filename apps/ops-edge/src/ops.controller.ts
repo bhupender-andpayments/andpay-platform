@@ -60,8 +60,7 @@ import {
 import {
   previewBankFile,
   commitBankFile,
-  previewDamageFile,
-  commitDamageFile,
+  flagDamageOps,
   resolveQuarantineRow,
   closeQuarantineRow,
   createDamageReasonOps,
@@ -73,7 +72,7 @@ import {
   ManualDevicePort,
   type BankRequestRow,
   type BankPreviewResult,
-  type DamagePreviewResult,
+  type FlagDamageResult,
   type DamageReasonRow,
   type DuplicateVpaOriginal,
 } from '@andpay/tms-service'
@@ -124,6 +123,24 @@ interface DamageCaseStatusBody {
   // on the IDs-only 6e, the same posture as HoldBody.reason.
   opsRemarks?: string
 }
+// D-26/D-27 (DAMAGE_PLAN B5): the Flag Damage body. The target dispatch leg is
+// the :asgnId route param; reasonCode is a damage_reason master CODE (DP-5,
+// validated active by the domain), remarks is the operator's required free-text
+// why (it lands on the domain row, never the IDs-only 6e, same posture as
+// HoldBody.reason), and the two counts apply to a COLLATERAL leg only (DP-2;
+// the domain rejects any count on a SOUNDBOX leg, whose quantity is fixed at
+// 1). The actor comes from the verified claim, never here (D99, M7/S16).
+interface FlagDamageBody {
+  reasonCode: string
+  remarks: string
+  standeeCount?: number
+  stickerCount?: number
+}
+// The cap on the flag-damage remarks, kept identical to the domain contract's
+// own max (flagDamageOps: trimmed non-empty, max 500). Two checks, one number,
+// same split as MAX_TRIGGER_REASON_LENGTH below: the edge check produces the
+// operator-facing 400 message, the domain check is the guarantee.
+const MAX_FLAG_REMARKS_LENGTH = 500
 // Phase 5 Task 2 (D-H.1): the target rides in the BODY, not a route param
 // (unlike hold/release/damage-case-status), because this is the FIRST caller
 // of the TMS activation path (grounding section 2) and there is no existing
@@ -538,51 +555,6 @@ export class OpsController {
     })
   }
 
-  // The damage-file preview (Phase 7 Task 7, L11/FR08-3 decision item 11):
-  // the preview-parity counterpart to previewBank above, so the portal's
-  // damage upload gets the same preview-then-commit UX. Same persist-nothing
-  // posture as previewBank: NO Idempotency-Key, NO mutation gate, NO
-  // co-committed ALLOW 6e, NO durable DENY 6e (a DENY 6e is itself an outbox
-  // write, forbidden on a route that persists nothing). previewDamageFile
-  // reads (never writes) the assignment/damage_reason match the commit path
-  // would use, under the read-only tms_ops_read role. The response carries
-  // decoded bank/damage PII exactly like the bank preview, so the same
-  // direct D2 authorize (authorizePreview) still gates access.
-  @Post('uploads/damage/preview')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
-  @HttpCode(200)
-  async previewDamage(
-    @Req() req: EdgeRequest,
-    @UploadedFile() file: UploadedSheet | undefined,
-  ): Promise<DamagePreviewResult> {
-    this.authorizePreview(req, 'ops:upload-damage-file')
-    if (!file) throw new BadRequestException('missing file')
-    return previewDamageFile(this.deps.tmsDb, file.buffer, file.originalname)
-  }
-
-  // The damage-file commit (D-K). Multipart raw file, server-parsed. Same
-  // gate and partial-accept as the bank commit. (Preview parity landed above
-  // as of Phase 7 Task 7; this route's own re-parse and match logic is
-  // otherwise unchanged.)
-  @Post('uploads/damage/commit')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
-  @HttpCode(200)
-  async commitDamage(
-    @Req() req: EdgeRequest,
-    @UploadedFile() file: UploadedSheet | undefined,
-    @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ replaced: number; quarantined: number; duplicate: number; fileId: string }> {
-    const g = await this.gate(req, 'ops:upload-damage-file', idem, [])
-    if (!file) throw new BadRequestException('missing file')
-    return commitDamageFile(this.deps.tmsDb, {
-      fileBytes: file.buffer,
-      filename: file.originalname,
-      clientKey: g.clientKey,
-      actorId: g.actorId,
-      traceId: g.traceId,
-    })
-  }
-
   // Phase 5 Task 1 (D-G, FR-01a): the ops device-inventory upload, the ops
   // analog of the vendor-channel manufacturer intake. Mirrors commitBank's
   // multipart/gate/re-parse posture exactly (mandatory Idempotency-Key, D2
@@ -593,16 +565,20 @@ export class OpsController {
   // as the fulfillment domain's OpsClientError, which the app-wide
   // OpsErrorFilter maps to a 4xx.
   // PREVIEW: parses and compares against stock, writes nothing, so it takes NO
-  // Idempotency-Key (there is nothing to make idempotent) and runs no gate
-  // beyond the controller guard, exactly like the bank and damage previews.
-  // Added 2026-08-13: this upload was the only one an operator had to commit
-  // blind.
+  // Idempotency-Key (there is nothing to make idempotent), exactly like the
+  // bank preview. DP-9 (D-29, 16 Aug 2026): it DOES run the same persist-
+  // nothing authorizePreview the bank preview runs, on this upload's own
+  // permission, because the preview response echoes the sheet's contents and a
+  // restricted role (customer_support carries no upload permissions) must not
+  // read sheet contents through a preview it could never commit.
   @Post('uploads/device-inventory/preview')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   @HttpCode(200)
   async previewDeviceInventory(
+    @Req() req: EdgeRequest,
     @UploadedFile() file: UploadedSheet | undefined,
   ): Promise<OpsDeviceInventoryPreview> {
+    this.authorizePreview(req, 'ops:upload-device-inventory')
     if (!file) throw new BadRequestException('missing file')
     return previewOpsDeviceInventory(this.deps.fulfillmentDb, {
       fileBytes: file.buffer,
@@ -661,11 +637,17 @@ export class OpsController {
 
   // Bulk unit-status correction, the sheet-upload sibling of PATCH-by-hand
   // above. PREVIEW writes nothing, same posture as the device-inventory
-  // preview: no Idempotency-Key, no gate beyond the controller guard.
+  // preview: no Idempotency-Key, and (DP-9, D-29) the same persist-nothing
+  // authorizePreview on this upload's own permission, because a restricted
+  // role must not read sheet contents through a preview it cannot commit.
   @Post('uploads/unit-status/preview')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   @HttpCode(200)
-  async previewUnitStatus(@UploadedFile() file: UploadedSheet | undefined): Promise<OpsUnitStatusPreview> {
+  async previewUnitStatus(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+  ): Promise<OpsUnitStatusPreview> {
+    this.authorizePreview(req, 'ops:upload-unit-status')
     if (!file) throw new BadRequestException('missing file')
     return previewOpsUnitStatus(this.deps.fulfillmentDb, { fileBytes: file.buffer, filename: file.originalname })
   }
@@ -702,13 +684,19 @@ export class OpsController {
   // nothing an operator can assert about whose sheet this is (M7, S16, 105c).
   //
   // The preview writes nothing, so like the device-inventory and unit-status
-  // previews it takes no Idempotency-Key and runs no gate beyond the controller
-  // guard. It exists so a mixed-vendor or unbound-batch file is refused on
+  // previews it takes no Idempotency-Key, and (DP-9, D-29) it runs the same
+  // persist-nothing authorizePreview on this upload's own permission: a
+  // restricted role must not read sheet contents through a preview it cannot
+  // commit. It exists so a mixed-vendor or unbound-batch file is refused on
   // screen before the operator commits it.
   @Post('uploads/return/preview')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   @HttpCode(200)
-  async previewReturnUpload(@UploadedFile() file: UploadedSheet | undefined): Promise<ReturnSheetParseResult> {
+  async previewReturnUpload(
+    @Req() req: EdgeRequest,
+    @UploadedFile() file: UploadedSheet | undefined,
+  ): Promise<ReturnSheetParseResult> {
+    this.authorizePreview(req, 'ops:upload-return-file')
     if (!file) throw new BadRequestException('missing file')
     return parseReturnWorkbook(new Uint8Array(file.buffer), file.originalname ?? '')
   }
@@ -903,6 +891,61 @@ export class OpsController {
       asgnId,
       newStatus: body.status,
       ...(typeof body.opsRemarks === 'string' ? { opsRemarks: body.opsRemarks } : {}),
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // D-26/D-27/D-28 (DAMAGE_PLAN B5, supersedes the deleted damage file upload):
+  // the operator flags ONE dispatched leg as damaged and TMS mints the
+  // non-billable replacement child in the same transaction (billable=false,
+  // case_status='Open', the replacement_raised fact, the demand fact, the
+  // co-committed ALLOW 6e in the TMS outbox). The child's dispatch_group is
+  // inherited from the flagged leg (DP-2), so there is no group input here.
+  //
+  // The body is validated BEFORE this.gate, exactly as the batch-trigger reason
+  // and the hold reason are and for the same reason: a malformed request must
+  // never put an ALLOW on the hash chain for an action that then 400s. The
+  // domain re-validates everything (active reason code, leg/count semantics,
+  // the DP-3 one-live-case rule), which is the guarantee that holds for every
+  // caller; these checks produce the operator-facing 400 message.
+  //
+  // Error mapping rides the app-wide OpsErrorFilter: the domain's not-found
+  // (unknown asgn) maps to 404 and its conflict (a non-Closed child already
+  // exists, DP-3) maps to 409, the same way the neighboring routes' domain
+  // errors map. 201 on success: a child assignment was CREATED, unlike the
+  // sibling 200 status-transition route above.
+  @Post('records/:asgnId/flag-damage')
+  @HttpCode(201)
+  async flagDamage(
+    @Req() req: EdgeRequest,
+    @Param('asgnId') asgnId: string,
+    @Body() body: FlagDamageBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<FlagDamageResult> {
+    const reasonCode = typeof body?.reasonCode === 'string' ? body.reasonCode.trim() : ''
+    if (reasonCode === '') throw new BadRequestException('reasonCode is required')
+    const remarks = typeof body?.remarks === 'string' ? body.remarks.trim() : ''
+    if (remarks === '') throw new BadRequestException('remarks are required')
+    if (remarks.length > MAX_FLAG_REMARKS_LENGTH) {
+      throw new BadRequestException(`remarks must be at most ${MAX_FLAG_REMARKS_LENGTH} characters`)
+    }
+    for (const [name, value] of [
+      ['standeeCount', body?.standeeCount],
+      ['stickerCount', body?.stickerCount],
+    ] as const) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 0 || value > 99)) {
+        throw new BadRequestException(`${name} must be an integer between 0 and 99`)
+      }
+    }
+    const g = await this.gate(req, 'ops:flag-damage', idem, [asgnId])
+    return flagDamageOps(this.deps.tmsDb, {
+      asgnId,
+      reasonCode,
+      remarks,
+      ...(body.standeeCount !== undefined ? { standeeCount: body.standeeCount } : {}),
+      ...(body.stickerCount !== undefined ? { stickerCount: body.stickerCount } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

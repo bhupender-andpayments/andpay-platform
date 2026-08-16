@@ -24,7 +24,11 @@ import { humanRole, type RoleConfig } from '@andpay/authz'
 // permission string here would be dead.
 const OPS_PERMISSIONS = [
   'ops:upload-bank-file',
-  'ops:upload-damage-file',
+  // D-25 (DAMAGE_PLAN, 16 Aug 2026): a former 'ops:upload-damage-file' entry
+  // was REMOVED here, not just orphaned: damage file ingestion is gone (the
+  // two /ops/uploads/damage/* routes were deleted), and a permission string
+  // with no route is a standing invitation to wire one back. The damage entry
+  // point is now ops:flag-damage below.
   'ops:status-correction',
   'ops:terminal-override',
   'ops:recompose-artifact',
@@ -50,6 +54,12 @@ const OPS_PERMISSIONS = [
   // `ops:damage-case-list` entry, same reasoning as the other absent -list
   // permissions above (the list route authorizes without its own permission).
   'ops:update-damage-case',
+  // D-26/D-27 (DAMAGE_PLAN B5, 16 Aug 2026): flag ONE dispatched leg as
+  // damaged; TMS mints the non-billable replacement child in the same
+  // transaction. This REPLACES the removed ops:upload-damage-file as the only
+  // way a damage case is born. Shared ops bundle, and additionally the ONE
+  // mutation the customer_support role below carries.
+  'ops:flag-damage',
   // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
   // admin write pair (branding/template upsert, logo upload). No
   // `ops:bank-config-list` entry, same reasoning as the absent
@@ -74,10 +84,9 @@ const OPS_PERMISSIONS = [
   'ops:bank-master-create',
   'ops:bank-master-edit',
   // Phase 5 Task 1 (D-G, FR-01a): the ops device-inventory upload, the ops
-  // analog of the vendor-channel manufacturer intake. Same tier as every
-  // other upload (ops:upload-bank-file, ops:upload-damage-file), not
-  // admin-tier. No list permission is needed (no new list route is added by
-  // this task).
+  // analog of the vendor-channel manufacturer intake. Same tier as the other
+  // uploads (ops:upload-bank-file), not admin-tier. No list permission is
+  // needed (no new list route is added by this task).
   'ops:upload-device-inventory',
   // Phase 5 Task 2 (D-H.1, BRD Phase-1 MANUAL activation flow): ops marks a
   // DELIVERED assignment activated (CWD already activated the device+SIM out
@@ -173,6 +182,22 @@ export const OPS_ROLES: RoleConfig['roles'] = {
   }),
   super_admin: humanRole({
     permissions: [...OPS_PERMISSIONS, ...ADMIN_TIER_PERMISSIONS],
+    ceiling: 'all-programs',
+    requiredAcr: 'AAL2',
+  }),
+  // D-29 (DAMAGE_PLAN B6, 16 Aug 2026): the customer-support operator. Its
+  // MUTATION surface is exactly ONE operation by design: it can flag a
+  // damaged dispatch (ops:flag-damage) and nothing else, so every upload,
+  // correction, override, and config write 403s at the D2 gate by omission.
+  // Its READ side is guard-only like every class-3 role, minus the deny list
+  // the edge applies (apps/ops-edge/src/read-restriction.ts): no binary
+  // downloads, no CSV export, no config views. That restriction lives
+  // edge-side because this repo mints no read-side permission strings (see
+  // the comment at the top of OPS_PERMISSIONS). Same all-programs ceiling and
+  // AAL2 floor as the other operator roles; scoping is enforced at the DB
+  // write-gate, not the claim.
+  customer_support: humanRole({
+    permissions: ['ops:flag-damage'],
     ceiling: 'all-programs',
     requiredAcr: 'AAL2',
   }),

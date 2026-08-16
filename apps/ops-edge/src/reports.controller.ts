@@ -27,6 +27,7 @@ import { readActivationTrailOps } from '@andpay/tms-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAnalyticsRead, emitOpsAnalyticsCrossTenant } from './audit.js'
+import { requireUnrestrictedRead } from './read-restriction.js'
 import type { EdgeRequest } from './request.js'
 
 // The minimal response shape this controller writes to (see the tenant edge's
@@ -121,6 +122,12 @@ export class ReportsController {
     @Res({ passthrough: true }) res: EdgeResponse,
   ): Promise<unknown> {
     if (!TILE_NAMES.has(tile)) throw new NotFoundException()
+    // D-29/DP-8: the CSV EXPORT of a drill-down is denied to the restricted
+    // customer_support role; the JSON view of the same drill-down stays open.
+    // Checked BEFORE this.authorize so a denied export leaves no ALLOW read 6e
+    // on the chain for a read that never happened (the same ordering the
+    // mutation routes use for their pre-gate validation).
+    if (q['format'] === 'csv') requireUnrestrictedRead(req.claim)
     await this.authorize(req, 'analytics:read-tile-drilldown')
     const scope: ReadScope = { kind: 'crossTenant' }
     const result = await readTileDrilldown(this.deps.analyticsDb, scope, tile as TileName, toFilters(q))
@@ -212,6 +219,10 @@ export class ReportsController {
     @Res({ passthrough: true }) res: EdgeResponse,
   ): Promise<unknown> {
     if (!REPORT_NAMES.has(name)) throw new NotFoundException()
+    // D-29/DP-8: the CSV EXPORT is denied to the restricted customer_support
+    // role while the JSON report view stays open, same posture and same
+    // before-the-audit ordering as the tile drill-down's CSV branch above.
+    if (q['format'] === 'csv') requireUnrestrictedRead(req.claim)
     await this.authorize(req, 'analytics:read-report')
     const scope: ReadScope = { kind: 'crossTenant' }
     const result = await readReport(this.deps.analyticsDb, scope, name as ReportName, toFilters(q))
