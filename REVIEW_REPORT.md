@@ -25,6 +25,34 @@
 - Merge recommendation upgraded accordingly: MERGE, pending the F6 product
   call and the parked OQ rulings, none of which block the code.
 
+## Recheck (same day, tip e5daf25 plus this note)
+
+Everything re-verified from scratch: clean tree, zero dash violations, both
+DB objects present (flagged_by, assignment_one_live_case), and an
+identical-tree rerun of the full sequence: build 0, lint 0, typecheck 0, gate
+287 files / 2310 tests exit 0.
+
+The F1 fix is now LIVE-VERIFIED end to end on the real rail, the one path
+the first walkthrough could not exercise: a 6-row bank upload, LOT_SIZE
+batch, an in-screen flag on a COLLATERAL leg (child non-billable, summary
+Open 1), a manual batch carrying the child (case moved to In-Progress off
+the real dispatch fact), a vendor return birthing the collateral consignment
+(collateralLinked 1), the courier webhook ladder to DELIVERED, and the
+enriched fact closing the case through Kafka and the tms consumer: case
+Closed, summary closed 1. Two fixture mistakes during the drive were mine,
+not the product's (a return sheet without the optional Courier column
+quarantines courier legs as courier_unassigned by design; the ops courier
+upload requires the courierVndrId body field).
+
+- N7, NEW (pre-existing on main, found by the recheck): POST
+  /ops/uploads/courier-status with a MISSING courierVndrId body field
+  answers a raw 500 instead of a 400; the route does not validate the
+  non-file field's presence before handing it to the service
+  (apps/ops-edge/src/ops.controller.ts:617-633, same shape presumably for
+  device-inventory's manufacturerVndrId). One-line fix: a BadRequestException
+  when the field is absent, beside the existing missing-file check. The
+  portal always sends the field, so only raw API callers ever see it.
+
 Scope: `feature/damage-workflow` at `9ca54b2`, reviewed against decisions
 D-24 to D-31 and the system as a whole with the branch applied. Method:
 adversarial code verification with file citations (the summary docs were used
