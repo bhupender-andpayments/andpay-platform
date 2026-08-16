@@ -101,6 +101,52 @@ describe('ActivationPage', () => {
     expect(call!.init.method).toBe('GET')
   })
 
+  // 16 Aug 2026 UAT: activation is of a device+SIM, so a dispatch the report
+  // returns with NO device paired (pre print-vendor return) must not be
+  // offered for activation. There is no hardware the CWD could have confirmed.
+  it('hides a dispatch with no device paired: nothing exists to activate', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          rows: [
+            {
+              dispatchId: 'asgn_no_device',
+              bankCode: 'HDFC',
+              merchantDisplay: 'Not Printed Yet Stores',
+              deviceIds: [],
+              deliveryDate: null,
+              activationStatus: null,
+              simActivationStatus: null,
+              activationDate: null,
+              activationFailureReason: null,
+            },
+            {
+              dispatchId: 'asgn_paired',
+              bankCode: 'HDFC',
+              merchantDisplay: 'Paired Traders',
+              deviceIds: ['DEV-7'],
+              deliveryDate: null,
+              activationStatus: null,
+              simActivationStatus: null,
+              activationDate: null,
+              activationFailureReason: null,
+            },
+          ],
+          watermark: { asOf: null, perTopic: {} },
+        }),
+      ),
+    )
+
+    renderActivationPage()
+
+    // The paired row is the proof the page rendered; the deviceless one is
+    // absent, and the count says 1, not 2.
+    expect(await screen.findByText('asgn_paired')).toBeTruthy()
+    expect(screen.queryByText('asgn_no_device')).toBeNull()
+    expect(screen.getByText('1 row')).toBeTruthy()
+  })
+
   it('marking a DELIVERED assignment calls ops:mark-activated (POST /ops/assignments/activate) with the wire asgn id + an Idempotency-Key', async () => {
     const calls: Call[] = []
     vi.stubGlobal(

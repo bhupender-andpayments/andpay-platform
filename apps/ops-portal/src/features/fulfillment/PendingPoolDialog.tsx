@@ -33,7 +33,8 @@ export function PendingPoolDialog({
         <DialogHeader>
           <DialogTitle>Pending pool</DialogTitle>
           <DialogDescription>
-            Every committed row and where it has reached, oldest first. POOLED rows are the ones a trigger can act on.
+            Rows still waiting for a batch, oldest first. A trigger claims every one of them. Rows already batched are in
+            the Batches grid; rows on hold are in Queues.
           </DialogDescription>
         </DialogHeader>
         {/* The grid gets an explicit maxBodyHeight so it can scroll ITSELF,
@@ -45,7 +46,7 @@ export function PendingPoolDialog({
           rows={rows}
           loading={loading}
           getRowKey={(r) => r.asgnId}
-          searchPlaceholder="Search merchant, bank, dispatch or batch…"
+          searchPlaceholder="Search merchant, bank or dispatch…"
           emptyTitle="Nothing in the pool"
           emptyMessage="Committed bank rows land here until a batch triggers."
           pageSize={20}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Package, Timer, Upload } from 'lucide-react'
 import { fmtWait } from './BatchingRules.js'
@@ -86,6 +86,7 @@ export function FulfillmentPage() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
 
+
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
     setLoadError(null)
@@ -93,7 +94,14 @@ export function FulfillmentPage() {
       // All four are on screen, so all four are fetched, in parallel: they are
       // independent reads and serialising them would make the page four times as
       // slow for no reason.
-      const [poolRows, batchRows] = await Promise.all([getPoolEntries(client, ''), getBatches(client)])
+      // POOLED, not the whole table (16 Aug 2026 UAT). The empty filter returned
+      // every entry ever committed, so once a batch claimed its records they
+      // stayed in "View pool" complete with the batch id they had just been
+      // claimed into. A pool is what is STILL WAITING; a row that has been
+      // batched has left it, and its home is the Batches grid below.
+      // HELD rows are worked in Queues, which is where accepting one puts it
+      // back into this pool.
+      const [poolRows, batchRows] = await Promise.all([getPoolEntries(client, 'POOLED'), getBatches(client)])
       setPool(poolRows)
       setBatches(batchRows)
     } catch (err) {
@@ -165,32 +173,18 @@ export function FulfillmentPage() {
     },
     { key: 'branch', header: 'Branch', cell: (r) => r.branchCode ?? '-', sortValue: (r) => r.branchCode ?? '' },
     { key: 'kit', header: 'Kit', cell: (r) => kit(r) },
-    { key: 'poolStatus', header: 'Pool Status', cell: (r) => r.poolStatus, sortValue: (r) => r.poolStatus },
+    // NO Pool Status, Dispatch State or Batch column (16 Aug 2026 UAT). Every
+    // row here is POOLED by construction now, so a Pool Status column repeated
+    // one word down the whole table, and Dispatch State said nothing a row can
+    // have reached before it is batched. Batch was the worst of the three: it
+    // could only ever read "not batched", and while this list still carried
+    // claimed rows it printed the id of a batch that did not exist when the row
+    // was pooled, which reads as a batch id existing before its batch.
     {
-      key: 'dispatchState',
-      header: 'Dispatch State',
-      cell: (r) => r.dispatchState ?? '-',
-      sortValue: (r) => r.dispatchState ?? '',
-    },
-    {
-      // The action sits on the row it acts on. Which action applies is decided
-      // by that row's own pool status.
+      // The action sits on the row it acts on.
       key: 'actions',
       header: '',
       cell: (r) => <PoolEntryActions row={r} onChanged={() => void load()} />,
-    },
-    {
-      key: 'batch',
-      header: 'Batch',
-      cell: (r) =>
-        r.batch === null ? (
-          <span className="text-muted-foreground">not batched</span>
-        ) : (
-          <button type="button" className="underline underline-offset-2" onClick={() => navigate(`/batches/${r.batch!}`, { state: { fromSearch: searchParams.toString() } })}>
-            {r.batch}
-          </button>
-        ),
-      sortValue: (r) => r.batch ?? '',
     },
     { key: 'createdAt', header: 'Pooled At', cell: (r) => fmtDateTime(r.createdAt), sortValue: (r) => r.createdAt },
   ]
@@ -244,7 +238,10 @@ export function FulfillmentPage() {
           action sits left and wide, the reference rules sit right in a
           compact side card. Same visual grammar as that page uses for its
           layout selector: subtle primary accent, one card per decision. */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start">
+      {/* No items-start: the row's two cards STRETCH to a shared height. With
+          items-start the left card shrank to its content, so an empty pool left
+          a tall gap beside the rules card and the row read as broken. */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <BatchablePools
           onTriggered={() => void load()}
           lotSizeFor={lotSizeFor}

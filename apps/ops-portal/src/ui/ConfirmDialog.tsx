@@ -79,7 +79,12 @@ export function ConfirmDialog({
           {description !== undefined && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
 
-        {children}
+        {/* The body owns its own vertical rhythm. DialogContent is a plain
+            padded box and only the header and footer carry margins, so a caller
+            passing two blocks (a stat panel and a field, say) used to get them
+            flush against each other and against the header. Spacing it here
+            fixes every caller at once rather than each one rediscovering it. */}
+        {children !== undefined && <div className="space-y-4">{children}</div>}
 
         {error !== null && <ErrorNote>{error}</ErrorNote>}
 

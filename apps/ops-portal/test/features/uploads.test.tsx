@@ -782,7 +782,10 @@ describe('uploads', () => {
 
   // D-17 (T5.1): the fourth upload surface. The courier emails a spreadsheet
   // every morning and no vendor credential can authenticate an inbox.
-  it('courier status: Continue needs BOTH a file and a courier, and Submit posts the named courier', async () => {
+  // REVISED 16 Aug 2026 (UAT): the "Continue to submit" step is gone. It
+  // gathered nothing, so the single Upload button now carries the
+  // both-are-required rule that Continue used to.
+  it('courier status: Upload needs BOTH a file and a courier, and posts the named courier', async () => {
     const calls: Call[] = []
     vi.stubGlobal(
       'fetch',
@@ -808,20 +811,19 @@ describe('uploads', () => {
     // the courier still unset.
     await userEvent.keyboard('{Escape}')
 
-    const continueButton = screen.getByRole('button', { name: /continue to submit/i }) as HTMLButtonElement
-    expect(continueButton.disabled).toBe(true)
+    const submitButton = screen.getByRole('button', { name: /upload courier status file/i }) as HTMLButtonElement
+    expect(submitButton.disabled).toBe(true)
 
     const input = screen.getByLabelText(/courier status file/i) as HTMLInputElement
     await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'morning.csv'))
-    expect(continueButton.disabled).toBe(true)
+    // A file alone is not enough: the courier is still unset.
+    expect(submitButton.disabled).toBe(true)
     expect(calls.some((c) => c.url.includes('/ops/uploads/courier-status'))).toBe(false)
 
     await userEvent.click(screen.getByText(/select a courier/i))
     await userEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: 'Blue Dart' }))
-    expect(continueButton.disabled).toBe(false)
-    await userEvent.click(continueButton)
-
-    const submitButton = (await screen.findByRole('button', { name: /upload courier status file/i })) as HTMLButtonElement
+    expect(submitButton.disabled).toBe(false)
+    // Still nothing posted: enabling the button is not submitting it.
     expect(calls.some((c) => c.url.includes('/ops/uploads/courier-status'))).toBe(false)
     await userEvent.click(submitButton)
 
@@ -849,8 +851,7 @@ describe('uploads', () => {
     await userEvent.upload(screen.getByLabelText(/courier status file/i), makeFile('x', 'morning.csv'))
     await userEvent.click(screen.getByText(/select a courier/i))
     await userEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: 'Blue Dart' }))
-    await userEvent.click(screen.getByRole('button', { name: /continue to submit/i }))
-    await userEvent.click(await screen.findByRole('button', { name: /upload courier status file/i }))
+    await userEvent.click(screen.getByRole('button', { name: /upload courier status file/i }))
 
     await waitFor(() => {
       expect(screen.getByText('Moved forward')).toBeTruthy()
