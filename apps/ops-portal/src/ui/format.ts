@@ -79,18 +79,49 @@ export function humanHeader(key: string): string {
     .trim()
 }
 
+// ONE DATE SHAPE FOR THE WHOLE CONSOLE: `17 Aug '26` and `17 Aug '26, 11:51 AM`.
+//
+// The date half is byte-identical between the two, which is what lets a table
+// mixing a date-only column with a datetime one read as a single system rather
+// than two conventions sharing a row.
+//
+// WHY THIS IS HAND-ROLLED rather than toLocaleString('en-IN', ...). The two
+// formatters this replaces asked the runtime for their output, and got:
+// a MISSING YEAR (the options listed day/month/hour/minute only, so every
+// instant older than a year was ambiguous), and a lowercase "am"/"pm" whose
+// exact spelling, spacing and separator are the ICU build's business, not
+// ours. Pinning it here means the portal renders the same string in a
+// browser, in jsdom, and in whatever Node the CI runs.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const
+
+function dateParts(d: Date): { day: string; mon: string; yy: string; hh: string; mm: string; ampm: string } {
+  const h24 = d.getHours()
+  return {
+    day: String(d.getDate()).padStart(2, '0'),
+    mon: MONTHS[d.getMonth()] ?? '',
+    yy: String(d.getFullYear()).slice(-2),
+    // 0 and 12 both read as 12 on a 12-hour clock (midnight, noon). Padded, so
+    // every stamp is the same width and a column of them lines up.
+    hh: String(h24 % 12 === 0 ? 12 : h24 % 12).padStart(2, '0'),
+    mm: String(d.getMinutes()).padStart(2, '0'),
+    ampm: h24 < 12 ? 'AM' : 'PM',
+  }
+}
+
 export function fmtDate(iso: string | null | undefined): string {
   if (!iso) return '-'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '-'
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  const { day, mon, yy } = dateParts(d)
+  return `${day} ${mon} '${yy}`
 }
 
 export function fmtDateTime(iso: string | null | undefined): string {
   if (!iso) return '-'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '-'
-  return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+  const { day, mon, yy, hh, mm, ampm } = dateParts(d)
+  return `${day} ${mon} '${yy}, ${hh}:${mm} ${ampm}`
 }
 
 export function fmtNumber(n: number | null | undefined): string {
@@ -109,21 +140,10 @@ export function shortId(id: string | null | undefined, keep = 10): string {
   return id.length <= keep + 2 ? id : `${id.slice(0, keep)}…`
 }
 
-// "2h ago" for a scan column; callers put the full fmtDateTime in a title so
-// the exact instant stays one hover away. Future instants (clock skew) fall
-// back to the absolute form rather than saying "in -3m".
-export function fmtRelative(iso: string | null | undefined): string {
-  if (!iso) return '-'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '-'
-  const ms = Date.now() - d.getTime()
-  if (ms < 0) return fmtDateTime(iso)
-  const mins = Math.floor(ms / 60_000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
-  return fmtDate(iso)
-}
+// fmtRelative ("2h ago") WAS HERE and is deliberately gone (2026-08-17 ruling:
+// one date shape everywhere). It rendered a different kind of fact beside the
+// absolute instants it sat next to - the Device page's Activity card showed
+// "Received: 17 Aug, 11:40 am" directly above "Last moved: 1h ago" - and every
+// one of its call sites already carried the real instant in a `title`, so the
+// absolute form was always the answer and the relative one merely covered it.
+// Re-adding it would walk the same inconsistency back in.

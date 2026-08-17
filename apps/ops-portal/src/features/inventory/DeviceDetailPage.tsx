@@ -34,10 +34,9 @@ import {
 import { Card, CardBody, Button, ErrorNote, StatusPill, CodeChip, Spinner } from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
 import { BackLink, FactRow, SectionHeading } from '../../ui/DetailFacts.js'
-import { fmtDateTime, fmtRelative } from '../../ui/format.js'
+import { fmtDateTime } from '../../ui/format.js'
 import { useToast } from '../../ui/Toast.js'
 import { UnitStatusEditDialog } from './UnitStatusEditDialog.js'
-import { UnitDetailsEditDialog } from './UnitDetailsEditDialog.js'
 import { UNIT_SPINE, STAGE_COPY, legalNextStatuses, isTerminalStatus, statusLabel } from './unitStatus.js'
 
 // One device, end to end. The lifecycle owns the top of the page as a
@@ -154,7 +153,6 @@ export function DeviceDetailPage() {
   const [copied, setCopied] = useState(false)
 
   const [statusOpen, setStatusOpen] = useState(false)
-  const [detailsOpen, setDetailsOpen] = useState(false)
 
   // Direct-URL entry (no handed row): recover the row from the list read, the
   // same wire the table uses.
@@ -311,19 +309,7 @@ export function DeviceDetailPage() {
       <div className="grid gap-4 lg:grid-cols-3">
         <Card>
           <CardBody>
-            <div className="flex items-start justify-between gap-2">
-              <SectionHeading>Device</SectionHeading>
-              {/* Corrects what the intake file recorded. A different action
-                  from the status move above, so a different button. */}
-              <button
-                type="button"
-                aria-label="Edit device details"
-                onClick={() => setDetailsOpen(true)}
-                className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                <Pencil className="size-4" aria-hidden="true" />
-              </button>
-            </div>
+            <SectionHeading>Device</SectionHeading>
             <FactRow icon={Smartphone} label="Device ID">
               <span className="num">{row.deviceSerial ?? '-'}</span>
             </FactRow>
@@ -384,7 +370,7 @@ export function DeviceDetailPage() {
               {fmtDateTime(row.createdAt)}
             </FactRow>
             <FactRow icon={Calendar} label="Last moved">
-              <span title={fmtDateTime(row.updatedAt)}>{fmtRelative(row.updatedAt)}</span>
+              <span>{fmtDateTime(row.updatedAt)}</span>
             </FactRow>
             {/* Activation is its OWN axis, not a rung on the rail: a device can
                 be activated while its status still reads DISPATCHED, which is
@@ -408,21 +394,6 @@ export function DeviceDetailPage() {
         open={statusOpen}
         onOpenChange={setStatusOpen}
         onSaved={(status) => setRow({ ...row, status })}
-      />
-      <UnitDetailsEditDialog
-        unit={row}
-        vendors={manufacturers}
-        open={detailsOpen}
-        onOpenChange={setDetailsOpen}
-        onSaved={(patch: UnitDetailsPatch) =>
-          setRow({
-            ...row,
-            ...(patch.deviceSerial !== undefined ? { deviceSerial: patch.deviceSerial } : {}),
-            ...(patch.simNo !== undefined ? { simNo: patch.simNo } : {}),
-            ...(patch.manufacturerVndr !== undefined ? { manufacturerVndr: patch.manufacturerVndr } : {}),
-            ...(patch.location !== undefined ? { location: patch.location } : {}),
-          })
-        }
       />
     </div>
   )

@@ -5,9 +5,9 @@ import { fmtWait } from './BatchingRules.js'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { BatchablePools } from './BatchablePools.js'
+import { BatchPreviewCard } from './BatchPreviewCard.js'
 import { resolveGlobalRule } from './BatchingRules.js'
 import { PoolEntryActions } from './PoolEntryActions.js'
-import { PendingPoolDialog } from './PendingPoolDialog.js'
 import { DispatchGroupBadge } from './DispatchGroupBadge.js'
 import {
   getBatches,
@@ -77,7 +77,6 @@ export function FulfillmentPage() {
 
   // The pool dialog lives here so the page can open on the summary and the
   // batches list, and the pool is one click away.
-  const [poolOpen, setPoolOpen] = useState(false)
   const [pool, setPool] = useState<PoolEntryRow[]>([])
   const [batches, setBatches] = useState<BatchRow[]>([])
   const [configs, setConfigs] = useState<BatchingConfigRow[] | null>(null)
@@ -248,14 +247,22 @@ export function FulfillmentPage() {
           // The same resolved rule the AutoTriggerCard beside it displays, so
           // the "N/7 days" here and the "7 days" there can never disagree.
           maxWaitSeconds={rule.maxWaitSeconds}
-          viewPoolCount={pool.length}
-          onViewPool={() => setPoolOpen(true)}
+          // The pool itself, inline. Owned here because this page already reads
+          // it and PoolEntryActions already writes back through this `load`.
+          poolRows={pool}
+          poolColumns={poolColumns}
+          poolLoading={loading}
         />
-        <AutoTriggerCard
-          minLotSize={rule.minLotSize}
-          maxWaitSeconds={rule.maxWaitSeconds}
-          isDefault={rule.isDefault}
-        />
+        {/* The right column stacks: what the next batch WOULD contain, above
+            the rules that would form it without anyone here. */}
+        <div className="flex flex-col gap-4">
+          <BatchPreviewCard rows={pool} minLotSize={rule.minLotSize} />
+          <AutoTriggerCard
+            minLotSize={rule.minLotSize}
+            maxWaitSeconds={rule.maxWaitSeconds}
+            isDefault={rule.isDefault}
+          />
+        </div>
       </div>
 
       {/* Batches is the default second card: it is what the operator wants to
@@ -274,20 +281,13 @@ export function FulfillmentPage() {
             onRowClick={(r) => navigate(`/batches/${r.id}`, { state: { fromSearch: searchParams.toString() } })}
             searchPlaceholder="Search batch id, vendor or trigger…"
             emptyTitle="No batches have formed yet"
-            emptyMessage="Trigger one from Ready to batch above once records are waiting."
+            emptyMessage="Trigger one from Build batch above once records are waiting."
             pageSize={20}
             pageSizeOptions={[20, 50, 100]}
           />
         </Card>
       </div>
 
-      <PendingPoolDialog
-        open={poolOpen}
-        onOpenChange={setPoolOpen}
-        rows={pool}
-        loading={loading}
-        columns={poolColumns}
-      />
     </div>
   )
 }
@@ -306,9 +306,13 @@ function AutoTriggerCard({
   isDefault: boolean
 }) {
   return (
-    <Card className="overflow-hidden">
+    // pt-0 because the accent bar is this card's FIRST child and the Card's own
+    // py-(--card-spacing) was putting a band of white above it, so an edge
+    // accent rendered as a line floating inside the card. The spacing token
+    // matches the Build batch card beside it so the two share one rhythm.
+    <Card className="gap-3 overflow-hidden pt-0 [--card-spacing:--spacing(5)]">
       <div className="h-1 w-full bg-primary/40" aria-hidden="true" />
-      <div className="flex items-baseline justify-between gap-3 px-5 pt-4">
+      <div className="flex items-baseline justify-between gap-3 px-5 pt-1">
         <div>
           <h2 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
             Auto-trigger
@@ -321,9 +325,9 @@ function AutoTriggerCard({
           </span>
         )}
       </div>
-      <dl className="grid grid-cols-1 gap-3 p-5 pt-3">
-        <div className="flex items-center gap-3 rounded-xl border border-border/70 bg-primary/[0.04] p-3">
-          <span className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+      <dl className="grid grid-cols-1 gap-2.5 px-5">
+        <div className="flex items-center gap-2.5 rounded-xl border border-border/70 bg-primary/[0.04] p-2.5">
+          <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Package className="size-4" aria-hidden="true" />
           </span>
           <div className="min-w-0 flex-1">
@@ -333,8 +337,8 @@ function AutoTriggerCard({
             </dd>
           </div>
         </div>
-        <div className="flex items-center gap-3 rounded-xl border border-border/70 bg-primary/[0.04] p-3">
-          <span className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <div className="flex items-center gap-2.5 rounded-xl border border-border/70 bg-primary/[0.04] p-2.5">
+          <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Timer className="size-4" aria-hidden="true" />
           </span>
           <div className="min-w-0 flex-1">

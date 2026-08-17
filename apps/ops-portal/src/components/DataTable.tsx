@@ -11,6 +11,9 @@ export interface DataTableColumn<T> {
    * not sortable and does not feed the search box, exactly DataGrid's own rule.
    */
   sortValue?(row: T): string | number
+  /** Forwarded to the grid: cap this column's width in px and clamp long text
+   *  with an ellipsis. See GridColumn.maxWidth. */
+  maxWidth?: number
 }
 
 export interface DataTableProps<T> {
@@ -55,6 +58,7 @@ export function DataTable<T>({
     // position which is stable per render.
     cell: (row: T) => c.cell(row, colIndex),
     sortValue: c.sortValue,
+    maxWidth: c.maxWidth,
   }))
 
   return (
@@ -81,11 +85,15 @@ export function PlainTable<T>({ columns, rows, getRowKey, emptyMessage = 'No rec
   const safeRows: readonly T[] = usable ? rows : []
   return (
     <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-left text-sm">
+      {/* Same `min-w-max` pairing as DataGrid: the wrapper only scrolls if the
+          table is allowed to outgrow it. This is the one table that does not
+          delegate to the grid, so without this it would be the only surface
+          left squeezing its columns. */}
+      <table className="w-full min-w-max border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-border">
             {columns.map((column) => (
-              <th key={column.key} scope="col" className="px-3 py-2 font-semibold text-foreground">
+              <th key={column.key} scope="col" className="whitespace-nowrap px-3 py-2 font-semibold text-foreground">
                 {column.header}
               </th>
             ))}
@@ -102,8 +110,18 @@ export function PlainTable<T>({ columns, rows, getRowKey, emptyMessage = 'No rec
             safeRows.map((row, index) => (
               <tr key={getRowKey ? getRowKey(row, index) : index} className="border-b border-border">
                 {columns.map((column) => (
-                  <td key={column.key} className="px-3 py-2 text-foreground">
-                    {column.cell(row, index)}
+                  <td key={column.key} className="whitespace-nowrap px-3 py-2 text-foreground">
+                    {column.maxWidth === undefined ? (
+                      column.cell(row, index)
+                    ) : (
+                      // Same clamp as the grid's SizedCell; this table has no
+                      // resize handles (it exists only for the damage-case
+                      // rows whose focused inputs TanStack would remount
+                      // mid-typing), so maxWidth is its whole story.
+                      <div className="truncate" style={{ maxWidth: column.maxWidth }}>
+                        {column.cell(row, index)}
+                      </div>
+                    )}
                   </td>
                 ))}
               </tr>

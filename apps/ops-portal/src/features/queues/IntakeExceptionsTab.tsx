@@ -4,7 +4,7 @@ import { type GridColumn } from '../../ui/DataGrid.js'
 import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { Card, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
-import { fmtDateTime, fmtRelative, shortId } from '../../ui/format.js'
+import { fmtDateTime, shortId } from '../../ui/format.js'
 import { orDash } from './shared.js'
 import {
   getIntakeExceptions,
@@ -187,8 +187,8 @@ export function IntakeExceptionsTab() {
       header: 'Created',
       sortValue: (r) => r.createdAt,
       cell: (r) => (
-        <span title={fmtDateTime(r.createdAt)} className="text-muted-foreground">
-          {fmtRelative(r.createdAt)}
+        <span className="text-muted-foreground">
+          {fmtDateTime(r.createdAt)}
         </span>
       ),
     },
@@ -200,8 +200,8 @@ export function IntakeExceptionsTab() {
         r.resolvedAt === null ? (
           <span className="text-muted-foreground">-</span>
         ) : (
-          <span title={fmtDateTime(r.resolvedAt)}>
-            {fmtRelative(r.resolvedAt)}
+          <span>
+            {fmtDateTime(r.resolvedAt)}
             <span className="block text-[11px] text-muted-foreground">{orDash(r.resolvedByActor)}</span>
           </span>
         ),

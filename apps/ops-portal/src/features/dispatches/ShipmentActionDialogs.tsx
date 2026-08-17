@@ -61,7 +61,6 @@ export function CorrectStatusDialog({ shptId, awb, open, onOpenChange, onSaved }
   const { client } = useAuth()
   const { toast } = useToast()
   const [status, setStatus] = useState<string>('')
-  const [courierTimestamp, setCourierTimestamp] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -69,15 +68,18 @@ export function CorrectStatusDialog({ shptId, awb, open, onOpenChange, onSaved }
   useEffect(() => {
     if (!open) return
     setStatus('')
-    setCourierTimestamp('')
     setError(null)
   }, [open])
 
   async function save(): Promise<void> {
-    if (status === '' || courierTimestamp === '') return
+    if (status === '') return
     setBusy(true)
     setError(null)
     try {
+      // The instant is taken at submit, not typed (2026-08-17 ruling): every
+      // status surface stamps system time. The edge still requires the field,
+      // so it is sent, just never asked for.
+      const courierTimestamp = new Date().toISOString()
       await correctStatus(client, shptId, { status, courierTimestamp }, newIdempotencyKey())
       onOpenChange(false)
       toast(`Courier status corrected to ${status}`)
@@ -109,14 +111,6 @@ export function CorrectStatusDialog({ shptId, awb, open, onOpenChange, onSaved }
               options={KNOWN_STATUSES.map((s) => ({ value: s, label: s }))}
             />
           </Field>
-          <Field label="When it happened" htmlFor="correct-courierTimestamp" hint="The courier's time, not now.">
-            <Input
-              id="correct-courierTimestamp"
-              type="datetime-local"
-              value={courierTimestamp}
-              onChange={(e) => setCourierTimestamp(e.target.value)}
-            />
-          </Field>
         </div>
         <DialogFooter>
           <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
@@ -125,7 +119,7 @@ export function CorrectStatusDialog({ shptId, awb, open, onOpenChange, onSaved }
           <Button
             type="button"
             onClick={() => void save()}
-            disabled={status === '' || courierTimestamp === ''}
+            disabled={status === ''}
             loading={busy}
           >
             Record update
@@ -140,7 +134,6 @@ export function OverrideStatusDialog({ shptId, awb, open, onOpenChange, onSaved 
   const { client } = useAuth()
   const { toast } = useToast()
   const [status, setStatus] = useState<string>('')
-  const [courierTimestamp, setCourierTimestamp] = useState('')
   const [overrideReason, setOverrideReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -148,18 +141,19 @@ export function OverrideStatusDialog({ shptId, awb, open, onOpenChange, onSaved 
   useEffect(() => {
     if (!open) return
     setStatus('')
-    setCourierTimestamp('')
     setOverrideReason('')
     setError(null)
   }, [open])
 
-  const incomplete = status === '' || courierTimestamp === '' || overrideReason.trim() === ''
+  const incomplete = status === '' || overrideReason.trim() === ''
 
   async function save(): Promise<void> {
     if (incomplete) return
     setBusy(true)
     setError(null)
     try {
+      // System time at submit, same ruling as the correction dialog above.
+      const courierTimestamp = new Date().toISOString()
       await overrideTerminal(
         client,
         shptId,
@@ -201,14 +195,6 @@ export function OverrideStatusDialog({ shptId, awb, open, onOpenChange, onSaved 
               value={status}
               onChange={setStatus}
               options={KNOWN_STATUSES.map((s) => ({ value: s, label: s }))}
-            />
-          </Field>
-          <Field label="When it happened" htmlFor="override-courierTimestamp" hint="The courier's time, not now.">
-            <Input
-              id="override-courierTimestamp"
-              type="datetime-local"
-              value={courierTimestamp}
-              onChange={(e) => setCourierTimestamp(e.target.value)}
             />
           </Field>
           <Field label="Override reason" htmlFor="override-reason" hint="Why the ladder is being bypassed.">
