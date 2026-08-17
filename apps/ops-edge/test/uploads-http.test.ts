@@ -5,22 +5,19 @@ import request from 'supertest'
 import { generateKeyPair, exportJWK, SignJWT, type JSONWebKeySet } from 'jose'
 import type { INestApplication } from '@nestjs/common'
 import { PrismaClient as FulfillmentClient, loadOpsConfig, InMemoryAssetStore } from '@andpay/fulfillment-service'
-import {
-  PrismaClient as TmsClient,
-  DEFAULT_REQUEST_COLUMN_MAPPING,
-  DEFAULT_DAMAGE_COLUMN_MAPPING,
-} from '@andpay/tms-service'
+import { PrismaClient as TmsClient, DEFAULT_REQUEST_COLUMN_MAPPING } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { PrismaClient as IdentityClient } from '@andpay/identity-service'
-import { newId, toUuid } from '@andpay/ids'
 import { buildOpsEdgeApp, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from '../src/index.js'
 import { bankRequestXlsx } from './xlsx-fixture.js'
 
 // The REAL app, real in-process HTTP via supertest against app.getHttpServer().
 // This suite exercises the Phase 2 Task 2 MULTIPART upload surface: the bank
-// PREVIEW (persists nothing), the bank COMMIT (partial-accept), and the damage
-// COMMIT, covering BOTH .csv and .xlsx through the edge, plus the negative authz
-// posture and the size-cap 413.
+// PREVIEW (persists nothing) and the bank COMMIT (partial-accept), covering
+// BOTH .csv and .xlsx through the edge, plus the negative authz posture and
+// the size-cap 413. (The damage upload routes this file once covered were
+// DELETED by D-25, DAMAGE_PLAN 16 Aug 2026: there is no damage file ingestion
+// anymore; the flag-damage flow is covered in flag-damage-http.test.ts.)
 const EXPECTED_ISS = 'https://auth.andpay.test/ops'
 const KID = 'ops-edge-uploads-test-key-1'
 
@@ -65,7 +62,6 @@ async function mint(overrides: Record<string, unknown> = {}): Promise<string> {
 
 // -------- CSV / XLSX fixtures (identity-mapping headers today) --------
 const REQUEST_HEADERS = Object.values(DEFAULT_REQUEST_COLUMN_MAPPING)
-const DAMAGE_HEADERS = Object.values(DEFAULT_DAMAGE_COLUMN_MAPPING)
 
 const BASE_REQUEST: Record<string, string> = {
   bankMerchantReference: 'BM-1',
@@ -87,25 +83,9 @@ const BASE_REQUEST: Record<string, string> = {
   vpaHint: 'acme@hdfcbank',
 }
 
-// Phase 3 Task 1 (BRD FR-08, FR-11): must be one of the four seeded
-// damage_reason master examples, or the damage ingest now quarantines it
-// (invalid_damage_reason) instead of replacing.
-const BASE_DAMAGE: Record<string, string> = {
-  tenantReference: 'HDFC',
-  vpaValue: 'acme@hdfcbank',
-  damageReason: 'battery issue',
-  bankRemarks: 'replace asap',
-  shipToAddress: 'New Addr',
-}
-
 function requestCells(over: Record<string, string> = {}): string[] {
   const rec = { ...BASE_REQUEST, ...over }
   return REQUEST_HEADERS.map((h) => rec[h] ?? '')
-}
-
-function damageCells(over: Record<string, string> = {}): string[] {
-  const rec = { ...BASE_DAMAGE, ...over }
-  return DAMAGE_HEADERS.map((h) => rec[h] ?? '')
 }
 
 function toCsv(header: string[], rows: string[][]): Buffer {
@@ -129,19 +109,6 @@ async function fulfillmentOutboxAuthz(): Promise<{ decision: string; operation: 
     { payload: { decision: string; operation: string; reasonCode?: string } }[]
   >`SELECT payload FROM outbox WHERE event_type = 'authz.audit' ORDER BY created_at ASC`
   return rows.map((r) => ({ decision: r.payload.decision, operation: r.payload.operation, reasonCode: r.payload.reasonCode }))
-}
-
-async function seedOriginalAssignment(vpa: string, bank: string): Promise<void> {
-  const asgnUuid = toUuid(newId('asgn'))
-  await tmsDb.$executeRaw`INSERT INTO assignment (
-    id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
-    bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count,
-    billable, demand_state, source_event_id, dispatch_group, updated_at
-  ) VALUES (
-    ${asgnUuid}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
-    'Acme', 'Acme Pvt Ltd', '5814', ${bank}, 'HDFC Bank', 'Old Addr', 'upi://pay', ${vpa}, true, 1, 2,
-    true, 'pooled-for-fulfillment', 'ops-seed|1', 'SOUNDBOX', now()
-  )`
 }
 
 beforeAll(async () => {
@@ -326,99 +293,3 @@ describe('ops-edge uploads: bank COMMIT (multipart, partial-accept)', () => {
   })
 })
 
-describe('ops-edge uploads: damage PREVIEW (multipart, persists nothing)', () => {
-  it('projects a matched row as valid and an unmatched row as no_match, writing ZERO rows', async () => {
-    await seedOriginalAssignment('acme@hdfcbank', 'HDFC')
-    const csv = toCsv(DAMAGE_HEADERS, [
-      damageCells(),
-      damageCells({ vpaValue: 'unknown@hdfcbank', damageReason: 'x', bankRemarks: '', shipToAddress: 'A' }),
-    ])
-    const token = await mint({})
-    const res = await request(app.getHttpServer())
-      .post('/ops/uploads/damage/preview')
-      .set('Authorization', `Bearer ${token}`)
-      .attach('file', csv, 'damage.csv')
-    expect(res.status).toBe(200)
-    expect(res.body.summary).toEqual({ total: 2, valid: 1, invalid: 1 })
-    expect(res.body.rows[0].valid).toBe(true)
-    expect(res.body.rows[0].reasonCode).toBeUndefined()
-    expect(res.body.rows[1].valid).toBe(false)
-    expect(res.body.rows[1].reasonCode).toBe('no_match')
-
-    // Persist-nothing: no replacement created, and none of the tables the
-    // real commit path would touch on these SAME two outcomes gained a row
-    // (a no_match row would INSERT quarantine_row on commit, damage.ts:81-84;
-    // matches the bank-preview sibling test's exact table set above), no
-    // Idempotency-Key was ever required or consumed.
-    const repl = await tmsDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
-    expect(Number(repl[0]!.n)).toBe(0)
-    expect(await tmsCount('pending_row')).toBe(0)
-    expect(await tmsCount('quarantine_row')).toBe(0)
-    expect(await tmsCount('ingest_file')).toBe(0)
-    expect(await tmsCount('outbox')).toBe(0)
-    expect(await fulfillmentOutboxAuthz()).toHaveLength(0)
-  })
-
-  it('projects invalid_damage_reason for a matched row whose reason is not in the active master', async () => {
-    await seedOriginalAssignment('acme@hdfcbank', 'HDFC')
-    const csv = toCsv(DAMAGE_HEADERS, [damageCells({ damageReason: 'not a real reason' })])
-    const token = await mint({})
-    const res = await request(app.getHttpServer())
-      .post('/ops/uploads/damage/preview')
-      .set('Authorization', `Bearer ${token}`)
-      .attach('file', csv, 'damage.csv')
-    expect(res.status).toBe(200)
-    expect(res.body.rows[0].valid).toBe(false)
-    expect(res.body.rows[0].reasonCode).toBe('invalid_damage_reason')
-    // Same persist-nothing bar as the sibling test above: an
-    // invalid_damage_reason row would ALSO INSERT quarantine_row on commit
-    // (damage.ts:117-120), so this is the specific table this outcome must
-    // prove it never touched.
-    const repl = await tmsDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
-    expect(Number(repl[0]!.n)).toBe(0)
-    expect(await tmsCount('pending_row')).toBe(0)
-    expect(await tmsCount('quarantine_row')).toBe(0)
-    expect(await tmsCount('ingest_file')).toBe(0)
-    expect(await tmsCount('outbox')).toBe(0)
-  })
-
-  it('rejects an unauthorized role with 403 and emits NO 6e (persist-nothing on DENY too)', async () => {
-    const csv = toCsv(DAMAGE_HEADERS, [damageCells()])
-    const token = await mint({ psr: 'role:not_ops' })
-    const res = await request(app.getHttpServer())
-      .post('/ops/uploads/damage/preview')
-      .set('Authorization', `Bearer ${token}`)
-      .attach('file', csv, 'damage.csv')
-    expect(res.status).toBe(403)
-    expect(await fulfillmentOutboxAuthz()).toHaveLength(0)
-  })
-})
-
-describe('ops-edge uploads: damage COMMIT (multipart)', () => {
-  it('partial-accepts a .csv: a matched row replaces, an unmatched row quarantines', async () => {
-    await seedOriginalAssignment('acme@hdfcbank', 'HDFC')
-    const csv = toCsv(DAMAGE_HEADERS, [
-      damageCells(),
-      damageCells({ vpaValue: 'unknown@hdfcbank', damageReason: 'x', bankRemarks: '', shipToAddress: 'A' }),
-    ])
-    const token = await mint({})
-    const res = await request(app.getHttpServer())
-      .post('/ops/uploads/damage/commit')
-      .set('Authorization', `Bearer ${token}`)
-      .set('Idempotency-Key', randomUUID())
-      .attach('file', csv, 'damage.csv')
-    expect(res.status).toBe(200)
-    expect(res.body.replaced).toBe(1)
-    expect(res.body.quarantined).toBe(1)
-
-    // W-5: seedOriginalAssignment is the legacy combined shape (soundbox plus
-    // counts on one row), so the matched row's like-for-like clone mints TWO
-    // replacement groups (SOUNDBOX and COLLATERAL). replaced stays 1 because
-    // it counts file ROWS, not minted groups.
-    const repl = await tmsDb.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of IS NOT NULL`
-    expect(Number(repl[0]!.n)).toBe(2)
-
-    const allow = await tmsOutboxAuthz()
-    expect(allow).toEqual([{ decision: 'ALLOW', operation: 'ops:upload-damage-file' }])
-  })
-})

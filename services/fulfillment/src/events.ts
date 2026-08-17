@@ -73,7 +73,11 @@ export interface ShipmentFactPayload {
   // never be mistaken for the primary kit's dispatch.
   collateral?: boolean
   // the asgn_ ids this collateral consignment covers. Present ONLY on a
-  // collateral fact: one AWB can legitimately cover many dispatch ids.
+  // collateral fact: one AWB can legitimately cover many dispatch ids. Since
+  // 16 Aug 26 (REVIEW_REPORT.md F1) the STATUS TRANSITIONS of a collateral
+  // parcel carry it too, not just the birth fact: TMS closes a COLLATERAL
+  // replacement case on the DELIVERED transition and the fact is the only
+  // sanctioned bridge (D-24, T7).
   asgnIds?: string[]
 }
 

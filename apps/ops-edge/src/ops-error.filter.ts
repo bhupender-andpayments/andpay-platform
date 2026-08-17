@@ -29,10 +29,16 @@ interface KindedError {
   kind?: unknown
 }
 
-function isOpsClientErrorShape(err: unknown): err is { kind: 'not-found' | 'invalid'; reasons?: unknown } {
+// `kind: 'conflict'` joined with the Flag Damage write (DAMAGE_PLAN DP-3): the
+// domain rejects a flag while a non-Closed replacement child already exists,
+// and that is a 409 (the request was well-formed and authorized; the resource
+// state refuses it), distinct from the caller-error 400 and the missing-target
+// 404. Duck-typed like the other two kinds, so any context's domain can throw
+// it with no new import here.
+function isOpsClientErrorShape(err: unknown): err is { kind: 'not-found' | 'invalid' | 'conflict'; reasons?: unknown } {
   if (typeof err !== 'object' || err === null) return false
   const kind = (err as KindedError).kind
-  return kind === 'not-found' || kind === 'invalid'
+  return kind === 'not-found' || kind === 'invalid' || kind === 'conflict'
 }
 
 // A narrow, opt-in exception to the fixed-body rule above, and the ONLY detail
@@ -97,6 +103,10 @@ export class OpsErrorFilter extends BaseExceptionFilter {
     const res = host.switchToHttp().getResponse<MinimalResponse>()
     if (exception.kind === 'not-found') {
       res.status(HttpStatus.NOT_FOUND).json({ code: 'not-found', message: 'resource not found' })
+      return
+    }
+    if (exception.kind === 'conflict') {
+      res.status(HttpStatus.CONFLICT).json({ code: 'conflict', message: 'conflicting resource state' })
       return
     }
     const reasons = safeReasons(exception.reasons)

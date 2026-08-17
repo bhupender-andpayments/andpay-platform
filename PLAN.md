@@ -245,6 +245,13 @@ plus status) as a new ops upload kind through the same single-record write in a 
 per-row rejects into the standard result shape. Note D-16 must land first or the delivered-gate
 blocks bulk marking of undelivered-but-activated rows.
 
+> SUPERSEDED 16 Aug 2026 (feature/damage-workflow). The 13 Aug BRD update
+> "Revised Damaged and Replacement Workflow" voids D-20 and D-21: there is NO
+> damage file ingestion anymore. Damage intake is an in-screen Flag Damage
+> action (D-25 to D-31), the operator resolves the target (D-26), which also
+> dissolves O-1. See DAMAGE_PLAN.md at the repo root. The two decision blocks
+> below are kept as history only.
+
 **D-20 (no quantity in damage file):** Remove the three quantity columns from the damage
 mapping and the items override. This reverses FR08-1 (owed to corpus) and, critically, removes
 the only mechanism that decides WHICH collateral is damaged, which is exactly O-1. The removal

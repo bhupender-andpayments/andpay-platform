@@ -4,28 +4,25 @@ import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-li
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
-import { DamageUploadPage } from '../../src/features/uploads/DamageUploadPage.js'
 import { DeviceInventoryUploadPage } from '../../src/features/uploads/DeviceInventoryUploadPage.js'
 import { CourierStatusUploadPage } from '../../src/features/uploads/CourierStatusUploadPage.js'
 import { ActivationUploadPage } from '../../src/features/uploads/ActivationUploadPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
 // The confirmed ops-edge contract (apps/ops-edge/src/ops.controller.ts's
-// previewBank/commitBank/previewDamage/commitDamage/uploadDeviceInventory,
-// grounded against services/tms/src/ops.ts and
+// previewBank/commitBank/uploadDeviceInventory, grounded against
+// services/tms/src/ops.ts and
 // services/fulfillment/src/ops-device-inventory.ts):
 //   POST /ops/uploads/bank/preview             multipart `file`, no
 //     Idempotency-Key, writes nothing -> BankPreviewResult
 //   POST /ops/uploads/bank/commit               multipart `file`,
 //     Idempotency-Key -> { accepted, quarantined, duplicate, fileId }
-//   POST /ops/uploads/damage/preview            multipart `file`, no
-//     Idempotency-Key, writes nothing -> DamagePreviewResult (Phase 7 Task 7,
-//     L11/FR08-3 decision item 11: preview parity for the damage upload)
-//   POST /ops/uploads/damage/commit             multipart `file`,
-//     Idempotency-Key -> { replaced, quarantined, duplicate, fileId }
 //   POST /ops/uploads/device-inventory           multipart `file` +
 //     `manufacturerVndrId` field, Idempotency-Key -> OpsDeviceInventoryResult
 //     (Phase-5 Task 1 edge, wired here for the first time)
+// (The damage upload routes that used to sit in this list are DELETED: D-25
+// voided damage file ingestion, and the flag-damage dialog on the dispatch
+// page replaced them. Its coverage lives in dispatch-detail.test.tsx.)
 // These are raw multipart `fetch`es (mirrors apps/vendor-portal
 // ReturnUploadPage.tsx's approach), NOT plain JSON: the server parses and
 // validates the raw file, so no rows are ever posted by the SPA. GET
@@ -62,36 +59,8 @@ function readFormFileText(form: FormData): Promise<string> {
 
 // The bank fixtures that used to live here (BANK_ROW_1/2, BANK_PREVIEW_RESULT)
 // moved to test/features/workflow-upload.test.tsx along with the bank flow
-// itself (2026-08-11 ruling).
-
-const DAMAGE_ROW_1 = {
-  fileId: 'file-2',
-  rowNo: 1,
-  tenantReference: 'HDFC',
-  vpaValue: 'acme@hdfcbank',
-  damageReason: 'battery issue',
-  bankRemarks: 'replace asap',
-  shipToAddress: 'New Addr',
-}
-
-const DAMAGE_ROW_2 = {
-  fileId: 'file-2',
-  rowNo: 2,
-  tenantReference: 'HDFC',
-  vpaValue: 'unknown@hdfcbank',
-  damageReason: 'x',
-  bankRemarks: '',
-  shipToAddress: 'A',
-}
-
-const DAMAGE_PREVIEW_RESULT = {
-  rows: [
-    { rowNo: 1, valid: true, row: DAMAGE_ROW_1 },
-    { rowNo: 2, valid: false, reasonCode: 'no_match', row: DAMAGE_ROW_2 },
-  ],
-  summary: { total: 2, valid: 1, invalid: 1 },
-  structuralErrors: [],
-}
+// itself (2026-08-11 ruling). The damage fixtures went with the damage upload
+// itself (D-25).
 
 const MANUFACTURERS = [
   {
@@ -215,94 +184,9 @@ describe('uploads', () => {
   // test/features/workflow-upload.test.tsx against UploadStage/ValidateStage
   // directly.
 
-  it('damage upload: picking a file POSTs it multipart to preview (no Idempotency-Key, writes nothing) and renders the real per-row projected outcome, then Commit POSTs with a fresh Idempotency-Key and shows the counts', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.includes('/ops/uploads/damage/preview')) return jsonResponse(DAMAGE_PREVIEW_RESULT)
-        if (url.includes('/ops/uploads/damage/commit')) {
-          return jsonResponse({ replaced: 1, quarantined: 1, duplicate: 0, fileId: 'file-2' })
-        }
-        return jsonResponse({})
-      }),
-    )
-
-    renderWithProviders(<DamageUploadPage />)
-
-    const input = screen.getByLabelText(/damage report file/i) as HTMLInputElement
-    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'damage.csv'))
-
-    // Real per-row preview data renders before any commit call is made.
-    expect(await screen.findByText('acme@hdfcbank')).toBeTruthy()
-    expect(screen.getByText('unknown@hdfcbank')).toBeTruthy()
-    expect(screen.getByText('No Match')).toBeTruthy()
-    expect(screen.getByText(/2 row\(s\) previewed/i)).toBeTruthy()
-
-    const previewCall = calls.find((c) => c.url.includes('/ops/uploads/damage/preview'))
-    expect(previewCall).toBeTruthy()
-    expect(headerValue(previewCall!, 'Idempotency-Key')).toBeNull()
-    expect(calls.some((c) => c.url.includes('/ops/uploads/damage/commit'))).toBe(false)
-
-    // Commit is now its own step (ruling 2026-08-11): Review must be left
-    // deliberately before the commit button exists at all.
-    await userEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
-
-    await userEvent.click(screen.getByRole('button', { name: /commit damage report file/i }))
-    expect(await screen.findByText('Replaced')).toBeTruthy()
-
-    await waitFor(() => {
-      expect(calls.some((c) => c.url.includes('/ops/uploads/damage/commit'))).toBe(true)
-    })
-    const commitCall = calls.find((c) => c.url.includes('/ops/uploads/damage/commit'))!
-    expect(headerValue(commitCall, 'Idempotency-Key')).toBeTruthy()
-    expect(screen.getByRole('link', { name: /view in quarantine queue/i })).toBeTruthy()
-  })
-
-  it('damage upload: a file over 5 MB is rejected client-side and never posted', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse(DAMAGE_PREVIEW_RESULT))
-    vi.stubGlobal('fetch', fetchMock)
-
-    renderWithProviders(<DamageUploadPage />)
-
-    const input = screen.getByLabelText(/damage report file/i) as HTMLInputElement
-    await userEvent.upload(input, makeOversizedFile())
-
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/5 MB/i)
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  // Ruling 2026-08-11: Commit moved off the Review card onto its own rail
-  // step, so a preview no longer hands the operator a commit button in the
-  // same breath as the table.
-  it('damage: preview lands on Review, and Commit is its own step', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (url.includes('/ops/uploads/damage/preview')) return jsonResponse(DAMAGE_PREVIEW_RESULT)
-        if (url.includes('/ops/uploads/damage/commit')) return jsonResponse({ replaced: 1, quarantined: 1, duplicate: 0, fileId: 'file-2' })
-        return jsonResponse({})
-      }),
-    )
-
-    renderWithProviders(<DamageUploadPage />)
-
-    const input = screen.getByLabelText(/damage report file/i) as HTMLInputElement
-    await userEvent.upload(input, makeFile('irrelevant, the server parses this', 'damage.csv'))
-
-    // After preview resolves: the summary and per-row table render, and the
-    // commit button does NOT exist yet.
-    expect(await screen.findByText(/row\(s\) previewed/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /commit damage report file/i })).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: /continue to commit/i }))
-
-    // The commit step states what is about to be written, then offers the button.
-    expect(screen.getByText(/will open replacements/i)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /commit damage report file/i })).toBeTruthy()
-  })
+  // (The three damage-upload tests that led this suite are DELETED with the
+  // damage upload itself, D-25. The flag-damage dialog that replaced the flow
+  // is covered in dispatch-detail.test.tsx.)
 
   // (2026-08-14: the step rail itself is gone from every upload page, so the
   // lock-the-Review-pill behaviour it enforced went with it. The stale-preview

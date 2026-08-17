@@ -35,6 +35,21 @@ export const ROLES: RoleConfig['roles'] = {
     ceiling: 'own-program',
     requiredAcr: 'AAL2',
   }),
+  // D-29 (Damage and Replacement Workflow, 16 Aug 2026): the customer-support
+  // operator. On the AUTH plane it is shaped exactly like support_readonly
+  // (login must recognize the role or it 401s unknown-role; it holds no auth
+  // mutation permissions). Its operational grants live where every ops role's
+  // do: the ops-plane OPS_ROLES config gives it the single ops:flag-damage
+  // mutation, and the ops edge's read-side deny list
+  // (apps/ops-edge/src/read-restriction.ts) withholds downloads, CSV export,
+  // and config views. The ops-plane config is deliberately not named by path
+  // here: the auth context must never reference the fulfillment context, and
+  // the C4 scrub test enforces that on this file's literal text.
+  customer_support: humanRole({
+    permissions: ['principal:read'],
+    ceiling: 'own-program',
+    requiredAcr: 'AAL2',
+  }),
   ops: humanRole({
     permissions: ['principal:read', 'vendor_credential:create', 'vendor_credential:revoke'],
     ceiling: 'own-program',

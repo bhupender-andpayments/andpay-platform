@@ -101,7 +101,18 @@ model Assignment {
   /// text, so it stays on this domain row and never rides a fact or an audit
   /// record (S7/DD1), the same posture as batch.trigger_note.
   opsRemarks          String?   @map("ops_remarks")
-  caseStatus          String?   @map("case_status") // Open | In-Progress | Closed (replacements only)
+  /// D-27 (Damage and Replacement Workflow, 16 Aug 2026): WHO flagged the
+  /// damage that minted this replacement, the flagging operator's principal id
+  /// (claim.sub, never a request body, M7/S16). Set only by ops:flag-damage;
+  /// null on every original and on every file-born replacement, which predate
+  /// the concept and are deliberately not backfilled. An id and not free text
+  /// (S4/S7): the why lives in ops_remarks above, the who lives here.
+  flaggedBy           String?   @map("flagged_by")
+  /// Open | In-Progress | Closed, replacements only. One LIVE (non-Closed)
+  /// child per parent is enforced by the migration-only partial unique index
+  /// assignment_one_live_case (20260816210000, DP-3/F2); Prisma cannot
+  /// express partial indexes, so it does not appear in this schema.
+  caseStatus          String?   @map("case_status")
   demandState         String    @map("demand_state") // received | pooled-for-fulfillment | closed | replacement-raised | activated
   activatedAt         DateTime? @map("activated_at") @db.Timestamptz(6)
   /// D-16 activation branch: the LATEST activation status, denormalized off
@@ -203,10 +214,9 @@ model IngestFile {
 }
 
 /// Damage-reason master (BRD FR-08, FR-11; Phase 3 Task 1). The admin-managed
-/// reference list the damage-file ingest (damage.ts ingestDamageRowWithinTx)
-/// validates row.damageReason against before creating a replacement; an
-/// unmatched or deactivated reason quarantines the row instead (the existing
-/// S8 quarantine_row pattern), reason_code invalid_damage_reason. Platform-only
+/// reference list the flag-damage write (flag-damage.ts flagDamageOps, D-26)
+/// validates reasonCode against before minting a replacement; an unknown or
+/// deactivated code is refused as a client error (DP-5). Platform-only
 /// (no program_id, no merchant scope, permissive v1 RLS): a damage reason is a
 /// shared taxonomy across every tenant/program, mirroring vndr's platform-only
 /// shape in fulfillment (D115). code is a stable admin-supplied machine

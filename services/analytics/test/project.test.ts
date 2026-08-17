@@ -315,6 +315,28 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
     expect(replaced).toMatchObject({ replacementDispatchId: asgnB, replacementStatus: 'RAISED', isReplacement: false })
   })
 
+  // B8 (D-28 tail): billable_flag is fed by the ASSIGNMENT fact's billable
+  // field, not by replacement_raised (which carries no billable and never
+  // touches the flag, project.ts REPLACEMENT case). tms mints a replacement
+  // child with billable=false and emitDemandFact snapshots that value onto the
+  // child's OWN assignment fact, so the child row is non-billable and the
+  // replaced original keeps the true its own fact carried.
+  it('a replacement child row is non-billable from its OWN assignment fact; the replaced original stays billable', async () => {
+    const asgnA = newId('asgn') // the replaced (original) assignment, billable
+    const asgnB = newId('asgn') // the replacement child, minted billable=false
+    const progP = newId('prog') as ProgId
+
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnA, progId: progP, billable: true, ts: '2026-07-01T00:00:00Z' }))
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgnB, progId: progP, billable: false, ts: '2026-07-02T00:00:00Z' }))
+    await ingestEnvelope(db, replacementEnvelope({ asgnId: asgnB, replacedAsgnId: asgnA, damageReason: 'CRACKED_SCREEN', ts: '2026-07-03T00:00:00Z' }))
+
+    const child = await db.dispatchRow.findUnique({ where: { dispatchId: asgnB } })
+    const original = await db.dispatchRow.findUnique({ where: { dispatchId: asgnA } })
+
+    expect(child).toMatchObject({ billableFlag: false, isReplacement: true, originalDispatchId: asgnA })
+    expect(original).toMatchObject({ billableFlag: true, replacementDispatchId: asgnB, replacementStatus: 'RAISED' })
+  })
+
   it('drop-and-rebuild from raw_event reproduces byte-identical rows regardless of ARRIVAL order (check 5)', async () => {
     const asgnA = newId('asgn')
     const progP = newId('prog') as ProgId

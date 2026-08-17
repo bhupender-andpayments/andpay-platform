@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { DispatchDetailPage } from '../../src/features/dispatches/DispatchDetailPage.js'
@@ -195,5 +196,154 @@ describe('DispatchDetailPage (D-16, T4.5)', () => {
     stub({ error: 'nope' }, 500)
     renderPage()
     expect(await screen.findByText(/could not read this dispatch/i)).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------- //
+// D-26 (damage workflow, B7): the Flag damage dialog. The damage-file upload
+// is gone (D-25); the operator flags the dispatch they are looking at, with a
+// reason from the master (label shown, code submitted, DP-5), a required
+// remark, and, on a COLLATERAL leg only, the replacement's counts (DP-2). A
+// SOUNDBOX leg mints exactly one replacement soundbox (D-27), so it carries
+// NO count input. The route is POST /ops/records/:asgnId/flag-damage.
+// ---------------------------------------------------------------------- //
+
+const REASONS = [
+  { id: 'dmgr_1', code: 'battery_issue', label: 'Battery issue', active: true, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z' },
+  { id: 'dmgr_2', code: 'retired_reason', label: 'Retired reason', active: false, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z' },
+]
+
+interface FlagCall {
+  url: string
+  init: RequestInit
+}
+
+function stubFlag(detail: unknown, flagStatus = 201, flagBody: unknown = { childAsgnId: 'asgn_child1', caseStatus: 'Open' }): FlagCall[] {
+  const calls: FlagCall[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      if (url.includes('/ops/damage-reasons')) return jsonResponse(REASONS)
+      if (url.includes('/flag-damage')) return jsonResponse(flagBody, flagStatus)
+      return jsonResponse(detail)
+    }),
+  )
+  return calls
+}
+
+async function openFlagDialog(): Promise<void> {
+  await userEvent.click(await screen.findByRole('button', { name: /flag damage/i }))
+  // The reason master loads when the dialog opens; wait for the real option.
+  await screen.findByRole('option', { name: 'Battery issue' })
+}
+
+describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
+  beforeEach(() => {
+    clearAccessToken()
+    setAccessToken('tok-1')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('opens from the Damage card, offering only ACTIVE reasons with the label shown', async () => {
+    stubFlag(DETAIL)
+    renderPage()
+    await openFlagDialog()
+
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    // Active row offered by LABEL; the inactive master row is not offered.
+    expect(screen.getByRole('option', { name: 'Battery issue' })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: 'Retired reason' })).toBeNull()
+  })
+
+  it('a SOUNDBOX dispatch shows NO count inputs, and states the fixed one-replacement rule instead', async () => {
+    stubFlag(DETAIL)
+    renderPage()
+    await openFlagDialog()
+
+    expect(screen.queryByRole('spinbutton')).toBeNull()
+    expect(screen.queryByLabelText(/standees/i)).toBeNull()
+    expect(screen.getByText(/one replacement soundbox is raised, fixed per d-27/i)).toBeTruthy()
+  })
+
+  it('a COLLATERAL dispatch requires a total of at least one item before submit unlocks', async () => {
+    stubFlag({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null, activationTrail: [] })
+    renderPage()
+    await openFlagDialog()
+
+    await userEvent.selectOptions(screen.getByLabelText(/reason/i), 'battery_issue')
+    await userEvent.type(screen.getByLabelText(/remarks/i), 'standee torn in transit')
+
+    // Counts default to 0 + 0: a replacement carrying nothing is not a
+    // replacement, so submit stays locked.
+    const confirm = () => screen.getByRole('button', { name: /open damage case/i }) as HTMLButtonElement
+    expect(confirm().disabled).toBe(true)
+
+    const standee = screen.getByLabelText(/standees/i)
+    await userEvent.clear(standee)
+    await userEvent.type(standee, '2')
+    expect(confirm().disabled).toBe(false)
+  })
+
+  it('submit posts the reason CODE, the trimmed remarks and the counts, then links the child dispatch', async () => {
+    const calls = stubFlag({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null, activationTrail: [] })
+    renderPage()
+    await openFlagDialog()
+
+    await userEvent.selectOptions(screen.getByLabelText(/reason/i), 'battery_issue')
+    await userEvent.type(screen.getByLabelText(/remarks/i), '  standee torn in transit  ')
+    const standee = screen.getByLabelText(/standees/i)
+    await userEvent.clear(standee)
+    await userEvent.type(standee, '2')
+    await userEvent.click(screen.getByRole('button', { name: /open damage case/i }))
+
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes(`/ops/records/${ASGN}/flag-damage`))).toBe(true)
+    })
+    const write = calls.find((c) => c.url.includes('/flag-damage'))!
+    const headers = write.init.headers as Record<string, string>
+    expect(headers['Idempotency-Key']).toBeTruthy()
+    const body = JSON.parse(String(write.init.body)) as Record<string, unknown>
+    // The CODE, never the label (DP-5); the remarks trimmed; the counts as
+    // integers. No extra field: merchant and scope come from the principal.
+    expect(body).toEqual({ reasonCode: 'battery_issue', remarks: 'standee torn in transit', standeeCount: 2, stickerCount: 0 })
+
+    // The confirmation names the child and links its page.
+    const link = await screen.findByRole('link', { name: /asgn_child1/ })
+    expect(link.getAttribute('href')).toBe('/dispatches/asgn_child1')
+  })
+
+  it('a SOUNDBOX submit sends NO counts at all', async () => {
+    const calls = stubFlag(DETAIL)
+    renderPage()
+    await openFlagDialog()
+
+    await userEvent.selectOptions(screen.getByLabelText(/reason/i), 'battery_issue')
+    await userEvent.type(screen.getByLabelText(/remarks/i), 'no sound on delivery')
+    await userEvent.click(screen.getByRole('button', { name: /open damage case/i }))
+
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/flag-damage'))).toBe(true)
+    })
+    const write = calls.find((c) => c.url.includes('/flag-damage'))!
+    const body = JSON.parse(String(write.init.body)) as Record<string, unknown>
+    expect(body).toEqual({ reasonCode: 'battery_issue', remarks: 'no sound on delivery' })
+  })
+
+  it('a 409 reads as the DP-3 rule in words: a live case already exists', async () => {
+    stubFlag(DETAIL, 409, { code: 'conflict' })
+    renderPage()
+    await openFlagDialog()
+
+    await userEvent.selectOptions(screen.getByLabelText(/reason/i), 'battery_issue')
+    await userEvent.type(screen.getByLabelText(/remarks/i), 'no sound on delivery')
+    await userEvent.click(screen.getByRole('button', { name: /open damage case/i }))
+
+    expect(await screen.findByText(/a live damage case already exists for this dispatch/i)).toBeTruthy()
+    // No child link is claimed for a refused flag.
+    expect(screen.queryByRole('link', { name: /asgn_child1/ })).toBeNull()
   })
 })

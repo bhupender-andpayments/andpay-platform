@@ -1,7 +1,6 @@
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
 import { BankIngestPage } from './BankIngestPage.js'
 import { ReturnUploadPage } from './ReturnUploadPage.js'
-import { DamageUploadPage } from './DamageUploadPage.js'
 import { CourierStatusUploadPage } from './CourierStatusUploadPage.js'
 import { ActivationUploadPage } from './ActivationUploadPage.js'
 import {
@@ -12,14 +11,17 @@ import {
 } from './uploadKinds.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
-// The six-card index, replicated from the pdf-generation branch on the user's
-// ruling (13 Aug 2026): do not invent, replicate. Six equal cards, each a FILE
-// ARRIVING FROM OUTSIDE - that is the organising idea: the dispatch BRD's
-// Phase-1 exchanges are all files sent by email (bank request, manufacturer
-// inventory, print vendor return, courier statuses, CWD activation results),
-// so the operator's mental model is "I have a file, I go to Uploads". What each
-// file SETS IN MOTION lives on the page that owns it (Batches, Dispatches,
-// Activation), and those pages link back here.
+// The five-card index (replicated from the pdf-generation branch on the
+// user's ruling, 13 Aug 2026; the damage card was the sixth until D-25 ended
+// damage file ingestion). Five equal cards, each a FILE ARRIVING FROM OUTSIDE
+// - that is the organising idea: the dispatch BRD's Phase-1 exchanges are all
+// files sent by email (bank request, manufacturer inventory, print vendor
+// return, courier statuses, CWD activation results), so the operator's mental
+// model is "I have a file, I go to Uploads". Damage is deliberately NOT here
+// any more: it is not a file, it is a flag raised on the dispatch itself
+// (D-26), from the per-dispatch page. What each file SETS IN MOTION lives on
+// the page that owns it (Batches, Dispatches, Activation), and those pages
+// link back here.
 //
 // Two departures from the replicated original, both because this branch's
 // backend is newer, neither visible in the design:
@@ -30,7 +32,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 //     card says Device ID.
 //
 // Still binding, from the tabs-era defects: NOTHING is preselected here, and
-// each upload keeps its own url so "the damage upload" stays a sendable link.
+// each upload keeps its own url so "the return upload" stays a sendable link.
 
 interface UploadCard {
   slug: string
@@ -49,12 +51,6 @@ const UPLOAD_CARDS: readonly UploadCard[] = [
     title: 'Bank requests',
     source: 'From the bank',
     description: 'New soundbox requests. Check the per-row verdict, commit; the rows pool toward the next batch.',
-  },
-  {
-    slug: 'damage',
-    title: 'Damage reports',
-    source: 'From the bank, after delivery',
-    description: 'Damaged devices to be replaced. Every row is matched to an existing dispatch.',
   },
   {
     slug: 'device-inventory',
@@ -142,7 +138,6 @@ export function UploadsPage() {
       <Route index element={<UploadsIndex />} />
       <Route path="bank" element={<BankIngestPage />} />
       <Route path="return" element={<ReturnUploadPage />} />
-      <Route path="damage" element={<DamageUploadPage />} />
       <Route path="courier-status" element={<CourierStatusUploadPage />} />
       <Route path="activation" element={<ActivationUploadPage />} />
       {/* Kinds another section owns, plus the old pdf-era slug. Declared HERE
@@ -151,7 +146,9 @@ export function UploadsPage() {
           <Routes> tree does not reliably win against it. */}
       <Route path="device-inventory" element={<Navigate to="/inventory/upload" replace />} />
       <Route path="statuses" element={<Navigate to="/uploads/courier-status" replace />} />
-      {/* An unknown upload slug lands on the choices rather than a dead end. */}
+      {/* An unknown upload slug lands on the choices rather than a dead end.
+          This also catches the retired /uploads/damage bookmark (D-25): there
+          is no damage file any more, so the honest landing is the index. */}
       <Route path="*" element={<Navigate to="/uploads" replace />} />
     </Routes>
   )

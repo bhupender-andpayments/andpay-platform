@@ -3,16 +3,16 @@ import { randomUUID } from 'node:crypto'
 import { PrismaClient } from '../generated/client/index.js'
 import { createDamageReasonOps, activateDamageReasonOps, deactivateDamageReasonOps, OpsClientError } from '../src/ops.js'
 import { listDamageReasons } from '../src/ops-read.js'
-import { ingestDamageRow } from '../src/damage.js'
+import { flagDamageOps } from '../src/flag-damage.js'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 
 // Phase 3 Task 1 (BRD FR-08, FR-11): admin CRUD on the damage_reason master.
 // damage_reason is REFERENCE data, never truncated (unlike the per-test
-// assignment/quarantine_row/outbox tables in damage.test.ts / ops.test.ts): a
-// blanket TRUNCATE here would delete the four BRD-seeded rows those other test
-// files depend on, whichever order the suite happens to run files in. Every
-// row this file creates is therefore deleted BY ID in a `finally`, never by
-// truncating the table.
+// assignment/quarantine_row/outbox tables in ops.test.ts / flag-damage.test.ts):
+// a blanket TRUNCATE here would delete the four BRD-seeded rows those other
+// test files depend on, whichever order the suite happens to run files in.
+// Every row this file creates is therefore deleted BY ID in a `finally`, never
+// by truncating the table.
 const url = process.env.TMS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'
 const db = new PrismaClient({ datasourceUrl: url })
 // Truncates the per-test ingest/audit tables (NOT damage_reason, the master
@@ -50,52 +50,6 @@ async function auditRowsFor(operation: string): Promise<{ decision: string; reso
   `
   return rows.filter((r) => r.payload.operation === operation).map((r) => ({ decision: r.payload.decision, resourceIds: r.payload.resourceIds ?? [], principalId: r.payload.principalId }))
 }
-
-describe('ingest ambiguous-reason defense-in-depth (fix-round 1, Important)', () => {
-  it('if two ACTIVE rows ever normalize-collide (constraint bypassed), the ingest match quarantines ambiguous_damage_reason rather than silently picking one', async () => {
-    // The normalized-unique index (migration 20260804165617) makes this
-    // state UNREACHABLE through the ops API or any ordinary INSERT; this
-    // test proves the ingest-side defense-in-depth is non-vacuous by
-    // temporarily dropping the index (mirrors the repo's own
-    // installCurrentUserGuard-style temporary-DB-object technique for a
-    // non-vacuous proof), inserting the colliding pair directly, then
-    // restoring the index in a `finally` so no other test observes the gap.
-    const code1 = `test_code_${randomUUID()}`
-    const code2 = `test_code_${randomUUID()}`
-    const label = `Ambiguous Reason ${randomUUID()}`
-    await db.$executeRawUnsafe('DROP INDEX "damage_reason_label_normalized_key"')
-    let id1 = ''
-    let id2 = ''
-    try {
-      const r1 = await db.$queryRaw<{ id: string }[]>`
-        INSERT INTO damage_reason (code, label, active, updated_at) VALUES (${code1}, ${label}, true, now()) RETURNING id
-      `
-      id1 = r1[0]!.id
-      const r2 = await db.$queryRaw<{ id: string }[]>`
-        INSERT INTO damage_reason (code, label, active, updated_at) VALUES (${code2}, ${`  ${label.toUpperCase()}  `}, true, now()) RETURNING id
-      `
-      id2 = r2[0]!.id
-
-      const vpa = `dr-ambig-${randomUUID()}@hdfcbank`
-      await seedOriginalAssignment(vpa, 'HDFC')
-      const outcome = await ingestDamageRow(
-        db,
-        { fileId: `dr-ambig-${code1}`, rowNo: 1, tenantReference: 'HDFC', vpaValue: vpa, damageReason: label, bankRemarks: '', shipToAddress: 'New Addr' },
-        't-dr-ambig',
-      )
-      expect(outcome).toBe('quarantined')
-      const q = await db.$queryRaw<{ reason_code: string }[]>`SELECT reason_code FROM quarantine_row WHERE file_id = ${`dr-ambig-${code1}`}`
-      expect(q).toHaveLength(1)
-      expect(q[0]!.reason_code).toBe('ambiguous_damage_reason')
-    } finally {
-      if (id1) await deleteReason(id1)
-      if (id2) await deleteReason(id2)
-      await db.$executeRawUnsafe(
-        'CREATE UNIQUE INDEX "damage_reason_label_normalized_key" ON "damage_reason" (lower(trim(label)))',
-      )
-    }
-  })
-})
 
 describe('damage_reason admin CRUD (Phase 3 Task 1, BRD FR-08/FR-11)', () => {
   it('createDamageReasonOps creates a row and co-commits the ALLOW 6e in the same tx', async () => {
@@ -215,78 +169,48 @@ describe('damage_reason admin CRUD (Phase 3 Task 1, BRD FR-08/FR-11)', () => {
     }
   })
 
-  it('fix-round 1 (Important): after deactivating a reason, an ingest row using ANY case/whitespace form of its label quarantines (invalid_damage_reason), proving deactivation is effective', async () => {
-    const code = `test_code_${randomUUID()}`
-    const label = `Cracked Screen ${randomUUID()}`
-    const created = await createDamageReasonOps(db, { code, label, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-8' })
-    const id = created.damageReason!.id
-    try {
-      const vpa1 = `dr-t8a-${randomUUID()}@hdfcbank`
-      await seedOriginalAssignment(vpa1, 'HDFC')
-      // while active, a DIFFERENT case/whitespace form of the same label
-      // still matches (the ingest match is itself normalized) and replaces.
-      const beforeDeactivate = await ingestDamageRow(
-        db,
-        { fileId: `dr-t8-before-${id}`, rowNo: 1, tenantReference: 'HDFC', vpaValue: vpa1, damageReason: `  ${label.toUpperCase()}  `, bankRemarks: '', shipToAddress: 'New Addr' },
-        't-dr-8',
-      )
-      expect(beforeDeactivate).toBe('replaced')
-
-      await deactivateDamageReasonOps(db, { id, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-8' })
-
-      const vpa2 = `dr-t8b-${randomUUID()}@hdfcbank`
-      await seedOriginalAssignment(vpa2, 'HDFC')
-      // NOW a case/whitespace-varied form of the (now-deactivated) label
-      // must quarantine: this is the exact collision the review flagged --
-      // before the fix, a second normalized-identical ACTIVE row could exist
-      // and this would still match and replace.
-      const afterDeactivate = await ingestDamageRow(
-        db,
-        { fileId: `dr-t8-after-${id}`, rowNo: 1, tenantReference: 'HDFC', vpaValue: vpa2, damageReason: label.toLowerCase(), bankRemarks: '', shipToAddress: 'New Addr' },
-        't-dr-8',
-      )
-      expect(afterDeactivate).toBe('quarantined')
-      const q = await db.$queryRaw<{ reason_code: string }[]>`SELECT reason_code FROM quarantine_row WHERE file_id = ${`dr-t8-after-${id}`}`
-      expect(q).toHaveLength(1)
-      expect(q[0]!.reason_code).toBe('invalid_damage_reason')
-    } finally {
-      await deleteReason(id)
-    }
-  })
-
-  it('a deactivated reason removes it from the active set: a damage-ingest row using its label quarantines (invalid_damage_reason)', async () => {
+  it('a deactivated reason removes it from the active set: flagDamageOps refuses its code (D-25/DP-5: the flag write is what consumes the master now)', async () => {
     const code = `test_code_${randomUUID()}`
     const label = `Cracked Screen ${randomUUID()}`
     const created = await createDamageReasonOps(db, { code, label, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-5' })
     const id = created.damageReason!.id
     try {
-      const vpa = `dr-test-${randomUUID()}@hdfcbank`
-      await seedOriginalAssignment(vpa, 'HDFC')
+      const parent1 = await seedOriginalAssignment(`dr-test-${randomUUID()}@hdfcbank`, 'HDFC')
 
-      // while ACTIVE, the label matches and the row replaces.
-      const okOutcome = await ingestDamageRow(
-        db,
-        { fileId: `dr-active-${id}`, rowNo: 1, tenantReference: 'HDFC', vpaValue: vpa, damageReason: label, bankRemarks: '', shipToAddress: 'New Addr' },
-        't-dr-5',
-      )
-      expect(okOutcome).toBe('replaced')
+      // while ACTIVE, the code is accepted and the flag mints a replacement.
+      const ok = await flagDamageOps(db, {
+        asgnId: parent1,
+        reasonCode: code,
+        remarks: 'unit cracked',
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-dr-5',
+      })
+      expect(ok.caseStatus).toBe('Open')
+      const minted = await db.$queryRaw<{ damage_reason: string }[]>`
+        SELECT damage_reason FROM assignment WHERE id = ${toUuid(ok.childAsgnId)}::uuid
+      `
+      expect(minted[0]!.damage_reason).toBe(code)
 
       await deactivateDamageReasonOps(db, { id, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-dr-5' })
 
-      // a SECOND original, same now-deactivated label: quarantines.
-      const vpa2 = `dr-test2-${randomUUID()}@hdfcbank`
-      await seedOriginalAssignment(vpa2, 'HDFC')
-      const badOutcome = await ingestDamageRow(
-        db,
-        { fileId: `dr-inactive-${id}`, rowNo: 1, tenantReference: 'HDFC', vpaValue: vpa2, damageReason: label, bankRemarks: '', shipToAddress: 'New Addr' },
-        't-dr-5',
-      )
-      expect(badOutcome).toBe('quarantined')
-      const q = await db.$queryRaw<{ reason_code: string }[]>`
-        SELECT reason_code FROM quarantine_row WHERE file_id = ${`dr-inactive-${id}`}
+      // a SECOND dispatch, same now-deactivated code: refused as invalid, and
+      // no second replacement is minted.
+      const parent2 = await seedOriginalAssignment(`dr-test2-${randomUUID()}@hdfcbank`, 'HDFC')
+      await expect(
+        flagDamageOps(db, {
+          asgnId: parent2,
+          reasonCode: code,
+          remarks: 'unit cracked',
+          clientKey: randomUUID(),
+          actorId: randomUUID(),
+          traceId: 't-dr-5',
+        }),
+      ).rejects.toMatchObject({ kind: 'invalid' })
+      const n = await db.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM assignment WHERE replacement_of = ${toUuid(parent2)}::uuid
       `
-      expect(q).toHaveLength(1)
-      expect(q[0]!.reason_code).toBe('invalid_damage_reason')
+      expect(Number(n[0]!.n)).toBe(0)
     } finally {
       await deleteReason(id)
     }

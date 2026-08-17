@@ -44,6 +44,10 @@ interface Row {
   damageReason?: string | null
   replacementDispatchId?: string | null
   replacementStatus?: string | null
+  // B8: billable_flag as projected from the assignment fact (project.ts). A
+  // replacement child's own fact carries false; every ordinary row carries true,
+  // which is why true is the fixture default.
+  billableFlag?: boolean
 }
 
 async function insertRow(r: Row): Promise<void> {
@@ -57,7 +61,7 @@ async function insertRow(r: Row): Promise<void> {
             ARRAY['DEV1']::text[], ${r.awb ?? null}, ${r.shptId ?? null}, ${r.dispatchDate ?? null}, ${r.courierStatus ?? null},
             ${r.pipelineState}, ${r.isReplacement ?? false}, ${r.originalDispatchId ?? null},
             ${r.damageReason ?? null}, ${r.replacementDispatchId ?? null}, ${r.replacementStatus ?? null},
-            true, ${r.receivedAt}, ${r.sentToVendorAt ?? null}, ${r.dispatchedAt ?? null},
+            ${r.billableFlag ?? true}, ${r.receivedAt}, ${r.sentToVendorAt ?? null}, ${r.dispatchedAt ?? null},
             ${r.deliveryDate ?? null}, ${r.activationStatus ?? null}, now())`
 }
 
@@ -105,6 +109,43 @@ describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
     expect(rows[0]!.shptId).toBe(shptWire)
     expect(() => toUuid(rows[0]!.shptId as string)).not.toThrow()
     expect(watermark).toBeDefined()
+  })
+
+  // B8 / OQ-4: the delivery report carries the flag per row and hides nothing.
+  // A dispatched replacement child (billable_flag=false, from its own assignment
+  // fact) appears alongside the ordinary rows, marked non-billable, so billing
+  // excludes it by reading the column, never by the report filtering it out.
+  it('soundbox-delivery: billable rides every row; a non-billable replacement child is shown, not hidden', async () => {
+    const p1 = toUuid(newId('prog'))
+    const now = new Date()
+    const ordinaryId = newId('asgn')
+    const childId = newId('asgn')
+    await insertRow({
+      dispatchId: ordinaryId,
+      programId: p1,
+      pipelineState: 'DISPATCHED',
+      receivedAt: now,
+      dispatchedAt: now,
+      awb: 'AWB-ORD',
+    })
+    await insertRow({
+      dispatchId: childId,
+      programId: p1,
+      pipelineState: 'DISPATCHED',
+      receivedAt: now,
+      dispatchedAt: now,
+      awb: 'AWB-REPL',
+      isReplacement: true,
+      originalDispatchId: ordinaryId,
+      billableFlag: false,
+    })
+
+    const scope: ReadScope = { kind: 'own', programIds: [p1] }
+    const { rows } = await readReport(db, scope, 'soundbox-delivery', {})
+
+    expect(rows).toHaveLength(2)
+    expect(rows.find((r) => r.dispatchId === ordinaryId)!.billable).toBe(true)
+    expect(rows.find((r) => r.dispatchId === childId)!.billable).toBe(false)
   })
 
   it('soundbox-delivery: shptId is null when no shipment fact has been folded yet', async () => {
@@ -219,6 +260,9 @@ describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
       receivedAt: now,
       isReplacement: true,
       originalDispatchId: 'disp_original',
+      // a replacement child is minted billable=false in tms and its own
+      // assignment fact carries that value into billable_flag (B8).
+      billableFlag: false,
     })
     await insertRow({
       dispatchId: damagedId,
@@ -237,6 +281,12 @@ describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
     expect(rows).toHaveLength(2)
     const ids = rows.map((r) => r.dispatchId).sort()
     expect(ids).toEqual([damagedId, replacementId].sort())
+
+    // B8 / OQ-4: the flag rides the rows so billing can exclude the child; the
+    // NON-billable child is still PRESENT above (no row hidden), and the
+    // replaced original stays billable.
+    expect(rows.find((r) => r.dispatchId === replacementId)!.billable).toBe(false)
+    expect(rows.find((r) => r.dispatchId === damagedId)!.billable).toBe(true)
   })
 
   it('print-vendor-pendency: SENT_TO_VENDOR not yet dispatched, ageing bucket from sent_to_vendor_at', async () => {

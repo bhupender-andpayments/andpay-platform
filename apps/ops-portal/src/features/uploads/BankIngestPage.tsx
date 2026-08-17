@@ -220,10 +220,14 @@ export function BankIngestPage() {
                   <p className="font-medium">This does not look like a bank request file.</p>
                   <p className="mt-1">
                     {structural.length} of the columns a bank request file must have are missing, so it was not read and
-                    nothing was written. Check you picked the right file: device inventory, print vendor returns, courier
-                    status and damage reports each have their own upload on{' '}
+                    nothing was written. Check you picked the right file: device inventory, print vendor returns and
+                    courier status each have their own upload on{' '}
                     <Link className="underline" to="/uploads">
                       Uploads
+                    </Link>
+                    . Damage is not a file: flag it from the dispatch itself, on{' '}
+                    <Link className="underline" to="/dispatches">
+                      Dispatches
                     </Link>
                     .
                   </p>

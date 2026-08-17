@@ -44,10 +44,10 @@ describe('PerRowErrors: the malformed-QR notice (D-8)', () => {
     expect(container.textContent).not.toMatch(/QR/i)
   })
 
-  // Every other upload surface (damage, device inventory) shares this component
-  // and never reports this count, so an absent field must not render.
+  // Every other upload surface (device inventory) shares this component and
+  // never reports this count, so an absent field must not render.
   it('renders nothing when the upload has no such count', () => {
-    const { container } = renderResult({ replaced: 3, quarantined: 1, duplicate: 0 })
+    const { container } = renderResult({ accepted: 3, quarantined: 1, duplicate: 0 })
     expect(container.textContent).not.toMatch(/QR/i)
   })
 

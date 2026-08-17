@@ -320,14 +320,18 @@ interface RawRow {
  *     names its assignments directly because it has no print_for to be found by)
  *
  * A KNOWN AND DELIBERATE LIMITATION. The `shpts` CTE is NOT widened to include
- * collateral shpts, so a courier TRANSITION on a collateral-only parcel
- * (PICKED_UP, DELIVERED and friends) is not folded into this row. Those
- * transitions carry no `collateral` flag and no asgnIds (advanceShipmentStatus
- * knows only the AWB), so including their shpt in the CTE would let a
- * collateral DELIVERED write courier_status and delivery_date on a record whose
- * SOUNDBOX is still in transit, which is a worse answer than a null. Tracking
- * the collateral parcel's own carrier state is a separate column set and a
- * separate decision; what is recorded today is which AWB it went out on.
+ * collateral shpts, so a collateral parcel's carrier TRANSITIONS never drive
+ * this row's PRIMARY courier columns. Since 16 Aug 26 those transitions DO
+ * carry `collateral: true` plus asgnIds (fulfillment enriches them so TMS can
+ * close replacement cases on DELIVERED, REVIEW_REPORT.md F1), which means they
+ * now reach this fold through the asgnIds arm below, and the `collateral`
+ * early return in applyFact routes them into the two collateral columns only.
+ * The safety property is therefore carried by the producer's flag rather than
+ * by this CTE's narrowness, and the outcome is unchanged: a collateral
+ * DELIVERED can never write courier_status or delivery_date on a record whose
+ * SOUNDBOX is still in transit. Tracking the collateral parcel's own carrier
+ * state is a separate column set and a separate decision; what is recorded
+ * today is which AWB it went out on.
  * Runs under the caller's tx (which holds analytics_write, SELECT on raw_event).
  * Returns null when no rows exist for the asgn.
  */

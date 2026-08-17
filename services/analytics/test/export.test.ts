@@ -56,6 +56,23 @@ describe('toCsv', () => {
     expect(lines[2]).toContain('disp_2')
   })
 
+  // B8 / OQ-4: toCsv columns are the union of row keys, so the billable column
+  // the report row builders now emit reaches the export with no wiring here.
+  // Both values serialize (true and false), and the non-billable row is a line
+  // in the file, never an omission: billing excludes by reading the column.
+  it('carries the billable column for report rows, false rows included as data', () => {
+    const rows: ReportRow[] = [
+      { dispatchId: 'disp_1', bankCode: 'HDFC', isReplacement: false, billable: true },
+      { dispatchId: 'disp_2', bankCode: 'HDFC', isReplacement: true, billable: false },
+    ]
+    const csv = toCsv(rows)
+    const lines = csv.split('\r\n')
+    expect(lines[0]).toBe('dispatchId,bankCode,isReplacement,billable')
+    expect(lines[1]).toBe('disp_1,HDFC,false,true')
+    expect(lines[2]).toBe('disp_2,HDFC,true,false')
+    expect(lines).toHaveLength(3)
+  })
+
   it('throws (bounded, no silent truncation) when the serialized CSV exceeds the 5 MB-class discipline', () => {
     // One ~200-byte row repeated enough times to exceed MAX_CSV_BYTES.
     const bigCell = 'x'.repeat(150)

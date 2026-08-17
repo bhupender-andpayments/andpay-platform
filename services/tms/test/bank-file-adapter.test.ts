@@ -1,18 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import ExcelJS from 'exceljs'
-import {
-  parseBankRequestFile,
-  parseBankDamageFile,
-  DEFAULT_REQUEST_COLUMN_MAPPING,
-  DEFAULT_DAMAGE_COLUMN_MAPPING,
-} from '../src/bank-file-adapter.js'
+import { parseBankRequestFile, DEFAULT_REQUEST_COLUMN_MAPPING } from '../src/bank-file-adapter.js'
 
 const REQUEST_HEADERS = Object.values(DEFAULT_REQUEST_COLUMN_MAPPING)
-const DAMAGE_HEADERS = Object.values(DEFAULT_DAMAGE_COLUMN_MAPPING)
 
-// One request row and one damage row, all fields as strings (matching how a
-// CSV cell always arrives), so the xlsx fixture built below carries the
-// SAME values and the two parse paths are directly comparable.
+// One request row, all fields as strings (matching how a CSV cell always
+// arrives), so the xlsx fixture built below carries the SAME values and the
+// two parse paths are directly comparable.
 const REQUEST_DATA_ROW = [
   'BM-1',
   'Acme',
@@ -32,11 +26,6 @@ const REQUEST_DATA_ROW = [
   'BR-001',
   'acme@hdfcbank',
 ]
-
-// Aligned to DAMAGE_HEADERS: the trailing 4 (soundbox, standeeCount, stickerCount,
-// deliveryStatus) are the OPTIONAL FR08-1/FR08-2 columns, left blank here so the
-// canonical parse stays a 5-field clone row (populated variants tested below).
-const DAMAGE_DATA_ROW = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'unit cracked in transit', '221B Baker Street', '', '', '', '']
 
 function toCsv(header: string[], rows: string[][]): Uint8Array {
   const lines = [header, ...rows].map((r) => r.map((f) => (f.includes(',') ? `"${f}"` : f)).join(','))
@@ -153,81 +142,5 @@ describe('parseBankRequestFile (phase 2 task 1, D-C core)', () => {
       ['file-9', 1, 'BM-1'],
       ['file-9', 2, 'BM-2'],
     ])
-  })
-})
-
-describe('parseBankDamageFile (phase 2 task 1, D-C core)', () => {
-  it('parses a .csv sample to the expected canonical BankDamageRow shape', async () => {
-    const csv = toCsv(DAMAGE_HEADERS, [DAMAGE_DATA_ROW])
-    const result = await parseBankDamageFile(csv, 'damage.csv', 'file-2')
-    expect(result.errors).toEqual([])
-    expect(result.rows).toEqual([
-      {
-        fileId: 'file-2',
-        rowNo: 1,
-        tenantReference: 'HDFC',
-        vpaValue: 'acme@hdfcbank',
-        damageReason: 'physically damaged',
-        bankRemarks: 'unit cracked in transit',
-        shipToAddress: '221B Baker Street',
-      },
-    ])
-  })
-
-  it('parses a .xlsx sample built with exceljs from the SAME data to an IDENTICAL canonical row', async () => {
-    const csv = toCsv(DAMAGE_HEADERS, [DAMAGE_DATA_ROW])
-    const xlsx = await toXlsx(DAMAGE_HEADERS, [DAMAGE_DATA_ROW])
-
-    const csvResult = await parseBankDamageFile(csv, 'damage.csv', 'file-2')
-    const xlsxResult = await parseBankDamageFile(xlsx, 'damage.xlsx', 'file-2')
-
-    expect(xlsxResult.errors).toEqual([])
-    expect(xlsxResult).toEqual(csvResult)
-  })
-
-  it('returns a structural error, not a throw, for a missing required column', async () => {
-    const headerMissingReason = DAMAGE_HEADERS.filter((h) => h !== 'damageReason')
-    const rowMissingReason = DAMAGE_DATA_ROW.filter((_v, idx) => DAMAGE_HEADERS[idx] !== 'damageReason')
-    const csv = toCsv(headerMissingReason, [rowMissingReason])
-    const result = await parseBankDamageFile(csv, 'damage.csv', 'file-2')
-    expect(result.rows).toEqual([])
-    expect(result.errors).toEqual([
-      { code: 'missing_required_column', message: 'Missing required column "damageReason" (field "damageReason").' },
-    ])
-  })
-
-  it('the five real columns are the whole required set: a file with only those parses cleanly', async () => {
-    const baseHeaders = ['tenantReference', 'vpaValue', 'damageReason', 'bankRemarks', 'shipToAddress']
-    const csv = toCsv(baseHeaders, [['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr']])
-    const result = await parseBankDamageFile(csv, 'damage.csv', 'file-2')
-    expect(result.errors).toEqual([])
-    expect(result.rows[0]).not.toHaveProperty('items')
-    expect(result.rows[0]).not.toHaveProperty('deliveryStatus')
-  })
-
-  // THE RE-PIN (D-20 and D-24, T6.2). These two used to assert that the item
-  // columns steered the replacement and that the file could seed the case
-  // status. Both are removed from the canonical mapping, and a file that still
-  // carries those columns is now simply carrying columns nobody reads.
-  it('D-20: item quantity columns are IGNORED, even when the file still supplies them', async () => {
-    // positions 5..8 = the old soundbox, standeeCount, stickerCount, deliveryStatus
-    const row = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', 'false', '3', '0', 'In-Progress']
-    const result = await parseBankDamageFile(toCsv(DAMAGE_HEADERS, [row]), 'damage.csv', 'file-2')
-    expect(result.errors).toEqual([])
-    // The five real fields still land.
-    expect(result.rows[0]).toMatchObject({ tenantReference: 'HDFC', vpaValue: 'acme@hdfcbank' })
-    // And the removed ones do not, so the file cannot decide which items a
-    // damage replaces. That decision now runs through damage-resolution.ts,
-    // which is where O-1's answer will land.
-    expect(result.rows[0]).not.toHaveProperty('items')
-  })
-
-  it('D-24: a file cannot seed the case status, because that lifecycle is ours to observe', async () => {
-    // A file that opened a case already Closed was asserting a state nobody
-    // here had watched happen.
-    const row = ['HDFC', 'acme@hdfcbank', 'physically damaged', 'r', 'Addr', '', '', '4', 'Closed']
-    const result = await parseBankDamageFile(toCsv(DAMAGE_HEADERS, [row]), 'damage.csv', 'file-2')
-    expect(result.rows[0]).not.toHaveProperty('deliveryStatus')
-    expect(result.rows[0]).not.toHaveProperty('items')
   })
 })

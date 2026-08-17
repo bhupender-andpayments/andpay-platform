@@ -19,15 +19,34 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import {
+  flagDamage,
   getBatchDetail,
+  getDamageReasons,
   getDevices,
   getDispatchDetail,
   getPoolEntries,
   type BatchEntryRow,
+  type DamageReasonRow,
   type DispatchDetailView,
   type UnitInventoryRow,
 } from '../../api/endpoints.js'
-import { Card, CardBody, ErrorNote, EmptyState, SkeletonRows, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { ApiError } from '../../api/errors.js'
+import { newIdempotencyKey } from '../../api/idempotency.js'
+import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import {
+  Button,
+  Card,
+  CardBody,
+  ErrorNote,
+  EmptyState,
+  Field,
+  Input,
+  InfoNote,
+  Select,
+  SkeletonRows,
+  StatusPill,
+  CodeChip,
+} from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
 import { BackLink, FactRow, NoValue, SectionHeading } from '../../ui/DetailFacts.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
@@ -173,6 +192,79 @@ export function DispatchDetailPage() {
     [detail, entry, batchFormedAt],
   )
 
+  // D-26: damage is flagged HERE, on the dispatch it happened to, now that
+  // the damage-file upload is gone (D-25). The operator names the reason from
+  // the master (code stored, label shown, DP-5), writes the why into remarks,
+  // and, for a COLLATERAL leg only, the counts the replacement should carry
+  // (DP-2). A SOUNDBOX leg carries no count: the quantity is fixed at one
+  // replacement soundbox (D-27).
+  const isCollateral = detail?.dispatchGroup === 'COLLATERAL'
+  const [flagOpen, setFlagOpen] = useState(false)
+  const [reasons, setReasons] = useState<DamageReasonRow[] | null>(null)
+  const [reasonCode, setReasonCode] = useState('')
+  const [remarks, setRemarks] = useState('')
+  const [standeeCount, setStandeeCount] = useState('0')
+  const [stickerCount, setStickerCount] = useState('0')
+  const [flagBusy, setFlagBusy] = useState(false)
+  const [flagError, setFlagError] = useState<string | null>(null)
+  const [flagged, setFlagged] = useState<{ childAsgnId: string } | null>(null)
+
+  // The master is read when the dialog first opens, not on page mount: most
+  // visits to this page never flag anything.
+  useEffect(() => {
+    if (!flagOpen || reasons !== null) return
+    let cancelled = false
+    getDamageReasons(client)
+      .then((rows) => {
+        if (!cancelled && Array.isArray(rows)) setReasons(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setFlagError('Could not read the damage reasons. Close and try again.')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [flagOpen, reasons, client])
+
+  const trimmedRemarks = remarks.trim()
+  const standee = parseCount(standeeCount)
+  const sticker = parseCount(stickerCount)
+  const countsValid = !isCollateral || (standee !== null && sticker !== null && standee + sticker >= 1)
+  const flagValid = reasonCode !== '' && trimmedRemarks !== '' && trimmedRemarks.length <= 500 && countsValid
+
+  const runFlagDamage = useCallback(async (): Promise<void> => {
+    if (asgnId === undefined || !flagValid) return
+    setFlagBusy(true)
+    setFlagError(null)
+    try {
+      const res = await flagDamage(
+        client,
+        asgnId,
+        {
+          reasonCode,
+          remarks: trimmedRemarks,
+          // Counts ride ONLY on a collateral leg; the server rejects any count
+          // on a soundbox leg, so none is ever sent for one.
+          ...(isCollateral ? { standeeCount: standee ?? 0, stickerCount: sticker ?? 0 } : {}),
+        },
+        newIdempotencyKey(),
+      )
+      setFlagged({ childAsgnId: res.childAsgnId })
+      setFlagOpen(false)
+      await load()
+    } catch (e) {
+      // DP-3: one live case per dispatch. The 409 is that rule answering, so
+      // it gets its own sentence rather than the generic conflict wording.
+      if (e instanceof ApiError && e.status === 409) {
+        setFlagError('A live damage case already exists for this dispatch. It has to close before a new one can be raised.')
+      } else {
+        setFlagError(e instanceof Error ? e.message : 'The write failed.')
+      }
+    } finally {
+      setFlagBusy(false)
+    }
+  }, [asgnId, flagValid, client, reasonCode, trimmedRemarks, isCollateral, standee, sticker, load])
+
   if (loading) return <SkeletonRows rows={6} />
   if (error !== null) return <ErrorNote>{error}</ErrorNote>
   if (detail === null) return <EmptyState title="No such dispatch" />
@@ -298,9 +390,141 @@ export function DispatchDetailPage() {
           </CardBody>
         </Card>
 
+        {/* D-26: the damage flag lives on the dispatch it happened to. Legacy
+            combined rows (null group) predate the leg split the flag's count
+            rules key on (DP-2), so they get no flag control rather than a
+            write the server holds no rule for. */}
+        {detail.dispatchGroup !== null && (
+          <Card>
+            <CardBody>
+              <SectionHeading>Damage</SectionHeading>
+              {flagged !== null ? (
+                <InfoNote>
+                  Damage case opened. The replacement dispatch is{' '}
+                  <Link className="underline underline-offset-2" to={`/dispatches/${flagged.childAsgnId}`}>
+                    <CodeChip>{flagged.childAsgnId}</CodeChip>
+                  </Link>
+                  , non-billable, already in the normal pool.
+                </InfoNote>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Flagging opens a damage case and raises a non-billable replacement into the normal pool. One live
+                    case per dispatch; a new flag is allowed once the case closes.
+                  </p>
+                  <div className="mt-3">
+                    <Button variant="secondary" onClick={() => setFlagOpen(true)}>
+                      <AlertTriangle className="mr-1.5 h-3.5 w-3.5" /> Flag damage
+                    </Button>
+                  </div>
+                </>
+              )}
+            </CardBody>
+          </Card>
+        )}
       </div>
+
+      <ConfirmDialog
+        open={flagOpen}
+        onOpenChange={(open) => {
+          setFlagOpen(open)
+          if (!open) setFlagError(null)
+        }}
+        title={`Flag ${detail.merchantDisplay}'s dispatch as damaged?`}
+        description="Opens a damage case and raises a non-billable replacement into the normal pool."
+        // NOT "Flag damage": the card's opener already carries that name, and
+        // two buttons with one accessible name is an ambiguity for both a
+        // screen reader and a test. The confirm names the consequence.
+        confirmLabel="Open damage case"
+        busy={flagBusy}
+        confirmDisabled={!flagValid}
+        error={flagError}
+        onConfirm={() => {
+          void runFlagDamage()
+        }}
+      >
+        <div className="space-y-4">
+          <Field label="Reason" htmlFor="flag-damage-reason" hint="From the damage-reason master. The code is what is stored.">
+            <Select
+              id="flag-damage-reason"
+              aria-label="Reason"
+              value={reasonCode}
+              onChange={(e) => setReasonCode(e.target.value)}
+              disabled={flagBusy}
+            >
+              <option value="">Select a reason</option>
+              {(reasons ?? [])
+                .filter((r) => r.active)
+                .map((r) => (
+                  <option key={r.code} value={r.code}>
+                    {r.label}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+          <Field
+            label="Remarks"
+            htmlFor="flag-damage-remarks"
+            hint={`Required. ${Math.max(0, 500 - remarks.length)} characters left.`}
+          >
+            <textarea
+              id="flag-damage-remarks"
+              aria-label="Remarks"
+              maxLength={500}
+              rows={3}
+              className="w-full rounded-lg border border-border bg-input/50 px-3 py-2 text-sm outline-none focus-visible:border-ring"
+              placeholder="What happened, in your own words."
+              value={remarks}
+              onChange={(e) => setRemarks(e.target.value)}
+              disabled={flagBusy}
+            />
+          </Field>
+          {isCollateral ? (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Standees" htmlFor="flag-damage-standee">
+                  <Input
+                    id="flag-damage-standee"
+                    aria-label="Standees"
+                    type="number"
+                    min={0}
+                    max={99}
+                    value={standeeCount}
+                    onChange={(e) => setStandeeCount(e.target.value)}
+                    disabled={flagBusy}
+                  />
+                </Field>
+                <Field label="Stickers" htmlFor="flag-damage-sticker">
+                  <Input
+                    id="flag-damage-sticker"
+                    aria-label="Stickers"
+                    type="number"
+                    min={0}
+                    max={99}
+                    value={stickerCount}
+                    onChange={(e) => setStickerCount(e.target.value)}
+                    disabled={flagBusy}
+                  />
+                </Field>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Whole numbers 0 to 99, at least one item in total: the collateral the replacement should carry.
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              One replacement soundbox is raised, fixed per D-27. There is no quantity to enter.
+            </p>
+          )}
+        </div>
+      </ConfirmDialog>
     </div>
   )
+}
+
+/** An int 0 to 99 or null: the D-27 count grammar, checked before submit. */
+function parseCount(raw: string): number | null {
+  return /^\d{1,2}$/.test(raw.trim()) ? Number(raw.trim()) : null
 }
 
 /** The BRD 6.2 ladder, as rail rungs. Order IS the lifecycle. */

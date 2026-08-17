@@ -26,7 +26,9 @@ describe('class-3 ops RoleConfig', () => {
       expect(authorize(claim(`role:${role}`), 'ops:manual-batch-trigger', {}, cfg).allowed).toBe(true)
       expect(authorize(claim(`role:${role}`), 'ops:status-correction', {}, cfg).allowed).toBe(true)
       expect(authorize(claim(`role:${role}`), 'ops:upload-bank-file', {}, cfg).allowed).toBe(true)
-      expect(authorize(claim(`role:${role}`), 'ops:upload-damage-file', {}, cfg).allowed).toBe(true)
+      // ops:upload-damage-file was retired with the damage file ingest (D-25);
+      // the in-screen flag action is the only damage mutation left.
+      expect(authorize(claim(`role:${role}`), 'ops:flag-damage', {}, cfg).allowed).toBe(true)
       expect(authorize(claim(`role:${role}`), 'ops:terminal-override', {}, cfg).allowed).toBe(true)
       expect(authorize(claim(`role:${role}`), 'ops:recompose-artifact', {}, cfg).allowed).toBe(true)
       expect(authorize(claim(`role:${role}`), 'ops:record-hold', {}, cfg).allowed).toBe(true)

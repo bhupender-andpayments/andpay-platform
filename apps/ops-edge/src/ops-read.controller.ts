@@ -1,4 +1,16 @@
-import { Controller, Get, HttpCode, Inject, NotFoundException, Param, Query, Res, UseGuards } from '@nestjs/common'
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  HttpCode,
+  Inject,
+  NotFoundException,
+  Param,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common'
 import {
   listVendors,
   readIntakeExceptions,
@@ -31,14 +43,20 @@ import {
   listDamageReasons,
   readDamageCases,
   listMerchants,
+  searchDispatchesByVpa,
+  countDamageCasesByStatus,
   type QuarantineRowView,
   type DamageReasonRow,
   type DamageCaseView,
   type MerchantRow,
+  type VpaDispatchRow,
+  type DamageCaseSummary,
 } from '@andpay/tms-service'
 import { listBankMasters, type BankMasterRow } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
+import { requireUnrestrictedRead } from './read-restriction.js'
+import type { EdgeRequest } from './request.js'
 
 // The minimal response shape the binary download routes write to (same
 // structural typing the vendor-edge PullController and the ReportsController
@@ -58,6 +76,13 @@ interface EdgeResponse {
 // result. @UseGuards is at the CLASS level so every route is authenticated by
 // construction. `?includeResolved=true` opts a queue into its resolved rows;
 // the default is the open (unresolved) queue.
+//
+// ONE narrow exception to pure guard-only (D-29, DAMAGE_PLAN DP-8, 16 Aug
+// 2026): the binary downloads and the two config views additionally run
+// requireUnrestrictedRead (read-restriction.ts), a role-keyed deny list for
+// customer_support, which must have no download and no config access. It
+// throws a bare 403 and emits NOTHING, so this controller's zero-audit pin
+// (object-spine-http.test.ts) still holds for every route.
 @Controller('ops')
 @UseGuards(OpsEdgeGuard)
 export class OpsReadController {
@@ -93,6 +118,17 @@ export class OpsReadController {
     return readDamageCases(this.deps.tmsDb, { includeClosed: includeClosed === 'true' })
   }
 
+  // D-31 (DAMAGE_PLAN B3/DP-7): case counts by status for the dashboard tile.
+  // Served from TMS, not analytics, because case_status is deliberately never
+  // projected into analytics; guard-only exactly like `damageCases` above.
+  // Registration order does not matter here: 'damage-cases' is an exact path
+  // and cannot capture 'damage-cases/summary'.
+  @Get('damage-cases/summary')
+  @HttpCode(200)
+  async damageCaseSummary(): Promise<DamageCaseSummary> {
+    return countDamageCasesByStatus(this.deps.tmsDb)
+  }
+
   @Get('exceptions/intake')
   @HttpCode(200)
   async intakeExceptions(@Query('includeResolved') includeResolved?: string): Promise<IntakeExceptionView[]> {
@@ -106,24 +142,29 @@ export class OpsReadController {
   }
 
   // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
-  // admin list, guard-only exactly like `vendors`/`damageReasons` above (no D2
-  // authorize, no 6e; the read-only DB role scopes visibility). `?tenantWire=`
-  // narrows to one tenant; omitted returns every configured row.
+  // admin list. A CONFIG VIEW, so it carries the D-29/DP-8 read restriction
+  // (customer_support is denied; every unrestricted class-3 role passes with
+  // no D2 authorize and no 6e, the read-only DB role scoping visibility as
+  // before). `?tenantWire=` narrows to one tenant; omitted returns every
+  // configured row.
   @Get('bank-config')
   @HttpCode(200)
-  async bankConfig(@Query('tenantWire') tenantWire?: string): Promise<BankCompositionConfigRow[]> {
+  async bankConfig(@Req() req: EdgeRequest, @Query('tenantWire') tenantWire?: string): Promise<BankCompositionConfigRow[]> {
+    requireUnrestrictedRead(req.claim)
     return listBankCompositionConfigs(this.deps.fulfillmentDb, tenantWire !== undefined ? { tenantWire } : {})
   }
 
-  // Phase 3 Task 6 (BRD 5.3.2): the batching-parameter admin list, guard-only
-  // exactly like the reads above (no D2 authorize, no 6e; the read-only DB role
-  // scopes visibility). Returns every configured scope row (GLOBAL, per-tenant,
-  // per-(tenant,program)) for the admin UI. NOTE: this GET is guard-only, so
-  // any authenticated class-3 operator can VIEW the batching config; only the
-  // WRITE (POST) is admin/super_admin-gated (T6 differentiation).
+  // Phase 3 Task 6 (BRD 5.3.2): the batching-parameter admin list. A CONFIG
+  // VIEW, so like bank-config above it carries the D-29/DP-8 read restriction:
+  // customer_support is denied; any OTHER authenticated class-3 operator can
+  // still VIEW the batching config with no D2 authorize and no 6e, and only
+  // the WRITE (POST) is admin/super_admin-gated (T6 differentiation). Returns
+  // every configured scope row (GLOBAL, per-tenant, per-(tenant,program)) for
+  // the admin UI.
   @Get('batching-config')
   @HttpCode(200)
-  async batchingConfig(): Promise<BatchingConfigRow[]> {
+  async batchingConfig(@Req() req: EdgeRequest): Promise<BatchingConfigRow[]> {
+    requireUnrestrictedRead(req.claim)
     return listBatchingConfigs(this.deps.fulfillmentDb)
   }
 
@@ -177,6 +218,22 @@ export class OpsReadController {
     return listDispatches(this.deps.fulfillmentDb, status !== undefined ? { status } : {})
   }
 
+  // D-26 (DAMAGE_PLAN B2/DP-6): find every dispatch leg for one merchant VPA,
+  // the operator's entry point into the flag-damage flow. Served from TMS
+  // (assignment owns vpa_value; the existing lower(vpa_value) index carries
+  // the match), guard-only like every read here, so no context boundary
+  // moves. A blank or missing ?vpa= is a 400, not an unbounded scan.
+  // Registration order does not matter: 'dispatches' above is an exact path
+  // and cannot capture 'dispatches/by-vpa'.
+  @Get('dispatches/by-vpa')
+  @HttpCode(200)
+  async dispatchesByVpa(@Query('vpa') vpa?: string): Promise<{ rows: VpaDispatchRow[] }> {
+    if (typeof vpa !== 'string' || vpa.trim() === '') {
+      throw new BadRequestException('vpa query parameter is required')
+    }
+    return { rows: await searchDispatchesByVpa(this.deps.tmsDb, vpa) }
+  }
+
   // The device inventory. Guard-only, like the other reads on this controller:
   // no new D2 permission string is minted for it, because it exposes nothing a
   // class-3 ops principal cannot already reach about a device through a batch
@@ -215,16 +272,19 @@ export class OpsReadController {
   // Phase 1 dispatch-package hand-off, per the 2026-08-10 E1 ruling: TWO Excels
   // per batch, one per delivery group, on the same group vocabulary (and legacy
   // artifact-type key mapping) the collateral PDF route below already uses. One
-  // resolver, two media types. Guard-only like every read here (no D2 authorize,
-  // no 6e); the ship-view PII an entitled operator sees mirrors the accepted
-  // internal-read posture (A.2). 404 on an unknown group key, the same null
-  // path the PDF route takes.
+  // resolver, two media types. A BINARY DOWNLOAD, so it carries the D-29/DP-8
+  // read restriction (customer_support is denied; every unrestricted class-3
+  // role passes with no D2 authorize and no 6e); the ship-view PII an entitled
+  // operator sees mirrors the accepted internal-read posture (A.2). 404 on an
+  // unknown group key, the same null path the PDF route takes.
   @Get('batches/:btchId/excel/:groupKey')
   async dispatchExcel(
+    @Req() req: EdgeRequest,
     @Param('btchId') btchId: string,
     @Param('groupKey') groupKey: string,
     @Res() res: EdgeResponse,
   ): Promise<void> {
+    requireUnrestrictedRead(req.claim)
     const group = resolveCollateralGroup(groupKey)
     if (group === null) {
       res.status(404).send(Buffer.from(''))
@@ -245,13 +305,17 @@ export class OpsReadController {
   // merchant). The three legacy artifact-type values still resolve to the group
   // carrying that product, so a URL an operator already holds keeps working.
   // 404 when the batch has nothing in that group, and for an unknown key, which
-  // is the same null path an unknown artifact type took before.
+  // is the same null path an unknown artifact type took before. A BINARY
+  // DOWNLOAD, so it carries the D-29/DP-8 read restriction exactly like the
+  // Excel route above.
   @Get('batches/:btchId/collateral/:collateralKey')
   async collateral(
+    @Req() req: EdgeRequest,
     @Param('btchId') btchId: string,
     @Param('collateralKey') collateralKey: string,
     @Res() res: EdgeResponse,
   ): Promise<void> {
+    requireUnrestrictedRead(req.claim)
     const pdf = await assembleGroupPdf(this.deps.fulfillmentDb, this.deps.assetStore, btchId, collateralKey)
     if (pdf === null) {
       res.status(404).send(Buffer.from(''))

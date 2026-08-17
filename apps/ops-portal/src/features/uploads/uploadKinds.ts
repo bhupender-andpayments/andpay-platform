@@ -38,10 +38,10 @@ export interface UploadKind {
   route?: string
   /**
    * Stated ONLY where the portal has a verified list. Device inventory shares
-   * a real constant with its parser. The bank and damage layouts are resolved
-   * by source profile at ingest (D8), and the real GSCB file's headers differ
-   * from the canonical names, so listing columns for those would invent a
-   * contract the portal cannot check.
+   * a real constant with its parser. The bank layout is resolved by source
+   * profile at ingest (D8), and the real GSCB file's headers differ from the
+   * canonical names, so listing columns for it would invent a contract the
+   * portal cannot check.
    */
   columns?: readonly string[]
   steps: readonly UploadStep[]
@@ -153,8 +153,11 @@ export const DEVICE_INVENTORY_KIND: UploadKind = {
 // is the sequence a real week runs in and the sequence DEMO.md walks: a bank
 // requests soundboxes, the manufacturer's stock has to already be in, the print
 // vendor returns the sheet, the courier reports movement, the CWD confirms
-// activation. Damage is the one off-flow kind and sits last, because it is the
-// one file here nobody plans for.
+// activation.
+//
+// THE DAMAGE KIND IS GONE (D-25): there is no damage file any more. A damaged
+// device is flagged by an operator on the dispatch itself (D-26), from the
+// per-dispatch page, so no card here can honestly claim that file exists.
 //
 // A bulk "device status corrections" kind used to sit after it, listed here but
 // owned by /inventory/status-upload. Both are gone (2026-08-14): device and
@@ -270,26 +273,6 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
     ],
     guidanceByStep: {
       upload: 'Submit unlocks once a file is set.',
-    },
-  },
-  {
-    slug: 'damage',
-    title: 'Damage reports',
-    source: 'From the bank, after delivery',
-    description: 'Damaged devices to be replaced. Every row is matched to an existing dispatch.',
-    steps: [CHOOSE, UPLOAD, REVIEW, COMMIT],
-    nextByStep: {
-      upload: ['Drop the file to see the projected match per row. Nothing is written yet.', 'Review, then commit once the matches look right.'],
-      review: ['Each row shows whether it would replace or quarantine, and why.', 'Continue to Commit when the matches look right.'],
-      commit: ['Committing opens the replacement cases, tagged non-billable.', 'Quarantined rows land in Queues for review.'],
-    },
-    goodToKnow: [
-      ...SHARED_GOOD_TO_KNOW,
-      'Preview writes nothing; only Commit does.',
-      'Rows are matched to a dispatch by bank code plus VPA, and the reason must be an active damage reason.',
-    ],
-    guidanceByStep: {
-      upload: 'Review and Commit unlock once the file previews cleanly.',
     },
   },
 ]

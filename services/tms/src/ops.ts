@@ -18,20 +18,15 @@ import {
   type RequestRowRejectReason,
   type DuplicateVpaOriginal,
 } from './ingest.js'
-import { ingestDamageRowWithinTx, CASE_STATUS_VALUES, type BankDamageRow } from './damage.js'
+import { CASE_STATUS_VALUES, normalizeCaseStatus } from './damage-case.js'
 
 // The cap on an operator's case note, matching the trigger-note and hold-reason
 // caps elsewhere: long enough for a real explanation, short enough that the
 // column is a note and not a document store.
 const MAX_OPS_REMARKS_LENGTH = 500
-import {
-  parseBankRequestFile,
-  parseBankDamageFile,
-  type StructuralParseError,
-} from './bank-file-adapter.js'
+import { parseBankRequestFile, type StructuralParseError } from './bank-file-adapter.js'
 import { createDamageReasonWithinTx, setDamageReasonActiveWithinTx, type DamageReasonRow } from './damage-reason.js'
 import { activateAssignmentWithinTx } from './assignment.js'
-import { normalizeCaseStatus } from './damage.js'
 import { recordActivationStatusWithinTx } from './activation-branch.js'
 import type { DevicePort } from './device-port.js'
 
@@ -40,12 +35,14 @@ import type { DevicePort } from './device-port.js'
 // caller-supplied value that fails validation), so the ops HTTP edge's
 // app-wide OpsErrorFilter can map it to a 4xx via duck-typing on `kind`
 // (the filter's comment names this exact future addition, "a future tms
-// equivalent needs no new import here"). `kind` is intentionally narrow
-// (only the one shape this domain throws in v1): 'invalid' for a
-// caller-supplied value that fails validation.
+// equivalent needs no new import here"). `kind` started as the single
+// 'invalid' this domain threw in v1; the flag-damage write (D-26, DP-3)
+// widened it with 'not-found' (an unknown target dispatch, the same kind
+// fulfillment already throws) and 'conflict' (a live damage case already
+// exists, the 409 the edge maps it to).
 export class OpsClientError extends Error {
   constructor(
-    public readonly kind: 'invalid',
+    public readonly kind: 'invalid' | 'not-found' | 'conflict',
     message: string,
   ) {
     super(message)
@@ -154,14 +151,10 @@ function opsAllow(args: {
 // spec 10c ops writes (Task 5). These are the TMS-side handlers the ops HTTP
 // edge (T9) calls in-process; the ops principal is class-3 human (D-3), never
 // a vendor. Each opens ONE transaction and sets the role FIRST via a plain
-// `SET LOCAL ROLE tms_write`, not `enterWriteScope`: the bank-file and
-// damage-file ingests write only the permissive S8 ledger tables
-// (pending_row / quarantine_row / ingest_file), which carry no program_id
-// gate, so there is no single Program to bind into app.program_id for the
-// whole action. `ingestDamageRowWithinTx` sets its OWN per-row
-// app.program_id internally (for the program-scoped `assignment` write), so
-// running many rows under one `tms_write` role-scope in a single transaction
-// is still correct: each row sets its program right before its own writes.
+// `SET LOCAL ROLE tms_write`, not `enterWriteScope`: the bank-file ingest
+// writes only the permissive S8 ledger tables (pending_row / quarantine_row /
+// ingest_file), which carry no program_id gate, so there is no single Program
+// to bind into app.program_id for the whole action.
 //
 // Each action is one client-key idempotent instance (rule 1, 06.A) via the
 // shared E6 inbox (`onceWithin`): a replay of the same clientKey does not
@@ -187,8 +180,7 @@ function opsAllow(args: {
 // quarantine_row, ingest_file, inbox or outbox row is written, no write role is
 // entered, no 6e is enqueued, and NOTHING is logged.
 //
-// This is the posture previewDamageFile below already established for the same
-// reason ("a pure preview cannot do this"), and a READ is not persistence.
+// A READ is not persistence: nothing about the write plane moved.
 export async function previewBankFile(db: TmsDb, fileBytes: Uint8Array, filename: string): Promise<BankPreviewResult> {
   const parsed = await parseBankRequestFile(fileBytes, filename, 'preview')
   if (parsed.errors.length > 0) {
@@ -422,111 +414,6 @@ export async function commitBankFile(
     })
   })
   return { ...tally, qrMalformed, duplicateVpa, duplicateMobile, duplicateVpaHeld, fileId }
-}
-
-// Phase 7 Task 7 (L11, FR08-3 decision item 11): the damage-file PREVIEW,
-// built to give the damage upload the same preview-then-commit UX the bank
-// upload already has. UNLIKE previewBankFile (a pure in-memory re-validate,
-// zero DB touch), damage validation is a DB match by (bank_reference_code,
-// vpa_value) against `assignment` plus an ACTIVE `damage_reason` label match
-// (ingestDamageRowWithinTx's own two SELECTs) - a "pure preview cannot do
-// this" per the ops.ts damage-commit comment above, so this function reads
-// (never writes) those SAME two SELECTs under the read-only tms_ops_read
-// role (the same role listDamageReasons/readDamageCases already use) and
-// projects the identical outcome the commit path would reach. It opens NO
-// write role, INSERTs no quarantine_row, and enqueues no 6e: a dry run in
-// the strongest sense the domain allows. Duplicate detection is
-// DELIBERATELY not projected (same omission previewBankFile makes): a
-// duplicate is decided by the real Idempotency-Key-derived correlationId,
-// which does not exist until commit.
-export interface DamagePreviewRowResult {
-  rowNo: number
-  valid: boolean
-  reasonCode?: 'no_match' | 'ambiguous_match' | 'invalid_damage_reason' | 'ambiguous_damage_reason'
-  row: BankDamageRow
-}
-
-export interface DamagePreviewResult {
-  rows: DamagePreviewRowResult[]
-  summary: { total: number; valid: number; invalid: number }
-  structuralErrors: StructuralParseError[]
-}
-
-export async function previewDamageFile(db: TmsDb, fileBytes: Uint8Array, filename: string): Promise<DamagePreviewResult> {
-  const parsed = await parseBankDamageFile(fileBytes, filename, 'preview')
-  if (parsed.errors.length > 0) {
-    return { rows: [], summary: { total: 0, valid: 0, invalid: 0 }, structuralErrors: parsed.errors }
-  }
-  const rows = await db.$transaction(async (tx: Tx) => {
-    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
-    const out: DamagePreviewRowResult[] = []
-    for (const row of parsed.rows) {
-      const matches = await tx.$queryRaw<{ id: string }[]>`
-        SELECT id FROM assignment
-        WHERE bank_reference_code = ${row.tenantReference} AND vpa_value = ${row.vpaValue} AND replacement_of IS NULL
-      `
-      if (matches.length !== 1) {
-        out.push({ rowNo: row.rowNo, valid: false, reasonCode: matches.length === 0 ? 'no_match' : 'ambiguous_match', row })
-        continue
-      }
-      const reasonMatches = await tx.$queryRaw<{ id: string }[]>`
-        SELECT id FROM damage_reason
-        WHERE active = true AND LOWER(TRIM(label)) = LOWER(TRIM(${row.damageReason}))
-      `
-      if (reasonMatches.length !== 1) {
-        out.push({
-          rowNo: row.rowNo,
-          valid: false,
-          reasonCode: reasonMatches.length === 0 ? 'invalid_damage_reason' : 'ambiguous_damage_reason',
-          row,
-        })
-        continue
-      }
-      out.push({ rowNo: row.rowNo, valid: true, row })
-    }
-    return out
-  })
-  const valid = rows.reduce((n, r) => n + (r.valid ? 1 : 0), 0)
-  return { rows, summary: { total: rows.length, valid, invalid: rows.length - valid }, structuralErrors: [] }
-}
-
-// Phase 2 Task 2 (D-K): the damage-file COMMIT. Same server-side re-parse and
-// server-owned fileId rule as commitBankFile; there is no separate damage
-// preview in v1 (damage validation is a DB match by tenant+vpa, which a pure
-// preview cannot do; a later task may add one). Runs the UNCHANGED damage
-// ingest (match + non-billable replacement + linkage/demand facts) under
-// tms_write, keeping the partial-accept and the co-committed ALLOW 6e.
-export async function commitDamageFile(
-  db: TmsDb,
-  args: { fileBytes: Uint8Array; filename: string; clientKey: string; actorId: string; traceId: string },
-): Promise<{ replaced: number; quarantined: number; duplicate: number; fileId: string }> {
-  const fileId = args.clientKey
-  const parsed = await parseBankDamageFile(args.fileBytes, args.filename, fileId)
-  if (parsed.errors.length > 0) throw new BankFileParseError(parsed.errors)
-
-  const tally = { replaced: 0, quarantined: 0, duplicate: 0 }
-  await db.$transaction(async (tx: Tx) => {
-    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
-    await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:upload-damage-file'), async () => {
-      for (const row of parsed.rows) {
-        const outcome = await ingestDamageRowWithinTx(tx, row, args.traceId)
-        tally[outcome] += 1
-      }
-      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the ingest.
-      await enqueue(
-        tx,
-        buildAuthzAuditEvent(
-          opsAllow({
-            operation: 'ops:upload-damage-file',
-            principalId: args.actorId,
-            resourceIds: [],
-            traceId: args.traceId,
-          }),
-        ),
-      )
-    })
-  })
-  return { ...tally, fileId }
 }
 
 // Re-drives the S8 ingest for a corrected row, then stamps the SOURCE
@@ -811,10 +698,9 @@ export async function activateDamageReasonOps(
 }
 
 // The reason this task exists (FR-08, FR-11): once a reason is deactivated,
-// any LATER damage-file row still using its label quarantines
-// (invalid_damage_reason, damage.ts) instead of creating a replacement, even
-// though the label string itself is unchanged; only rows already replaced
-// before deactivation are unaffected (this never touches assignment).
+// any LATER flag rejects it (flagDamageOps validates the CODE against active
+// rows, flag-damage.ts) instead of creating a replacement; only replacements
+// minted before deactivation are unaffected (this never touches assignment).
 export async function deactivateDamageReasonOps(
   db: TmsDb,
   args: { id: string; clientKey: string; actorId: string; traceId: string },

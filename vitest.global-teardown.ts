@@ -267,6 +267,102 @@ async function cleanAuthScoped(): Promise<string> {
   }
 }
 
+/**
+ * THE KAFKA PASS (F-10), and why it is an OFFSET RESET and never a topic
+ * delete.
+ *
+ * The gate does not only leave rows behind, it leaves MESSAGES behind. The
+ * bus acceptance test (packages/bus/test/roundtrip.test.ts) publishes a
+ * synthetic envelope onto the real fct.identity.merchant.v1 topic on the real
+ * local Redpanda, because the thing it proves (outbox row -> real publisher
+ * -> real consumer -> inbox dedup) is only proven against the real rail. That
+ * message is correct there and poison everywhere else: its payload is not a
+ * merchant fact, so when the DEMO's tms consumer group reads it on the next
+ * boot, the projector hands an undefined wire id to the ids parser and the
+ * message walks the retry ladder into the DLQ. Observed on 2026-08-16 in two
+ * consecutive boots at different commits, one dead-lettered mrch_rt_<epoch>
+ * per gate run, accumulating forever.
+ *
+ * The truncation above already destroys every database effect this run's
+ * messages had, so replaying ANY of them into the emptied projections is
+ * wrong by construction, not just noisy. The coherent reset is therefore:
+ * the store and the stream move together. Each local demo consumer group's
+ * committed offsets are advanced to the topic ends, so the next boot resumes
+ * from now instead of replaying the gate. Messages are never deleted, topics
+ * are never dropped or created (S23: provisioning is out of band), and the
+ * retry ladder is untouched: a message already mid-ladder from an earlier
+ * boot is skipped for the same reason, its database context no longer
+ * exists.
+ *
+ * Loud, never fatal, like everything else here: no broker, no kafkajs, or a
+ * group with LIVE members (the demo running during a partial run) degrades
+ * to a warning. A live group needs no reset anyway, because its consumers
+ * saw this run's messages as they were published.
+ *
+ * VERIFIED 2026-08-16: full gate (which publishes one fresh mrch_rt_ fact),
+ * this pass reports the reset, `bash scripts/demo.sh` boots with zero
+ * retry/DLQ lines in the consumer log. Before the pass existed, the same
+ * sequence dead-lettered the fact within a minute of boot.
+ */
+const DEMO_CONSUMER_CONTEXTS = ['identity', 'tms', 'fulfillment', 'analytics', 'auth'] as const
+
+async function resetDemoConsumerGroups(): Promise<string> {
+  let kafkajs: typeof import('kafkajs')
+  try {
+    kafkajs = await import('kafkajs')
+  } catch {
+    console.error(`${TAG} kafkajs not installed; demo consumer groups were NOT reset. Run: pnpm install`)
+    return 'kafka: skipped (no kafkajs)'
+  }
+
+  const brokers = (process.env.KAFKA_BROKERS ?? 'localhost:19092').split(',').map((b) => b.trim())
+  const kafka = new kafkajs.Kafka({ clientId: 'andpay-global-teardown', brokers, logLevel: kafkajs.logLevel.NOTHING })
+  const admin = kafka.admin()
+  try {
+    await admin.connect()
+  } catch {
+    console.error(`${TAG} Kafka broker unreachable at ${brokers.join(',')}; demo consumer groups were NOT reset.`)
+    return 'kafka: skipped (broker unreachable)'
+  }
+
+  let groupsReset = 0
+  let topicsReset = 0
+  const liveGroups: string[] = []
+  try {
+    for (const ctx of DEMO_CONSUMER_CONTEXTS) {
+      // The group id shape is pinned by apps/consumer (groupIdFor). A literal
+      // here for the same reason the schema list above is a literal: adding a
+      // sixth context must be a deliberate edit, not an accident.
+      const groupId = `andpay.${ctx}.v1`
+      try {
+        const committed = await admin.fetchOffsets({ groupId })
+        const topics = committed
+          .filter((t) => t.partitions.some((p) => p.offset !== '-1'))
+          .map((t) => t.topic)
+        if (topics.length === 0) continue
+        for (const topic of topics) {
+          await admin.resetOffsets({ groupId, topic, earliest: false })
+          topicsReset += 1
+        }
+        groupsReset += 1
+      } catch (err) {
+        // kafkajs refuses to move a group that has live members. That is the
+        // demo running during this test run, and a live consumer already read
+        // this run's messages the moment they were published; there is
+        // nothing coherent left to skip.
+        const msg = err instanceof Error ? err.message : String(err)
+        liveGroups.push(groupId)
+        console.error(`${TAG} group ${groupId} not reset (${msg}); if the demo is running, its consumers already saw this run's messages.`)
+      }
+    }
+  } finally {
+    await admin.disconnect()
+  }
+
+  const live = liveGroups.length > 0 ? `, ${String(liveGroups.length)} live (untouched)` : ''
+  return `kafka: ${String(groupsReset)} consumer groups advanced to latest across ${String(topicsReset)} topics${live}`
+}
+
 export async function teardown(): Promise<void> {
   // Escape hatch for the case where you WANT the rows: debugging a failing test
   // by inspecting what it left behind.
@@ -315,6 +411,15 @@ export async function teardown(): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`${TAG} FAILED for auth: ${msg}`)
     results.push('auth: FAILED')
+  }
+  // The stream resets with the store (F-10 above): after the truncations,
+  // advance the demo consumer groups past everything this run published.
+  try {
+    results.push(await resetDemoConsumerGroups())
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`${TAG} FAILED for kafka: ${msg}`)
+    results.push('kafka: FAILED')
   }
 
   console.log(`${TAG} ${results.join(' | ')}. orchestrator untouched.`)
