@@ -169,27 +169,27 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
     slug: 'bank',
     title: 'Bank requests',
     source: 'From the bank',
-    description: 'New soundbox requests. Check the per-row verdict, commit, and the rows pool toward the next batch.',
+    description: 'New soundbox requests. Rows split into ready and held; add the ready ones and they pool toward the next batch.',
     steps: [CHOOSE, UPLOAD, REVIEW, COMMIT],
     nextByStep: {
       upload: [
         'Drop the file to see the server verdict per row. Nothing is written yet.',
-        'Review, then commit once the rows look right.',
+        'Rows split into two tables: ready to add, and held for review.',
       ],
-      review: ['Each row shows whether it can be committed, and why not if it cannot.', 'Commit sits above the table.'],
+      review: ['Clean rows sit under Ready to add; failing rows under Held for review, each naming its reason.', 'The Add button sits on the ready table.'],
       commit: [
-        'Committed rows pool toward the next batch; the batch is what mints Dispatch IDs.',
+        'Added rows pool toward the next batch; the batch is what mints Dispatch IDs.',
         'Held rows wait in Queues, where accepting one is what puts it in the pool.',
       ],
     },
     goodToKnow: [
       ...SHARED_GOOD_TO_KNOW,
-      'Preview writes nothing; only Commit does.',
+      'Preview writes nothing; only Add does.',
       'Column names are resolved against the bank’s own layout, so the file does not need renaming by hand.',
-      'A UPI ID already in the system is HELD for review rather than committed, because it is often a genuine additional soundbox and that call is a human one.',
+      'A UPI ID already in the system is HELD for review rather than added, because it is often a genuine additional soundbox and that call is a human one.',
     ],
     guidanceByStep: {
-      upload: 'Review and Commit unlock once the file previews cleanly.',
+      upload: 'The Add button unlocks once the file previews cleanly.',
     },
   },
   // Listed, not owned: the page is /inventory/upload and the Inventory section
