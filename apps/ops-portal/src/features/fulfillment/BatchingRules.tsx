@@ -15,6 +15,21 @@ import { fmtNumber } from '../../ui/format.js'
 const DEFAULT_MIN_LOT = 50
 const DEFAULT_MAX_WAIT_SECONDS = 7 * 24 * 3600
 
+/**
+ * The ONE wait-rendering rule in the portal: the fulfillment panels, the pool
+ * cards and the master-data batching table all use this, so a wait reads the
+ * same everywhere it appears.
+ *
+ * Largest exact unit wins, which is why the 7-day platform default reads as
+ * "7 days" rather than "168 hours".
+ *
+ * The sub-hour case renders as MINUTES rather than raw seconds (2026-08-17).
+ * Seconds are the wire unit, never an operator's unit, and the batching dialog
+ * now takes its input in hours, so a half-hour tier is something an admin can
+ * routinely create; "1800 s" was the one place a configured value came back in
+ * a unit nobody had typed. Seconds survive only as the last resort for a value
+ * that is not a whole minute, which nothing in the product can currently set.
+ */
 export function fmtWait(seconds: number): string {
   if (seconds % 86400 === 0) {
     const d = seconds / 86400
@@ -23,6 +38,10 @@ export function fmtWait(seconds: number): string {
   if (seconds % 3600 === 0) {
     const h = seconds / 3600
     return `${h} ${h === 1 ? 'hour' : 'hours'}`
+  }
+  if (seconds % 60 === 0) {
+    const m = seconds / 60
+    return `${m} ${m === 1 ? 'minute' : 'minutes'}`
   }
   return `${seconds} s`
 }

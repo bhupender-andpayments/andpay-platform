@@ -583,6 +583,8 @@ importers:
 
   packages/keys: {}
 
+  packages/merchant-ref: {}
+
   packages/outbox: {}
 
   services/analytics:
@@ -693,6 +695,9 @@ importers:
       '@andpay/keys':
         specifier: workspace:*
         version: link:../../packages/keys
+      '@andpay/merchant-ref':
+        specifier: workspace:*
+        version: link:../../packages/merchant-ref
       '@andpay/outbox':
         specifier: workspace:*
         version: link:../../packages/outbox
@@ -718,6 +723,9 @@ importers:
       '@andpay/keys':
         specifier: workspace:*
         version: link:../../packages/keys
+      '@andpay/merchant-ref':
+        specifier: workspace:*
+        version: link:../../packages/merchant-ref
       '@andpay/outbox':
         specifier: workspace:*
         version: link:../../packages/outbox

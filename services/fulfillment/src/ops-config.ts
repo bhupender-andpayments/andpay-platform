@@ -83,6 +83,17 @@ const OPS_PERMISSIONS = [
   // dead. No step-up (master-data maintenance, not a destructive action).
   'ops:bank-master-create',
   'ops:bank-master-edit',
+  // 2026-08-17: the ops Add-merchant write (POST /ops/merchants), for the
+  // merchant no bank file has carried yet. Shared bundle, NOT admin-tier, and
+  // no step-up, matching bank-master-create and vendor-create directly above:
+  // it creates master data, it destroys nothing, and it asks for no hardware
+  // (the bank request upload remains the only door for that). No
+  // `ops:merchant-list` entry, same reasoning as every other absent -list
+  // permission here: GET /ops/merchants is guard-only at the edge.
+  //
+  // Submitted as item 5 of
+  // docs/plan/CORPUS_SUBMISSION_2026-08-17_MERCHANT_CREATE.md, not yet ratified.
+  'ops:merchant-create',
   // Phase 5 Task 1 (D-G, FR-01a): the ops device-inventory upload, the ops
   // analog of the vendor-channel manufacturer intake. Same tier as the other
   // uploads (ops:upload-bank-file), not admin-tier. No list permission is

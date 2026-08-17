@@ -17,6 +17,7 @@
     "@andpay/envelope": "workspace:*",
     "@andpay/ids": "workspace:*",
     "@andpay/keys": "workspace:*",
+    "@andpay/merchant-ref": "workspace:*",
     "@andpay/outbox": "workspace:*",
     "exceljs": "^4.4.0"
   },

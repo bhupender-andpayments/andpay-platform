@@ -34,6 +34,13 @@ const ROWS = [
   },
 ]
 
+// Shapes copied from services/identity/src/ops.ts BankMasterRow. Only the two
+// fields the picker reads are needed here.
+const BANKS = [
+  { tnntId: 'tnnt_gscb', displayName: 'GSCB', bankReferenceCode: 'GSCB', status: 'ACTIVE' },
+  { tnntId: 'tnnt_hdfc', displayName: 'HDFC Bank', bankReferenceCode: 'HDFC', status: 'ACTIVE' },
+]
+
 function renderPage() {
   return render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -165,16 +172,18 @@ describe('MerchantsPage', () => {
   })
 
   // The Add-merchant form carries the BRD's own merchant record (section 5.1):
-  // identity, contact and the dispatch address block. The POST body is the
-  // contract the backend team implements; nothing typed may silently vanish
-  // from it.
+  // identity, contact and the dispatch address block, plus the sponsoring bank
+  // from master data. The POST body is the contract the edge implements;
+  // nothing typed may silently vanish from it.
   it('posts every BRD field from the Add merchant form, and stays disabled until they are valid', async () => {
     const calls: { url: string; init: RequestInit }[] = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init: RequestInit) => {
         calls.push({ url, init })
-        if (url.includes('/ops/merchants') && init.method === 'POST') return jsonResponse({ mrchId: 'mrch_new' })
+        if (url.includes('/ops/merchants') && init.method === 'POST')
+          return jsonResponse({ deduped: false, mrchId: 'mrch_new' })
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
         return jsonResponse(ROWS)
       }),
     )
@@ -185,6 +194,10 @@ describe('MerchantsPage', () => {
     const type = async (label: RegExp, value: string) => {
       await userEvent.type(screen.getByLabelText(label), value)
     }
+    // The bank comes from master data, so it is SELECTED, never typed.
+    await screen.findByRole('option', { name: 'GSCB' })
+    await userEvent.selectOptions(screen.getByLabelText(/bank/i), 'tnnt_gscb')
+
     await type(/business name/i, 'Chai Point')
     await type(/legal name/i, 'CHAI POINT LLP')
     await type(/mcc/i, '5812')
@@ -209,6 +222,7 @@ describe('MerchantsPage', () => {
     })
     const body = JSON.parse(String(write.init.body)) as Record<string, unknown>
     expect(body).toMatchObject({
+      tnntWire: 'tnnt_gscb',
       displayName: 'Chai Point',
       legalName: 'CHAI POINT LLP',
       mcc: '5812',
@@ -220,6 +234,57 @@ describe('MerchantsPage', () => {
       state: 'MH',
       pincode: '411001',
     })
+  })
+
+  // Without a bank the server has no resolver key to write, so the merchant
+  // would be invisible to the bank file that arrives for it later. The form
+  // refuses the save rather than letting the server take that shape.
+  it('will not save without a bank, however complete the rest of the form is', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+    await userEvent.click(screen.getByRole('button', { name: /add merchant/i }))
+
+    const type = async (label: RegExp, value: string) => {
+      await userEvent.type(screen.getByLabelText(label), value)
+    }
+    await type(/business name/i, 'Chai Point')
+    await type(/legal name/i, 'CHAI POINT LLP')
+    await type(/mcc/i, '5812')
+    await type(/vpa/i, 'chaipoint@gscb')
+    await type(/contact name/i, 'Asha')
+    await type(/mobile/i, '9876543210')
+    await type(/^address$/i, '12 MG Road')
+    await type(/city/i, 'Pune')
+    await type(/state/i, 'MH')
+    await type(/pincode/i, '411001')
+
+    const save = screen.getAllByRole('button', { name: /add merchant/i }).at(-1) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+  })
+
+  // TASKLIST_2026-08-08 item C-1 refused the "one merchant per VPA" framing
+  // while D1 remains an interim key. The dialog carried it anyway; it does not
+  // any more, and the server's rule is per bank.
+  it('does not claim one merchant per VPA', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+    await userEvent.click(screen.getByRole('button', { name: /add merchant/i }))
+
+    expect(screen.queryByText(/one merchant per vpa/i)).toBeNull()
   })
 })
 

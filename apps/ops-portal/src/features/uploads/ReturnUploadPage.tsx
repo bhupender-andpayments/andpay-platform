@@ -18,7 +18,7 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, Loader2 } from 'lucide-react'
+import { ArrowRight, Download, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -32,9 +32,15 @@ import {
   uploadFileRejection,
   previewReturnUpload,
   commitReturnUpload,
+  getBatches,
+  getBatchDetail,
+  getDevices,
+  getVendors,
   type ReturnPreviewResult,
   type ReturnCommitResult,
 } from '../../api/endpoints.js'
+import { buildSampleReturnSheet, selectSampleReturnBatch } from './sampleReturnSheet.js'
+import { saveBlob } from '../../lib/saveBlob.js'
 import { kindBySlug, type StepKey } from './uploadKinds.js'
 import { BackLink } from '../../ui/DetailFacts.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
@@ -113,6 +119,63 @@ export function ReturnUploadPage() {
     }
   }, [client, file, toast])
 
+  // TESTING AID (see ./sampleReturnSheet.ts). Unlike the inventory and bank
+  // samples this one cannot be conjured: a return sheet names dispatches that
+  // must already exist, be batched, and still be awaiting their vendor, so the
+  // live state IS the input. Four reads, then a pure build:
+  //   batches   pick the newest with a bound print vendor (one batch only, or
+  //             the file is refused whole as mixed_vendors)
+  //   detail    its entries, which carry the real Dispatch IDs and the W-5
+  //             group that decides whether a row may carry a serial
+  //   devices   filtered to unpaired, so no row hits unit_already_paired
+  //   vendors   an ACTIVE courier code, or the optional column is omitted
+  //             entirely rather than guessed (an unknown code quarantines)
+  // A failure here is reported inline, not as a downloaded file that fails on
+  // upload, which is the whole point of the exercise.
+  const [sampling, setSampling] = useState(false)
+  const downloadSample = useCallback(async (): Promise<void> => {
+    setError(null)
+    setSampling(true)
+    try {
+      const batches = await getBatches(client)
+      const batch = selectSampleReturnBatch(batches)
+      if (batch === null) {
+        setError(
+          'No batch has a print vendor bound yet, so a return sheet has nothing to reference. Trigger a batch first, then try again.',
+        )
+        return
+      }
+      const [detail, devices, vendors] = await Promise.all([
+        getBatchDetail(client, batch.id),
+        getDevices(client, 'IN_STOCK'),
+        getVendors(client),
+      ])
+      const courier = vendors.find(
+        (v) => v.type === 'COURIER' && v.status === 'ACTIVE' && v.courierCode !== null,
+      )
+      const outcome = buildSampleReturnSheet({
+        batchId: batch.id,
+        entries: detail.entries,
+        freeSerials: devices
+          .filter((d) => d.asgnId === null && d.deviceSerial !== null)
+          .map((d) => d.deviceSerial!),
+        courierCode: courier?.courierCode ?? null,
+      })
+      if (!outcome.ok) {
+        setError(outcome.problem)
+        return
+      }
+      saveBlob(outcome.file.filename, new Blob([outcome.file.csv], { type: 'text/csv;charset=utf-8' }))
+      toast(
+        `Sample sheet downloaded: ${outcome.file.soundboxRows} soundbox, ${outcome.file.collateralRows} collateral.`,
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to build a sample return sheet.')
+    } finally {
+      setSampling(false)
+    }
+  }, [client, toast])
+
   const columns = useMemo<ReadonlyArray<GridColumn<PreviewRow>>>(
     () => [
       {
@@ -167,7 +230,25 @@ export function ReturnUploadPage() {
         <CardContent className="space-y-4">
           {result === null && (
             <div className="space-y-2">
-              <Label htmlFor="return-sheet-file">Return sheet</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="return-sheet-file">Return sheet</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={sampling || busy !== null}
+                  onClick={() => {
+                    void downloadSample()
+                  }}
+                >
+                  {sampling ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Download className="size-4" aria-hidden="true" />
+                  )}{' '}
+                  Sample file
+                </Button>
+              </div>
               <FileDropZone
                 id="return-sheet-file"
                 file={file}

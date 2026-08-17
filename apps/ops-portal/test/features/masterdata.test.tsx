@@ -17,10 +17,16 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 //   GET /ops/batching-config  -> BatchingConfigRow[]
 // The courier master is NOT a separate route: it is /ops/vendors filtered
 // client-side to type === 'COURIER' (existing CourierMasterPage precedent).
-// FR-11 (admin console: vendor create/suspend, damage-reason
-// create/activate/deactivate, batching-config SET, bank-master create/edit)
-// is deferred (ratified L9): every view here is READ-ONLY, so this suite
-// asserts both real data rendering AND the absence of any write control.
+//
+// CREATE landed 2026-08-17 (the L9 reversal), against routes that already
+// existed: POST /ops/vendors (couriers included, with type COURIER),
+// /ops/bank-masters, /ops/damage-reasons, /ops/batching-config.
+//
+// This suite therefore asserts THREE things, not two: real data rendering, the
+// create control and the exact body it posts, and the CONTINUED absence of the
+// still-deferred actions (edit, suspend, activate, deactivate). The last one
+// matters most: the reversal was scoped to create, and a suite that only
+// checked "some write control exists" would not notice the scope widening.
 
 interface Call {
   url: string
@@ -129,11 +135,24 @@ function renderPage(ui: ReactElement) {
   )
 }
 
-// Any control whose accessible name suggests a mutation. The Tabs primitive's
-// own switch buttons ("Vendor Registry", "Courier Master", "Bank Masters",
-// "Damage Reasons", "Batching Config") never match this, so this pattern can
-// safely be checked against every button on the page.
-const WRITE_CONTROL_PATTERN = /\b(add|create|new|edit|delete|remove|suspend|activate|deactivate|set|save|submit)\b/i
+// The actions still deferred under L9 after the create-only reversal. The Tabs
+// primitive's own switch buttons never match this, so it is safe to check
+// against every button on the page.
+//
+// "activate" would also match "deactivate", which is intended: both are
+// deferred. It does NOT match any of the five create controls, whose names are
+// "Add vendor", "Add courier", "Add bank master", "Add damage reason" and
+// "Set tier".
+const DEFERRED_CONTROL_PATTERN = /\b(edit|delete|remove|suspend|activate|deactivate)\b/i
+
+// The create control each tab is expected to carry, by accessible name.
+const CREATE_CONTROL_BY_TAB: ReadonlyArray<{ tab: string; control: string }> = [
+  { tab: 'Vendor Registry', control: 'Add vendor' },
+  { tab: 'Courier Master', control: 'Add courier' },
+  { tab: 'Bank Masters', control: 'Add bank master' },
+  { tab: 'Damage Reasons', control: 'Add damage reason' },
+  { tab: 'Batching Config', control: 'Set tier' },
+]
 
 describe('master data views', () => {
   beforeEach(() => {
@@ -222,7 +241,12 @@ describe('master data views', () => {
     expect(await screen.findByText('GLOBAL')).toBeTruthy()
     expect(screen.getByText('TENANT')).toBeTruthy()
     expect(screen.getByText('50')).toBeTruthy()
-    expect(screen.getByText('3,600')).toBeTruthy()
+    // The SHARED fmtWait, the same rule the fulfillment panels use, so a wait
+    // reads the same everywhere. Never the raw seconds the wire carries.
+    expect(screen.getByText('1 hour')).toBeTruthy()
+    expect(screen.getByText('30 minutes')).toBeTruthy()
+    expect(screen.queryByText('3,600')).toBeNull()
+    expect(screen.queryByText('1800 s')).toBeNull()
     // The GLOBAL row's null tenantWire/programWire render as a dash, never
     // the literal string "null".
     expect(screen.queryByText('null')).toBeNull()
@@ -292,32 +316,231 @@ describe('master data views', () => {
     expect(screen.getByText(/could not display these rows/i)).toBeTruthy()
   })
 
-  it('has NO write controls anywhere and issues only GET reads across every tab', async () => {
+  it('carries exactly one create control per tab, and none of the still-deferred actions', async () => {
     const calls: Call[] = []
     stubAllReads(calls)
 
     renderPage(<MasterDataPage />)
 
-    const tabLabels = ['Vendor Registry', 'Courier Master', 'Bank Masters', 'Damage Reasons', 'Batching Config']
-    for (const label of tabLabels) {
-      await userEvent.click(screen.getByRole('button', { name: label }))
+    const tabLabels = CREATE_CONTROL_BY_TAB.map((t) => t.tab)
+    for (const { tab, control } of CREATE_CONTROL_BY_TAB) {
+      await userEvent.click(screen.getByRole('button', { name: tab }))
       // Wait for that tab's data (or its error/empty state) to settle before
-      // inspecting the button set, since a race would just find the previous
-      // tab's buttons (also none), silently passing for the wrong reason.
-      await screen.findAllByRole('button')
-      const buttons = screen.getAllByRole('button')
-      const buttonNames = buttons.map((b) => b.textContent ?? '')
-      // Every visible button must be a tab switch, never a write control.
-      for (const name of buttonNames) {
-        expect(tabLabels).toContain(name)
-        expect(name).not.toMatch(WRITE_CONTROL_PATTERN)
+      // inspecting the button set, since a race would inspect the previous
+      // tab's buttons and pass for the wrong reason.
+      await screen.findByRole('button', { name: control })
+
+      const names = screen.getAllByRole('button').map((b) => b.textContent ?? '')
+      // Every button is either a tab switch or this tab's ONE create control.
+      for (const name of names) {
+        expect([...tabLabels, control]).toContain(name)
+      }
+      // Edit, suspend, activate and deactivate stay deferred under L9.
+      for (const name of names) {
+        expect(name).not.toMatch(DEFERRED_CONTROL_PATTERN)
       }
     }
 
+    // Browsing the tabs still writes nothing: the reads stay GET, and a create
+    // only happens when a dialog is submitted.
     expect(calls.length).toBeGreaterThan(0)
     for (const call of calls) {
-      const method = (call.init.method ?? 'GET').toUpperCase()
-      expect(method).toBe('GET')
+      expect((call.init.method ?? 'GET').toUpperCase()).toBe('GET')
     }
+  })
+
+  // The page said "Read-only view. Admin console for edits is deferred." That
+  // sentence is now false, and a stale reassurance beside a row of add buttons
+  // is worse than none.
+  it('no longer claims to be read-only', async () => {
+    stubAllReads([])
+    renderPage(<MasterDataPage />)
+    await screen.findByRole('button', { name: 'Add vendor' })
+    expect(screen.queryByText(/read-only/i)).toBeNull()
+  })
+})
+
+// Each dialog's POST body is the contract with an edge route that already
+// existed, so these assert the exact body rather than merely that something was
+// sent. A field silently dropped here is a field the operator typed and the
+// server never saw.
+describe('master data create dialogs', () => {
+  beforeEach(() => {
+    clearAccessToken()
+    setAccessToken('tok-1')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+  })
+
+  function stubWrites(calls: Call[]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit = { method: 'GET' }) => {
+        calls.push({ url, init })
+        if ((init.method ?? 'GET').toUpperCase() === 'POST') {
+          if (url.includes('/ops/damage-reasons')) return jsonResponse({ deduped: false, damageReason: DAMAGE_REASONS[0] })
+          return jsonResponse({ deduped: false, vndrId: 'vndr_1', tnntId: 'tnnt_1', id: 'bc-9' })
+        }
+        if (url.includes('/ops/vendors')) return jsonResponse(MIXED_VENDORS)
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANK_MASTERS)
+        if (url.includes('/ops/damage-reasons')) return jsonResponse(DAMAGE_REASONS)
+        if (url.includes('/ops/batching-config')) return jsonResponse(BATCHING_CONFIGS)
+        return jsonResponse([])
+      }),
+    )
+  }
+
+  async function postedTo(calls: Call[], fragment: string): Promise<Record<string, unknown>> {
+    const found = await vi.waitFor(() => {
+      const hit = calls.find((c) => c.url.includes(fragment) && (c.init.method ?? '').toUpperCase() === 'POST')
+      expect(hit).toBeTruthy()
+      return hit!
+    })
+    return JSON.parse(String(found.init.body)) as Record<string, unknown>
+  }
+
+  const type = async (label: RegExp, value: string) => {
+    await userEvent.type(screen.getByLabelText(label), value)
+  }
+
+  it('the vendor dialog posts the chosen type, and offers courier fields only for a COURIER', async () => {
+    const calls: Call[] = []
+    stubWrites(calls)
+    renderPage(<VendorRegistryPage />)
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Add vendor' }))
+    await type(/display name/i, 'New Press')
+
+    // courierCode and integrationMode are COURIER-only per the schema, so they
+    // are absent while a non-courier type is selected rather than sent empty.
+    await userEvent.selectOptions(screen.getByLabelText(/type/i), 'PRINT')
+    expect(screen.queryByLabelText(/courier code/i)).toBeNull()
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Add vendor' }).at(-1) as HTMLElement)
+    expect(await postedTo(calls, '/ops/vendors')).toEqual({ type: 'PRINT', displayName: 'New Press' })
+  })
+
+  it('the courier dialog pins the type to COURIER, so a create can never fall outside the list it was made from', async () => {
+    const calls: Call[] = []
+    stubWrites(calls)
+    renderPage(<CourierMasterPage />)
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Add courier' }))
+    // No type picker at all here: it is decided by the tab.
+    expect(screen.queryByLabelText(/^type$/i)).toBeNull()
+
+    await type(/display name/i, 'Quick Ship')
+    await type(/courier code/i, 'QSH')
+    await userEvent.selectOptions(screen.getByLabelText(/integration mode/i), 'WEBHOOK')
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Add courier' }).at(-1) as HTMLElement)
+    expect(await postedTo(calls, '/ops/vendors')).toEqual({
+      type: 'COURIER',
+      displayName: 'Quick Ship',
+      courierCode: 'QSH',
+      integrationMode: 'WEBHOOK',
+    })
+  })
+
+  it('the bank master dialog posts the full BRD D.1 record', async () => {
+    const calls: Call[] = []
+    stubWrites(calls)
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Add bank master' }))
+
+    await type(/bank reference code/i, 'GSCB')
+    await type(/display name/i, 'Gujarat State Co-op Bank')
+    await type(/address 1/i, '1 MG Road')
+    await type(/city/i, 'Ahmedabad')
+    await type(/district/i, 'Ahmedabad')
+    await type(/country/i, 'India')
+    await type(/pin/i, '380001')
+
+    // Mobile and email are still empty, so the save must not be offered yet.
+    const save = screen.getAllByRole('button', { name: 'Add bank master' }).at(-1) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    await type(/mobile/i, '9000000001')
+    await type(/email/i, 'ops@gscb.example')
+    expect(save.disabled).toBe(false)
+
+    await userEvent.click(save)
+    expect(await postedTo(calls, '/ops/bank-masters')).toEqual({
+      bankReferenceCode: 'GSCB',
+      displayName: 'Gujarat State Co-op Bank',
+      address1: '1 MG Road',
+      city: 'Ahmedabad',
+      district: 'Ahmedabad',
+      country: 'India',
+      pin: '380001',
+      mobile: '9000000001',
+      email: 'ops@gscb.example',
+    })
+  })
+
+  it('the damage reason dialog posts the code and label as separate fields', async () => {
+    const calls: Call[] = []
+    stubWrites(calls)
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Damage Reasons' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Add damage reason' }))
+
+    await type(/code/i, 'SCREEN')
+    await type(/label/i, 'Screen cracked')
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Add damage reason' }).at(-1) as HTMLElement)
+    expect(await postedTo(calls, '/ops/damage-reasons')).toEqual({ code: 'SCREEN', label: 'Screen cracked' })
+  })
+
+  it('the batching dialog sends only the chosen tier fields, and refuses max wait on a bank tier', async () => {
+    const calls: Call[] = []
+    stubWrites(calls)
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Batching Config' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Set tier' }))
+
+    // GLOBAL is the default and narrows nothing, so no tenant field is shown.
+    expect(screen.queryByLabelText(/bank partner/i)).toBeNull()
+
+    // The operator types HOURS; the wire field is seconds.
+    await type(/maximum wait/i, '2')
+
+    // R-7: a bank tier carries min lot ONLY. The max-wait field is not rendered
+    // at all, so the operator cannot build a body the server would reject.
+    await userEvent.selectOptions(screen.getByLabelText(/scope/i), 'BANK')
+    expect(screen.queryByLabelText(/maximum wait/i)).toBeNull()
+
+    await userEvent.selectOptions(screen.getByLabelText(/bank partner/i), 'tnnt_bank1000000000000000000')
+    await type(/member bank code/i, '77')
+    await type(/minimum lot size/i, '20')
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Set tier' }).at(-1) as HTMLElement)
+    // The 2 hours typed before switching to BANK is NOT smuggled through: the
+    // body carries no maxWaitSeconds at all.
+    expect(await postedTo(calls, '/ops/batching-config')).toEqual({
+      minLotSize: 20,
+      tenantWire: 'tnnt_bank1000000000000000000',
+      bankReferenceCode: '77',
+    })
+  })
+
+  it('converts the max wait from hours to seconds on a pool tier', async () => {
+    const calls: Call[] = []
+    stubWrites(calls)
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Batching Config' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Set tier' }))
+
+    await type(/minimum lot size/i, '30')
+    await type(/maximum wait/i, '2.5')
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Set tier' }).at(-1) as HTMLElement)
+    expect(await postedTo(calls, '/ops/batching-config')).toEqual({
+      minLotSize: 30,
+      // 2.5 hours, sent on the wire in the seconds the timer arms on.
+      maxWaitSeconds: 9000,
+    })
   })
 })
