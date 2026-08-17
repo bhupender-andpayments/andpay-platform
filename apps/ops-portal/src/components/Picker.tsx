@@ -32,6 +32,16 @@ export interface PickerOption {
   label: string
   /** Shown right-aligned in the row, e.g. how many rows carry this status. */
   count?: number
+  /**
+   * Present in the list but not choosable. For a list whose unavailable
+   * entries are part of the ANSWER rather than noise: the unit status editor
+   * shows the stages a device has already passed so the operator can see where
+   * it sits on the ladder, greyed out because a device only moves forward.
+   * Hiding them would leave the dropdown silently starting mid-ladder.
+   */
+  disabled?: boolean
+  /** Small trailing text explaining a disabled row, e.g. "not selectable". */
+  note?: string
 }
 
 interface CoreProps {
@@ -121,10 +131,20 @@ function PickerPanel({
                     type="button"
                     role="option"
                     aria-selected={checked}
+                    aria-disabled={o.disabled === true}
+                    disabled={o.disabled === true}
                     onClick={() => onToggle(o.value)}
-                    className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-accent"
+                    className={cn(
+                      'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm',
+                      o.disabled === true
+                        ? 'cursor-not-allowed text-muted-foreground/70'
+                        : 'cursor-pointer hover:bg-accent',
+                    )}
                   >
                     <span className="flex-1 truncate">{o.label}</span>
+                    {o.note !== undefined && (
+                      <span className="shrink-0 text-[11px] italic text-muted-foreground/70">{o.note}</span>
+                    )}
                     {o.count !== undefined && <span className="num text-xs text-muted-foreground">{o.count}</span>}
                     {checked && <Check className="size-3.5 shrink-0 text-primary" aria-hidden="true" />}
                   </button>

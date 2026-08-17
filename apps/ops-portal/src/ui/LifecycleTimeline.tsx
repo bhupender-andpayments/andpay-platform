@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
-import { fmtDateTime, fmtRelative } from './format.js'
+import { fmtDateTime } from './format.js'
 
 // THE ONE LIFECYCLE TIMELINE, shared by the device, the dispatch and the
 // shipment. Extracted from DeviceDetailPage, where it was inline, because three
@@ -84,12 +84,12 @@ function dotFor(state: TimelineStage['state']): string {
   return 'bg-muted-foreground/25'
 }
 
-/** Relative time, with the exact instant on hover. */
+/** The instant, in the console's one date shape. */
 function When({ at, label }: { at: string; label?: string }) {
   return (
-    <span className="shrink-0 text-xs text-muted-foreground" title={fmtDateTime(at)}>
+    <span className="shrink-0 text-xs text-muted-foreground">
       {label !== undefined && <span className="text-muted-foreground/70">{label} </span>}
-      {fmtRelative(at)}
+      {fmtDateTime(at)}
     </span>
   )
 }

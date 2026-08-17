@@ -5,7 +5,7 @@ import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { Card, Field, Input, Button, ErrorNote, InfoNote, StatusPill, CodeChip } from '../../ui/primitives.js'
 import { SearchSelect } from '../../components/Picker.js'
-import { fmtDateTime, fmtRelative, shortId, statusMeta } from '../../ui/format.js'
+import { fmtDateTime, shortId, statusMeta } from '../../ui/format.js'
 import { orDash } from './shared.js'
 import {
   getStatusExceptions,
@@ -177,8 +177,8 @@ export function StatusExceptionsTab() {
       header: 'Created',
       sortValue: (r) => r.createdAt,
       cell: (r) => (
-        <span title={fmtDateTime(r.createdAt)} className="text-muted-foreground">
-          {fmtRelative(r.createdAt)}
+        <span className="text-muted-foreground">
+          {fmtDateTime(r.createdAt)}
         </span>
       ),
     },
@@ -190,8 +190,8 @@ export function StatusExceptionsTab() {
         r.resolvedAt === null ? (
           <span className="text-muted-foreground">-</span>
         ) : (
-          <span title={fmtDateTime(r.resolvedAt)}>
-            {fmtRelative(r.resolvedAt)}
+          <span>
+            {fmtDateTime(r.resolvedAt)}
             <span className="block text-[11px] text-muted-foreground">{orDash(r.resolvedByActor)}</span>
           </span>
         ),

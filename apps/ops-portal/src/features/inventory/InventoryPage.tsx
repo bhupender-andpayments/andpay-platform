@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Boxes, Check, Copy, Download, PackageCheck, PackageX, Pencil, Repeat2, Smartphone, Truck, Upload } from 'lucide-react'
+import { Boxes, Check, Copy, Download, PackageCheck, PackageX, Pencil, Smartphone, Truck, Upload } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { UnitStatusEditDialog } from './UnitStatusEditDialog.js'
 import { UNIT_STATUS_ORDER as STATUS_ORDER, STATUS_LABEL, legalNextStatuses } from './unitStatus.js'
-import { MultiSelect } from '../../components/Picker.js'
+import { MultiSelect, SearchSelect } from '../../components/Picker.js'
 import {
   getDevices,
   getMerchants,
@@ -19,7 +19,7 @@ import {
 import { PageHeader, Card, Field, Input, Button, ErrorNote, Toolbar, StatusPill, CodeChip } from '../../ui/primitives.js'
 import { buildSampleInventoryFile, SAMPLE_ROW_COUNT } from './sampleInventory.js'
 import { saveBlob } from '../../lib/saveBlob.js'
-import { fmtDate, fmtDateTime, fmtRelative } from '../../ui/format.js'
+import { fmtDate, fmtDateTime } from '../../ui/format.js'
 import { useToast } from '../../ui/Toast.js'
 import { cn } from '@/lib/utils'
 
@@ -59,13 +59,13 @@ interface StatCardDef {
   tone: string // tailwind text-* for the icon chip
   chip: string // tailwind bg-* for the icon chip
   value: number
-  // Which status values clicking this card selects ([] = clear). undefined =
-  // not a status slice, handled separately. Two cards are in that category now:
-  // replacements, and (since D-16) activation, which is its own axis rather than
+  // Which status values clicking this card selects ([] = the Total card, which
+  // clears every card slice). undefined = not a status slice: the one card in
+  // that category is Activated, which (since D-16) is its own axis rather than
   // a value the status column can hold.
   statuses?: string[]
   // The URL param this card toggles when `statuses` is undefined.
-  param?: 'repl' | 'act'
+  param?: 'act'
 }
 
 function StatCard({ def, active, onClick }: { def: StatCardDef; active: boolean; onClick(): void }) {
@@ -116,8 +116,12 @@ export function InventoryPage() {
   const q = searchParams.get('q') ?? ''
   const from = searchParams.get('from') ?? ''
   const to = searchParams.get('to') ?? ''
-  const replOnly = searchParams.get('repl') === '1'
-  // D-16: the activation slice, a sibling of `repl` rather than a status value.
+  // The source axis: '' (all), 'replacement' (sent to replace a damaged kit,
+  // non-billable) or 'fresh' (ordinary billable stock). It replaced the old
+  // repl=1 toggle when the Replacements card became the Source dropdown, which
+  // can name BOTH halves of the split instead of only one.
+  const srcSel = searchParams.get('src') ?? ''
+  // D-16: the activation slice, its own axis rather than a status value.
   const actOnly = searchParams.get('act') === '1'
 
   const setParam = useCallback(
@@ -136,7 +140,7 @@ export function InventoryPage() {
   )
 
   const anyFilter =
-    statusSel.length > 0 || mfrSel.length > 0 || q !== '' || from !== '' || to !== '' || replOnly || actOnly
+    statusSel.length > 0 || mfrSel.length > 0 || q !== '' || from !== '' || to !== '' || srcSel !== '' || actOnly
 
   const load = useCallback(
     async (asRefresh = false): Promise<void> => {
@@ -229,15 +233,18 @@ export function InventoryPage() {
     [dateSearchScoped, mfrSel],
   )
 
-  // Stage 3: + status and the replacements toggle. These are the table rows.
+  // Stage 3: + status, the source axis, and the activation toggle. These are
+  // the table rows.
   const tableRows = useMemo(() => {
     return scoped.filter((r) => {
       if (statusSel.length > 0 && !statusSel.includes(r.status)) return false
-      if (replOnly && !(r.asgnId !== null && replacementAsgnIds.has(r.asgnId))) return false
+      const isReplacement = r.asgnId !== null && replacementAsgnIds.has(r.asgnId)
+      if (srcSel === 'replacement' && !isReplacement) return false
+      if (srcSel === 'fresh' && isReplacement) return false
       if (actOnly && r.activatedAt === null) return false
       return true
     })
-  }, [scoped, statusSel, replOnly, actOnly, replacementAsgnIds])
+  }, [scoped, statusSel, srcSel, actOnly, replacementAsgnIds])
 
   const byStatus = useMemo(() => {
     const m = new Map<string, number>()
@@ -306,37 +313,45 @@ export function InventoryPage() {
       value: byStatus.get('DAMAGED') ?? 0,
       statuses: ['DAMAGED'],
     },
-    {
-      key: 'replacements',
-      label: 'Replacements',
-      hint: 'sent to replace a damaged kit',
-      icon: Repeat2,
-      tone: 'text-amber-600',
-      chip: 'bg-amber-500/10',
-      value: replacementCount,
-      param: 'repl',
-    },
   ]
 
+  // CARDS ARE ONE-AT-A-TIME. Each pick clears the other card axes, so exactly
+  // one card carries the highlight: several cards lit at once read as a
+  // combined filter the table is not actually applying in that shape. The
+  // dropdowns below stay independently composable; only the cards are
+  // exclusive. Total is the "everything" view: clicking it clears every card
+  // slice, and it wears the highlight whenever no slice is applied, which is
+  // what makes it read as clickable at rest.
+  // ONE setSearchParams call per click, writing all three keys together.
+  // Sequential setParam calls do NOT compose inside a single handler: each
+  // computes from the same stale location and issues its own navigation, so
+  // the last one wins and silently drops the others' changes. That is the
+  // exact bug that made the Total card feel dead (its clears cancelled each
+  // other out).
   function onCardClick(def: StatCardDef): void {
-    if (def.statuses === undefined) {
-      // The two axis cards (replacements, activation) each toggle their own
-      // dedicated slice rather than the status facet.
-      const on = def.param === 'act' ? actOnly : replOnly
-      setParam(def.param ?? 'repl', on ? '' : '1')
-      return
-    }
-    const same = def.statuses.length === statusSel.length && def.statuses.every((s) => statusSel.includes(s))
-    setParam('status', same || def.statuses.length === 0 ? '' : def.statuses.join(','))
-    if (def.statuses.length === 0) {
-      setParam('repl', '')
-      setParam('act', '')
-    }
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('status')
+        next.delete('act')
+        next.delete('src')
+        if (def.statuses === undefined) {
+          // The activation axis card, toggling.
+          if (!actOnly) next.set('act', '1')
+        } else if (def.statuses.length > 0) {
+          const same = def.statuses.length === statusSel.length && def.statuses.every((s) => statusSel.includes(s))
+          if (!same) next.set('status', def.statuses.join(','))
+        }
+        return next
+      },
+      { replace: true },
+    )
   }
 
   function cardActive(def: StatCardDef): boolean {
-    if (def.statuses === undefined) return def.param === 'act' ? actOnly : replOnly
-    if (def.statuses.length === 0) return false
+    if (def.statuses === undefined) return actOnly
+    // Total: active exactly when no card slice is applied.
+    if (def.statuses.length === 0) return statusSel.length === 0 && !actOnly && srcSel === ''
     return def.statuses.length === statusSel.length && def.statuses.every((s) => statusSel.includes(s))
   }
 
@@ -417,14 +432,15 @@ export function InventoryPage() {
       key: 'activatedAt',
       header: 'Activation',
       sortValue: (r) => (r.activatedAt === null ? 0 : new Date(r.activatedAt).getTime()),
+      // The PILL ONLY: in a list the fact is whether it is activated, and the
+      // instant beside it was noise repeated on every row. The exact time
+      // lives on the device page's Activity card, one click away. Sorting
+      // still uses the real instant below, so ordering is unaffected.
       cell: (r) =>
         r.activatedAt === null ? (
           <span className="text-muted-foreground">not activated</span>
         ) : (
-          <span className="flex items-center gap-1.5">
-            <StatusPill value="ACTIVATED" />
-            <span className="text-[11.5px] text-muted-foreground">{fmtRelative(r.activatedAt)}</span>
-          </span>
+          <StatusPill value="ACTIVATED" />
         ),
     },
     {
@@ -513,11 +529,7 @@ export function InventoryPage() {
       key: 'moved',
       header: 'Last moved',
       sortValue: (r) => r.updatedAt,
-      cell: (r) => (
-        <span title={fmtDateTime(r.updatedAt)} className="text-muted-foreground">
-          {fmtRelative(r.updatedAt)}
-        </span>
-      ),
+      cell: (r) => <span className="text-muted-foreground">{fmtDateTime(r.updatedAt)}</span>,
     },
   ]
 
@@ -558,7 +570,7 @@ export function InventoryPage() {
 
       {loadError !== null ? <ErrorNote>{loadError}</ErrorNote> : null}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {cards.map((c) => (
           <StatCard key={c.key} def={c} active={cardActive(c)} onClick={() => onCardClick(c)} />
         ))}
@@ -593,6 +605,19 @@ export function InventoryPage() {
             }))}
             selected={mfrSel}
             onChange={(next) => setParam('mfr', next.join(','))}
+          />
+        </Field>
+        <Field label="Source" htmlFor="invSrc" className="w-full sm:w-44">
+          <SearchSelect
+            id="invSrc"
+            placeholder="All sources"
+            clearable
+            options={[
+              { value: 'fresh', label: 'Fresh (billable)', count: scoped.length - replacementCount },
+              { value: 'replacement', label: 'Replacement', count: replacementCount },
+            ]}
+            value={srcSel}
+            onChange={(v) => setParam('src', v)}
           />
         </Field>
         <Field label="Received from" htmlFor="invFrom" className="w-full sm:w-44">

@@ -85,17 +85,17 @@ afterEach(() => {
 })
 
 describe('FulfillmentPage', () => {
-  it('reads GET /ops/pool on mount and reveals the pool via the "View pool" button', async () => {
+  it('reads GET /ops/pool on mount and shows the pool inline, with nothing to click first', async () => {
     const calls = stubFetch(() => jsonResponse([POOL_ROW]))
     renderFulfillment()
-    // The pool no longer sits below the summary always-visible; it lives
-    // behind a header button that opens a dialog on demand.
-    const viewPool = await screen.findByRole('button', { name: /view pool/i })
+    // 2026-08-17: the pool is ON the page. It used to sit behind a "View pool"
+    // button that opened a dialog, which put the records an operator is
+    // deciding about behind an overlay at the moment they decide.
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /view pool/i })).toBeNull()
     expect(calls.some((c) => c.url.includes('/ops/pool'))).toBe(true)
     const headers = calls[0]!.init.headers as Record<string, string>
     expect(headers['Idempotency-Key']).toBeUndefined()
-    await userEvent.click(viewPool)
-    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
   })
 
   it('the batches region calls GET /ops/batches and shows the stored unit count', async () => {
@@ -112,8 +112,6 @@ describe('FulfillmentPage', () => {
     const leaky = { ...POOL_ROW, shipToAddress: 'PLOT 42 SECRET LANE', shipToMobile: '9537908017' }
     stubFetch(() => jsonResponse([leaky]))
     renderFulfillment()
-    // Open the pool dialog so the row is on screen at all.
-    await userEvent.click(await screen.findByRole('button', { name: /view pool/i }))
     await screen.findByText('BRILLIANT PERFUME')
     expect(screen.queryByText(/PLOT 42 SECRET LANE/)).toBeNull()
     expect(screen.queryByText(/9537908017/)).toBeNull()
@@ -131,7 +129,6 @@ describe('FulfillmentPage', () => {
       ]),
     )
     renderFulfillment()
-    await userEvent.click(await screen.findByRole('button', { name: /view pool/i }))
     await screen.findByText('ALPHA TRADERS')
     expect(await screen.findByText('asgn_sb')).toBeTruthy()
     expect(await screen.findByText('asgn_legacy')).toBeTruthy()
@@ -180,18 +177,18 @@ describe('Batches: default landing, no tab strip', () => {
   it('has no tab strip', async () => {
     stubBoth()
     renderFulfillment()
-    await screen.findByRole('button', { name: /view pool/i })
+    await screen.findByText(/newest first\. open a batch/i)
     for (const gone of ['Pending Pool', 'Dispatches']) {
       expect(screen.queryByRole('button', { name: gone })).toBeNull()
     }
   })
 
-  it('opens on Ready to batch + Batches; the pool is one click away', async () => {
+  it('opens on Build batch + Batches, with the pool itself on screen', async () => {
     stubBoth()
     renderFulfillment()
     expect(await screen.findByText(/newest first\. open a batch/i)).toBeTruthy()
-    // The pool section is hidden by default and revealed by a header button.
-    expect(screen.getByRole('button', { name: /view pool/i })).toBeTruthy()
+    // The pool is inline now, so there is nothing to open and nothing to open it.
+    expect(screen.queryByRole('button', { name: /view pool/i })).toBeNull()
     // No sidebar Card claiming to be the pool's own filter Toolbar.
     expect(screen.queryByLabelText(/pool status/i)).toBeNull()
   })
@@ -199,7 +196,7 @@ describe('Batches: default landing, no tab strip', () => {
   it('no longer carries the shipments list, which moved to /dispatches', async () => {
     stubBoth()
     renderFulfillment()
-    await screen.findByRole('button', { name: /view pool/i })
+    await screen.findByText(/newest first\. open a batch/i)
     expect(screen.queryByLabelText(/carrier status/i)).toBeNull()
   })
 })

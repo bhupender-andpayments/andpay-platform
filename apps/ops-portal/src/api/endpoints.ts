@@ -692,22 +692,16 @@ export function getDeviceDetail(c: Client, unitId: string) {
 // control. Forward-only, same rule as everywhere else; the edge/domain reject
 // an illegal move rather than trusting the picker's own option list.
 //
-// `occurredAt` (2026-08-15): when the move REALLY happened, for the operator
-// updating days late. Sent on the wire so the contract is ready, but the
-// route does not store it yet - `unit` keeps no per-status history (the
-// already-escalated unit_status_event gap), so this is a NAMED BACKEND ASK,
-// and the dialog's hint says so rather than implying a backdate was recorded.
-export function correctUnitStatus(
-  c: Client,
-  unitId: string,
-  status: string,
-  idempotencyKey: string,
-  occurredAt?: string,
-) {
+// THE INSTANT IS THE SERVER'S (2026-08-17 ruling): no operator-supplied
+// occurredAt. An earlier version sent one, but the edge's UnitStatusBody has
+// no such field and never read it, so the input asked for a value that was
+// silently discarded. `unit` carries status plus updated_at and the server
+// stamps the move itself.
+export function correctUnitStatus(c: Client, unitId: string, status: string, idempotencyKey: string) {
   return c.request<{ deduped: boolean; advanced: boolean }>({
     method: 'POST',
     path: `/ops/units/${encodeURIComponent(unitId)}/status`,
-    body: { status, ...(occurredAt !== undefined && occurredAt !== '' ? { occurredAt } : {}) },
+    body: { status },
     idempotencyKey,
   })
 }

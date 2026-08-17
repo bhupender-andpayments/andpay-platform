@@ -79,3 +79,16 @@ export function legalNextStatuses(current: string): string[] {
   if (idx === -1) return []
   return [...UNIT_SPINE.slice(idx + 1), ...UNIT_TERMINAL]
 }
+
+/**
+ * The spine stages at or BEFORE the current one: where the device has already
+ * been. Not legal targets (a device only moves forward), but the status editor
+ * lists them greyed out so the ladder reads whole rather than appearing to
+ * start mid-way. A terminal device has no spine position of its own, so its
+ * prior list is empty.
+ */
+export function priorStatuses(current: string): string[] {
+  const idx = UNIT_SPINE.indexOf(current as (typeof UNIT_SPINE)[number])
+  if (idx === -1) return []
+  return UNIT_SPINE.slice(0, idx + 1)
+}

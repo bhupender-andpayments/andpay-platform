@@ -3,7 +3,7 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { correctUnitStatus, type UnitInventoryRow } from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { useToast } from '../../ui/Toast.js'
-import { Button, ErrorNote, Field, Input, StatusPill } from '../../ui/primitives.js'
+import { Button, ErrorNote, StatusPill } from '../../ui/primitives.js'
 import { SearchSelect } from '../../components/Picker.js'
 import {
   Dialog,
@@ -13,7 +13,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { legalNextStatuses, statusLabel } from './unitStatus.js'
+import { legalNextStatuses, priorStatuses, statusLabel } from './unitStatus.js'
 
 // ONE status editor, for every screen that edits a status.
 //
@@ -48,11 +48,24 @@ export function UnitStatusEditDialog({
   const { client } = useAuth()
   const { toast } = useToast()
   const [newStatus, setNewStatus] = useState('')
-  const [occurredAt, setOccurredAt] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const options = legalNextStatuses(unit.status)
+
+  // The whole ladder, with the stages already behind this device listed first
+  // and greyed out. They are NOT selectable (a device only moves forward), but
+  // showing them is what makes the dropdown read as a position on a ladder
+  // rather than an arbitrary short list starting at some middle rung.
+  const listed = [
+    ...priorStatuses(unit.status).map((s) => ({
+      value: s,
+      label: statusLabel(s),
+      disabled: true,
+      note: s === unit.status ? 'current' : 'not selectable',
+    })),
+    ...options.map((s) => ({ value: s, label: statusLabel(s) })),
+  ]
 
   // Re-seeded on every open, not once on mount: the list keeps this component
   // mounted across rows, so a stale selection from the previous device would
@@ -60,7 +73,6 @@ export function UnitStatusEditDialog({
   useEffect(() => {
     if (!open) return
     setNewStatus(presetStatus !== undefined && options.includes(presetStatus) ? presetStatus : (options[0] ?? ''))
-    setOccurredAt('')
     setError(null)
   }, [open, presetStatus, unit.id])
 
@@ -69,8 +81,10 @@ export function UnitStatusEditDialog({
     setSaving(true)
     setError(null)
     try {
-      const occurredAtIso = occurredAt === '' ? undefined : new Date(occurredAt).toISOString()
-      await correctUnitStatus(client, unit.id, newStatus, newIdempotencyKey(), occurredAtIso)
+      // No operator-supplied instant: the server stamps the move itself
+      // (unit carries status + updated_at, and the edge's body has no
+      // timestamp field at all).
+      await correctUnitStatus(client, unit.id, newStatus, newIdempotencyKey())
       onSaved(newStatus)
       onOpenChange(false)
       toast(`Status updated to ${statusLabel(newStatus)}`)
@@ -94,34 +108,17 @@ export function UnitStatusEditDialog({
           </DialogDescription>
         </DialogHeader>
         {error !== null && <ErrorNote>{error}</ErrorNote>}
-        <div className="space-y-3">
-          <div className="space-y-2">
-            <label htmlFor="unit-status-select" className="text-sm font-medium">
-              New status
-            </label>
-            <SearchSelect
-              id="unit-status-select"
-              placeholder="Pick a status…"
-              options={options.map((s) => ({ value: s, label: statusLabel(s) }))}
-              value={newStatus}
-              onChange={setNewStatus}
-            />
-          </div>
-          {/* For the operator updating days late: when the move REALLY
-              happened. Optional; blank means now. The hint is honest about the
-              named backend ask (see correctUnitStatus in api/endpoints.ts). */}
-          <Field
-            label="When it happened"
-            htmlFor="unit-status-occurred"
-            hint="Optional. Leave empty for now; stored with the correction once the backend keeps a status history."
-          >
-            <Input
-              id="unit-status-occurred"
-              type="datetime-local"
-              value={occurredAt}
-              onChange={(e) => setOccurredAt(e.target.value)}
-            />
-          </Field>
+        <div className="space-y-2">
+          <label htmlFor="unit-status-select" className="text-sm font-medium">
+            New status
+          </label>
+          <SearchSelect
+            id="unit-status-select"
+            placeholder="Pick a status…"
+            options={listed}
+            value={newStatus}
+            onChange={setNewStatus}
+          />
         </div>
         <DialogFooter>
           <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
