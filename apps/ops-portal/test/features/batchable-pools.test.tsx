@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
+import { ToastProvider } from '../../src/ui/Toast.js'
 import { BatchablePools } from '../../src/features/fulfillment/BatchablePools.js'
 import type { PoolEntryRow } from '../../src/api/endpoints.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
@@ -50,9 +51,14 @@ function jsonResponse(body: unknown): Response {
 }
 
 function withProviders(node: React.ReactNode) {
+  // ToastProvider included because App.tsx always provides it: the trigger's
+  // success confirmation IS a toast now, so a harness without the provider
+  // would silently swallow the very thing several tests assert on.
   return (
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <AuthProvider>{node}</AuthProvider>
+      <AuthProvider>
+        <ToastProvider>{node}</ToastProvider>
+      </AuthProvider>
     </MemoryRouter>
   )
 }
@@ -346,10 +352,109 @@ describe('BatchablePools: the force-dispatch reason', () => {
     expect(body.tenantWire).toBe('tnnt_2')
     expect(body.reason).toBe('only the second pool')
 
+    // The created-batch dialog now has to be ANSWERED before the page is
+    // reachable again (17 Aug 2026): it is modal on purpose, so that the batch
+    // id it carries cannot be lost by clicking past it. Dismissing it is what an
+    // operator staying on this screen does.
+    await userEvent.click(await screen.findByRole('button', { name: /stay on batches/i }))
+
     // And the first pool's confirmation opens empty, unarmed: one shared box
     // would have carried that reason into a different batch's audit record.
     await openTrigger(0)
     expect((await screen.findByLabelText(/reason/i)).getAttribute('value')).not.toBe('only the second pool')
     expect(confirmButton().disabled).toBe(true)
+  })
+})
+
+// The trigger's success has been three things. First a static inline line
+// ("Batch created: btch_..."), then a toast carrying the id as a chip, and now
+// (17 Aug 2026) a MODAL that waits to be answered. The toast lost twice over: a
+// four-second timer is a race for the one id the operator needs next, and
+// forming a batch ends one task and starts another, which is a choice
+// ("go to the batch" or "stay with the pool") and not a glance.
+//
+// So this suite asserts the modal: it names the batch, offers the id as a real
+// link, does not vanish, and both exits work. The null outcome ("nothing was
+// eligible") deliberately stays inline; it is a condition to read.
+describe('BatchablePools: the created batch arrives as a modal that waits', () => {
+  beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
+  afterEach(() => { cleanup(); clearAccessToken() })
+
+  function renderWithToastAndRoutes() {
+    return render(
+      <MemoryRouter initialEntries={['/']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/" element={<BatchablePools />} />
+              <Route path="/batches/:btchId" element={<p>batch page probe</p>} />
+            </Routes>
+          </ToastProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+  }
+
+  it('names the created batch and offers its id as a link through to that batch page', async () => {
+    stub([entry()], { btchId: 'btch_50000000008008000000000009' })
+    renderWithToastAndRoutes()
+
+    await typeReason()
+    await confirmTrigger()
+
+    expect(await screen.findByRole('dialog', { name: /batch created/i })).toBeTruthy()
+    // A real link, not a button: the id is the one thing worth opening in a new
+    // tab or copying, which a button cannot offer.
+    const idLink = screen.getByRole('link', { name: 'btch_50000000008008000000000009' })
+    expect(idLink.getAttribute('href')).toBe('/batches/btch_50000000008008000000000009')
+
+    await userEvent.click(idLink)
+    expect(await screen.findByText('batch page probe')).toBeTruthy()
+    // Acted on means gone: the dialog must not linger over the page it just
+    // sent the operator to.
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('waits to be answered: modal, so a stray click cannot throw the id away', async () => {
+    stub([entry()], { btchId: 'btch_50000000008008000000000009' })
+    renderWithToastAndRoutes()
+
+    await typeReason()
+    await confirmTrigger()
+    await screen.findByRole('dialog', { name: /batch created/i })
+
+    // Asserted as STATE rather than by clicking outside, because the click is
+    // not performable: a modal dialog puts `pointer-events: none` on the body,
+    // which is the very mechanism that makes a stray dismissal impossible. The
+    // page behind is inert until one of the two exits is taken.
+    expect(document.body.getAttribute('data-scroll-locked')).toBe('1')
+    expect(document.body.style.pointerEvents).toBe('none')
+    // And nothing has navigated on its own.
+    expect(screen.queryByText('batch page probe')).toBeNull()
+    expect(screen.getByRole('link', { name: 'btch_50000000008008000000000009' })).toBeTruthy()
+  })
+
+  it('the other exit stays put: "Stay on batches" closes without navigating', async () => {
+    stub([entry()], { btchId: 'btch_50000000008008000000000009' })
+    renderWithToastAndRoutes()
+
+    await typeReason()
+    await confirmTrigger()
+    await screen.findByRole('dialog', { name: /batch created/i })
+
+    await userEvent.click(screen.getByRole('button', { name: /stay on batches/i }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByText('batch page probe')).toBeNull()
+  })
+
+  it('shows NO dialog for the null outcome; "nothing to batch" stays inline', async () => {
+    stub([entry()], null)
+    renderWithToastAndRoutes()
+
+    await typeReason()
+    await confirmTrigger()
+
+    expect(await screen.findByText(/nothing to batch/i)).toBeTruthy()
+    expect(screen.queryByText(/batch created/i)).toBeNull()
   })
 })

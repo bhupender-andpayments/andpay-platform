@@ -107,15 +107,19 @@ async function renderAuthedShell(): Promise<void> {
   await screen.findByRole('navigation', { name: /main/i })
 }
 
-// The 11 live sidebar sections in AppShell's own order (src/ui/AppShell.tsx),
+// The 10 SHOWN sidebar sections in AppShell's own order (src/ui/AppShell.tsx),
 // each paired with the exact heading its page renders (PageHeader's title
 // prop, confirmed by reading every feature page: WorkflowPage/TilesPage/
 // ReportPage/QueuesPage/MasterDataPage/UploadsPage/OperationsPage/
 // ActivationPage/MerchantsPage).
+//
+// Reports is absent because this test walks the sidebar by CLICKING each item,
+// and HIDDEN_ROUTES (17 Aug 2026) removed that item while the Insights work is
+// in flight. ReportPage itself is unaffected and still covered by
+// test/features/reports*.test.tsx.
 const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
   { label: 'Command Center', heading: /^command center$/i },
   { label: 'Merchants', heading: /^merchants$/i },
-  { label: 'Reports', heading: /^reports$/i },
   { label: 'Queues', heading: /^queues$/i },
   { label: 'Master Data', heading: /^master data$/i },
   { label: 'Uploads', heading: /^uploads$/i },
@@ -143,7 +147,7 @@ describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
     consoleErrorSpy.mockRestore()
   })
 
-  it('mounts the shell authenticated and routes through all 11 sections with no thrown errors and no console.error', async () => {
+  it('mounts the shell authenticated and routes through all 10 shown sections with no thrown errors and no console.error', async () => {
     await renderAuthedShell()
 
     const nav = screen.getByRole('navigation', { name: /main/i })

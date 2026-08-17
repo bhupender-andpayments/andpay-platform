@@ -14,19 +14,32 @@ import { cn } from '@/lib/utils'
 // existing tests assert on those inline alerts.
 export type ToastTone = 'success' | 'info'
 
+// One optional action per toast, rendered as a chip the operator can click
+// through ("Batch created" carrying the new btch id, straight to its page).
+// A plain onClick rather than a router `to`, so this file stays free of
+// router imports and a caller can hand it whatever navigation it owns.
+export interface ToastAction {
+  label: string
+  onClick(): void
+}
+
 interface ToastItem {
   id: number
   tone: ToastTone
   message: string
+  action?: ToastAction
 }
 
 interface ToastContextValue {
-  toast(message: string, tone?: ToastTone): void
+  toast(message: string, tone?: ToastTone, action?: ToastAction): void
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null)
 
 const AUTO_DISMISS_MS = 4000
+// A toast with an action needs longer on screen: four seconds is enough to
+// read a sentence, not to decide to click a link inside it.
+const AUTO_DISMISS_WITH_ACTION_MS = 8000
 
 export function useToast(): ToastContextValue {
   const ctx = useContext(ToastContext)
@@ -43,9 +56,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setItems((list) => list.filter((t) => t.id !== id))
   }, [])
 
-  const toast = useCallback((message: string, tone: ToastTone = 'success') => {
+  const toast = useCallback((message: string, tone: ToastTone = 'success', action?: ToastAction) => {
     const id = nextId.current++
-    setItems((list) => [...list, { id, tone, message }])
+    setItems((list) => [...list, { id, tone, message, action }])
   }, [])
 
   const value = useMemo(() => ({ toast }), [toast])
@@ -67,29 +80,54 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss(id: number): void }) {
   useEffect(() => {
-    const timer = setTimeout(() => onDismiss(item.id), AUTO_DISMISS_MS)
+    const timer = setTimeout(
+      () => onDismiss(item.id),
+      item.action !== undefined ? AUTO_DISMISS_WITH_ACTION_MS : AUTO_DISMISS_MS,
+    )
     return () => clearTimeout(timer)
-  }, [item.id, onDismiss])
+  }, [item.id, item.action, onDismiss])
 
   return (
     <div
       role="status"
       className={cn(
-        'pointer-events-auto flex w-full max-w-md items-center gap-2.5 rounded-2xl border bg-card px-4 py-2.5 text-sm shadow-lg',
-        item.tone === 'success' ? 'border-emerald-200' : 'border-border',
+        // FILLED, not a pale outlined card (17 Aug 2026). A white card with a
+        // faint emerald border read as part of the page rather than as a thing
+        // that had just happened, which is the one job a transient notification
+        // has. These are Material's own filled-snackbar values: #2e7d32 for
+        // success and #323232 for the default dark surface, on white text.
+        // Hardcoded like the status pills in index.css, because matching a known
+        // vocabulary exactly is the point and a token would drift from it.
+        'pointer-events-auto flex w-full max-w-md items-center gap-2.5 rounded-xl px-4 py-3 text-sm text-white shadow-lg',
+        item.tone === 'success' ? 'bg-[#2e7d32]' : 'bg-[#323232]',
       )}
     >
       {item.tone === 'success' ? (
-        <CheckCircle2 className="size-4 shrink-0 text-emerald-600" aria-hidden="true" />
+        <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
       ) : (
-        <Info className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <Info className="size-4 shrink-0" aria-hidden="true" />
       )}
       <span className="flex-1">{item.message}</span>
+      {item.action !== undefined && (
+        <button
+          type="button"
+          onClick={() => {
+            // Dismiss FIRST: the action usually navigates, and a toast
+            // lingering over the page it just sent the operator to reads as
+            // an unfinished thought.
+            onDismiss(item.id)
+            item.action?.onClick()
+          }}
+          className="shrink-0 rounded-md bg-white/15 px-2 py-0.5 font-mono text-[12px] text-white hover:bg-white/25"
+        >
+          {item.action.label}
+        </button>
+      )}
       <button
         type="button"
         onClick={() => onDismiss(item.id)}
         aria-label="Dismiss notification"
-        className="shrink-0 rounded-md p-0.5 text-muted-foreground hover:text-foreground"
+        className="shrink-0 rounded-md p-0.5 text-white/70 hover:text-white"
       >
         <X className="size-3.5" aria-hidden="true" />
       </button>

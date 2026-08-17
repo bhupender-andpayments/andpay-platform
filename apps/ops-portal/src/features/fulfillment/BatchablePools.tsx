@@ -1,8 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Check } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { getPoolEntries, triggerBatch, getDevices, type PoolEntryRow } from '../../api/endpoints.js'
-import { Card, CardHeader, Button, EmptyState, ErrorNote, InfoNote, CodeChip, SkeletonRows, Field, Input } from '../../ui/primitives.js'
+import { Card, CardHeader, Button, EmptyState, ErrorNote, InfoNote, SkeletonRows, Field, Input } from '../../ui/primitives.js'
 import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { fmtNumber } from '../../ui/format.js'
@@ -160,6 +170,7 @@ export function BatchablePools({
   poolLoading?: boolean
 }) {
   const { client } = useAuth()
+  const navigate = useNavigate()
   const [pools, setPools] = useState<BatchablePool[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
@@ -175,6 +186,9 @@ export function BatchablePools({
   // own batch, so the click that does it asks first, and the dialog spells out
   // exactly what is about to be claimed.
   const [confirming, setConfirming] = useState<BatchablePool | null>(null)
+  // The batch that was just created, held until the operator answers what to do
+  // next. Separate from `outcome`, which exists to render the null case inline.
+  const [created, setCreated] = useState<{ btchId: string } | null>(null)
   // How many devices are actually in the warehouse. null means we could not
   // find out, which is deliberately different from zero: an unknown stock level
   // must never render as "0 in stock".
@@ -197,10 +211,33 @@ export function BatchablePools({
     }
   }
 
+  // A reload that arrived while the confirmation was open and was deferred.
+  // Held so the strip still catches up once the dialog closes, rather than
+  // sitting stale until the pool happens to change again.
+  const missedReload = useRef(false)
+
   useEffect(() => {
+    // NEVER move the ground under an open confirmation. The dialog states the
+    // record count for a write that cannot be undone, so re-reading underneath
+    // it could change the number between the operator reading it and clicking
+    // Create batch. The page above polls now, so this is reachable, not
+    // theoretical.
+    if (confirming !== null) {
+      missedReload.current = true
+      return
+    }
     void load()
     // `load` is redefined every render, so it is deliberately not a dependency.
   }, [client, reloadKey])
+
+  // The catch-up, once the dialog is gone. A trigger does its own load() on the
+  // way out, so in practice this covers the operator who cancelled.
+  useEffect(() => {
+    if (confirming === null && missedReload.current) {
+      missedReload.current = false
+      void load()
+    }
+  }, [confirming])
 
   async function handleTrigger(pool: BatchablePool): Promise<void> {
     const key = `${pool.tenantId}|${pool.programId}`
@@ -218,6 +255,15 @@ export function BatchablePools({
         newIdempotencyKey(),
       )
       setOutcome(res)
+      // A MODAL, not a toast (17 Aug 2026). Creating a batch ends one task and
+      // begins another: the operator either goes to the new batch for its QR
+      // cards and print collateral, or stays here with the pool they were
+      // working. A toast made that a race against a timer, and it carried the
+      // one id the operator needs next in something that erased itself. So the
+      // confirmation waits to be answered instead. A null response still gets
+      // nothing: "nothing was eligible" is a condition to read, and it stays
+      // inline below.
+      if (res !== null) setCreated({ btchId: res.btchId })
       // Only now, once the write has actually returned, does the dialog close:
       // dismissing it on click would have left the operator watching a page that
       // had not changed yet with no idea whether the batch was forming.
@@ -253,6 +299,10 @@ export function BatchablePools({
     )
   }
 
+  // Whether the pool table is rendering INSIDE this card. It decides which
+  // component owns the empty message, so the two cannot both claim it.
+  const showsPoolInline = poolColumns !== undefined && poolRows !== undefined
+
   // h-full plus a column body: the card shares a grid row with the rules card
   // beside it and has to be able to fill it, otherwise the empty state has no
   // height to centre itself in.
@@ -267,9 +317,16 @@ export function BatchablePools({
           because it is the evidence; the trigger strip below it is the
           decision. Rendered only when the page hands rows in, so the workflow
           workspace (which mounts this card without them) is unchanged. */}
-      {poolColumns !== undefined && poolRows !== undefined && (
-        <div className="px-5">
-          <div className="overflow-hidden rounded-xl border">
+      {showsPoolInline && (
+        // WHEN THE POOL IS EMPTY the table's box takes the card's whole spare
+        // height, so the empty state sits centred in it instead of a small
+        // strip floating over half a card of blank. Only when empty: with rows
+        // present the spare height belongs BETWEEN the table and the trigger
+        // strip (the strip's own mt-auto), not inside the table's border.
+        <div className={`px-5 ${poolRows.length === 0 ? 'flex flex-1 flex-col' : ''}`}>
+          <div
+            className={`overflow-hidden rounded-xl border ${poolRows.length === 0 ? 'flex flex-1 flex-col' : ''}`}
+          >
             <DataGrid
               columns={poolColumns}
               rows={poolRows}
@@ -291,11 +348,21 @@ export function BatchablePools({
           <SkeletonRows rows={2} cols={3} />
         </div>
       ) : pools.length === 0 ? (
-        // The shared EmptyState, the same treatment every other empty surface
-        // in the portal uses, centred in whatever height the row gives us.
-        <div className="flex flex-1 items-center justify-center px-5">
-          <EmptyState title="Nothing waiting to be batched" message={emptyHint} />
-        </div>
+        // ONE empty state, not two. `pools` is grouped from the same POOLED
+        // read the inline table renders, so once the table came out from behind
+        // its dialog these two branches began testing the SAME condition and
+        // both fired: "Nothing pooled yet" from the grid, and this, stacked
+        // directly beneath it, saying the identical thing a second time in a
+        // card tall enough to hold the pool that is not there.
+        //
+        // When the table is present it owns the message. This branch is still
+        // the right answer for a caller that mounts the card WITHOUT the pool
+        // (the workflow workspace), where nothing else on screen would say it.
+        showsPoolInline ? null : (
+          <div className="flex flex-1 items-center justify-center px-5">
+            <EmptyState title="Nothing waiting to be batched" message={emptyHint} />
+          </div>
+        )
       ) : (
         // mt-auto pins the trigger strip to the BOTTOM of the card. The card
         // stretches to the height of the right-hand column (deliberately, see
@@ -398,20 +465,71 @@ export function BatchablePools({
         </div>
       )}
 
-      {/* A trigger error stays in the dialog it came from, so this only carries
-          the outcome of one that got through. */}
-      {outcome !== undefined && (
+      {/* A trigger error stays in the dialog it came from, and a SUCCESS opens
+          the created-batch dialog below, so the one outcome left to state
+          inline is the null one: a real outcome, not a failure, and a
+          condition to read rather than a confirmation to glance at. */}
+      {outcome === null && (
         <div className="px-5">
-          {outcome === null ? (
-            // A real outcome, not a failure: nothing was eligible.
-            <InfoNote>Nothing to batch. The pool had no eligible records.</InfoNote>
-          ) : (
-            <p className="text-sm text-foreground">
-              Batch created: <CodeChip>{outcome.btchId}</CodeChip>
-            </p>
-          )}
+          <InfoNote>Nothing to batch. The pool had no eligible records.</InfoNote>
         </div>
       )}
+
+      {/* WHAT HAPPENED, AND WHAT NEXT. Stays until answered: no timer, and no
+          dismiss on a stray click outside, because the batch id is the one thing
+          the operator needs to carry forward and this is the only place it is
+          offered. The id itself is a link, so it can be opened in a new tab or
+          copied, which a button alone would not allow. */}
+      <Dialog
+        open={created !== null}
+        onOpenChange={(next) => {
+          if (!next) setCreated(null)
+        }}
+      >
+        <DialogContent onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <span className="flex size-6 items-center justify-center rounded-full bg-[#2e7d32] text-white">
+                <Check className="size-3.5" aria-hidden="true" />
+              </span>
+              Batch created
+            </DialogTitle>
+            <DialogDescription>
+              The pooled records moved into it and their Dispatch IDs are minted.
+            </DialogDescription>
+          </DialogHeader>
+
+          {created !== null && (
+            <p className="text-sm">
+              Batch{' '}
+              <Link
+                to={`/batches/${created.btchId}`}
+                onClick={() => setCreated(null)}
+                className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[13px] text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+              >
+                {created.btchId}
+              </Link>{' '}
+              is ready for its QR cards and print collateral.
+            </p>
+          )}
+
+          <DialogFooter>
+            <Button type="button" variant="secondary" onClick={() => setCreated(null)}>
+              Stay on batches
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                const btchId = created?.btchId
+                setCreated(null)
+                if (btchId !== undefined) void navigate(`/batches/${btchId}`)
+              }}
+            >
+              View batch
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {confirming !== null && (
         <ConfirmDialog

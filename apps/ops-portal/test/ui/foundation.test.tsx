@@ -35,7 +35,9 @@ describe('design-system foundation (Task 1)', () => {
       </MemoryRouter>,
     )
     const nav = screen.getByRole('navigation', { name: /main/i })
-    for (const label of ['Merchants', 'Command Center', 'Reports', 'Queues', 'Master Data', 'Uploads', 'Batches']) {
+    // Reports is deliberately not in this list: HIDDEN_ROUTES drops it from the
+    // sidebar (17 Aug 2026) while the Insights work is in flight.
+    for (const label of ['Merchants', 'Command Center', 'Queues', 'Master Data', 'Uploads', 'Batches']) {
       expect(within(nav).getByText(label)).toBeTruthy()
     }
     expect(screen.getByText('page content')).toBeTruthy()

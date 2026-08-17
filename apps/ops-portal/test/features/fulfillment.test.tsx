@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { FulfillmentPage } from '../../src/features/fulfillment/FulfillmentPage.js'
@@ -191,6 +190,18 @@ describe('Batches: default landing, no tab strip', () => {
     expect(screen.queryByRole('button', { name: /view pool/i })).toBeNull()
     // No sidebar Card claiming to be the pool's own filter Toolbar.
     expect(screen.queryByLabelText(/pool status/i)).toBeNull()
+  })
+
+  // An empty pool used to say so TWICE in one card: "Nothing pooled yet" from
+  // the inline grid, and "Nothing waiting to be batched" stacked directly
+  // beneath it. Both branches read the same POOLED rows, so once the table came
+  // out from behind its dialog they became the same condition. The grid owns
+  // the message whenever it is on screen.
+  it('says the pool is empty ONCE, not once per component that noticed', async () => {
+    stubBoth()
+    renderFulfillment()
+    expect(await screen.findByText(/nothing pooled yet/i)).toBeTruthy()
+    expect(screen.queryByText(/nothing waiting to be batched/i)).toBeNull()
   })
 
   it('no longer carries the shipments list, which moved to /dispatches', async () => {
