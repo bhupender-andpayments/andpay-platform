@@ -18,6 +18,13 @@ const buttonVariants = cva(
           "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
         destructive:
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
+        // NO success/green variant, deliberately. One was added on 17 Aug 2026
+        // to pair a green Resolve with the red Close in the queues, and it was
+        // removed the same day: the pair read as a traffic light rather than as
+        // this console's vocabulary, where the action you are meant to take is
+        // always the primary amber. Only the outcome worth hesitating over gets
+        // a colour of its own, which is what destructive above is for. The
+        // theme's --success token stays defined and unused.
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

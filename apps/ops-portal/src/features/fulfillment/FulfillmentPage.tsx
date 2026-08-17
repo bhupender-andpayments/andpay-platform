@@ -21,6 +21,7 @@ import {
 } from '../../api/endpoints.js'
 import { PageHeader, Card, CardHeader, Button, ErrorNote, CodeChip } from '../../ui/primitives.js'
 import { fmtDateTime, fmtNumber } from '../../ui/format.js'
+import { usePagePoll } from '../../lib/usePagePoll.js'
 
 // The Batches section: what is waiting to be batched, the rules that decide when
 // it batches itself, and the batches already formed. A batch's own contents are
@@ -43,6 +44,12 @@ import { fmtDateTime, fmtNumber } from '../../ui/format.js'
 // default-exclude): no ship-to address, contact, mobile, or raw qr/vpa value is
 // available to render. An operator who needs the ship view downloads the
 // dispatch Excel from inside the batch.
+
+// How often the page re-reads itself while it is open. Slow enough to be
+// invisible, fast enough that a bank file committed seconds ago shows up
+// without anyone reaching for the browser reload. See the poll effect below
+// for why a page that fetches on mount still needs this.
+const POLL_INTERVAL_MS = 8_000
 
 function kit(row: { soundbox: boolean; standeeCount: number; stickerCount: number }): string {
   const parts: string[] = []
@@ -86,9 +93,17 @@ export function FulfillmentPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
 
 
-  const load = useCallback(async (): Promise<void> => {
-    setLoading(true)
-    setLoadError(null)
+  // `quiet` is a BACKGROUND re-read: same fetch, but it leaves `loading` alone
+  // so the poll below never flashes skeletons over a table someone is reading,
+  // and it swallows its own errors so a blip on tick 12 cannot replace a page
+  // that is working with an error banner. Same split InventoryPage's
+  // `asRefresh` uses, minus the "Updating..." pill, which blinking every eight
+  // seconds would be worse than silence.
+  const load = useCallback(async (quiet = false): Promise<void> => {
+    if (!quiet) {
+      setLoading(true)
+      setLoadError(null)
+    }
     try {
       // All four are on screen, so all four are fetched, in parallel: they are
       // independent reads and serialising them would make the page four times as
@@ -104,15 +119,34 @@ export function FulfillmentPage() {
       setPool(poolRows)
       setBatches(batchRows)
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to load.')
+      if (!quiet) setLoadError(err instanceof Error ? err.message : 'Failed to load.')
     } finally {
-      setLoading(false)
+      if (!quiet) setLoading(false)
     }
   }, [client])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  // THE POOL ARRIVES AFTER THE UPLOAD RESPONSE DOES, so one fetch on mount is
+  // not enough and never was. pending_pool_entry is written in exactly one
+  // place, projectDemandFact (services/fulfillment/src/pool.ts), which runs in
+  // the fulfillment CONSUMER when it takes the assignment fact off Kafka:
+  //
+  //   ops-edge commit -> TMS rows + outbox (one tx) -> relay poll (2s default,
+  //   DEFAULT_TICK_SECONDS) -> Kafka -> consumer -> INSERT
+  //
+  // That is a few seconds behind the commit an operator just watched succeed.
+  // Walk straight here from the bank upload and the mount fetch runs BEFORE the
+  // consumer has projected anything, so the page truthfully reports an empty
+  // pool and stays that way until a manual browser reload, which was the whole
+  // reported bug. Reading once more on mount would not have helped; the page
+  // has to notice records that land while it is already open. The hook's
+  // settle burst matters here specifically: its ~2s/4s re-reads track the
+  // relay's own 2s tick, so the rows appear while the operator is still
+  // looking at the empty state, not eight seconds after they gave up on it.
+  usePagePoll(() => void load(true), POLL_INTERVAL_MS)
 
   // The rules and the vendor roster are loaded separately and deliberately
   // silently: neither is the thing this page is for, and a config read that
@@ -136,6 +170,17 @@ export function FulfillmentPage() {
 
   const rule = resolveGlobalRule(configs)
   const lotSizeFor = makeLotSizeFor(configs)
+
+  // BatchablePools owns a SECOND, independent read of the same endpoint for its
+  // trigger strip. Without this the poll above would refresh the table while
+  // the count beside it stayed on the pool from before, and one card would
+  // contradict itself. `reloadKey` is the seam the component already documents
+  // for exactly this, and it is a prop rather than a React `key` so a
+  // half-typed trigger reason survives the refresh.
+  //
+  // A fingerprint, not the tick count: the strip re-reads when the pool has
+  // actually CHANGED, not every eight seconds regardless.
+  const poolFingerprint = `${String(pool.length)}:${pool.at(-1)?.asgnId ?? ''}`
 
   // NO STAT TILES ON THIS PAGE (2026-08-15 ruling). The Inventory-style summary
   // row was tried and removed: everything it said was already on screen once -
@@ -243,6 +288,7 @@ export function FulfillmentPage() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <BatchablePools
           onTriggered={() => void load()}
+          reloadKey={poolFingerprint}
           lotSizeFor={lotSizeFor}
           // The same resolved rule the AutoTriggerCard beside it displays, so
           // the "N/7 days" here and the "7 days" there can never disagree.

@@ -11,7 +11,6 @@ import {
   Factory,
   MapPin,
   PackageCheck,
-  Pencil,
   Printer,
   QrCode,
   Smartphone,
@@ -27,7 +26,6 @@ import {
   getMerchants,
   getVendors,
   type UnitInventoryRow,
-  type UnitDetailsPatch,
   type MerchantRow,
   type VendorRow,
 } from '../../api/endpoints.js'
@@ -212,7 +210,6 @@ export function DeviceDetailPage() {
   }, [client])
 
   const vendorNames = useMemo(() => new Map(vendors.map((v) => [v.id, v.displayName])), [vendors])
-  const manufacturers = useMemo(() => vendors.filter((v) => v.type === 'MANUFACTURER'), [vendors])
   const rail = useMemo(() => (row === null ? null : buildRail(row)), [row])
 
   async function copySerial(serial: string): Promise<void> {

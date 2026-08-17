@@ -3,7 +3,8 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { type GridColumn } from '../../ui/DataGrid.js'
 import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { Card, Field, Input, Button, ErrorNote, InfoNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { Field, Input, Button, ErrorNote, InfoNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { SearchSelect } from '../../components/Picker.js'
 import { fmtDateTime, shortId, statusMeta } from '../../ui/format.js'
 import { orDash } from './shared.js'
@@ -236,47 +237,59 @@ export function StatusExceptionsTab() {
         vendorOf={(r) => r.vndrId}
       />
 
-      {resolvingRow !== null && form !== null && (
-        <Card className="p-5">
-          <h2 className="mb-4 text-sm font-semibold text-foreground">Resolve status exception</h2>
-          <form
-            onSubmit={(e) => {
-              void submitResolve(e)
-            }}
-            className="flex flex-wrap items-end gap-3"
-          >
-            {formError !== null && <ErrorNote>{formError}</ErrorNote>}
-            <Field label="Shipment">
-              <CodeChip>{resolvingRow.shptId}</CodeChip>
-            </Field>
-            <Field label="Status" htmlFor="se-form-status">
-              <SearchSelect
-                id="se-form-status"
-                className="w-52"
-                placeholder="Pick a status…"
-                options={KNOWN_STATUSES.map((s) => ({ value: s, label: statusMeta(s).label }))}
-                value={form.status}
-                onChange={(value) => setForm((prev) => (prev === null ? prev : { ...prev, status: value }))}
-              />
-            </Field>
-            <Field label="Courier timestamp" htmlFor="se-form-courierTimestamp">
-              <Input
-                id="se-form-courierTimestamp"
-                value={form.courierTimestamp}
-                onChange={(e) => {
-                  const value = e.target.value
-                  setForm((prev) => (prev === null ? prev : { ...prev, courierTimestamp: value }))
-                }}
-                placeholder="2026-08-01T10:00"
-              />
-            </Field>
-            <Button type="submit">Submit correction</Button>
-            <Button type="button" variant="secondary" onClick={cancelResolve}>
-              Cancel
-            </Button>
-          </form>
-        </Card>
-      )}
+      {/* Opens OVER the table, like the other two queue tabs. Narrow enough for
+          the default dialog width: this is three fields, not a full re-key. */}
+      <Dialog
+        open={resolvingRow !== null && form !== null}
+        onOpenChange={(open) => {
+          if (!open) cancelResolve()
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Resolve status exception</DialogTitle>
+          </DialogHeader>
+          {resolvingRow !== null && form !== null && (
+            <form
+              onSubmit={(e) => {
+                void submitResolve(e)
+              }}
+              className="space-y-4"
+            >
+              {formError !== null && <ErrorNote>{formError}</ErrorNote>}
+              <Field label="Shipment">
+                <CodeChip>{resolvingRow.shptId}</CodeChip>
+              </Field>
+              <Field label="Status" htmlFor="se-form-status">
+                <SearchSelect
+                  id="se-form-status"
+                  placeholder="Pick a status…"
+                  options={KNOWN_STATUSES.map((s) => ({ value: s, label: statusMeta(s).label }))}
+                  value={form.status}
+                  onChange={(value) => setForm((prev) => (prev === null ? prev : { ...prev, status: value }))}
+                />
+              </Field>
+              <Field label="Courier timestamp" htmlFor="se-form-courierTimestamp">
+                <Input
+                  id="se-form-courierTimestamp"
+                  value={form.courierTimestamp}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    setForm((prev) => (prev === null ? prev : { ...prev, courierTimestamp: value }))
+                  }}
+                  placeholder="2026-08-01T10:00"
+                />
+              </Field>
+              <DialogFooter>
+                <Button type="button" variant="secondary" onClick={cancelResolve}>
+                  Cancel
+                </Button>
+                <Button type="submit">Submit correction</Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <InfoNote>
         Resolving requires a matched shipment. Rows with no matching shipment (for example an unrecognized AWB) show

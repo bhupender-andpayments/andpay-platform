@@ -60,6 +60,14 @@ function renderQueues(tab: 'quarantine' | 'intake' | 'status') {
   )
 }
 
+// The quarantine row actions live behind a per-row kebab menu (17 Aug 2026),
+// so reaching Resolve or Close means opening that row's menu first. Both items
+// keep the aria-labels they had as buttons; only the role changed, from button
+// to menuitem.
+async function openRowActions(rowId: string): Promise<void> {
+  await userEvent.click(screen.getByRole('button', { name: new RegExp(`^actions for quarantine row ${rowId}$`, 'i') }))
+}
+
 describe('QueuesPage', () => {
   beforeEach(() => {
     clearAccessToken()
@@ -113,7 +121,8 @@ describe('QueuesPage', () => {
     // Resolve: fill every correction field including the now-mandatory branch
     // code, submit, and assert the real BankRequestRow shape (with branchCode)
     // rode the POST body, not a bare id.
-    await userEvent.click(screen.getByRole('button', { name: /resolve quarantine row qr-1/i }))
+    await openRowActions('qr-1')
+    await userEvent.click(screen.getByRole('menuitem', { name: /resolve quarantine row qr-1/i }))
 
     // The two identity fields are PREFILLED from the clicked row and read-only
     // (16 Aug 2026): the resolve is keyed by the row id in the URL, so editing
@@ -213,11 +222,14 @@ describe('QueuesPage', () => {
     renderQueues('quarantine')
 
     expect(await screen.findByText('file-dup')).toBeTruthy()
-    // Both actions are present; neither is hidden behind the other.
-    expect(screen.getByRole('button', { name: /resolve quarantine row qr-dup/i })).toBeTruthy()
 
-    // First click only ARMS the close: nothing is posted yet.
-    await userEvent.click(screen.getByRole('button', { name: /^close quarantine row qr-dup$/i }))
+    // Both ways out are offered in the row's own menu, neither buried under the
+    // other: cure and close are peers.
+    await openRowActions('qr-dup')
+    expect(screen.getByRole('menuitem', { name: /resolve quarantine row qr-dup/i })).toBeTruthy()
+
+    // Choosing Close only ARMS it: nothing is posted until the confirm.
+    await userEvent.click(screen.getByRole('menuitem', { name: /^close quarantine row qr-dup$/i }))
     expect(calls.some((c) => c.url.includes('/close'))).toBe(false)
     expect(screen.getByText(/archived as closed and nothing is ingested/i)).toBeTruthy()
 
@@ -229,6 +241,69 @@ describe('QueuesPage', () => {
     expect(headerValue(closeCall, 'Idempotency-Key')).toBeTruthy()
     // No corrected row rides a close: there is nothing to correct.
     expect(parseBody(closeCall).correctedRow).toBeUndefined()
+  })
+
+  // 17 Aug 2026. Resolve and Close each used to own a `useState` and rendered
+  // one after the other in cards BELOW the grid, so clicking both put two
+  // panels on screen at once with two competing submit buttons.
+  //
+  // Two independent things now prevent that, and this guards both. The actions
+  // are one discriminated union, so two-open is unrepresentable in state; and
+  // they are modal, so while one is up the row triggers behind it are
+  // aria-hidden and cannot be clicked at all. That second part is why this test
+  // dismisses between actions instead of clicking both triggers: through the
+  // real UI, reaching the second trigger first requires leaving the first.
+  it('opens one action at a time, and never both', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/quarantine')) {
+          return jsonResponse([
+            {
+              id: 'qr-both', fileId: 'file-both', rowNo: 4, reasonCode: 'missing_branch_code',
+              createdAt: '2026-08-12T00:00:00.000Z', resolvedAt: null, resolvedByActor: null, resolution: null,
+            },
+          ])
+        }
+        return jsonResponse([])
+      }),
+    )
+
+    renderQueues('quarantine')
+    await screen.findByText('file-both')
+
+    // The resolve form's own field proves which panel is up; the close copy
+    // proves the other one.
+    const closeCopy = /archived as closed and nothing is ingested/i
+
+    // Nothing is open to begin with: the forms used to be rendered below the
+    // table, so "no dialog" is itself part of the claim.
+    expect(screen.queryAllByRole('dialog')).toHaveLength(0)
+
+    await openRowActions('qr-both')
+    await userEvent.click(screen.getByRole('menuitem', { name: /resolve quarantine row qr-both/i }))
+    expect(screen.queryAllByRole('dialog')).toHaveLength(1)
+    expect(screen.getByLabelText(/bank merchant reference/i)).toBeTruthy()
+    expect(screen.queryByText(closeCopy)).toBeNull()
+
+    // Escape dismisses, which the inline cards never offered.
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryAllByRole('dialog')).toHaveLength(0)
+
+    await openRowActions('qr-both')
+    await userEvent.click(screen.getByRole('menuitem', { name: /^close quarantine row qr-both$/i }))
+    expect(screen.queryAllByRole('dialog')).toHaveLength(1)
+    expect(screen.getByText(closeCopy)).toBeTruthy()
+    // The resolve form is GONE, not merely covered: one state, one panel.
+    expect(screen.queryByLabelText(/bank merchant reference/i)).toBeNull()
+
+    // And back, since the old bug was symmetric.
+    await userEvent.keyboard('{Escape}')
+    await openRowActions('qr-both')
+    await userEvent.click(screen.getByRole('menuitem', { name: /resolve quarantine row qr-both/i }))
+    expect(screen.queryAllByRole('dialog')).toHaveLength(1)
+    expect(screen.getByLabelText(/bank merchant reference/i)).toBeTruthy()
+    expect(screen.queryByText(closeCopy)).toBeNull()
   })
 
   it('shows HOW a resolved row was retired, and a dash when the server does not say', async () => {
@@ -265,9 +340,16 @@ describe('QueuesPage', () => {
     expect(await screen.findByText('file-a')).toBeTruthy()
     expect(screen.getByText('Closed')).toBeTruthy()
     expect(screen.getByText('Cured')).toBeTruthy()
-    // Already-resolved rows offer neither action.
-    expect((screen.getByRole('button', { name: /^close quarantine row qr-closed$/i }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: /resolve quarantine row qr-closed/i }) as HTMLButtonElement).disabled).toBe(true)
+    // An already-resolved row offers NEITHER action, and says so on the control
+    // itself rather than opening an empty menu: the trigger is disabled and its
+    // accessible name carries the reason.
+    const retiredTrigger = screen.getByRole('button', {
+      name: /^no actions for quarantine row qr-closed, already resolved$/i,
+    }) as HTMLButtonElement
+    expect(retiredTrigger.disabled).toBe(true)
+    // A still-open row does have a menu, so the assertion above is about this
+    // row's state and not about the column having lost its actions.
+    expect(screen.queryByRole('menuitem')).toBeNull()
   })
 
   it('renders intake exceptions and resolves with a correctedSheet including a dynamically added row (raw exceptionId, unblocked)', async () => {

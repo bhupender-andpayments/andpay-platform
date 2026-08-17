@@ -127,7 +127,7 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 11 real sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 10 shown sections, no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
@@ -150,18 +150,26 @@ describe('ops-portal app shell + navigation', () => {
     // work an operator picks up and moves along, as opposed to an object they
     // look at. The read had existed at the edge since FR08-2 with no surface at
     // all, which is most of why those statuses were stale.
+    //
+    // Reports is HIDDEN as of 17 Aug 2026 (HIDDEN_ROUTES) while the Insights
+    // work is in flight, so it is absent here while /reports itself still
+    // resolves. See the deep-link test below, which is what guards that.
     expect([...names].sort()).toEqual(
-      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
+      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Uploads'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })
 
-  it('groups the nav under the five object-first headings', async () => {
+  it('groups the nav under the object-first headings, less the emptied Insights', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
-    for (const heading of ['Overview', 'Pipeline', 'Operations', 'Insights', 'Setup']) {
+    for (const heading of ['Overview', 'Pipeline', 'Operations', 'Setup']) {
       expect(within(nav).getByText(heading)).toBeTruthy()
     }
+    // Insights held only Reports, so hiding that item empties the group and its
+    // heading goes with it rather than titling an empty list. Same rule the CS
+    // test below relies on for Setup.
+    expect(within(nav).queryByText('Insights')).toBeNull()
   })
 
   // The renames must not strand a bookmark or a link in someone's notes.
@@ -262,8 +270,10 @@ describe('ops-portal app shell + navigation', () => {
 
     expect(names).not.toContain('Uploads')
     expect(names).not.toContain('Master Data')
-    // The views D-29 keeps for CS are all still offered.
-    for (const kept of ['Dispatches', 'Merchants', 'Damage cases', 'Reports']) {
+    // The views D-29 keeps for CS are all still offered. Reports is NOT among
+    // them any more, and not because of this role: HIDDEN_ROUTES drops it for
+    // everyone while the Insights work is in flight.
+    for (const kept of ['Dispatches', 'Merchants', 'Damage cases']) {
       expect(names).toContain(kept)
     }
     // The Setup group held only Master Data, so its heading goes with it

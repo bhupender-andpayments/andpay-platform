@@ -215,7 +215,12 @@ export function DataGrid<T>({
   const stickyFirstCell = stickyFirstColumn ? 'first:sticky first:left-0 first:z-10 first:bg-card' : ''
 
   return (
-    <div>
+    // h-full + flex-col so a caller that gives the grid a tall box gets a grid
+    // that fills it, with the empty state centred in the leftover instead of
+    // hugging the toolbar over a lake of blank card. In a normal auto-height
+    // parent both classes resolve to exactly the old layout, so no other
+    // caller moves.
+    <div className="flex h-full flex-col">
       {(searchable || toolbarRight !== undefined || toolbarLeft !== undefined) && (
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
           {/* The search box sits LEFT normally, but slides over to the action
@@ -256,7 +261,9 @@ export function DataGrid<T>({
       {loading ? (
         <SkeletonRows rows={6} cols={Math.min(columns.length, 6)} />
       ) : total === 0 ? (
-        <EmptyState title={emptyTitle} message={emptyMessage} />
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState title={emptyTitle} message={emptyMessage} />
+        </div>
       ) : (
         <>
           <div

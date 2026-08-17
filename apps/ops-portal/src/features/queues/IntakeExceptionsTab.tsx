@@ -3,7 +3,8 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { type GridColumn } from '../../ui/DataGrid.js'
 import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { Card, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { fmtDateTime, shortId } from '../../ui/format.js'
 import { orDash } from './shared.js'
 import {
@@ -241,9 +242,20 @@ export function IntakeExceptionsTab() {
         vendorOf={(r) => r.vndrId}
       />
 
-      {resolvingId !== null && form !== null && (
-        <Card className="p-5">
-          <h2 className="mb-4 text-sm font-semibold text-foreground">Correct and resolve intake exception</h2>
+      {/* Opens OVER the table, like the other two queue tabs. This form grows as
+          rows are added, so the dialog is wide and scrolls internally rather
+          than pushing the queue it is about off the screen. */}
+      <Dialog
+        open={resolvingId !== null && form !== null}
+        onOpenChange={(open) => {
+          if (!open) cancelResolve()
+        }}
+      >
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Correct and resolve intake exception</DialogTitle>
+          </DialogHeader>
+          {form !== null && (
           <form
             onSubmit={(e) => {
               void submitResolve(e)
@@ -342,15 +354,16 @@ export function IntakeExceptionsTab() {
               </Button>
             </div>
 
-            <div className="flex gap-2">
-              <Button type="submit">Submit correction</Button>
+            <DialogFooter>
               <Button type="button" variant="secondary" onClick={cancelResolve}>
                 Cancel
               </Button>
-            </div>
+              <Button type="submit">Submit correction</Button>
+            </DialogFooter>
           </form>
-        </Card>
-      )}
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

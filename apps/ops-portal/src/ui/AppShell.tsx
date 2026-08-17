@@ -129,11 +129,20 @@ if (UNGROUPED.length > 0) {
 // bar reaches whatever the edge decides they reach, exactly as before.
 const CS_HIDDEN_ROUTES: readonly string[] = ['/uploads', '/masterdata']
 
+// Hidden from EVERY role while the Insights work is in flight (17 Aug 2026).
+// Same posture as CS_HIDDEN_ROUTES above: DISPLAY ONLY, never authorization.
+// The route stays registered in routes.tsx, so /reports still loads when typed
+// and the Command Center tiles that link into it are not dead ends; the crumb
+// still resolves too, because both TopBar lookups read the unfiltered SECTIONS
+// and GROUPED_NAV. Removing the entry from SECTIONS or NAV_GROUPS instead would
+// trip the two invariants above, which is why this filters downstream.
+const HIDDEN_ROUTES: readonly string[] = ['/reports']
+
 function navGroupsFor(roleLabel: string | undefined): typeof GROUPED_NAV {
-  if (roleLabel !== 'customer_support') return GROUPED_NAV
+  const hidden = roleLabel === 'customer_support' ? [...HIDDEN_ROUTES, ...CS_HIDDEN_ROUTES] : HIDDEN_ROUTES
   return GROUPED_NAV.map((g) => ({
     ...g,
-    items: g.items.filter((s) => !CS_HIDDEN_ROUTES.includes(s.to)),
+    items: g.items.filter((s) => !hidden.includes(s.to)),
   })).filter((g) => g.items.length > 0)
 }
 

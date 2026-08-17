@@ -150,26 +150,9 @@ describe('TilesPage (Command Center)', () => {
     }
   })
 
-  // D-31: the damage-cases tile. Its counts come from TMS, not the frozen
-  // analytics damagedReplacementOpen tile (DP-7), and each count deep-links
-  // the case screen pre-filtered with the exact ?status= vocabulary
-  // DamageCasesPage reads.
-  it('shows the damage-case counts, each one a door into the case screen filtered by that status', async () => {
-    stub()
-    renderAt()
-
-    const card = await screen.findByTestId('damage-cases-card')
-    expect(within(card).getByText('4')).toBeTruthy()
-    expect(within(card).getByText('6')).toBeTruthy()
-    expect(within(card).getByText('8')).toBeTruthy()
-
-    const hrefs = within(card)
-      .getAllByRole('link')
-      .map((l) => l.getAttribute('href'))
-    expect(hrefs).toEqual([
-      '/damage-cases?status=Open',
-      '/damage-cases?status=In-Progress',
-      '/damage-cases?status=Closed',
-    ])
-  })
+  // The D-31 damage-case counts card was REMOVED from this page on 17 Aug 2026
+  // and its test went with it. What that test actually guarded still is: the
+  // three counts and the ?status= deep-link vocabulary are covered on the screen
+  // that owns them, test/features/damage-cases.test.tsx (the summary chips, the
+  // ?status=Closed landing, and the hyphenless spelling).
 })

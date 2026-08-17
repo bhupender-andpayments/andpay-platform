@@ -3,7 +3,24 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { type GridColumn } from '../../ui/DataGrid.js'
 import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
-import { Card, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu'
+import { buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+import { MoreVertical } from 'lucide-react'
 import { fmtDateTime, shortId } from '../../ui/format.js'
 import { orDash } from './shared.js'
 import {
@@ -58,18 +75,26 @@ const BANK_REQUEST_ROW_FIELDS: ReadonlyArray<{
   { key: 'vpaHint', label: 'VPA hint (optional)', type: 'text' },
 ]
 
+// D-8 (T2.2a): the queue's TWO ways out, as ONE piece of state.
+//
+// Resolve carries a form because a cure is a correction; close carries only an
+// id because there is nothing to edit, so it asks for a confirmation instead.
+// They were two independent `useState`s until 17 Aug 2026, and nothing stopped
+// both from being open at once: clicking Resolve then Close put two panels on
+// screen with two competing submit buttons. A discriminated union makes that
+// state unrepresentable rather than merely unlikely, which is why this is one
+// variable and not two booleans somebody has to remember to clear.
+type PendingAction =
+  | { kind: 'resolve'; rowId: string; form: BankRequestRowForm }
+  | { kind: 'close'; rowId: string }
+
 export function QuarantineTab() {
   const { client } = useAuth()
   const [includeResolved, setIncludeResolved] = useState(false)
   const [rows, setRows] = useState<QuarantineRowView[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [resolvingId, setResolvingId] = useState<string | null>(null)
-  const [form, setForm] = useState<BankRequestRowForm | null>(null)
+  const [pending, setPending] = useState<PendingAction | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
-  // D-8 (T2.2a): the queue's SECOND action. Held separately from the resolve
-  // form's state because closing is not a correction: there is nothing to edit,
-  // so it opens a confirm rather than a form.
-  const [closingId, setClosingId] = useState<string | null>(null)
   const [closeError, setCloseError] = useState<string | null>(null)
 
   const load = useCallback(() => {
@@ -89,28 +114,40 @@ export function QuarantineTab() {
   }, [load])
 
   function startResolve(row: QuarantineRowView): void {
-    setResolvingId(row.id)
-    setForm(emptyBankRequestRowForm(row.fileId, row.rowNo))
+    setPending({ kind: 'resolve', rowId: row.id, form: emptyBankRequestRowForm(row.fileId, row.rowNo) })
     setFormError(null)
+    setCloseError(null)
   }
 
-  function cancelResolve(): void {
-    setResolvingId(null)
-    setForm(null)
+  function startClose(row: QuarantineRowView): void {
+    setPending({ kind: 'close', rowId: row.id })
     setFormError(null)
+    setCloseError(null)
+  }
+
+  function dismiss(): void {
+    setPending(null)
+    setFormError(null)
+    setCloseError(null)
+  }
+
+  // Patches the open resolve form. A no-op unless a resolve is what is open,
+  // so a stray edit can never write a form onto a close confirmation.
+  function patchForm(patch: Partial<BankRequestRowForm>): void {
+    setPending((prev) => (prev === null || prev.kind !== 'resolve' ? prev : { ...prev, form: { ...prev.form, ...patch } }))
   }
 
   async function submitResolve(e: FormEvent): Promise<void> {
     e.preventDefault()
-    if (resolvingId === null || form === null) return
-    const correctedRow = toBankRequestRow(form)
+    if (pending === null || pending.kind !== 'resolve') return
+    const correctedRow = toBankRequestRow(pending.form)
     if (correctedRow === null) {
       setFormError('Row number, standee count, and sticker count must be whole numbers.')
       return
     }
     try {
-      await resolveQuarantine(client, resolvingId, correctedRow, newIdempotencyKey())
-      cancelResolve()
+      await resolveQuarantine(client, pending.rowId, correctedRow, newIdempotencyKey())
+      dismiss()
       await load()
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to submit the correction.')
@@ -121,17 +158,18 @@ export function QuarantineTab() {
   // not corrected. Without this the only way out of the queue was to invent a
   // correction for a row that did not need one.
   async function submitClose(): Promise<void> {
-    if (closingId === null) return
+    if (pending === null || pending.kind !== 'close') return
     setCloseError(null)
     try {
-      const res = await closeQuarantine(client, closingId, newIdempotencyKey())
+      const res = await closeQuarantine(client, pending.rowId, newIdempotencyKey())
       // `closed: false` means somebody else resolved the row between this list
       // load and this click. Saying so beats a silent success that leaves the
-      // operator believing they closed it.
+      // operator believing they closed it. The dialog STAYS OPEN in that case,
+      // because the message belongs where the operator is looking.
       if (!res.closed && !res.deduped) {
         setCloseError('That row was already resolved by someone else. Reloading the queue.')
       } else {
-        setClosingId(null)
+        setPending(null)
       }
       await load()
     } catch (err) {
@@ -207,35 +245,54 @@ export function QuarantineTab() {
     {
       key: 'actions',
       header: 'Actions',
-      cell: (r) => (
-        <span className="flex gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={r.resolvedAt !== null}
-            aria-label={`Resolve quarantine row ${r.id}`}
-            onClick={() => startResolve(r)}
-          >
-            Resolve
-          </Button>
-          {/* D-8: the second way out. Same disabled rule as Resolve, because a
-              resolved row is out of the queue by either route. */}
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={r.resolvedAt !== null}
-            aria-label={`Close quarantine row ${r.id}`}
-            onClick={() => {
-              setClosingId(r.id)
-              setCloseError(null)
-            }}
-          >
-            Close
-          </Button>
-        </span>
-      ),
+      // ONE MENU, not two buttons per row (17 Aug 2026). Two filled buttons
+      // repeated down every row turned the column into the loudest thing on a
+      // screen whose job is reading the queue; and colouring them to tell them
+      // apart only made that worse. The actions are one click away either way.
+      cell: (r) => {
+        const retired = r.resolvedAt !== null
+        return (
+          <DropdownMenu>
+            {/* Styled with buttonVariants directly, NOT `asChild` around our
+                Button: that Button is a plain function component (no
+                forwardRef), so on React 18 Radix cannot take a ref through it
+                and the trigger silently fails to anchor its menu. Picker.tsx
+                does the same thing with PopoverTrigger for the same reason. */}
+            <DropdownMenuTrigger
+              disabled={retired}
+              className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
+              // Named per row, so the menu is addressable and an operator using
+              // a screen reader is told which row they opened. Keyed by id, like
+              // the two item labels and every other label here.
+              aria-label={
+                retired ? `No actions for quarantine row ${r.id}, already resolved` : `Actions for quarantine row ${r.id}`
+              }
+            >
+              <MoreVertical className="size-4" aria-hidden="true" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              {/* Green for the cure, red for the close: the two outcomes the
+                  Resolved column later reports as "Cured" and "Closed". */}
+              <DropdownMenuItem
+                variant="success"
+                aria-label={`Resolve quarantine row ${r.id}`}
+                onSelect={() => startResolve(r)}
+              >
+                Resolve
+              </DropdownMenuItem>
+              {/* D-8: the second way out, and the one worth a colour: closing
+                  archives a real order unfilled rather than curing it. */}
+              <DropdownMenuItem
+                variant="destructive"
+                aria-label={`Close quarantine row ${r.id}`}
+                onSelect={() => startClose(r)}
+              >
+                Close
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )
+      },
     },
   ]
 
@@ -253,86 +310,106 @@ export function QuarantineTab() {
         searchText={(r) => `${r.rowNo} ${r.fileId} ${r.reasonCode} ${r.detail?.duplicateOf?.reference ?? ''}`}
       />
 
-      {closeError !== null && <ErrorNote>{closeError}</ErrorNote>}
-
-      {closingId !== null && (
-        <Card className="p-5">
-          <h2 className="mb-2 text-sm font-semibold text-foreground">Close this row without correcting it</h2>
-          <p className="mb-4 text-[13px] text-muted-foreground">
-            Closing records that the row was judged and needs no correction. It is archived as closed and nothing is
-            ingested.
-          </p>
-          <div className="flex gap-2">
+      {/* Both actions open OVER the table rather than below it. The resolve
+          form is 18 fields in a 3-column grid, which pushed the queue it was
+          about off the screen; and being modal is what makes "one at a time"
+          visible to the operator rather than merely true in the state. */}
+      <Dialog
+        open={pending?.kind === 'close'}
+        onOpenChange={(open) => {
+          if (!open) dismiss()
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close this row without correcting it</DialogTitle>
+            <DialogDescription>
+              Closing records that the row was judged and needs no correction. It is archived as closed and nothing is
+              ingested.
+            </DialogDescription>
+          </DialogHeader>
+          {closeError !== null && <ErrorNote>{closeError}</ErrorNote>}
+          <DialogFooter>
+            <Button type="button" variant="secondary" onClick={dismiss}>
+              Cancel
+            </Button>
             <Button
               type="button"
-              size="sm"
-              aria-label={`Confirm close quarantine row ${closingId}`}
+              variant="danger"
+              aria-label={pending?.kind === 'close' ? `Confirm close quarantine row ${pending.rowId}` : undefined}
               onClick={() => {
                 void submitClose()
               }}
             >
               Close the row
             </Button>
-            <Button type="button" size="sm" variant="secondary" onClick={() => setClosingId(null)}>
-              Cancel
-            </Button>
-          </div>
-        </Card>
-      )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {resolvingId !== null && form !== null && (
-        <Card className="p-5">
-          <h2 className="mb-4 text-sm font-semibold text-foreground">Correct and resolve quarantine row</h2>
-          <form
-            onSubmit={(e) => {
-              void submitResolve(e)
-            }}
-            className="space-y-4"
-          >
-            {formError !== null && <ErrorNote>{formError}</ErrorNote>}
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-              {BANK_REQUEST_ROW_FIELDS.map((f) => (
-                <Field key={f.key} label={f.label} htmlFor={`qr-form-${f.key}`}>
-                  <Input
-                    id={`qr-form-${f.key}`}
-                    type={f.type}
-                    value={form[f.key]}
-                    readOnly={f.readOnly === true}
-                    aria-readonly={f.readOnly === true || undefined}
-                    className={f.readOnly === true ? 'bg-muted text-muted-foreground' : undefined}
+      <Dialog
+        open={pending?.kind === 'resolve'}
+        onOpenChange={(open) => {
+          if (!open) dismiss()
+        }}
+      >
+        {/* Wider than the default max-w-md, which cannot hold three columns,
+            and capped in height so a long form scrolls inside the dialog
+            instead of running off the viewport. */}
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Correct and resolve quarantine row</DialogTitle>
+          </DialogHeader>
+          {pending?.kind === 'resolve' && (
+            <form
+              onSubmit={(e) => {
+                void submitResolve(e)
+              }}
+              className="space-y-4"
+            >
+              {formError !== null && <ErrorNote>{formError}</ErrorNote>}
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                {BANK_REQUEST_ROW_FIELDS.map((f) => (
+                  <Field key={f.key} label={f.label} htmlFor={`qr-form-${f.key}`}>
+                    <Input
+                      id={`qr-form-${f.key}`}
+                      type={f.type}
+                      value={pending.form[f.key]}
+                      readOnly={f.readOnly === true}
+                      aria-readonly={f.readOnly === true || undefined}
+                      className={f.readOnly === true ? 'bg-muted text-muted-foreground' : undefined}
+                      onChange={(e) => {
+                        if (f.readOnly === true) return
+                        patchForm({ [f.key]: e.target.value })
+                      }}
+                    />
+                  </Field>
+                ))}
+                <div className="flex items-end gap-2 pb-2.5">
+                  <input
+                    id="qr-form-soundbox"
+                    type="checkbox"
+                    className="h-4 w-4 accent-[color:var(--brand)]"
+                    checked={pending.form.soundbox}
                     onChange={(e) => {
-                      if (f.readOnly === true) return
-                      const value = e.target.value
-                      setForm((prev) => (prev === null ? prev : { ...prev, [f.key]: value }))
+                      patchForm({ soundbox: e.target.checked })
                     }}
                   />
-                </Field>
-              ))}
-              <div className="flex items-end gap-2 pb-2.5">
-                <input
-                  id="qr-form-soundbox"
-                  type="checkbox"
-                  className="h-4 w-4 accent-[color:var(--brand)]"
-                  checked={form.soundbox}
-                  onChange={(e) => {
-                    const checked = e.target.checked
-                    setForm((prev) => (prev === null ? prev : { ...prev, soundbox: checked }))
-                  }}
-                />
-                <label className="text-[13px] font-medium text-foreground" htmlFor="qr-form-soundbox">
-                  Soundbox
-                </label>
+                  <label className="text-[13px] font-medium text-foreground" htmlFor="qr-form-soundbox">
+                    Soundbox
+                  </label>
+                </div>
               </div>
-            </div>
-            <div className="flex gap-2">
-              <Button type="submit">Submit correction</Button>
-              <Button type="button" variant="secondary" onClick={cancelResolve}>
-                Cancel
-              </Button>
-            </div>
-          </form>
-        </Card>
-      )}
+              <DialogFooter>
+                <Button type="button" variant="secondary" onClick={dismiss}>
+                  Cancel
+                </Button>
+                <Button type="submit">Submit correction</Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
