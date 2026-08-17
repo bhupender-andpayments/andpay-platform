@@ -1,0 +1,23 @@
+-- D-26 and D-27 (Damage and Replacement Workflow, 16 Aug 2026).
+--
+-- The damage file is gone (D-25): an operator now flags a damaged dispatch in
+-- the screen, and the flag itself mints the non-billable replacement child.
+-- D-27 asks the record to carry WHO raised it, and nothing on the row could
+-- answer that: bank_remarks and ops_remarks carry words, the 6e audit carries
+-- the decision, but the assignment itself never named the operator.
+--
+-- flagged_by is the flagging operator's principal id (claim.sub, resolved from
+-- the authenticated principal, never a request body, M7/S16). It is stamped
+-- only on a child minted by ops:flag-damage. Nullable, additive to a built
+-- table: every file-born replacement predates the concept and honestly has
+-- nobody to name, the same posture quarantine_row.resolution took (never
+-- backfilled, because inventing an operator claim nobody made would put a
+-- fabrication in the record).
+--
+-- An id and not free text (S4/S7): the WHY goes to ops_remarks, the WHO is
+-- this column, and the two never mix.
+--
+-- No GRANT is needed: Postgres table-level privileges cover columns added
+-- later, and `assignment` already carries SELECT to tms_read/tms_ops_read and
+-- the full set to tms_write.
+ALTER TABLE "assignment" ADD COLUMN IF NOT EXISTS "flagged_by" text;

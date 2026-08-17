@@ -52,10 +52,10 @@ describe('PerRowErrors: the soundbox duplicate-VPA hold notice (ruling 2026-08-1
     expect(container.textContent).not.toMatch(/held for review/i)
   })
 
-  // Every other upload surface (damage, device inventory) shares this component
-  // and never reports this list, so an absent field must not render.
+  // Every other upload surface (device inventory) shares this component and
+  // never reports this list, so an absent field must not render.
   it('renders nothing when the upload has no such list', () => {
-    const { container } = renderResult({ replaced: 3, quarantined: 1, duplicate: 0 })
+    const { container } = renderResult({ accepted: 3, quarantined: 1, duplicate: 0 })
     expect(container.textContent).not.toMatch(/held for review/i)
   })
 

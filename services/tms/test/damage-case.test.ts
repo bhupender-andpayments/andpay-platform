@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { projectDispatchToCases } from '../src/damage-case.js'
+import { projectDispatchToCases, projectShipmentToCases } from '../src/damage-case.js'
 import { activateAssignmentOps } from '../src/ops.js'
 import type { DevicePort } from '../src/device-port.js'
 
@@ -32,6 +32,7 @@ async function seedAssignment(opts: {
   replacement?: boolean
   caseStatus?: string | null
   soundbox?: boolean
+  dispatchGroup?: 'SOUNDBOX' | 'COLLATERAL'
 } = {}): Promise<string> {
   const asgnUuid = toUuid(newId('asgn'))
   const replacementOf = opts.replacement === true ? toUuid(newId('asgn')) : null
@@ -43,7 +44,7 @@ async function seedAssignment(opts: {
     ${asgnUuid}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
     'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'Addr', 'upi://x', ${`x-${randomUUID()}@hdfcbank`},
     ${opts.soundbox ?? true}, 0, 0,
-    ${opts.replacement !== true}, 'pooled-for-fulfillment', ${`src-${randomUUID()}`}, 'SOUNDBOX',
+    ${opts.replacement !== true}, 'pooled-for-fulfillment', ${`src-${randomUUID()}`}, ${opts.dispatchGroup ?? 'SOUNDBOX'},
     ${replacementOf}::uuid, ${opts.caseStatus === undefined ? 'Open' : opts.caseStatus}, now()
   )`
   return fromUuid('asgn', asgnUuid)
@@ -58,6 +59,10 @@ async function caseStatusOf(asgnId: string): Promise<string | null> {
 
 function dispatchEnvelope(asgnIds: string[], dispatchState: string, dedupKey = randomUUID()): never {
   return { payload: { btchId: newId('btch'), asgnIds, dispatchState }, dedupKey } as never
+}
+
+function shipmentEnvelope(asgnIds: string[] | undefined, status: string, dedupKey = randomUUID()): never {
+  return { payload: { shptId: newId('shpt'), awb: 'AWB-1', status, collateral: true, asgnIds }, dedupKey } as never
 }
 
 describe('In Progress when the replacement enters the pipeline (D-24)', () => {
@@ -150,6 +155,72 @@ describe('Closed when the soundbox replacement reaches its terminal (D-24)', () 
       actorId: randomUUID(),
       traceId: 't-case-3',
     })
+    expect(await caseStatusOf(original)).toBeNull()
+  })
+})
+
+// B4 (D-24, DP-11): the COLLATERAL replacement's terminal. Delivery is where a
+// standee or sticker replacement is DONE, so the shipment fact's DELIVERED
+// closes exactly those cases and nothing else: the soundbox terminal stays
+// activation (above), an original has no case, and forward-only still holds.
+describe('Closed when the collateral replacement is DELIVERED (D-24, B4)', () => {
+  it('a DELIVERED shipment closes the COLLATERAL replacement case it names', async () => {
+    const repl = await seedAssignment({ replacement: true, soundbox: false, dispatchGroup: 'COLLATERAL', caseStatus: 'In-Progress' })
+    const r = await projectShipmentToCases(db, shipmentEnvelope([repl], 'DELIVERED'))
+    expect(r.advanced).toBe(1)
+    expect(await caseStatusOf(repl)).toBe('Closed')
+  })
+
+  it('closes from Open too, for a case the dispatch fact never moved', async () => {
+    const repl = await seedAssignment({ replacement: true, soundbox: false, dispatchGroup: 'COLLATERAL', caseStatus: 'Open' })
+    await projectShipmentToCases(db, shipmentEnvelope([repl], 'DELIVERED'))
+    expect(await caseStatusOf(repl)).toBe('Closed')
+  })
+
+  it('leaves a SOUNDBOX replacement alone: a device is done when it activates, not when the courier says delivered', async () => {
+    const repl = await seedAssignment({ replacement: true, dispatchGroup: 'SOUNDBOX', caseStatus: 'In-Progress' })
+    const r = await projectShipmentToCases(db, shipmentEnvelope([repl], 'DELIVERED'))
+    expect(r.advanced).toBe(0)
+    expect(await caseStatusOf(repl)).toBe('In-Progress')
+  })
+
+  it('leaves a NON-REPLACEMENT collateral assignment alone: no case existed, so none is invented', async () => {
+    const original = await seedAssignment({ soundbox: false, dispatchGroup: 'COLLATERAL', caseStatus: null })
+    const r = await projectShipmentToCases(db, shipmentEnvelope([original], 'DELIVERED'))
+    expect(r.advanced).toBe(0)
+    expect(await caseStatusOf(original)).toBeNull()
+  })
+
+  it('is forward-only: an already-Closed case stays Closed and reports no move', async () => {
+    const repl = await seedAssignment({ replacement: true, soundbox: false, dispatchGroup: 'COLLATERAL', caseStatus: 'Closed' })
+    const r = await projectShipmentToCases(db, shipmentEnvelope([repl], 'DELIVERED'))
+    expect(r.advanced).toBe(0)
+    expect(await caseStatusOf(repl)).toBe('Closed')
+  })
+
+  it('ignores a non-DELIVERED status and a fact with no asgnIds (only collateral facts carry them)', async () => {
+    const repl = await seedAssignment({ replacement: true, soundbox: false, dispatchGroup: 'COLLATERAL' })
+    expect((await projectShipmentToCases(db, shipmentEnvelope([repl], 'IN_TRANSIT'))).advanced).toBe(0)
+    expect((await projectShipmentToCases(db, shipmentEnvelope(undefined, 'DELIVERED'))).advanced).toBe(0)
+    expect((await projectShipmentToCases(db, shipmentEnvelope([], 'DELIVERED'))).advanced).toBe(0)
+    expect(await caseStatusOf(repl)).toBe('Open')
+  })
+
+  it('a REDELIVERED shipment fact advances nothing the second time (E6 inbox)', async () => {
+    const repl = await seedAssignment({ replacement: true, soundbox: false, dispatchGroup: 'COLLATERAL' })
+    const key = randomUUID()
+    expect((await projectShipmentToCases(db, shipmentEnvelope([repl], 'DELIVERED', key))).advanced).toBe(1)
+    expect((await projectShipmentToCases(db, shipmentEnvelope([repl], 'DELIVERED', key))).advanced).toBe(0)
+  })
+
+  it('a mixed fact moves only the collateral replacements and counts only real moves', async () => {
+    const collateral = await seedAssignment({ replacement: true, soundbox: false, dispatchGroup: 'COLLATERAL' })
+    const soundbox = await seedAssignment({ replacement: true, dispatchGroup: 'SOUNDBOX' })
+    const original = await seedAssignment({ soundbox: false, dispatchGroup: 'COLLATERAL', caseStatus: null })
+    const r = await projectShipmentToCases(db, shipmentEnvelope([collateral, soundbox, original], 'DELIVERED'))
+    expect(r.advanced).toBe(1)
+    expect(await caseStatusOf(collateral)).toBe('Closed')
+    expect(await caseStatusOf(soundbox)).toBe('Open')
     expect(await caseStatusOf(original)).toBeNull()
   })
 })

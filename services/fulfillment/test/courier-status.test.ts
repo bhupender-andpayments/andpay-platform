@@ -60,7 +60,7 @@ async function facts(): Promise<{ payload: Envelope<ShipmentFactPayload> }[]> {
 
 describe('courier carrier-status advance', () => {
   beforeEach(async () => {
-    await db.$executeRaw`TRUNCATE shpt_status_event, courier_status_exception, shpt, outbox, inbox CASCADE`
+    await db.$executeRaw`TRUNCATE shpt_status_event, courier_status_exception, shpt, pending_pool_entry, outbox, inbox CASCADE`
   })
   // Truncating ONLY in beforeEach leaves whatever the FINAL test inserted
   // sitting in the database for the rest of the gate and beyond (F-9, F-9b).
@@ -68,7 +68,7 @@ describe('courier carrier-status advance', () => {
   // list is this suite's OWN and deliberately omits vndr, which it never
   // writes: a shared teardown list would truncate tables a suite does not own.
   afterAll(async () => {
-    await db.$executeRaw`TRUNCATE shpt_status_event, courier_status_exception, shpt, outbox, inbox CASCADE`
+    await db.$executeRaw`TRUNCATE shpt_status_event, courier_status_exception, shpt, pending_pool_entry, outbox, inbox CASCADE`
     await db.$disconnect()
   })
 
@@ -184,5 +184,55 @@ describe('courier carrier-status advance', () => {
     const t = await db.$queryRaw<{ c: bigint }[]>`SELECT count(*) AS c FROM shpt_status_event`
     expect(Number(t[0]!.c)).toBe(0)
     expect(await facts()).toHaveLength(0)
+  })
+
+  // THE EMITTER CONTRACT (REVIEW_REPORT.md F1). The TMS case-close listener
+  // keys on `status === 'DELIVERED' && asgnIds`, so the contract these two
+  // tests pin is the one the handler suites cannot: the payload the emitter
+  // ACTUALLY produces. Before the fix no transition carried asgnIds and the
+  // collateral close was unreachable from a real courier event.
+  async function seedCollateralLink(shptUuid: string): Promise<string> {
+    const asgnUuid = toUuid(newId('asgn'))
+    await db.$executeRaw`
+      INSERT INTO pending_pool_entry (
+        asgn_id, tenant_id, program_id, soundbox, standee_count, sticker_count, billable,
+        merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+        ship_to_address, qr_value, vpa_value, pool_status, source_event_id, trace_id,
+        dispatch_group, collateral_shipment, created_at, updated_at
+      ) VALUES (
+        ${asgnUuid}::uuid, ${TENANT}::uuid, ${PROGRAM}::uuid, false, 1, 2, false,
+        'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', '221B Baker Street',
+        'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', 'BATCHED', ${`f1-${asgnUuid}`}, 'trace-f1',
+        'COLLATERAL', ${shptUuid}::uuid, now(), now()
+      )
+    `
+    return fromUuid('asgn', asgnUuid)
+  }
+
+  it('a COLLATERAL parcel transition carries collateral + asgnIds, so the D-24 close can fire (F1)', async () => {
+    const shptUuid = await seedShipment('AWB-COLL-F1')
+    const asgnWire = await seedCollateralLink(shptUuid)
+
+    expect(await advance('DELIVERED', '2026-08-16T12:00:00.000Z', 'AWB-COLL-F1')).toBe('advanced')
+
+    const f = await facts()
+    expect(f).toHaveLength(1)
+    const payload = f[0]!.payload.payload
+    expect(payload.status).toBe('DELIVERED')
+    expect(payload.collateral).toBe(true)
+    expect(payload.asgnIds).toEqual([asgnWire])
+  })
+
+  it('a DEVICE parcel transition carries NEITHER collateral NOR asgnIds (the discriminator stays honest)', async () => {
+    await seedShipment('AWB-DEV-F1')
+    expect(await advance('DELIVERED', '2026-08-16T12:00:00.000Z', 'AWB-DEV-F1')).toBe('advanced')
+
+    const f = await facts()
+    expect(f).toHaveLength(1)
+    const payload = f[0]!.payload.payload
+    // The envelope is JSON out of the outbox, so an absent key reads as
+    // undefined; the two optional fields simply must not be there.
+    expect(payload.collateral).toBeUndefined()
+    expect(payload.asgnIds).toBeUndefined()
   })
 })

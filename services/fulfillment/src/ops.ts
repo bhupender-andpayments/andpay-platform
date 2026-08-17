@@ -6,7 +6,7 @@ import type { Acr } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope, enterWriteRole } from './write-context.js'
-import { advanceShipmentStatus, type AdvanceOutcome } from './courier-status.js'
+import { advanceShipmentStatus, collateralAsgnIdsFor, type AdvanceOutcome } from './courier-status.js'
 import { canAdvanceUnitStatus, advanceUnitStatus, type AnyUnitStatus } from './unit-lifecycle.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
 import { holdEntryWithinTx, triggerBatchWithinTx } from './batching.js'
@@ -268,6 +268,10 @@ export async function overrideTerminal(
       // needed here.
       const shptWire = args.shptId
       const tsIso = args.courierTimestamp.toISOString()
+      // Same collateral enrichment as advanceShipmentStatus's emit, and for
+      // the same consumer: an overridden DELIVERED on a collateral parcel
+      // must still close its replacement cases (D-24, REVIEW_REPORT.md F1).
+      const collateralAsgns = await collateralAsgnIdsFor(tx, shptUuid)
       await enqueue(tx, {
         aggregateType: 'shpt',
         aggregateId: shptWire,
@@ -281,6 +285,7 @@ export async function overrideTerminal(
             status: args.status,
             courierTimestamp: tsIso,
             statusSource: 'OPS_MANUAL',
+            ...(collateralAsgns.length > 0 ? { collateral: true, asgnIds: collateralAsgns } : {}),
           },
           dedupKey: `${shptWire}|${args.status}|${tsIso}`,
           traceId: args.traceId,

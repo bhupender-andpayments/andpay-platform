@@ -18,14 +18,11 @@ export {
 } from './ingest.js'
 export {
   parseBankRequestFile,
-  parseBankDamageFile,
   DEFAULT_REQUEST_COLUMN_MAPPING,
-  DEFAULT_DAMAGE_COLUMN_MAPPING,
   type BankColumnMapping,
   type StructuralParseError,
   type StructuralParseErrorCode,
   type BankRequestParseResult,
-  type BankDamageParseResult,
 } from './bank-file-adapter.js'
 export { projectMerchantFact, projectTenantFact } from './projections.js'
 export {
@@ -47,27 +44,16 @@ export {
   type ActivationTrailEntry,
 } from './activation-branch.js'
 export {
-  ingestDamageRow,
-  ingestDamageRowWithinTx,
-  normalizeCaseStatus,
-  CASE_STATUS_VALUES,
-  type BankDamageRow,
-  type CaseStatus,
-} from './damage.js'
-export {
   advanceCaseStatusWithinTx,
   projectDispatchToCases,
+  projectShipmentToCases,
+  normalizeCaseStatus,
+  CASE_STATUS_VALUES,
+  type CaseStatus,
   type DispatchFactView,
+  type ShipmentFactView,
 } from './damage-case.js'
-export {
-  cloneMatchedRequest,
-  activeDamageResolution,
-  type DamagedCollateralResolution,
-  type DamageResolution,
-  type DamageResolutionInput,
-  type MatchedOriginal,
-  type ReplacementGroupSpec,
-} from './damage-resolution.js'
+export { flagDamageOps, type FlagDamageArgs, type FlagDamageResult } from './flag-damage.js'
 export {
   UnwiredDevicePort,
   ManualDevicePort,
@@ -81,8 +67,6 @@ export { readAssignments, readAssignmentById, type AssignmentReadRow } from './r
 export {
   previewBankFile,
   commitBankFile,
-  previewDamageFile,
-  commitDamageFile,
   resolveQuarantineRow,
   closeQuarantineRow,
   createDamageReasonOps,
@@ -95,8 +79,6 @@ export {
   OpsClientError,
   type BankPreviewResult,
   type PreviewRowResult,
-  type DamagePreviewResult,
-  type DamagePreviewRowResult,
 } from './ops.js'
 export {
   readActivationTrailOps,
@@ -105,10 +87,14 @@ export {
   listDamageReasons,
   readDamageCases,
   listMerchants,
+  searchDispatchesByVpa,
+  countDamageCasesByStatus,
   type QuarantineRowView,
   type QuarantineRowDetail,
   type DamageCaseView,
   type MerchantRow,
+  type VpaDispatchRow,
+  type DamageCaseSummary,
 } from './ops-read.js'
 export {
   createDamageReasonWithinTx,

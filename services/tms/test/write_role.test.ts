@@ -199,7 +199,7 @@ describe('tms_write role and the assignment_scoped WITH CHECK gate (spec 10d Tas
     expect(r[0]!.rolcanlogin).toBe(false)
   })
 
-  describe('(a) representative M-pred writer: the createAssignmentFromEnrollment/ingestDamageRow INSERT shape', () => {
+  describe('(a) representative M-pred writer: the createAssignmentFromEnrollment/flagDamageOps INSERT shape', () => {
     it('WRONG-GUC: assignment INSERT (program_id = GUC) violates WITH CHECK when the GUC is a different program', async () => {
       const ownProgramId = toUuid(newId('prog'))
       const wrongProgramId = toUuid(newId('prog'))

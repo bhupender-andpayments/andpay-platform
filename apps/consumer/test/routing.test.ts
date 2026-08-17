@@ -33,8 +33,13 @@ describe('the routing table matches the pump table it was copied from', () => {
     // replacement it answers enters the pipeline, which only fulfillment sees;
     // consuming the existing fact is the sanctioned way to learn it (T7), and
     // the alternative would have been a cross-context table read (C4 forbids it).
+    //
+    // B4 (D-24, DP-11): fct.fulfillment.shipment.v1 joined it for the other end
+    // of the same lifecycle. DELIVERED is a COLLATERAL replacement's terminal,
+    // so the case closes off the shipment fact, by the identical T7 reasoning.
     expect([...ROUTES.tms.topics].sort()).toEqual([
       'fct.fulfillment.dispatch.v1',
+      'fct.fulfillment.shipment.v1',
       'fct.identity.enrollment.v1',
       'fct.identity.merchant.v1',
       'fct.identity.tenant.v1',

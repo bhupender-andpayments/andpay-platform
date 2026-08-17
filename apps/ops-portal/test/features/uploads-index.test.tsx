@@ -38,11 +38,10 @@ describe('Uploads step 1: the remaining choice, none preselected', () => {
   // which is what keeps "listed" from becoming "a second entry point".
   it('offers every upload kind as a link', () => {
     renderAt('/uploads')
-    // The six-card index, replicated from the pdf-generation branch on the
-    // user's ruling (13 Aug 2026). Exactly these six, no seventh card.
+    // FIVE cards since the damage workflow (D-25): damage is no longer a file
+    // anyone sends, so no card here may claim one exists. Exactly these five.
     for (const name of [
       /bank requests/i,
-      /damage reports/i,
       /device inventory/i,
       /print vendor return/i,
       /courier statuses/i,
@@ -50,6 +49,8 @@ describe('Uploads step 1: the remaining choice, none preselected', () => {
     ]) {
       expect(screen.getByRole('link', { name })).toBeTruthy()
     }
+    // The retired kind: no damage card, in any spelling.
+    expect(screen.queryByText(/damage report/i)).toBeNull()
   })
 
   it('points the kind another section owns at that section, not at a copy here', () => {
@@ -64,7 +65,6 @@ describe('Uploads step 1: the remaining choice, none preselected', () => {
   it('renders NO upload form until one is chosen', () => {
     renderAt('/uploads')
     expect(screen.queryByText(/bank request upload/i)).toBeNull()
-    expect(screen.queryByText(/damage report upload/i)).toBeNull()
     expect(screen.queryByText(/device inventory upload/i)).toBeNull()
   })
 
@@ -81,9 +81,9 @@ describe('Uploads step 1: the remaining choice, none preselected', () => {
 
   it('says who sends the file, so the operator knows which one they hold', () => {
     renderAt('/uploads')
-    // TWO bank lines: the request file ("From the bank") and the damage report
-    // ("From the bank, after delivery"). Both are the bank, at different points.
-    expect(screen.getAllByText(/from the bank/i).length).toBe(2)
+    // ONE bank line since D-25: the request file. The damage report card that
+    // shared this source is gone with damage file ingestion itself.
+    expect(screen.getAllByText(/from the bank/i).length).toBe(1)
     expect(screen.getByText(/from the manufacturer/i)).toBeTruthy()
     expect(screen.getByText(/from the print vendor/i)).toBeTruthy()
     expect(screen.getByText(/from the courier/i)).toBeTruthy()
@@ -114,9 +114,12 @@ describe('Uploads: each upload keeps its own linkable route', () => {
     renderAt('/uploads/bank')
     expect(await screen.findByText(/bank request upload/i)).toBeTruthy()
   })
-  it('deep-links the damage upload', async () => {
+  // D-25: the damage upload no longer exists, so its old bookmark lands on
+  // the index (the honest destination) rather than a 404 or a dead form.
+  it('sends the retired /uploads/damage bookmark back to the index', async () => {
     renderAt('/uploads/damage')
-    expect(await screen.findByText(/damage report upload/i)).toBeTruthy()
+    expect(await screen.findByRole('link', { name: /bank requests/i })).toBeTruthy()
+    expect(screen.queryByText(/damage report upload/i)).toBeNull()
   })
   // Device inventory moved into the Inventory section (2026-08-12): the old
   // slug is a redirect for the same bookmark-must-not-404 reason as bank.
@@ -140,6 +143,6 @@ describe('Uploads: each upload keeps its own linkable route', () => {
   })
   it('sends an unknown upload path back to step 1 rather than 404ing', () => {
     renderAt('/uploads/nonsense')
-    expect(screen.getByRole('link', { name: /damage report/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /print vendor return/i })).toBeTruthy()
   })
 })

@@ -5,7 +5,10 @@ import { kindBySlug } from '../../src/features/uploads/uploadKinds.js'
 
 afterEach(() => { cleanup() })
 
-const DAMAGE = kindBySlug('damage')!
+// The damage kind that used to drive these tests is gone (D-25: no damage
+// file ingestion). The bank kind exercises the same shape: a four-step
+// choose/upload/review/commit flow whose good-to-know states no column list.
+const BANK = kindBySlug('bank')!
 const DEVICE_INVENTORY = kindBySlug('device-inventory')!
 
 // Spec section 8 names "Helper copy changes with the step" as required
@@ -14,11 +17,11 @@ const DEVICE_INVENTORY = kindBySlug('device-inventory')!
 // and renders straight off uploadKinds.ts data.
 describe('UploadHelperCards: the copy changes with the step', () => {
   it('the What happens next copy DIFFERS between two steps of the same kind', () => {
-    const { unmount } = render(<UploadHelperCards kind={DAMAGE} step="upload" />)
+    const { unmount } = render(<UploadHelperCards kind={BANK} step="upload" />)
     const uploadText = screen.getByText(/what happens next/i).closest('div')!.textContent
     unmount()
 
-    render(<UploadHelperCards kind={DAMAGE} step="review" />)
+    render(<UploadHelperCards kind={BANK} step="review" />)
     const reviewText = screen.getByText(/what happens next/i).closest('div')!.textContent
 
     // This is the whole reason the card re-renders per step: a regression
@@ -29,16 +32,16 @@ describe('UploadHelperCards: the copy changes with the step', () => {
 
   it('a step with no nextByStep entry renders only the Good to know card', () => {
     // 'choose' has no nextByStep entry for any kind.
-    render(<UploadHelperCards kind={DAMAGE} step="choose" />)
+    render(<UploadHelperCards kind={BANK} step="choose" />)
     expect(screen.queryByText(/what happens next/i)).toBeNull()
     expect(screen.getByText(/good to know/i)).toBeTruthy()
   })
 
-  it('the Good to know copy for damage contains NO column list, while device inventory\'s does', () => {
-    const { unmount: unmountDamage } = render(<UploadHelperCards kind={DAMAGE} step="upload" />)
-    const damageGoodToKnow = screen.getByText(/good to know/i).closest('div')!.textContent!
-    expect(damageGoodToKnow).not.toMatch(/required columns/i)
-    unmountDamage()
+  it('the Good to know copy for bank contains NO column list, while device inventory\'s does', () => {
+    const { unmount: unmountBank } = render(<UploadHelperCards kind={BANK} step="upload" />)
+    const bankGoodToKnow = screen.getByText(/good to know/i).closest('div')!.textContent!
+    expect(bankGoodToKnow).not.toMatch(/required columns/i)
+    unmountBank()
 
     render(<UploadHelperCards kind={DEVICE_INVENTORY} step="upload" />)
     const deviceGoodToKnow = screen.getByText(/good to know/i).closest('div')!.textContent!

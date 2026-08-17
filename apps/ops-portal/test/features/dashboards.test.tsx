@@ -39,6 +39,10 @@ const REPORT_ROWS = [
   { dispatchId: 'asgn_c', awb: 'AWB2', courierStatus: 'DELIVERED', dispatchDate: iso(3), deliveryDate: iso(1) },
 ]
 
+// D-31: the damage-case counts, a TMS read (DP-7: case status is never
+// projected into analytics, so the analytics tiles cannot answer it).
+const DAMAGE_SUMMARY = { open: 4, inProgress: 6, closed: 8 }
+
 function stub(): string[] {
   const urls: string[] = []
   vi.stubGlobal(
@@ -50,6 +54,9 @@ function stub(): string[] {
       }
       if (url.includes('/ops/reports/tiles')) {
         return jsonResponse({ tiles: TILES_FIXTURE, watermark: { asOf: '2026-08-15T08:00:00.000Z', perTopic: {} } })
+      }
+      if (url.includes('/ops/damage-cases/summary')) {
+        return jsonResponse(DAMAGE_SUMMARY)
       }
       return jsonResponse({})
     }),
@@ -141,5 +148,28 @@ describe('TilesPage (Command Center)', () => {
     for (const label of ['Today', '7 days', '30 days', '90 days', 'All time']) {
       expect(await screen.findByRole('button', { name: label })).toBeTruthy()
     }
+  })
+
+  // D-31: the damage-cases tile. Its counts come from TMS, not the frozen
+  // analytics damagedReplacementOpen tile (DP-7), and each count deep-links
+  // the case screen pre-filtered with the exact ?status= vocabulary
+  // DamageCasesPage reads.
+  it('shows the damage-case counts, each one a door into the case screen filtered by that status', async () => {
+    stub()
+    renderAt()
+
+    const card = await screen.findByTestId('damage-cases-card')
+    expect(within(card).getByText('4')).toBeTruthy()
+    expect(within(card).getByText('6')).toBeTruthy()
+    expect(within(card).getByText('8')).toBeTruthy()
+
+    const hrefs = within(card)
+      .getAllByRole('link')
+      .map((l) => l.getAttribute('href'))
+    expect(hrefs).toEqual([
+      '/damage-cases?status=Open',
+      '/damage-cases?status=In-Progress',
+      '/damage-cases?status=Closed',
+    ])
   })
 })

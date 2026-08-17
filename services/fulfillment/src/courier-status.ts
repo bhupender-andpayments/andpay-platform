@@ -64,6 +64,28 @@ export type AdvanceOutcome = 'advanced' | 'trail_only' | 'deduped' | 'unknown_aw
  * many per-shipment writes to a different program without a blanket
  * multi-program UPDATE or an array-membership WITH CHECK.
  */
+/**
+ * The asgn_ wire ids a COLLATERAL consignment covers, empty for a device
+ * parcel. Both transition emitters (the ladder advance below and the ops
+ * terminal override) enrich their fact with `collateral: true` plus this
+ * list, for two consumers with opposite needs: TMS closes a COLLATERAL
+ * replacement case on DELIVERED and can only find the case by asgn id
+ * (D-24, the fact is the ONLY sanctioned bridge, T7); analytics routes every
+ * `collateral` fact into its early-return branch, which touches only the two
+ * collateral columns, so a flagged transition can never regress a record's
+ * primary courier status (the exact hazard its fold documents). Before this
+ * enrichment the transition facts carried neither field and the case close
+ * was unreachable (REVIEW_REPORT.md F1).
+ */
+export async function collateralAsgnIdsFor(tx: Tx, shptUuid: string): Promise<string[]> {
+  const rows = await tx.$queryRaw<{ asgn_id: string }[]>`
+    SELECT asgn_id::text AS asgn_id FROM pending_pool_entry
+    WHERE collateral_shipment = ${shptUuid}::uuid
+    ORDER BY asgn_id
+  `
+  return rows.map((r) => fromUuid('asgn', r.asgn_id))
+}
+
 export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<AdvanceOutcome> {
   const found = await tx.$queryRaw<{ id: string; program_id: string; courier_partner: string | null }[]>`
     SELECT id::text AS id, program_id::text AS program_id, courier_partner::text AS courier_partner
@@ -150,6 +172,7 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
     // The dedupKey MUST be per-transition. The spec-08 birth fact uses the bare
     // shpt wire id, so a bare key here would let an E6 inbox consumer dedup
     // every transition away as a duplicate of the birth.
+    const collateralAsgns = await collateralAsgnIdsFor(tx, shptUuid)
     await enqueue(tx, {
       aggregateType: 'shpt',
       aggregateId: shptWire,
@@ -163,6 +186,7 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
           status: u.status,
           courierTimestamp: tsIso,
           statusSource: u.source,
+          ...(collateralAsgns.length > 0 ? { collateral: true, asgnIds: collateralAsgns } : {}),
         },
         dedupKey: `${shptWire}|${u.status}|${tsIso}`,
         traceId: u.traceId,

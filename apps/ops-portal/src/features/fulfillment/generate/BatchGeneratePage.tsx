@@ -62,7 +62,11 @@ interface GenRow {
 
 export function BatchGeneratePage() {
   const { btchId } = useParams<{ btchId: string }>()
-  const { client } = useAuth()
+  const { client, principal } = useAuth()
+  // D-29/DP-8 display gating: the edge denies customer_support the batch
+  // binary downloads, so the Excel buttons are not shown to them. Display
+  // convenience only, never authorization (S24/T14).
+  const downloadsHidden = principal?.roleLabel === 'customer_support'
   const { toast } = useToast()
   const location = useLocation()
   const fromSearch = (location.state as { fromSearch?: string } | null)?.fromSearch ?? ''
@@ -580,7 +584,7 @@ export function BatchGeneratePage() {
               {/* One button per group the batch ACTUALLY has, read off its own
                   artifacts, rather than two fixed buttons where one 404s. */}
               <div className="flex flex-wrap gap-2">
-                {excelGroups.map((g) => (
+                {!downloadsHidden && excelGroups.map((g) => (
                   <Button
                     key={g}
                     type="button"

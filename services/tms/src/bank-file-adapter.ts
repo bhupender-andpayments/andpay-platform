@@ -1,6 +1,5 @@
 import ExcelJS from 'exceljs'
 import type { BankRequestRow } from './ingest.js'
-import type { BankDamageRow } from './damage.js'
 import { selectBankSourceProfile, BANK_SOURCE_PROFILES, type BankSourceProfile } from './bank-source-profile.js'
 
 // Phase 2 Task 1 (D-C core): the server-side bank-file parse and normalize
@@ -10,10 +9,16 @@ import { selectBankSourceProfile, BANK_SOURCE_PROFILES, type BankSourceProfile }
 // task can wire it behind the upload edge. It is pure: no DB, no network, no
 // filesystem writes, no persistence, and it never logs row content (bank rows
 // carry PII, S4/5c). Row-level business validation (QR/VPA format, mandatory
-// contact) is NOT this module's job; that stays in services/tms/src/ingest.ts
-// and services/tms/src/damage.ts, which a later task calls with this
-// adapter's output. This module only reports STRUCTURAL parse errors:
-// unreadable bytes, an unsupported extension, or a missing required column.
+// contact) is NOT this module's job; that stays in services/tms/src/ingest.ts,
+// which a later task calls with this adapter's output. This module only
+// reports STRUCTURAL parse errors: unreadable bytes, an unsupported extension,
+// or a missing required column.
+//
+// D-25 (Damage and Replacement Workflow, 16 Aug 2026): the damage half of this
+// adapter (its column mapping, normalizer, and parseBankDamageFile) is GONE.
+// There is no damage file ingestion anymore; an operator flags a damaged
+// dispatch in the screen (services/tms/src/flag-damage.ts). The bank REQUEST
+// path below is untouched.
 
 /**
  * Canonical-field name to source-header name. Config-as-code: today every
@@ -60,44 +65,11 @@ export const DEFAULT_REQUEST_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
   tenantReference: 'tenantReference',
 })
 
-// D-20 and D-24 (T6.2, 13 Aug 2026): the damage file carries NO quantities and
-// NO delivery status.
-//
-// FR08-1 mapped three "Conditional Quantity of each item to be replaced" columns
-// here, and FR08-2 mapped a file-side "Delivery Status" that seeded the case.
-// The 12 Aug walkthrough removes both, and each removal is a different kind of
-// change. The quantities were the only mechanism that decided WHICH of a
-// merchant's items a damage report replaces, so removing them is exactly what
-// leaves O-1 open; the decision now runs through damage-resolution.ts, whose
-// strategy in force falls back to replacing what the request shipped. The
-// delivery status went because a case's lifecycle is the platform's to observe
-// (D-24), not the bank's to assert in a spreadsheet: a file that opened a case
-// already Closed described a state nobody here had watched happen.
-//
-// The MAPPING is what changed, not the row shape: BankDamageRow still admits
-// `items`, so a source profile that genuinely carries per-item quantities
-// resolves exactly as it always did. Nothing maps them today.
-export const DEFAULT_DAMAGE_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
-  tenantReference: 'tenantReference',
-  vpaValue: 'vpaValue',
-  damageReason: 'damageReason',
-  bankRemarks: 'bankRemarks',
-  shipToAddress: 'shipToAddress',
-})
-
-// Damage columns that are OPTIONAL (not structurally required). Empty since
-// T6.2 removed the four optional ones; kept as the mechanism, not as dead code,
-// because Q17's merchant-name column is the next candidate for it.
-const OPTIONAL_DAMAGE_FIELDS: string[] = []
-
 // vpaHint and tenantReference are the OPTIONAL request fields (see ingest.ts);
-// every other canonical field on both row shapes is required.
+// every other canonical field on the row shape is required.
 const REQUEST_OPTIONAL_FIELDS = ['vpaHint', 'tenantReference']
 const REQUEST_REQUIRED_FIELDS = Object.keys(DEFAULT_REQUEST_COLUMN_MAPPING).filter(
   (f) => !REQUEST_OPTIONAL_FIELDS.includes(f),
-)
-const DAMAGE_REQUIRED_FIELDS = Object.keys(DEFAULT_DAMAGE_COLUMN_MAPPING).filter(
-  (f) => !OPTIONAL_DAMAGE_FIELDS.includes(f),
 )
 
 export type StructuralParseErrorCode = 'unsupported_extension' | 'unreadable_file' | 'missing_required_column'
@@ -109,11 +81,6 @@ export interface StructuralParseError {
 
 export interface BankRequestParseResult {
   rows: BankRequestRow[]
-  errors: StructuralParseError[]
-}
-
-export interface BankDamageParseResult {
-  rows: BankDamageRow[]
   errors: StructuralParseError[]
 }
 
@@ -317,30 +284,6 @@ function normalizeRequestRow(
   return vpaHint === '' ? withTenant : { ...withTenant, vpaHint }
 }
 
-function normalizeDamageRow(
-  rec: Record<string, string>,
-  mapping: BankColumnMapping,
-  fileId: string,
-  rowNo: number,
-): BankDamageRow {
-  const get = (field: string) => rec[mapping[field] ?? field] ?? ''
-  const row: BankDamageRow = {
-    fileId,
-    rowNo,
-    tenantReference: get('tenantReference'),
-    vpaValue: get('vpaValue'),
-    damageReason: get('damageReason'),
-    bankRemarks: get('bankRemarks'),
-    shipToAddress: get('shipToAddress'),
-  }
-  // D-20 / D-24 (T6.2): NOTHING is read for `items` or `deliveryStatus` here any
-  // more. Both fields survive on BankDamageRow so a source profile that really
-  // does carry per-item quantities keeps resolving as it always did, but the
-  // canonical mapping no longer looks for those columns, so a file that still
-  // has them is simply ignoring extra columns rather than steering the outcome.
-  return row
-}
-
 async function parseBankFile<T>(
   file: Uint8Array,
   filename: string,
@@ -359,8 +302,8 @@ async function parseBankFile<T>(
   // required-column check, so the rest of this function is unchanged. A file
   // that matches no profile falls through with `profile === null` and gets the
   // exact diagnostics it got before: the missing-column errors naming what the
-  // canonical mapping wanted. `profiles` is undefined for damage files, which
-  // keeps that path byte-for-byte as it was.
+  // canonical mapping wanted. `profiles` stays optional: a caller that passes
+  // none opts out of profile selection entirely.
   const profile = profiles === undefined ? null : selectBankSourceProfile(header, profiles)
 
   // The UNION of the file's own header and the profile's OUTPUT keys. Taking
@@ -412,17 +355,4 @@ export function parseBankRequestFile(
   profiles: readonly BankSourceProfile[] = BANK_SOURCE_PROFILES,
 ): Promise<BankRequestParseResult> {
   return parseBankFile(file, filename, fileId, mapping, REQUEST_REQUIRED_FIELDS, normalizeRequestRow, profiles)
-}
-
-// Parses a damage-file (.csv or .xlsx) into BankDamageRow[], same fileId/rowNo
-// rule as parseBankRequestFile. Interchangeable with what
-// services/tms/src/damage.ts's ingestDamageRow/ingestDamageRowWithinTx already
-// consume.
-export function parseBankDamageFile(
-  file: Uint8Array,
-  filename: string,
-  fileId: string,
-  mapping: BankColumnMapping = DEFAULT_DAMAGE_COLUMN_MAPPING,
-): Promise<BankDamageParseResult> {
-  return parseBankFile(file, filename, fileId, mapping, DAMAGE_REQUIRED_FIELDS, normalizeDamageRow)
 }
