@@ -29,6 +29,12 @@ interface Row {
   dispatchId: string
   programId: string
   bankCode?: string
+  // The bank's display name and the wire batch id. Both were ALREADY selected
+  // by scopedDispatchRead and already columns on dispatch_row; they are
+  // parameterised here only so the activation-report test can prove the row
+  // projection now carries them instead of dropping them.
+  bankDisplay?: string
+  batchId?: string | null
   pipelineState: string
   receivedAt: Date
   awb?: string | null
@@ -53,11 +59,11 @@ interface Row {
 async function insertRow(r: Row): Promise<void> {
   await db.$executeRaw`
     INSERT INTO dispatch_row
-      (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
+      (dispatch_id, program_id, bank_code, bank_display, batch_id, merchant_display, device_ids,
        awb, shpt_id, dispatch_date, courier_status, pipeline_state, is_replacement, original_dispatch_id,
        damage_reason, replacement_dispatch_id, replacement_status, billable_flag, received_at,
        sent_to_vendor_at, dispatched_at, delivery_date, activation_status, updated_at)
-    VALUES (${r.dispatchId}, ${r.programId}::uuid, ${r.bankCode ?? 'HDFC'}, 'HDFC Bank', 'Acme',
+    VALUES (${r.dispatchId}, ${r.programId}::uuid, ${r.bankCode ?? 'HDFC'}, ${r.bankDisplay ?? 'HDFC Bank'}, ${r.batchId ?? null}, 'Acme',
             ARRAY['DEV1']::text[], ${r.awb ?? null}, ${r.shptId ?? null}, ${r.dispatchDate ?? null}, ${r.courierStatus ?? null},
             ${r.pipelineState}, ${r.isReplacement ?? false}, ${r.originalDispatchId ?? null},
             ${r.damageReason ?? null}, ${r.replacementDispatchId ?? null}, ${r.replacementStatus ?? null},
@@ -246,6 +252,55 @@ describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
 
     expect(rows).toHaveLength(1)
     expect(rows[0]!.dispatchId).toBe(wanted)
+  })
+
+  // The activation sheet the CWD receives is keyed on the batch and names the
+  // bank in words, and both columns were already being READ by
+  // scopedDispatchRead and then dropped by the row projection. This locks the
+  // widening in so a future edit cannot quietly drop them again, and it also
+  // pins that batchId is emitted in WIRE form (`btch_`), not as a uuid, which
+  // is why the projector does no id decode.
+  it('activation: the row carries batchId in wire form and bankDisplay, both already read by the query', async () => {
+    const p1 = toUuid(newId('prog'))
+    const now = new Date()
+    const batched = newId('asgn')
+    const unbatched = newId('asgn')
+    const btchWire = newId('btch')
+    await insertRow({
+      dispatchId: batched,
+      programId: p1,
+      pipelineState: 'DELIVERED',
+      receivedAt: now,
+      dispatchedAt: now,
+      deliveryDate: now,
+      batchId: btchWire,
+      bankDisplay: 'HDFC Bank',
+    })
+    // Never batched: batchId is legitimately null, not an empty string.
+    await insertRow({
+      dispatchId: unbatched,
+      programId: p1,
+      pipelineState: 'DISPATCHED',
+      receivedAt: now,
+      dispatchedAt: now,
+      bankDisplay: 'ICICI Bank',
+      bankCode: 'ICICI',
+    })
+
+    const scope: ReadScope = { kind: 'own', programIds: [p1] }
+    const { rows } = await readReport(db, scope, 'activation', {})
+
+    const batchedRow = rows.find((r) => r.dispatchId === batched)!
+    expect(batchedRow.batchId).toBe(btchWire)
+    // Wire form, same guarantee as shptId on the delivery report: it decodes
+    // rather than throwing, which is exactly why no fromUuid wrap happens.
+    expect(() => toUuid(batchedRow.batchId as string)).not.toThrow()
+    expect(batchedRow.bankDisplay).toBe('HDFC Bank')
+    expect(batchedRow.bankCode).toBe('HDFC')
+
+    const unbatchedRow = rows.find((r) => r.dispatchId === unbatched)!
+    expect(unbatchedRow.batchId).toBeNull()
+    expect(unbatchedRow.bankDisplay).toBe('ICICI Bank')
   })
 
   it('damaged-replacement: rows with is_replacement or replacement_status populated', async () => {
