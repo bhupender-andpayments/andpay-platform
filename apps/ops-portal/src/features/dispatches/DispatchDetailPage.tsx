@@ -12,12 +12,10 @@ import {
   Printer,
   QrCode,
   Route,
-  Send,
   Smartphone,
   Store,
   Truck,
   Undo2,
-  Zap,
 } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import {
@@ -27,8 +25,6 @@ import {
   getDevices,
   getDispatchDetail,
   getPoolEntries,
-  markActivated,
-  requestActivation,
   type BatchEntryRow,
   type DamageReasonRow,
   type DispatchDetailView,
@@ -61,19 +57,20 @@ import { fmtDateTime, statusMeta } from '../../ui/format.js'
 // reached. This is the page an operator lands on when someone asks about a
 // merchant by name.
 //
-// ACTIVATION IS A CARD, NEVER A RUNG (revised 16 Aug 2026, UAT walkthrough
-// findings A3/A4, superseding the 2026-08-15 no-activation-here ruling). That
-// ruling's rail half survives in full: the RAIL is the parcel's, a dispatch
-// delivers and does not activate, and rendering activation as a rung read as a
-// stalled lifecycle on every collateral dispatch, which is exactly the
-// confusion D-16 separated the axes to end. Its removal half did not survive:
-// the device page never gained the activation ACTIONS the ruling pointed at,
-// requestActivation had no consumer anywhere, so REQUEST_SENT_TO_CWD was
-// unreachable from the entire UI while D-16/T4.5 records that this page
-// carries BOTH axes. So activation is a fact card beside Request and
-// Fulfilment: status, instant, trail, and the two writes the Activation
-// worklist already uses. A COLLATERAL dispatch states its terminal is
-// Delivered instead of offering a write that would 409.
+// NO ACTIVATION ON THIS PAGE AT ALL, neither rung nor card (16 Aug 2026 UAT
+// ruling, reversing the activation-card decision taken earlier the same day
+// under findings A3/A4). A dispatch delivers; it does not activate. The rail
+// is the PARCEL's, so activation was never a rung, and rendering it as one read
+// as a stalled lifecycle on every collateral dispatch. The card that replaced
+// the rung is gone too: activation is the Activation section's job, and one
+// axis owned by one screen beats the same two writes offered from two places.
+//
+// TWO CONSEQUENCES, recorded rather than discovered later. The activation TRAIL
+// rendered only inside that card, so activation history is not visible anywhere
+// in the portal now. And requestActivation is once again an endpoints.ts export
+// with no caller, which puts REQUEST_SENT_TO_CWD back out of reach of the whole
+// UI, the same gap the card had been added to close. Both are accepted for now
+// and belong to the Activation section when it grows those surfaces.
 //
 // ONE HORIZONTAL RAIL, the same shared LifecycleRail the device page uses:
 // the delivery lifecycle is a single unbranched ladder and stays one. The rail
@@ -195,30 +192,6 @@ export function DispatchDetailPage() {
     [detail, entry, batchFormedAt],
   )
 
-  // D-16: the activation BRANCH, independent of delivery. The two writes are
-  // the same ones the Activation worklist uses; this page offers them beside
-  // the dispatch's own facts so an operator on a dispatch never has to walk
-  // back to the worklist to act on what they are looking at.
-  const [activationAction, setActivationAction] = useState<'request' | 'mark' | null>(null)
-  const [activationBusy, setActivationBusy] = useState(false)
-  const [activationError, setActivationError] = useState<string | null>(null)
-
-  const runActivationAction = useCallback(async (): Promise<void> => {
-    if (asgnId === undefined || activationAction === null) return
-    setActivationBusy(true)
-    setActivationError(null)
-    try {
-      if (activationAction === 'request') await requestActivation(client, [asgnId], newIdempotencyKey())
-      else await markActivated(client, asgnId, newIdempotencyKey())
-      setActivationAction(null)
-      await load()
-    } catch (e) {
-      setActivationError(e instanceof Error ? e.message : 'The write failed.')
-    } finally {
-      setActivationBusy(false)
-    }
-  }, [asgnId, activationAction, client, load])
-
   // D-26: damage is flagged HERE, on the dispatch it happened to, now that
   // the damage-file upload is gone (D-25). The operator names the reason from
   // the master (code stored, label shown, DP-5), writes the why into remarks,
@@ -302,14 +275,6 @@ export function DispatchDetailPage() {
       : [entry.soundbox ? 'Soundbox' : null, entry.standeeCount > 0 ? `${entry.standeeCount} standee` : null, entry.stickerCount > 0 ? `${entry.stickerCount} sticker` : null]
           .filter((p): p is string => p !== null)
           .join(', ')
-
-  // detail.activationStatus is the ANALYTICS fold, and analytics never learns
-  // REQUEST_SENT_TO_CWD: no activation-request fact exists (a new topic is a
-  // corpus decision, PLAN.md section 7 item 8), so the ops surfaces read that
-  // state from TMS. The trail below IS the TMS read, so the latest trail entry
-  // wins over a null fold. This is the same read-your-own-write posture the
-  // Activation worklist took (V-4), for the same reason.
-  const activationStatus = detail.activationStatus ?? detail.activationTrail.at(-1)?.status ?? null
 
   return (
     <div className="space-y-4">
@@ -425,57 +390,6 @@ export function DispatchDetailPage() {
           </CardBody>
         </Card>
 
-        {/* D-16: the SECOND axis. A soundbox's activation is independent of its
-            delivery; a COLLATERAL consignment has no activation at all and its
-            lifecycle ends at Delivered, which this card says instead of
-            offering a write that would 409. */}
-        <Card>
-          <CardBody>
-            <SectionHeading>Activation</SectionHeading>
-            {detail.dispatchGroup === 'COLLATERAL' ? (
-              <p className="text-sm text-muted-foreground">
-                Not applicable: a collateral consignment ends at Delivered. Activation belongs to the soundbox dispatch.
-              </p>
-            ) : (
-              <>
-                <FactRow icon={Zap} label="Status">
-                  {activationStatus === null ? (
-                    <NoValue>no request sent yet</NoValue>
-                  ) : (
-                    <StatusPill value={activationStatus} />
-                  )}
-                </FactRow>
-                <FactRow icon={PackageCheck} label="Activated">
-                  {detail.activationDate === null ? <NoValue>not yet</NoValue> : fmtDateTime(detail.activationDate)}
-                </FactRow>
-                {detail.activationTrail.length > 0 && (
-                  <div className="mt-3 space-y-1">
-                    {detail.activationTrail.map((e, i) => (
-                      <p key={i} className="text-[12.5px] text-muted-foreground">
-                        <StatusPill value={e.status} /> <span className="num">{fmtDateTime(e.occurredAt)}</span>
-                        <span className="ml-1">via {e.statusSource}</span>
-                      </p>
-                    ))}
-                  </div>
-                )}
-                {activationError !== null && <ErrorNote>{activationError}</ErrorNote>}
-                {activationStatus !== 'ACTIVATED' && (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {activationStatus === null && (
-                      <Button variant="secondary" onClick={() => setActivationAction('request')}>
-                        <Send className="mr-1.5 h-3.5 w-3.5" /> Record request sent to CWD
-                      </Button>
-                    )}
-                    <Button onClick={() => setActivationAction('mark')}>
-                      <Zap className="mr-1.5 h-3.5 w-3.5" /> Mark activated
-                    </Button>
-                  </div>
-                )}
-              </>
-            )}
-          </CardBody>
-        </Card>
-
         {/* D-26: the damage flag lives on the dispatch it happened to. Legacy
             combined rows (null group) predate the leg split the flag's count
             rules key on (DP-2), so they get no flag control rather than a
@@ -509,24 +423,6 @@ export function DispatchDetailPage() {
           </Card>
         )}
       </div>
-
-      <ConfirmDialog
-        open={activationAction !== null}
-        onOpenChange={(open) => {
-          if (!open) setActivationAction(null)
-        }}
-        title={activationAction === 'request' ? 'Record that the activation request went to the CWD?' : `Mark ${detail.merchantDisplay} activated?`}
-        description={
-          activationAction === 'request'
-            ? 'Records that the activation sheet for this dispatch was sent to the CWD. The audit carries this as your action.'
-            : 'Records that the CWD confirmed this device and its SIM. This cannot be undone from here.'
-        }
-        confirmLabel={activationAction === 'request' ? 'Record request' : 'Mark activated'}
-        busy={activationBusy}
-        onConfirm={() => {
-          void runActivationAction()
-        }}
-      />
 
       <ConfirmDialog
         open={flagOpen}

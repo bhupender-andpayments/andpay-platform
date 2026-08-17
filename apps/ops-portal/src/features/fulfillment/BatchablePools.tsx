@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { getPoolEntries, triggerBatch, getDevices, type PoolEntryRow } from '../../api/endpoints.js'
-import { Card, CardHeader, Button, ErrorNote, InfoNote, CodeChip, SkeletonRows, Field, Input } from '../../ui/primitives.js'
+import { Card, CardHeader, Button, EmptyState, ErrorNote, InfoNote, CodeChip, SkeletonRows, Field, Input } from '../../ui/primitives.js'
 import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
 import { fmtNumber } from '../../ui/format.js'
 
@@ -233,8 +233,11 @@ export function BatchablePools({
     )
   }
 
+  // h-full plus a column body: the card shares a grid row with the rules card
+  // beside it and has to be able to fill it, otherwise the empty state has no
+  // height to centre itself in.
   return (
-    <Card>
+    <Card className="flex h-full flex-col">
       <CardHeader
         title="Ready to batch"
         subtitle="Everything pooled and waiting. One pool per tenant and program, never per bank."
@@ -252,9 +255,11 @@ export function BatchablePools({
           <SkeletonRows rows={2} cols={3} />
         </div>
       ) : pools.length === 0 ? (
-        <p className="px-5 pb-5 text-sm text-muted-foreground">
-          Nothing waiting to be batched.{emptyHint !== undefined && ` ${emptyHint}`}
-        </p>
+        // The shared EmptyState, the same treatment every other empty surface
+        // in the portal uses, centred in whatever height the row gives us.
+        <div className="flex flex-1 items-center justify-center px-5 pb-5">
+          <EmptyState title="Nothing waiting to be batched" message={emptyHint} />
+        </div>
       ) : (
         <div className="flex flex-col gap-3 px-5 pb-5">
           {pools.map((pool) => {
@@ -401,7 +406,12 @@ export function BatchablePools({
               autoFocus
               value={reasons[`${confirming.tenantId}|${confirming.programId}`] ?? ''}
               maxLength={MAX_REASON_LENGTH}
-              placeholder="Why this pool is being batched now"
+              // An EXAMPLE, not a restatement. The label already says Reason and
+              // the hint already says it is required, so a placeholder reading
+              // "why this pool is being batched now" spent the third line saying
+              // the same thing a third time. Showing the shape of a good answer
+              // is the only job left for it.
+              placeholder="e.g. Bank asked us to ship ahead of the weekend"
               onChange={(e) => {
                 const next = e.target.value
                 setReasons((prev) => ({ ...prev, [`${confirming.tenantId}|${confirming.programId}`]: next }))

@@ -26,7 +26,6 @@ import {
   Toolbar,
   ErrorNote,
   InfoNote,
-  StatusPill,
   CodeChip,
 } from '../../ui/primitives.js'
 import { fmtDateTime } from '../../ui/format.js'
@@ -367,16 +366,22 @@ export function ActivationPage() {
           <span className="text-muted-foreground">not yet delivered</span>
         ),
     },
-    {
-      key: 'simActivationStatus',
-      header: 'SIM Status',
-      cell: (row) => <StatusPill value={stringField(row, 'simActivationStatus')} />,
-    },
-    {
-      key: 'activationStatus',
-      header: 'Activation Status',
-      cell: (row) => <StatusPill value={stringField(row, 'activationStatus')} />,
-    },
+    // NO SIM Status and NO Activation Status column (16 Aug 2026 UAT), for two
+    // different reasons that end the same way.
+    //
+    // SIM: Phase 1 activates the device and its SIM on the one CWD
+    // confirmation, so simActivationStatus is SET FROM THE SAME FACT as
+    // activationStatus and can never read differently (project.ts's ACTIVATED
+    // case sets both in the same two lines). It returns the day the backend
+    // gives SIM its own signal, the deferred Phase-2 contract mediation.ts
+    // already documents.
+    //
+    // Activation Status: this WORKLIST is server-filtered to
+    // activation_status IS NULL (mediation.ts, case 'activation'), so every
+    // row that can appear here has a null status BY CONSTRUCTION and the
+    // column read "-" on every row forever. A row that gains a status leaves
+    // the list in the same event. The row's outcome after an action is the
+    // Last result column's job; the durable record is the activation report.
     {
       key: 'outcome',
       header: 'Last result',
@@ -432,9 +437,20 @@ export function ActivationPage() {
   // have already actioned in this session, then the URL filters. The count is
   // derived from the SAME list, so the header can never claim a number the
   // table does not show.
+  //
+  // NO DEVICE, NO ROW (16 Aug 2026 UAT). Activation is of a device+SIM; the
+  // CWD confirms a physical serial. A soundbox dispatch that has not been
+  // through the print-vendor return yet has NO device paired, so there is
+  // nothing the CWD could possibly have activated, and offering Mark activated
+  // on it invites recording an activation for hardware that does not exist
+  // yet. This narrows the D-16/T4.2 worklist wording ("every soundbox awaiting
+  // activation") by one notch: every soundbox awaiting activation THAT HAS A
+  // DEVICE. The delivery gate stays gone; a paired-but-undelivered dispatch is
+  // still activatable and still listed.
   const visibleRows = useMemo(() => {
     const needle = q.toLowerCase()
     return rows.filter((row) => {
+      if (arrayField(row, 'deviceIds').length === 0) return false
       const id = stringField(row, 'dispatchId')
       if (id !== null && locallyActivated.has(id)) return false
       if (bankSel.length > 0 && !bankSel.includes(stringField(row, 'bankCode') ?? '')) return false

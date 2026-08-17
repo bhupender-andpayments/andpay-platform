@@ -137,13 +137,16 @@ export function CourierStatusUploadPage() {
 
   // The page's position on the rail. Like device inventory, this file has no
   // preview route on the edge, so there is no Review step to derive: `step` is
-  // only ever 'upload' or 'submit', and 'submit' is where a structural rejection
-  // lands too, since that is where the operator is standing when it arrives.
-  const [confirming, setConfirming] = useState(false)
-  const canContinue = file !== null && courierVndrId !== ''
-  const step: StepKey = result !== null || confirming ? 'submit' : 'upload'
+  // only ever 'upload' or 'submit'.
+  //
+  // NO CONFIRM STEP (16 Aug 2026 UAT). There used to be a `confirming` flag: a
+  // "Continue to submit" button swapped the form for a lone "Upload courier
+  // status file" button. It gathered NOTHING. The courier and the file were
+  // both already chosen, so the second screen restated the first and cost a
+  // click to get back to where the operator already was. The form submits
+  // itself now, and this step exists only to report what came back.
+  const step: StepKey = result !== null ? 'submit' : 'upload'
   const KIND = kindBySlug('courier-status')!
-  const selectedCourier = couriers.find((c) => c.id === courierVndrId) ?? null
 
 
   return (
@@ -197,37 +200,10 @@ export function CourierStatusUploadPage() {
                 />
               </div>
 
-              <Button type="button" onClick={() => setConfirming(true)} disabled={!canContinue || busy}>
-                Continue to submit
-              </Button>
-            </>
-          )}
-
-          {error !== null && <ErrorNote>{error}</ErrorNote>}
-
-          {step === 'submit' && (
-            <>
-              {result === null && selectedCourier !== null && (
-                <p className="text-[13px] text-muted-foreground">
-                  The file will be applied as {selectedCourier.displayName}.
-                </p>
-              )}
-
-              {structuralErrors.length > 0 && (
-                <div className="space-y-2">
-                  {structuralErrors.map((e) => (
-                    <ErrorNote key={e.code + (e.column ?? '')}>{structuralMessage(e)}</ErrorNote>
-                  ))}
-                  <p className="text-sm text-muted-foreground">
-                    No rows were ingested. Expected columns: {EXPECTED_COLUMNS}. Column names are matched
-                    ignoring case and extra spaces.
-                  </p>
-                </div>
-              )}
-
-              {/* shadcn's Button has no `loading` prop (the pre-spec primitive did):
-                  the spec's idiom is a spinning lucide icon inside a disabled button,
-                  which its base class already sizes via [&_svg] rules. */}
+              {/* The one button, doing the one thing. shadcn's Button has no
+                  `loading` prop (the pre-spec primitive did): the spec's idiom
+                  is a spinning lucide icon inside a disabled button, which its
+                  base class already sizes via [&_svg] rules. */}
               <Button
                 type="button"
                 className="self-start"
@@ -239,7 +215,28 @@ export function CourierStatusUploadPage() {
                 {busy && <Loader2 className="animate-spin" aria-hidden="true" />}
                 Upload courier status file
               </Button>
+            </>
+          )}
 
+          {error !== null && <ErrorNote>{error}</ErrorNote>}
+
+          {/* A structural rejection writes no rows, so the operator stays on the
+              form with the file still picked. Reported here rather than on the
+              result step, which is only reached once something was ingested. */}
+          {structuralErrors.length > 0 && (
+            <div className="space-y-2">
+              {structuralErrors.map((e) => (
+                <ErrorNote key={e.code + (e.column ?? '')}>{structuralMessage(e)}</ErrorNote>
+              ))}
+              <p className="text-sm text-muted-foreground">
+                No rows were ingested. Expected columns: {EXPECTED_COLUMNS}. Column names are matched
+                ignoring case and extra spaces.
+              </p>
+            </div>
+          )}
+
+          {step === 'submit' && (
+            <>
               {result !== null && (
                 <div className="space-y-3">
                   {/* Four independent tallies, not a partition, and each one is
