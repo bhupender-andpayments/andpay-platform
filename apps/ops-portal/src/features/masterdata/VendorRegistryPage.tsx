@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { getVendors, type VendorRow } from '../../api/endpoints.js'
-import { Card, CardHeader, ErrorNote, StatusPill, CodeChip, SkeletonRows } from '../../ui/primitives.js'
+import { Button, Card, CardHeader, ErrorNote, StatusPill, CodeChip, SkeletonRows } from '../../ui/primitives.js'
 import { fmtDate } from '../../ui/format.js'
+import { VendorCreateDialog } from './VendorCreateDialog.js'
 
 // The full vendor registry (Phase 7 Task 8, spec 13 check 6): every vendor
 // row the platform-only /ops/vendors read returns, regardless of type
-// (MANUFACTURER | PRINT | COURIER). Read-only: vendor create and suspend are
-// separate tasks (operations / destructive actions), not this view.
+// (MANUFACTURER | PRINT | COURIER).
+//
+// CREATE landed 2026-08-17 (the L9 reversal). Suspend and edit remain separate
+// deferred actions and are deliberately still absent here.
 
 export const VENDOR_COLUMNS: ReadonlyArray<DataTableColumn<VendorRow>> = [
   { key: 'type', header: 'Type', cell: (r) => <CodeChip>{r.type}</CodeChip> },
@@ -31,12 +34,15 @@ export function VendorRegistryPage() {
   const { client } = useAuth()
   const [rows, setRows] = useState<VendorRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
+  // Extracted from the effect so a successful create can re-read the list. A
+  // create is a server-side write; refetching is what makes the new row appear
+  // with the fields the SERVER decided (status, timestamps) rather than a
+  // locally guessed row.
+  const load = useCallback((): void => {
     getVendors(client)
       .then((res) => {
-        if (cancelled) return
         // `res` is TYPED VendorRow[], but the type is an assertion about a
         // fetch body and not a check of it. A failed read arrives here as an
         // error envelope, and the subtitle below then prints "undefined
@@ -46,25 +52,34 @@ export function VendorRegistryPage() {
         setRows(res)
       })
       .catch((err: unknown) => {
-        if (cancelled) return
         setError(err instanceof Error ? err.message : 'Failed to load vendors.')
       })
-    return () => {
-      cancelled = true
-    }
   }, [client])
+
+  useEffect(() => {
+    load()
+  }, [load])
 
   return (
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader title="Vendor registry" subtitle={Array.isArray(rows) ? `${rows.length} vendors` : undefined} />
+        <CardHeader
+          title="Vendor registry"
+          subtitle={Array.isArray(rows) ? `${rows.length} vendors` : undefined}
+          actions={
+            <Button type="button" onClick={() => setAdding(true)}>
+              Add vendor
+            </Button>
+          }
+        />
         {rows === null ? (
           <SkeletonRows rows={5} cols={6} />
         ) : (
           <DataTable columns={VENDOR_COLUMNS} rows={rows} getRowKey={(r) => r.id} emptyMessage="No vendors." />
         )}
       </Card>
+      <VendorCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} />
     </div>
   )
 }

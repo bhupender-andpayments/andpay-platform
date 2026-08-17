@@ -29,6 +29,31 @@ model Merchant {
   registeredAddress String   @map("registered_address")
   activationState   String   @map("activation_state")
   status            String // ACTIVE | SUSPENDED (a status, never a delete)
+  // BRD 5.1 (the bank-file field table) contact and address block, written ONLY
+  // by the ops Add-merchant path (ops.ts createMerchant). ALL nullable at the DB
+  // level for the same reason tenant's Annexure D.1 block is: projectRowFact
+  // inserts a merchant with NONE of these set and must keep working, so the
+  // mandatory/optional rule is enforced in the admin-write application layer,
+  // never as a DB NOT NULL that would break the ingest INSERT.
+  //
+  // THE ASYMMETRY IS DELIBERATE (item 1 of the 2026-08-17 corpus submission):
+  // an ingested merchant leaves these null, because RowFactPayload carries no
+  // contact and the bank file's contact columns ride the TMS assignment path
+  // instead. Widening the row fact to close the gap would be a fact-shape
+  // change and therefore its own decision.
+  //
+  // city/state/pincode, not tenant's district/pin: this block mirrors the BANK
+  // FILE's own six-part address vocabulary (bank-source-profile.ts composes
+  // registeredAddress from exactly these), so a hand-created merchant and an
+  // ingested one describe one address the same way.
+  contactName       String?  @map("contact_name")
+  mobile            String?
+  email             String?
+  address2          String?  @map("address2")
+  address3          String?  @map("address3")
+  city              String?
+  state             String?
+  pincode           String?
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -96,6 +121,14 @@ model Tenant {
   pin               String?
   mobile            String?
   email             String?
+  // Present in the table since 20260721054958_identity_domain but undeclared
+  // here until 2026-08-17. The omission was a latent landmine, not a spare
+  // column: `prisma migrate dev` diffs the model against the database, so the
+  // NEXT identity migration for any reason at all would have generated
+  // `ALTER TABLE tenant DROP COLUMN created_at` as a silent passenger. It did
+  // exactly that when the merchant contact block was authored. Declared now so
+  // the schema states what the table actually holds.
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@map("tenant")
 }

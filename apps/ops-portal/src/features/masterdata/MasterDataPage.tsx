@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { VendorRegistryPage } from './VendorRegistryPage.js'
 import { CourierMasterPage } from './CourierMasterPage.js'
+import { BankMasterCreateDialog } from './BankMasterCreateDialog.js'
+import { DamageReasonCreateDialog } from './DamageReasonCreateDialog.js'
+import { BatchingConfigDialog } from './BatchingConfigDialog.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import {
   getBankMasters,
@@ -11,16 +14,27 @@ import {
   type DamageReasonRow,
   type BatchingConfigRow,
 } from '../../api/endpoints.js'
-import { PageHeader, Card, CardHeader, Tabs, InfoNote, ErrorNote, StatusPill, CodeChip, SkeletonRows } from '../../ui/primitives.js'
+import { PageHeader, Button, Card, CardHeader, Tabs, ErrorNote, StatusPill, CodeChip, SkeletonRows } from '../../ui/primitives.js'
 import { fmtDate, fmtNumber, shortId } from '../../ui/format.js'
+import { fmtWait } from '../fulfillment/BatchingRules.js'
 
-// Master data (Phase 7 Task 8, spec 13 check 6, L9). Five real read surfaces
-// live here as tabs on the one `/masterdata` route (routes.tsx, Nav.tsx):
-// vendor registry, courier master (the same vendor list filtered client-side
-// to type === COURIER, no separate route), bank masters, the damage-reason
-// master, and the batching-config view. ALL FIVE ARE READ-ONLY: the FR-11
-// admin console (create/edit/suspend/activate/deactivate/set) is deferred
-// (ratified L9) and is NOT built here. Do not add a write control to any tab.
+// Master data (Phase 7 Task 8, spec 13 check 6). Five real surfaces live here
+// as tabs on the one `/masterdata` route (routes.tsx, Nav.tsx): vendor
+// registry, courier master (the same vendor list filtered client-side to
+// type === COURIER, no separate route), bank masters, the damage-reason
+// master, and the batching-config view.
+//
+// CREATE IS NOW BUILT ON ALL FIVE (2026-08-17). These tabs shipped READ-ONLY
+// because L9 deferred the whole FR-11 admin console; that deferral was
+// REVERSED for create only, and the previous instruction here ("do not add a
+// write control to any tab") is retired with it. See PHASE7_DECISIONS.md L9.
+//
+// STILL DEFERRED, and still absent by intent: edit, suspend, activate and
+// deactivate. Adding one is a new decision, not a natural extension of this.
+//
+// Batching config is the odd tab out twice over: its write is an admin-tier
+// permission (a baseline `ops` operator gets a 403 the other four do not) and
+// it is a per-scope UPSERT, so its control says "Set tier" rather than "Add".
 
 type TabKey = 'vendors' | 'couriers' | 'bank-masters' | 'damage-reasons' | 'batching-config'
 
@@ -38,12 +52,16 @@ export function MasterDataPage() {
     <div className="space-y-5">
       <PageHeader
         title="Master Data"
-        description="Vendor registry, courier master, bank masters, damage-reason master, and batching config. Read-only."
+        description="Vendor registry, courier master, bank masters, damage-reason master, and batching config."
       />
-      <div className="flex items-center justify-between gap-4">
-        <Tabs tabs={TABS} active={tab} onChange={(k) => setTab(k as TabKey)} />
-        <InfoNote>Read-only view. Admin console for edits is deferred.</InfoNote>
-      </div>
+      {/*
+        The "Read-only view. Admin console for edits is deferred." note that
+        sat here is gone rather than reworded: with an add control on every
+        tab it was simply false, and a stale reassurance is worse than none.
+        Editing is still deferred, but that is now said by the absence of an
+        edit control, not by a banner contradicting the buttons beside it.
+      */}
+      <Tabs tabs={TABS} active={tab} onChange={(k) => setTab(k as TabKey)} />
       {tab === 'vendors' && <VendorRegistryPage />}
       {tab === 'couriers' && <CourierMasterPage />}
       {tab === 'bank-masters' && <BankMastersView />}
@@ -74,12 +92,11 @@ function BankMastersView() {
   const { client } = useAuth()
   const [rows, setRows] = useState<BankMasterRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
+  const load = useCallback((): void => {
     getBankMasters(client)
       .then((res) => {
-        if (cancelled) return
         // A failed read arrives as an error envelope, not a list, and the
         // subtitle below would then print a count of "undefined". Say what
         // happened instead; see VendorRegistryPage for the full reasoning.
@@ -87,19 +104,27 @@ function BankMastersView() {
         setRows(res)
       })
       .catch((err: unknown) => {
-        if (cancelled) return
         setError(err instanceof Error ? err.message : 'Failed to load bank masters.')
       })
-    return () => {
-      cancelled = true
-    }
   }, [client])
+
+  useEffect(() => {
+    load()
+  }, [load])
 
   return (
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader title="Bank masters" subtitle={Array.isArray(rows) ? `${rows.length} banks` : undefined} />
+        <CardHeader
+          title="Bank masters"
+          subtitle={Array.isArray(rows) ? `${rows.length} banks` : undefined}
+          actions={
+            <Button type="button" onClick={() => setAdding(true)}>
+              Add bank master
+            </Button>
+          }
+        />
         {rows === null ? (
           <SkeletonRows rows={5} cols={8} />
         ) : (
@@ -111,6 +136,7 @@ function BankMastersView() {
           />
         )}
       </Card>
+      <BankMasterCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} />
     </div>
   )
 }
@@ -129,12 +155,11 @@ function DamageReasonsView() {
   const { client } = useAuth()
   const [rows, setRows] = useState<DamageReasonRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
+  const load = useCallback((): void => {
     getDamageReasons(client)
       .then((res) => {
-        if (cancelled) return
         // A failed read arrives as an error envelope, not a list, and the
         // subtitle below would then print a count of "undefined". Say what
         // happened instead; see VendorRegistryPage for the full reasoning.
@@ -142,19 +167,27 @@ function DamageReasonsView() {
         setRows(res)
       })
       .catch((err: unknown) => {
-        if (cancelled) return
         setError(err instanceof Error ? err.message : 'Failed to load damage reasons.')
       })
-    return () => {
-      cancelled = true
-    }
   }, [client])
+
+  useEffect(() => {
+    load()
+  }, [load])
 
   return (
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader title="Damage-reason master" subtitle={Array.isArray(rows) ? `${rows.length} reasons` : undefined} />
+        <CardHeader
+          title="Damage-reason master"
+          subtitle={Array.isArray(rows) ? `${rows.length} reasons` : undefined}
+          actions={
+            <Button type="button" onClick={() => setAdding(true)}>
+              Add damage reason
+            </Button>
+          }
+        />
         {rows === null ? (
           <SkeletonRows rows={5} cols={5} />
         ) : (
@@ -166,13 +199,14 @@ function DamageReasonsView() {
           />
         )}
       </Card>
+      <DamageReasonCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} />
     </div>
   )
 }
 
 // -- Batching config (GET /ops/batching-config, guard-only view; the SET --
-// route, #24 in B_edge_contracts, is admin/super_admin-only and FR-11-
-// deferred, not built here) ------------------------------------------- //
+// route, #24 in B_edge_contracts, is admin/super_admin-only and landed here
+// 2026-08-17 with the L9 reversal) ------------------------------------- //
 
 const BATCHING_CONFIG_COLUMNS: ReadonlyArray<DataTableColumn<BatchingConfigRow>> = [
   { key: 'scope', header: 'Scope', cell: (r) => <CodeChip>{r.scope}</CodeChip> },
@@ -194,10 +228,20 @@ const BATCHING_CONFIG_COLUMNS: ReadonlyArray<DataTableColumn<BatchingConfigRow>>
   { key: 'minLotSize', header: 'Min lot size', cell: (r) => <span className="num text-foreground">{fmtNumber(r.minLotSize)}</span> },
   {
     key: 'maxWaitSeconds',
-    header: 'Max wait (s)',
+    // The SHARED fmtWait the fulfillment panels and pool cards use, so a wait
+    // reads identically wherever it appears. Deliberately not a bare number in
+    // one fixed unit: the header carried "(s)" while the dialog beside it asks
+    // for hours, which is how an operator sets 2 and believes they set two
+    // seconds.
+    header: 'Max wait',
     // A BANK-scope row carries min lot only (R-7); its wait is the pool
     // tier's, so a number here would claim a rule that does not exist.
-    cell: (r) => (r.maxWaitSeconds == null ? <span className="text-muted-foreground">pool tier</span> : <span className="num text-foreground">{fmtNumber(r.maxWaitSeconds)}</span>),
+    cell: (r) =>
+      r.maxWaitSeconds == null ? (
+        <span className="text-muted-foreground">pool tier</span>
+      ) : (
+        <span className="num text-foreground">{fmtWait(r.maxWaitSeconds)}</span>
+      ),
   },
   { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
   { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
@@ -207,12 +251,11 @@ function BatchingConfigView() {
   const { client } = useAuth()
   const [rows, setRows] = useState<BatchingConfigRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
+  const load = useCallback((): void => {
     getBatchingConfig(client)
       .then((res) => {
-        if (cancelled) return
         // A failed read arrives as an error envelope, not a list, and the
         // subtitle below would then print a count of "undefined". Say what
         // happened instead; see VendorRegistryPage for the full reasoning.
@@ -220,19 +263,29 @@ function BatchingConfigView() {
         setRows(res)
       })
       .catch((err: unknown) => {
-        if (cancelled) return
         setError(err instanceof Error ? err.message : 'Failed to load batching config.')
       })
-    return () => {
-      cancelled = true
-    }
   }, [client])
+
+  useEffect(() => {
+    load()
+  }, [load])
 
   return (
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader title="Batching config" subtitle={Array.isArray(rows) ? `${rows.length} scopes` : undefined} />
+        <CardHeader
+          title="Batching config"
+          subtitle={Array.isArray(rows) ? `${rows.length} scopes` : undefined}
+          // "Set", not "Add": this is a per-scope upsert, so writing a scope
+          // that already has a row replaces it rather than adding a second.
+          actions={
+            <Button type="button" onClick={() => setAdding(true)}>
+              Set tier
+            </Button>
+          }
+        />
         {rows === null ? (
           <SkeletonRows rows={4} cols={7} />
         ) : (
@@ -244,6 +297,7 @@ function BatchingConfigView() {
           />
         )}
       </Card>
+      <BatchingConfigDialog open={adding} onOpenChange={setAdding} onCreated={load} />
     </div>
   )
 }

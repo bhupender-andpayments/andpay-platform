@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import type { Envelope } from '@andpay/envelope'
 import { ingestRequestRow, projectMerchantFact, projectTenantFact, createAssignmentFromEnrollment, PrismaClient as TmsClient } from '@andpay/tms-service'
-import { projectRowFact, PrismaClient as IdentityClient } from '@andpay/identity-service'
+import { projectRowFact, createBankMaster, PrismaClient as IdentityClient } from '@andpay/identity-service'
 
 // Root-only integration seam (this file is under test/, not services/<ctx>, so
 // the cross-schema guard, test/architecture.test.ts, never scans it). This is
@@ -81,5 +82,87 @@ describe('TMS-thin to Identity-min round trip (checks 1, 2)', () => {
 
     // the enrollment fact carried the row's correlation id as sourceEventId
     expect((enrollmentFact.payload as { sourceEventId: string }).sourceEventId).toBe('file-1|1')
+  })
+})
+
+// The admin-created bank. resolveTenant AUTO-MINTS a tenant on first sight of a
+// bank reference code and emits the tenant fact only on that mint, so the
+// happy path above is the AUTO-MINT path: the tenant is born during ingest and
+// its fact rides out in the same transaction.
+//
+// A bank created through POST /ops/bank-masters is born BEFORE any file. When
+// the file arrives, resolveTenant RESOLVES it (created: false) and emits
+// nothing, because there was no state change to report. Nothing else emits it
+// either, so TMS's tenant_projection never gets a row and every assignment for
+// that bank's file dies on the projection lookup.
+describe('an admin-created bank reaches TMS (the tenant fact on the resolve path)', () => {
+  it('projects the tenant and creates the assignment for a bank that existed before its first file', async () => {
+    // 1. The bank is created by an admin, through its own route's domain
+    // function, with no file anywhere.
+    const bank = await createBankMaster(identity, {
+      bankReferenceCode: '77',
+      displayName: 'Admin Created Bank',
+      address1: '1 MG Road',
+      city: 'Bengaluru',
+      district: 'Bengaluru Urban',
+      country: 'India',
+      pin: '560001',
+      mobile: '9000000001',
+      email: 'ops@adminbank.example',
+      clientKey: randomUUID(),
+      actorId: 'actor-admin-1',
+      traceId: 'trace-admin-1',
+    })
+    expect(bank.tnntId).toMatch(/^tnnt_/)
+
+    // 2. That bank's first request file arrives.
+    const outcome = await ingestRequestRow(
+      tms,
+      {
+        fileId: 'file-admin', rowNo: 1, bankMerchantReference: 'BM-ADMIN-1', displayName: 'Late Sheet Traders',
+        legalName: 'Late Sheet Traders Pvt Ltd', mcc: '5814', registeredAddress: '9 Station Road',
+        bankReferenceCode: '77', productType: 'soundbox', vpaValue: 'late@bank77',
+        qrValue: 'upi://pay?pa=late@bank77', soundbox: true, standeeCount: 0, stickerCount: 0,
+        shipToAddress: '9 Station Road', contactName: 'Jane Doe', mobile: '9000000000', branchCode: '30',
+        vpaHint: 'late@bank77',
+      },
+      'trace-admin-2',
+    )
+    expect(outcome).toBe('accepted')
+
+    const [rowFact] = await tmsFacts()
+    const idResult = await projectRowFact(identity, rowFact as never)
+    expect(idResult.deduped).toBe(false)
+    if (idResult.deduped) throw new Error('unreachable')
+
+    // The ingest RESOLVED the admin-created bank rather than minting a second
+    // one. That much already worked; it is the reason no fact was emitted.
+    expect(idResult.tnntId).toBe(bank.tnntId)
+
+    // 3. A tenant fact must exist for this bank, from whichever path created
+    // it. Without one, TMS has no way to learn the bank exists at all.
+    const idFacts = await identityFacts()
+    const tenantFacts = idFacts.filter((f) => f.type === 'fct.identity.tenant.v1')
+    expect(tenantFacts).toHaveLength(1)
+    expect((tenantFacts[0]!.payload as { tnntId: string }).tnntId).toBe(bank.tnntId)
+
+    // 4. The whole point: the assignment can be created. Before the fix this
+    // threw "tenant projection not ready for <tnntId>" and every row of an
+    // admin-created bank's first file was lost.
+    const merchantFact = idFacts.find((f) => f.type === 'fct.identity.merchant.v1')!
+    const enrollmentFact = idFacts.find((f) => f.type === 'fct.identity.enrollment.v1')!
+    await projectMerchantFact(tms, merchantFact as never)
+    await projectTenantFact(tms, tenantFacts[0] as never)
+
+    const asgnRes = await createAssignmentFromEnrollment(tms, enrollmentFact as never)
+    expect(asgnRes.created).toBe(true)
+
+    const asgn = await tms.$queryRaw<{ bank_reference_code: string; bank_display_name: string }[]>`
+      SELECT bank_reference_code, bank_display_name FROM assignment
+    `
+    expect(asgn).toHaveLength(1)
+    // The snapshot carries the ADMIN's display name, not the bank reference
+    // code the auto-mint would have used as a placeholder.
+    expect(asgn[0]!.bank_display_name).toBe('Admin Created Bank')
   })
 })

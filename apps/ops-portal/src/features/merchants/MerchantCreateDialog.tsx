@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { createMerchant, type MerchantCreateBody } from '../../api/endpoints.js'
+import {
+  createMerchant,
+  getBankMasters,
+  type BankMasterRow,
+  type MerchantCreateBody,
+} from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { useToast } from '../../ui/Toast.js'
-import { Button, ErrorNote, Field, Input } from '../../ui/primitives.js'
+import { Button, ErrorNote, Field, Input, Select } from '../../ui/primitives.js'
 import {
   Dialog,
   DialogContent,
@@ -18,17 +23,22 @@ import {
 // exist BEFORE any file mentions them (a pilot, a correction, a bank that is
 // late with its sheet) had no door at all.
 //
-// UI-FIRST BY DECISION (2026-08-14): the backend team owns the route this posts
-// to (POST /ops/merchants, contract in api/endpoints.ts). Until it lands, a
-// save surfaces the edge's 404 inline here, which is the honest failure.
+// UI-FIRST BY DECISION (2026-08-14); the backend landed 2026-08-17 and the
+// route this posts to now exists (POST /ops/merchants).
 //
 // THE FIELDS ARE THE BRD'S (section 5.1, the bank-file field table), not a
-// screen's invention: identity (business name, legal name, MCC, VPA - the
-// BRD's unique merchant key), contact (name, mobile, email), and the dispatch
-// address block. What is deliberately ABSENT is everything that belongs to a
-// REQUEST rather than a merchant: bank, branch, QR string and the kit
-// quantities all arrive on the bank request file, which remains the door for
-// asking for hardware. Status is the server's to default.
+// screen's invention: identity (business name, legal name, MCC, VPA), contact
+// (name, mobile, email), and the dispatch address block. What is deliberately
+// ABSENT is everything that belongs to a REQUEST rather than a merchant:
+// branch, QR string and the kit quantities all arrive on the bank request file,
+// which remains the door for asking for hardware. Status is the server's to
+// default.
+//
+// THE BANK IS NOT ABSENT, and that is a change from the first cut. A merchant
+// is resolved by (bank, bank merchant reference), so a merchant created with no
+// bank has no resolver row, and the bank file that arrives for the same shop a
+// week later mints a SECOND merchant and attaches the dispatch to that one. The
+// bank comes from master data (GET /ops/bank-masters), never typed.
 //
 // The regex checks below are immediate keyboard feedback only; the server
 // remains the authority on every one of them.
@@ -47,6 +57,7 @@ export function MerchantCreateDialog({
   const { client } = useAuth()
   const { toast } = useToast()
   const [form, setForm] = useState<Record<string, string>>({})
+  const [banks, setBanks] = useState<readonly BankMasterRow[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -56,6 +67,25 @@ export function MerchantCreateDialog({
     setForm({})
     setError(null)
   }, [open])
+
+  // The bank list is master data, read on open. A failure here is NOT surfaced
+  // as a form error: the list simply stays empty, the save stays disabled
+  // because no bank can be chosen, and the operator is not told a save failed
+  // that they never attempted.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    void getBankMasters(client)
+      .then((rows) => {
+        if (!cancelled) setBanks(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setBanks([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, client])
 
   const f = (key: string): string => form[key] ?? ''
   const set = (key: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -67,7 +97,7 @@ export function MerchantCreateDialog({
   const pincodeOk = digits(f('pincode'), 6)
   const vpaOk = f('vpa').trim().includes('@')
   const emailOk = f('email').trim() === '' || /^\S+@\S+$/.test(f('email').trim())
-  const mandatoryFilled = ['displayName', 'legalName', 'contactName', 'address', 'city', 'state'].every(
+  const mandatoryFilled = ['tnntWire', 'displayName', 'legalName', 'contactName', 'address', 'city', 'state'].every(
     (k) => f(k).trim() !== '',
   )
   const incomplete = !mandatoryFilled || !mccOk || !mobileOk || !pincodeOk || !vpaOk || !emailOk
@@ -78,6 +108,7 @@ export function MerchantCreateDialog({
     setError(null)
     try {
       const body: MerchantCreateBody = {
+        tnntWire: f('tnntWire'),
         displayName: f('displayName').trim(),
         legalName: f('legalName').trim(),
         mcc: f('mcc').trim(),
@@ -92,9 +123,12 @@ export function MerchantCreateDialog({
         state: f('state').trim(),
         pincode: f('pincode').trim(),
       }
-      await createMerchant(client, body, newIdempotencyKey())
+      const result = await createMerchant(client, body, newIdempotencyKey())
       onOpenChange(false)
-      toast(`${body.displayName} added`)
+      // `deduped` means the server recognised this client key and did nothing a
+      // second time, so mrchId is null. Saying "added" there would claim a
+      // create that did not happen on this attempt.
+      toast(result.deduped ? `${body.displayName} was already added` : `${body.displayName} added`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add the merchant.')
     } finally {
@@ -117,6 +151,26 @@ export function MerchantCreateDialog({
         <div className="space-y-4">
           <div className="space-y-3">
             <h3 className="text-[12px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Identity</h3>
+            <Field
+              label="Bank"
+              htmlFor="mrch-bank"
+              hint="The sponsoring bank, from the Bank Master. The bank file for this merchant will resolve to this record."
+            >
+              <Select
+                id="mrch-bank"
+                value={f('tnntWire')}
+                onChange={(e) => {
+                  setForm((prev) => ({ ...prev, tnntWire: e.target.value }))
+                }}
+              >
+                <option value="">Select a bank</option>
+                {banks.map((b) => (
+                  <option key={b.tnntId} value={b.tnntId}>
+                    {b.displayName}
+                  </option>
+                ))}
+              </Select>
+            </Field>
             <Field label="Business name" htmlFor="mrch-display" hint="The name operators will search for.">
               <Input id="mrch-display" value={f('displayName')} onChange={set('displayName')} />
             </Field>
@@ -127,7 +181,15 @@ export function MerchantCreateDialog({
               <Field label="MCC" htmlFor="mrch-mcc" hint="4-digit category code.">
                 <Input id="mrch-mcc" value={f('mcc')} inputMode="numeric" maxLength={4} onChange={set('mcc')} />
               </Field>
-              <Field label="VPA" htmlFor="mrch-vpa" hint="The UPI ID. One merchant per VPA.">
+              {/*
+                The hint no longer reads "One merchant per VPA". That framing
+                crossed a ruling (TASKLIST_2026-08-08 item C-1: no VPA column
+                and no one-merchant-per-VPA framing, because D1 is an INTERIM
+                key with a re-key expected), and it was also wrong about the
+                system: the server's uniqueness is per BANK, at the resolver's
+                UNIQUE(tenant, reference).
+              */}
+              <Field label="VPA" htmlFor="mrch-vpa" hint="The UPI ID. One per merchant at this bank.">
                 <Input id="mrch-vpa" value={f('vpa')} placeholder="name@bank" onChange={set('vpa')} />
               </Field>
             </div>

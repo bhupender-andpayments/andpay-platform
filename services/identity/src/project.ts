@@ -71,7 +71,12 @@ async function resolveTenant(
 // STATED V1 ASSUMPTION: one Program per bank per product. Sets the program
 // context before the write so the write-gate passes (07.B). `created` is true
 // only when we minted it.
-async function resolveProgram(
+//
+// EXPORTED for ops.ts createMerchant (2026-08-17). The manual Add-merchant path
+// needs the same Program the next bank file for that bank will resolve to, and
+// two copies of the mint-then-set-GUC-before-INSERT dance is how the write gate
+// starts passing in one path and failing in the other.
+export async function resolveProgram(
   tx: Tx,
   tenantUuid: string,
   productType: string,
