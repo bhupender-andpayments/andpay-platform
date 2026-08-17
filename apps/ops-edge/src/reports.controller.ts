@@ -17,8 +17,10 @@ import {
   readBatchJourney,
   readDispatchDetail,
   toCsv,
+  activationSheetXlsx,
   type ReadScope,
   type ReportName,
+  type ReportRow,
   type ReportFilters,
   type TileName,
 } from '@andpay/analytics-service'
@@ -36,6 +38,26 @@ import type { EdgeRequest } from './request.js'
 // serializes the returned value.
 interface EdgeResponse {
   setHeader(name: string, value: string): void
+}
+
+// A SECOND response shape, for the one route here that writes a BINARY body
+// (the activation-sheet xlsx below), and why it is a second interface rather
+// than a widening of the first.
+//
+// This repo does not depend on @types/express, which is why both of these are
+// hand-written structural types (the vendor-edge PullController and
+// OpsReadController carry the same pair for the same reason). A binary body
+// needs status() and send(Buffer) and must NOT go through
+// @Res({ passthrough: true }): with passthrough Nest still tries to serialize
+// the handler's return value onto a response the handler already ended, which
+// is how a download turns into a half-written body or a double-send warning.
+// Widening EdgeResponse instead would hand every JSON and CSV route here a
+// send() and a status() they must never call, and the compiler would stop being
+// the thing that says so.
+interface EdgeBinaryResponse {
+  setHeader(name: string, value: string): void
+  status(code: number): EdgeBinaryResponse
+  send(body: Buffer): void
 }
 
 const REPORT_NAMES: ReadonlySet<string> = new Set<ReportName>([
@@ -102,6 +124,39 @@ export class ReportsController {
       principalId,
       operation,
       traceId: req.traceId,
+    })
+  }
+
+  // R-5 (16 Aug 2026, docs/plan/UAT_DECISIONS_2026-08-16.md): D-19 asks for
+  // the ICCID on the activation report, and the SIM deliberately never
+  // reaches analytics (S7, migration 20260803120000). So the EDGE merges it
+  // here from the fulfillment ops read, whose column grant carries sim_no
+  // (20260812150000), and the analytics row shape stays SIM-free. simNos is
+  // positional against deviceIds; a device with no captured SIM renders ''
+  // rather than shifting its neighbours. The corpus confirmation of the
+  // underlying grant is STILL OWED (UAT_DECISIONS item 12); this route rides
+  // that grant, it does not widen it.
+  //
+  // Extracted from report() into a method the moment a SECOND caller appeared
+  // (the batch-scoped xlsx download). Two inline copies of a positional merge
+  // is exactly how the two doors would drift, and the drift would be silent:
+  // an off-by-one here does not fail, it hands the CWD the wrong subscriber for
+  // a device and nothing downstream can detect the mispairing. One merge, one
+  // blanking rule, one grant.
+  //
+  // ONE round trip for the whole page, not one per row: the serials are
+  // collected into a Set across every result row first, so a 500-row report is
+  // still a single fulfillment read.
+  private async mergeActivationSims(rows: ReportRow[]): Promise<ReportRow[]> {
+    const serials = new Set<string>()
+    for (const row of rows) {
+      const ids = row['deviceIds']
+      if (Array.isArray(ids)) for (const id of ids) serials.add(id)
+    }
+    const sims = await readUnitSimsBySerialsOps(this.deps.fulfillmentDb, [...serials])
+    return rows.map((row) => {
+      const ids = Array.isArray(row['deviceIds']) ? (row['deviceIds'] as string[]) : []
+      return { ...row, simNos: ids.map((id) => sims.get(id) ?? '') }
     })
   }
 
@@ -210,6 +265,96 @@ export class ReportsController {
     return { ...detail, deliveryTrail, activationTrail }
   }
 
+  // GET /ops/reports/activation/batch/:btchId/xlsx: ONE batch's awaiting
+  // activation worklist as the .xlsx the CWD works from. The CWD is an EXTERNAL
+  // party that performs the activations, so this file leaves the platform.
+  //
+  // DECLARED BEFORE the generic @Get(':name') at the bottom of this class, with
+  // every other specific path here. Nest registers routes in declaration order
+  // and the FIRST match wins, so a specific path declared after a parameterized
+  // one is swallowed by it. A single-segment `:name` cannot match this
+  // four-segment path, so this particular pair would in fact survive either
+  // order today; the declaration still goes first, because that ordering is the
+  // rule the rest of this file already depends on (tiles/:tile,
+  // batch-journey/:btchId, dispatch/:asgnId), and a later shortening of this
+  // path must not be the change that discovers the exception. The resolution is
+  // pinned in reports-routes.test.ts, the same way object-spine-http.test.ts
+  // pins /ops/batches/:btchId against /ops/batches/:btchId/excel/:group.
+  //
+  // AUTHZ, in this exact order:
+  //
+  // 1. requireUnrestrictedRead FIRST, before the audit emit and before any DB
+  //    access. This is a BINARY DOWNLOAD, so it carries the D-29/DP-8 read
+  //    restriction: customer_support is denied, every unrestricted class-3 role
+  //    passes. Same ordering the two ?format=csv branches use, for the same
+  //    reason: a denied export must leave no ALLOW read 6e on the chain for a
+  //    read that never happened. Omitting it would silently hand the export to
+  //    the one role DP-8 exists to keep out of downloads.
+  // 2. Then this.authorize with the EXISTING 'analytics:read-report' operation.
+  //    No new permission is minted (PHASE5_DECISIONS Decision-2, "Pattern B",
+  //    RULED for the activation report): the guard plus the D99 accounting 6e,
+  //    reusing the report operation, with no D104 disclosure gate. Inheriting
+  //    this controller's guardrail-G3 posture is the point. The read is
+  //    analytics-mediated and CROSS-TENANT, so it owes both the per-read 6e and
+  //    the distinct cross-tenant-access entry, and a file crossing to an
+  //    external party is the last read that should be accounted for less.
+  //
+  // NO FILTERS are accepted, deliberately, and this is the one route here that
+  // reads with an empty ReportFilters. The file is defined by its BATCH, not by
+  // a window: letting ?from=/?to= narrow it would let a stray date param drop
+  // devices out of a sheet that is emailed onward, and nobody at either end
+  // could tell a short sheet from a complete one. A batch is already a finite,
+  // server-side set; there is nothing here for a presentation filter to fix.
+  //
+  // This is a READ, so there is NO Idempotency-Key requirement.
+  @Get('activation/batch/:btchId/xlsx')
+  async activationBatchXlsx(
+    @Req() req: EdgeRequest,
+    @Param('btchId') btchId: string,
+    @Res() res: EdgeBinaryResponse,
+  ): Promise<void> {
+    requireUnrestrictedRead(req.claim)
+    await this.authorize(req, 'analytics:read-report')
+    const scope: ReadScope = { kind: 'crossTenant' }
+    const result = await readReport(this.deps.analyticsDb, scope, 'activation', {})
+
+    const rows = result.rows.filter((row) => {
+      // The btchId is a WIRE btch_ string compared as a plain string, with no
+      // decode, for the reason batch-journey/:btchId already records above:
+      // analytics dispatch_row.batch_id HOLDS the wire id, not a uuid, so a
+      // toUuid here would throw on a value that was never a uuid. A row with a
+      // null batchId has not been batched at all and matches nothing.
+      if (row['batchId'] !== btchId) return false
+      // NO DEVICE, NO ROW, the same rule the Activation screen enforces and
+      // documents: activation is of a device plus its SIM, so a dispatch with no
+      // serial paired yet has nothing the CWD could activate. Dropping it here
+      // rather than leaving it to the serializer is what makes the emptiness
+      // visible as a 404 below instead of as a sheet with a missing line.
+      const ids = row['deviceIds']
+      return Array.isArray(ids) && ids.length > 0
+    })
+
+    // 404 rather than a header-only workbook, mirroring the null path of the
+    // pre-existing binary doors (ops-read.controller.ts dispatchExcel and
+    // collateral) and batchJourney's reasoning: "no such batch" and "a batch
+    // with nothing to activate" must not render the same. activationSheetXlsx
+    // will happily emit a valid empty sheet, and that is exactly the artifact
+    // that must not reach the CWD, because an empty sheet in their inbox is read
+    // as a positive statement that the batch is clear.
+    if (rows.length === 0) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+
+    // The R-5 merge runs on the NARROWED rows only, so the fulfillment SIM read
+    // asks for exactly this batch's serials rather than the whole worklist's.
+    const merged = await this.mergeActivationSims(rows)
+    const sheet = await activationSheetXlsx(merged)
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="activation-${btchId}.xlsx"`)
+    res.status(200).send(sheet)
+  }
+
   @Get(':name')
   @HttpCode(200)
   async report(
@@ -227,26 +372,13 @@ export class ReportsController {
     const scope: ReadScope = { kind: 'crossTenant' }
     const result = await readReport(this.deps.analyticsDb, scope, name as ReportName, toFilters(q))
 
-    // R-5 (16 Aug 2026, docs/plan/UAT_DECISIONS_2026-08-16.md): D-19 asks for
-    // the ICCID on the activation report, and the SIM deliberately never
-    // reaches analytics (S7, migration 20260803120000). So the EDGE merges it
-    // here from the fulfillment ops read, whose column grant carries sim_no
-    // (20260812150000), and the analytics row shape stays SIM-free. simNos is
-    // positional against deviceIds; a device with no captured SIM renders ''
-    // rather than shifting its neighbours. The corpus confirmation of the
-    // underlying grant is STILL OWED (UAT_DECISIONS item 12); this route rides
-    // that grant, it does not widen it.
+    // The R-5 SIM merge (mergeActivationSims, above, where the whole rationale
+    // lives). Still gated on the activation report ONLY, and still applied to
+    // result.rows in place, so this route's JSON and CSV bodies are byte for
+    // byte what they were before the extraction. Every other report keeps its
+    // own column set and gains no simNos key.
     if (name === 'activation') {
-      const serials = new Set<string>()
-      for (const row of result.rows) {
-        const ids = row['deviceIds']
-        if (Array.isArray(ids)) for (const id of ids) serials.add(id)
-      }
-      const sims = await readUnitSimsBySerialsOps(this.deps.fulfillmentDb, [...serials])
-      result.rows = result.rows.map((row) => {
-        const ids = Array.isArray(row['deviceIds']) ? (row['deviceIds'] as string[]) : []
-        return { ...row, simNos: ids.map((id) => sims.get(id) ?? '') }
-      })
+      result.rows = await this.mergeActivationSims(result.rows)
     }
 
     res.setHeader('x-analytics-watermark', result.watermark.asOf ?? 'none')

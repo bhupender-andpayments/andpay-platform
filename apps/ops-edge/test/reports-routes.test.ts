@@ -129,6 +129,45 @@ async function insertDeliveredRow(dispatchId: string, programId: string, bankCod
             ARRAY['SB-DEV-1','SB-DEV-2']::text[], 'DELIVERED', true, now(), now(), now())`
 }
 
+// The shape the batch-scoped activation sheet door exports: an awaiting
+// activation row (activation_status null) that is BATCHED and carries device
+// serials. Both halves matter to that route. The file is defined by its batch,
+// so a row with no batch_id can never be in one; and the sheet is ONE ROW PER
+// DEVICE, so a row with no serial contributes nothing.
+//
+// batch_id is inserted as the WIRE btch_ string and never as a uuid, because
+// that is what analytics.dispatch_row actually holds (project.ts copies the
+// folded fact's batch id verbatim). The route matches it the same way, with no
+// toUuid, which is why a malformed batch param 404s here rather than 400ing.
+async function insertBatchedActivationRow(
+  dispatchId: string,
+  programId: string,
+  batchWire: string,
+  deviceIds: string[],
+): Promise<void> {
+  await analyticsDb.$executeRaw`
+    INSERT INTO dispatch_row
+      (dispatch_id, program_id, batch_id, bank_code, bank_display, merchant_display, device_ids,
+       pipeline_state, billable_flag, received_at, delivery_date, updated_at)
+    VALUES (${dispatchId}, ${programId}::uuid, ${batchWire}, 'HDFC', 'HDFC Bank', 'Acme',
+            ${deviceIds}::text[], 'DELIVERED', true, now(), now(), now())`
+}
+
+// The same row with NO device paired yet: batched, awaiting activation, and
+// therefore ON the JSON worklist, but carrying nothing the CWD could activate.
+//
+// It is a separate helper rather than a `[]` argument to the one above on
+// purpose: an EMPTY js array has no element type for the driver to infer, so
+// `${[]}::text[]` is not a safe substitute for the `ARRAY[]::text[]` literal.
+async function insertBatchedDevicelessRow(dispatchId: string, programId: string, batchWire: string): Promise<void> {
+  await analyticsDb.$executeRaw`
+    INSERT INTO dispatch_row
+      (dispatch_id, program_id, batch_id, bank_code, bank_display, merchant_display, device_ids,
+       pipeline_state, billable_flag, received_at, delivery_date, updated_at)
+    VALUES (${dispatchId}, ${programId}::uuid, ${batchWire}, 'HDFC', 'HDFC Bank', 'Acme',
+            ARRAY[]::text[], 'DELIVERED', true, now(), now(), now())`
+}
+
 async function seed(): Promise<Seeded> {
   const progA = randomUUID()
   const progB = randomUUID()
@@ -337,6 +376,161 @@ describe('ops reports edge: GET /ops/reports/activation carries Device ID(s) (Ta
     for (const row of res.body.rows as Record<string, unknown>[]) {
       expect('simNos' in row).toBe(false)
     }
+  })
+})
+
+// The supertest binary-body idiom this file already uses for the batch Excel
+// and collateral doors (see the FR-03/FR-04 describe below), factored here
+// because the activation-sheet block needs it on every one of its cases.
+// Without .buffer(true) plus an explicit .parse, supertest hands back a decoded
+// string for an unknown content type and the PK signature check would compare
+// mojibake. A 404 goes through the same parse and yields an empty Buffer.
+function getBinary(path: string, token: string): request.Test {
+  return request(app.getHttpServer())
+    .get(path)
+    .set('Authorization', `Bearer ${token}`)
+    .buffer(true)
+    .parse((response, callback) => {
+      const chunks: Buffer[] = []
+      response.on('data', (chunk: Buffer) => chunks.push(chunk))
+      response.on('end', () => callback(null, Buffer.concat(chunks)))
+    })
+}
+
+// GET /ops/reports/activation/batch/:btchId/xlsx: the batch-scoped hand-off
+// sheet the CWD does the activations from.
+//
+// WHAT THIS SUITE PINS and what it deliberately does not. The COLUMN SET, the
+// header wording, the one-row-per-device grain and the blank-vs-'not yet
+// delivered' cells are pinned in the analytics service suite, which is where
+// exceljs is a declared dependency and where the serializer lives. This edge
+// suite owns the DOOR: the route resolving at all, the status codes, the two
+// binary headers, the batch narrowing, and the fact that the shared SIM merge
+// still runs inside the binary path. Asserting cell text here would mean
+// re-implementing an xlsx reader in a package that has no xlsx dependency, for
+// a guarantee that is already proven one layer down.
+describe('ops reports edge: GET /ops/reports/activation/batch/:btchId/xlsx (the CWD hand-off sheet)', () => {
+  it('a batch with awaiting-activation devices returns a PK zip under both binary headers', async () => {
+    const btchWire = newId('btch')
+    await insertBatchedActivationRow(`asgn_${randomUUID()}`, randomUUID(), btchWire, ['SB-DEV-1', 'SB-DEV-2'])
+
+    const token = await mint()
+    const res = await getBinary(`/ops/reports/activation/batch/${btchWire}/xlsx`, token)
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toContain(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    // The filename names the batch, so an operator who downloads several cannot
+    // mix them up in a downloads folder.
+    expect(res.headers['content-disposition']).toBe(`attachment; filename="activation-${btchWire}.xlsx"`)
+    // xlsx is a PK zip container.
+    expect((res.body as Buffer).subarray(0, 2).toString('latin1')).toBe('PK')
+
+    // Pattern B (PHASE5_DECISIONS Decision-2): the SAME two unconditional
+    // accounting 6e rows the JSON and CSV doors emit, under the SAME reused
+    // analytics:read-report operation. A new permission string appearing here
+    // would show up as a third row or a different operation name.
+    const auditRows = await analyticsAuditRows()
+    expect(auditRows).toHaveLength(2)
+    expect(auditRows.some((r) => r.operation === 'analytics:read-report')).toBe(true)
+    expect(auditRows.some((r) => r.operation === 'analytics:cross-tenant-read')).toBe(true)
+    expect(auditRows.every((r) => r.decision === 'ALLOW')).toBe(true)
+  })
+
+  it('an unknown batch id -> 404, never an empty but valid workbook', async () => {
+    // The same reasoning batchJourney records: "no such batch" and "a batch at
+    // stage zero" must not render the same. A header-only sheet landing in the
+    // CWD inbox reads as "this batch has nothing to activate", which is a
+    // different and much more dangerous claim than "that batch does not exist".
+    const token = await mint()
+    const res = await getBinary(`/ops/reports/activation/batch/${newId('btch')}/xlsx`, token)
+    expect(res.status).toBe(404)
+  })
+
+  it('a batch whose only awaiting-activation rows have no device paired -> 404 (NO DEVICE, NO ROW)', async () => {
+    const btchWire = newId('btch')
+    await insertBatchedDevicelessRow(`asgn_${randomUUID()}`, randomUUID(), btchWire)
+
+    // The row IS on the JSON worklist: batched, soundbox, not yet activated.
+    const token = await mint()
+    const json = await request(app.getHttpServer())
+      .get('/ops/reports/activation')
+      .set('Authorization', `Bearer ${token}`)
+    expect(json.status).toBe(200)
+    expect((json.body.rows as { batchId: string | null }[]).some((r) => r.batchId === btchWire)).toBe(true)
+
+    // It still contributes no sheet, because activation is of a device plus its
+    // SIM and there is no serial to activate. Same rule the Activation screen
+    // enforces.
+    const res = await getBinary(`/ops/reports/activation/batch/${btchWire}/xlsx`, token)
+    expect(res.status).toBe(404)
+  })
+
+  it('a second batch cannot bleed into this batch file', async () => {
+    // Two batches in the same (unwindowed) read. Batch A holds ONLY a deviceless
+    // row, batch B holds a row with two devices. Asking for A must 404: if the
+    // route failed to narrow by batch, B's two devices would satisfy A's request
+    // and it would answer 200 with a sheet full of another batch's devices,
+    // which is the exact defect this asserts against. B still answers 200, so
+    // the 404 is the narrowing and not a broken read.
+    const batchA = newId('btch')
+    const batchB = newId('btch')
+    await insertBatchedDevicelessRow(`asgn_${randomUUID()}`, randomUUID(), batchA)
+    await insertBatchedActivationRow(`asgn_${randomUUID()}`, randomUUID(), batchB, ['SB-DEV-9'])
+
+    const token = await mint()
+    expect((await getBinary(`/ops/reports/activation/batch/${batchA}/xlsx`, token)).status).toBe(404)
+    const b = await getBinary(`/ops/reports/activation/batch/${batchB}/xlsx`, token)
+    expect(b.status).toBe(200)
+    expect((b.body as Buffer).subarray(0, 2).toString('latin1')).toBe('PK')
+  })
+
+  it('the shared fulfillment SIM merge runs inside the binary door too (R-5)', async () => {
+    // The JSON route's merge is pinned above. What is pinned here is that the
+    // binary route goes through the SAME extracted merge: it reaches fulfillment
+    // for a real captured sim_no and still serves the sheet. Before the
+    // extraction the merge was inline under `if (name === 'activation')` and no
+    // second caller could reach it, so a copy-paste divergence was the risk.
+    const btchWire = newId('btch')
+    await insertBatchedActivationRow(`asgn_${randomUUID()}`, randomUUID(), btchWire, ['SB-DEV-1', 'SB-DEV-2'])
+    await fulfillmentDb.$executeRaw`
+      INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, sim_no, device_qr, updated_at)
+      VALUES (${randomUUID()}::uuid, 'SERIALIZED', 'SOUNDBOX', ${randomUUID()}::uuid, 'IN_STOCK', 'SB-DEV-1', '89910000000000000001', '{}'::jsonb, now()),
+             (${randomUUID()}::uuid, 'SERIALIZED', 'SOUNDBOX', ${randomUUID()}::uuid, 'IN_STOCK', 'SB-DEV-2', NULL, '{}'::jsonb, now())
+    `
+
+    const token = await mint()
+    const res = await getBinary(`/ops/reports/activation/batch/${btchWire}/xlsx`, token)
+    expect(res.status).toBe(200)
+    expect((res.body as Buffer).subarray(0, 2).toString('latin1')).toBe('PK')
+
+    await fulfillmentDb.$executeRaw`DELETE FROM unit WHERE device_serial IN ('SB-DEV-1', 'SB-DEV-2')`
+  })
+
+  it('the generic :name report route does not swallow this path', async () => {
+    // `@Get(':name')` is declared LAST in ReportsController and the new download
+    // is declared before it. A regression that reversed the two, or that shortened
+    // this path to something a single-segment `:name` could match, would answer
+    // here with the JSON report envelope (or a REPORT_NAMES 404) instead of a
+    // spreadsheet. This is the same class of assertion object-spine-http.test.ts
+    // makes for `/ops/batches/:btchId` versus `/ops/batches/:btchId/excel/:group`.
+    const btchWire = newId('btch')
+    await insertBatchedActivationRow(`asgn_${randomUUID()}`, randomUUID(), btchWire, ['SB-DEV-3'])
+
+    const token = await mint()
+    const sheet = await getBinary(`/ops/reports/activation/batch/${btchWire}/xlsx`, token)
+    expect(sheet.status).toBe(200)
+    expect(sheet.headers['content-type']).toContain('spreadsheetml')
+    expect(sheet.headers['content-type']).not.toContain('application/json')
+
+    // And the generic route is itself unharmed: the plain report name still
+    // resolves to JSON, so the new declaration did not shadow IT either.
+    const json = await request(app.getHttpServer())
+      .get('/ops/reports/activation')
+      .set('Authorization', `Bearer ${token}`)
+    expect(json.status).toBe(200)
+    expect(json.headers['content-type']).toContain('application/json')
+    expect(Array.isArray(json.body.rows)).toBe(true)
   })
 })
 

@@ -495,11 +495,27 @@ function soundboxDeliveryRow(r: DispatchDbRow): ReportRow {
 // mirrors the same generic device_ids exposure toReportRow already uses
 // (raw hardware serials, no encode/decode; @andpay/ids has no registered
 // device id kind), added per the BRD FR-10 Activation Report column set.
+//
+// batchId and bankDisplay are a PROJECTION widening only. scopedDispatchRead
+// already SELECTs batch_id and bank_display in BOTH the own and crossTenant
+// branches, and DispatchDbRow already declares them; this projector simply
+// dropped them on the floor. So nothing here adds a query, a column grant, a
+// role, or a scope change: the mediated read that produced `r` is byte for byte
+// the read it already was, and every other report keeps its own column set.
+//
+// batchId is emitted AS-IS, no fromUuid wrap, for the same reason shptId is on
+// soundboxDeliveryRow: analytics dispatch_row.batch_id holds the WIRE `btch_`
+// id, not a raw uuid (project.ts copies the folded fact's batch id verbatim),
+// so an id decode here would double-encode a value that is not a uuid and
+// would throw. It is `string | null` because a row that has not yet been
+// batched genuinely has no batch.
 function activationRow(r: DispatchDbRow): ReportRow {
   return {
     dispatchId: r.dispatch_id,
     programId: r.program_id,
+    batchId: r.batch_id,
     bankCode: r.bank_code,
+    bankDisplay: r.bank_display,
     merchantDisplay: r.merchant_display,
     deviceIds: r.device_ids ?? [],
     deliveryDate: iso(r.delivery_date),

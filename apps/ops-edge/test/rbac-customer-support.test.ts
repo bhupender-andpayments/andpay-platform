@@ -251,6 +251,20 @@ describe('customer_support CANNOT download, export, or view config (DP-8 edge de
     expect(json.status).toBe(200)
   })
 
+  // The batch-scoped activation sheet is a BINARY DOWNLOAD of exportable
+  // merchant and device data that leaves the platform for the CWD, so it sits
+  // squarely inside DP-8 and not in the guard-only JSON read plane. The deny is
+  // asserted against an UNSEEDED batch on purpose: a 403 for a batch that does
+  // not even exist proves requireUnrestrictedRead ran BEFORE any read, which is
+  // the ordering that keeps a denied export off the audit chain.
+  it('the activation-sheet xlsx download -> 403, before any batch resolution', async () => {
+    const token = await mint()
+    const res = await request(app.getHttpServer())
+      .get(`/ops/reports/activation/batch/${newId('btch')}/xlsx`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(403)
+  })
+
   it('GET bank-config and GET batching-config -> 403 (config views)', async () => {
     const token = await mint()
     const bank = await request(app.getHttpServer()).get('/ops/bank-config').set('Authorization', `Bearer ${token}`)
@@ -270,6 +284,35 @@ describe('the restriction must not leak onto full roles', () => {
       .set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
     expect(res.headers['content-type']).toContain('spreadsheetml')
+  })
+
+  // The 200 side of the activation sheet. Unlike the batch Excel above, an
+  // unknown batch is NOT a 200 here (that door 404s an empty batch by design),
+  // so this one has to seed a real batched, awaiting-activation, device-carrying
+  // row. Without it a genuine 403 regression and the route's own 404 would look
+  // identical and the deny test above would pass for the wrong reason.
+  //
+  // The row is inserted and deleted here rather than in a beforeEach because
+  // this suite deliberately truncates only tms and fulfillment; the other
+  // report assertions in this file must not start seeing an extra analytics row.
+  it('an ops-role principal still downloads the activation sheet (200, spreadsheetml)', async () => {
+    const btchWire = newId('btch')
+    const dispatchId = `asgn_${randomUUID()}`
+    await analyticsDb.$executeRaw`
+      INSERT INTO dispatch_row
+        (dispatch_id, program_id, batch_id, bank_code, bank_display, merchant_display, device_ids,
+         pipeline_state, billable_flag, received_at, delivery_date, updated_at)
+      VALUES (${dispatchId}, ${randomUUID()}::uuid, ${btchWire}, 'HDFC', 'HDFC Bank', 'Acme',
+              ARRAY['SB-RBAC-1']::text[], 'DELIVERED', true, now(), now(), now())`
+
+    const token = await mint({ psr: 'role:ops_portal' })
+    const res = await request(app.getHttpServer())
+      .get(`/ops/reports/activation/batch/${btchWire}/xlsx`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toContain('spreadsheetml')
+
+    await analyticsDb.$executeRaw`DELETE FROM dispatch_row WHERE dispatch_id = ${dispatchId}`
   })
 
   it('an ops-role principal still reads both config views (200)', async () => {
