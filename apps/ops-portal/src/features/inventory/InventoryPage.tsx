@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Boxes, Check, Copy, PackageCheck, PackageX, Pencil, Repeat2, Smartphone, Truck, Upload } from 'lucide-react'
+import { Boxes, Check, Copy, Download, PackageCheck, PackageX, Pencil, Repeat2, Smartphone, Truck, Upload } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { UnitStatusEditDialog } from './UnitStatusEditDialog.js'
@@ -17,6 +17,8 @@ import {
   type DamageCaseRow,
 } from '../../api/endpoints.js'
 import { PageHeader, Card, Field, Input, Button, ErrorNote, Toolbar, StatusPill, CodeChip } from '../../ui/primitives.js'
+import { buildSampleInventoryFile, SAMPLE_ROW_COUNT } from './sampleInventory.js'
+import { saveBlob } from '../../lib/saveBlob.js'
 import { fmtDate, fmtDateTime, fmtRelative } from '../../ui/format.js'
 import { useToast } from '../../ui/Toast.js'
 import { cn } from '@/lib/utils'
@@ -529,6 +531,24 @@ export function InventoryPage() {
           // and a dedicated button for it was one more thing on the screen an
           // operator never reached for.
           <div className="flex items-center gap-2">
+            {/*
+              TESTING AID (see ./sampleInventory.ts). Downloads one CSV of
+              freshly minted serials, so the upload flow can be demoed
+              repeatedly without reseeding: the checked-in demo assets carry
+              fixed serials and every upload after the first one correctly
+              flags them as duplicates. Ghost variant so it reads as a utility
+              beside the real action, never as the primary path.
+            */}
+            <Button
+              variant="ghost"
+              onClick={() => {
+                const sample = buildSampleInventoryFile()
+                saveBlob(sample.filename, new Blob([sample.csv], { type: 'text/csv;charset=utf-8' }))
+                toast(`Sample file with ${SAMPLE_ROW_COUNT} new devices downloaded.`)
+              }}
+            >
+              <Download className="size-4" aria-hidden="true" /> Sample file
+            </Button>
             <Button onClick={() => navigate('/inventory/upload')}>
               <Upload className="size-4" aria-hidden="true" /> Upload inventory
             </Button>

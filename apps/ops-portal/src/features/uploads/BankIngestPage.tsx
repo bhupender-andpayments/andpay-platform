@@ -24,7 +24,7 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, Check, Loader2 } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Check, Download, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -46,6 +46,8 @@ import {
 import { kindBySlug, type StepKey } from './uploadKinds.js'
 import { BackLink } from '../../ui/DetailFacts.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
+import { buildSampleBankFile, SAMPLE_BANK_ROW_COUNT } from './sampleBankRequests.js'
+import { saveBlob } from '../../lib/saveBlob.js'
 
 const KIND = kindBySlug('bank')!
 
@@ -183,7 +185,30 @@ export function BankIngestPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="bank-ingest-file">Bank request file</Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="bank-ingest-file">Bank request file</Label>
+              {/*
+                TESTING AID (see ./sampleBankRequests.ts). Downloads a bank file
+                in the real GSCB layout whose rows all commit, with a fresh VPA
+                per row so it works on every run: the checked-in 5-bank-demo.csv
+                carries a deliberate bad mobile and duplicate VPA, and its good
+                rows commit only once before the duplicate-VPA gate holds them.
+                Sits on the label row so it is found where the file is asked
+                for, without competing with the drop zone itself.
+              */}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const sample = buildSampleBankFile()
+                  saveBlob(sample.filename, new Blob([sample.csv], { type: 'text/csv;charset=utf-8' }))
+                  toast(`Sample file with ${SAMPLE_BANK_ROW_COUNT} new requests downloaded.`)
+                }}
+              >
+                <Download className="size-4" aria-hidden="true" /> Sample file
+              </Button>
+            </div>
             <FileDropZone
               id="bank-ingest-file"
               file={file}
