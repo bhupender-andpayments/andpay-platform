@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { execSync } from 'node:child_process'
 
 /**
  * Cross-schema isolation guard (spec 02 Section 2; C4, T1, T7). Runs with no
@@ -537,5 +538,60 @@ describe('no-cross-context-Identity-deep-import DO-NOT: apps/ops-edge composes @
     for (const { file, text } of opsEdgeFiles) {
       expect(text.includes('services/identity'), `${file} must not deep-import services/identity`).toBe(false)
     }
+  })
+})
+
+describe('no shared-infrastructure endpoint is ever committed (S4)', () => {
+  // `git ls-files` rather than a directory walk, so this sees exactly what a
+  // commit would carry: gitignored files such as .env are invisible to it by
+  // construction, which is the point.
+  const tracked = execSync('git ls-files -z', { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+    .split('\0')
+    .filter((p) => p !== '')
+
+  // An RDS endpoint: <instance>.<account-suffix>.<region>.rds.amazonaws.com.
+  // Anchored on the full shape so prose mentioning "rds.amazonaws.com" while
+  // explaining the rule does not trip it.
+  const RDS_ENDPOINT = /[a-z0-9][a-z0-9-]*\.[a-z0-9]{8,}\.[a-z0-9-]+\.rds\.amazonaws\.com/i
+
+  it('has files to check', () => {
+    expect(tracked.length).toBeGreaterThan(100)
+  })
+
+  it('no tracked file contains an RDS endpoint hostname', () => {
+    const offenders: string[] = []
+    for (const file of tracked) {
+      const full = join(root, file)
+      if (!existsSync(full)) continue
+      if (statSync(full).isDirectory()) continue
+      let text: string
+      try {
+        text = readFileSync(full, 'utf8')
+      } catch {
+        continue // binary or unreadable, nothing to match
+      }
+      if (RDS_ENDPOINT.test(text)) offenders.push(file)
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('no tracked file assigns a value to the shared-RDS password key', () => {
+    const offenders: string[] = []
+    for (const file of tracked) {
+      const full = join(root, file)
+      if (!existsSync(full) || statSync(full).isDirectory()) continue
+      let text: string
+      try {
+        text = readFileSync(full, 'utf8')
+      } catch {
+        continue
+      }
+      // `.env.example` carries the bare key with nothing after the '=', which
+      // is exactly what it is for. Anything else is a committed credential.
+      for (const line of text.split('\n')) {
+        if (/^\s*ANDPAY_DB_PASSWORD\s*=\s*\S/.test(line)) offenders.push(`${file}: ${line.trim().slice(0, 30)}`)
+      }
+    }
+    expect(offenders).toEqual([])
   })
 })
