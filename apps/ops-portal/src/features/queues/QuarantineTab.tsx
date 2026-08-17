@@ -4,7 +4,7 @@ import { type GridColumn } from '../../ui/DataGrid.js'
 import { QueueTable } from './QueueTable.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { Card, Field, Input, Button, ErrorNote, StatusPill, CodeChip } from '../../ui/primitives.js'
-import { fmtDateTime, fmtRelative, shortId } from '../../ui/format.js'
+import { fmtDateTime, shortId } from '../../ui/format.js'
 import { orDash } from './shared.js'
 import {
   getQuarantine,
@@ -177,8 +177,8 @@ export function QuarantineTab() {
       header: 'Created',
       sortValue: (r) => r.createdAt,
       cell: (r) => (
-        <span title={fmtDateTime(r.createdAt)} className="text-muted-foreground">
-          {fmtRelative(r.createdAt)}
+        <span className="text-muted-foreground">
+          {fmtDateTime(r.createdAt)}
         </span>
       ),
     },
@@ -190,8 +190,8 @@ export function QuarantineTab() {
         r.resolvedAt === null ? (
           <span className="text-muted-foreground">-</span>
         ) : (
-          <span title={fmtDateTime(r.resolvedAt)}>
-            {fmtRelative(r.resolvedAt)}
+          <span>
+            {fmtDateTime(r.resolvedAt)}
             {/* D-8: HOW it was retired, not just when and by whom. Closing and
                 curing are different outcomes for the same row, and a queue that
                 only said "resolved" could not tell them apart afterwards. A row

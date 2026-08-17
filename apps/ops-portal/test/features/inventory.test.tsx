@@ -58,13 +58,13 @@ function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
 }
 
-function stub(devices: unknown = [DEVICE, IN_STOCK]): { url: string }[] {
+function stub(devices: unknown = [DEVICE, IN_STOCK], damageCases: unknown = []): { url: string }[] {
   const calls: { url: string }[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     calls.push({ url })
     if (url.includes('/ops/merchants')) return jsonResponse(MERCHANTS)
     if (url.includes('/ops/vendors')) return jsonResponse(VENDORS)
-    if (url.includes('/ops/damage-cases')) return jsonResponse([])
+    if (url.includes('/ops/damage-cases')) return jsonResponse(damageCases)
     return jsonResponse(devices)
   }))
   return calls
@@ -217,6 +217,51 @@ describe('InventoryPage', () => {
     })
     await userEvent.click(inStockCard)
     expect(await screen.findByText('9990000001001')).toBeTruthy()
+  })
+
+  // Cards are one-at-a-time: picking one clears the others' slices, so the
+  // highlight always sits on exactly one card and the table's filter is the
+  // one the highlighted card names. Total is the "everything" view and takes
+  // the highlight back when clicked.
+  it('cards are exclusive: picking one clears the others, and Total restores everything', async () => {
+    stub()
+    renderPage()
+    await screen.findByText('9990000001001')
+    // Activated slice: only the activated device (unit_1) remains.
+    await userEvent.click(screen.getByRole('button', { name: /^activated 1\b/i }))
+    await vi.waitFor(() => expect(screen.queryByText('9990000001002')).toBeNull())
+    // In stock slice REPLACES the activation slice rather than stacking on it:
+    // stacked, the table would be empty (nothing is both).
+    await userEvent.click(screen.getByRole('button', { name: /^in stock 1\b/i }))
+    expect(await screen.findByText('9990000001002')).toBeTruthy()
+    expect(screen.queryByText('9990000001001')).toBeNull()
+    // Total clears every slice.
+    await userEvent.click(screen.getByRole('button', { name: /^total devices 2\b/i }))
+    expect(await screen.findByText('9990000001001')).toBeTruthy()
+    expect(screen.getByText('9990000001002')).toBeTruthy()
+  })
+
+  // The Source facet (replacement vs fresh) that replaced the Replacements
+  // card: a device whose asgn_id appears on a damage case IS the replacement
+  // sent for a damaged kit; everything else is fresh billable stock.
+  it('the Source dropdown slices replacement stock from fresh, and clears back to all', async () => {
+    stub(
+      [DEVICE, IN_STOCK],
+      [{ caseId: 'case_1', asgnId: 'asgn_1' }],
+    )
+    renderPage()
+    await screen.findByText('9990000001001')
+    await userEvent.click(screen.getByLabelText(/source/i))
+    const listbox = await screen.findByRole('listbox')
+    await userEvent.click(within(listbox).getByRole('option', { name: /replacement/i }))
+    await vi.waitFor(() => expect(screen.queryByText('9990000001002')).toBeNull())
+    expect(screen.getByText('9990000001001')).toBeTruthy()
+    // Fresh is the complement.
+    await userEvent.click(screen.getByLabelText(/source/i))
+    const listbox2 = await screen.findByRole('listbox')
+    await userEvent.click(within(listbox2).getByRole('option', { name: /fresh/i }))
+    expect(await screen.findByText('9990000001002')).toBeTruthy()
+    expect(screen.queryByText('9990000001001')).toBeNull()
   })
 
   it('paginates: the footer states the visible range out of the total', async () => {

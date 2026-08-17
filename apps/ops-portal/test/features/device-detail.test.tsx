@@ -151,8 +151,19 @@ describe('DeviceDetailPage', () => {
     await screen.findAllByText('9990000001001')
     await userEvent.click(screen.getByRole('button', { name: /change status/i }))
     await userEvent.click(await screen.findByLabelText(/new status/i))
-    const options = (await screen.findAllByRole('option')).map((o) => o.textContent)
-    expect(options).toEqual(['Delivered', 'Damaged', 'Returned'])
+    const options = await screen.findAllByRole('option')
+    // The whole ladder is listed so the operator can see where the device
+    // sits, but only the forward moves are choosable: the stages already
+    // behind it (through DISPATCHED, its current one) are present and
+    // disabled, because a device never moves back.
+    expect(options.map((o) => o.getAttribute('aria-disabled') === 'true')).toEqual([
+      true, true, true, true, false, false, false,
+    ])
+    expect(options.filter((o) => o.getAttribute('aria-disabled') !== 'true').map((o) => o.textContent)).toEqual([
+      'Delivered', 'Damaged', 'Returned',
+    ])
+    // The current rung says so rather than merely being greyed.
+    expect(options[3]!.textContent).toContain('current')
   })
 
   it('a terminal device (DAMAGED) has no edit control at all', async () => {
@@ -180,21 +191,25 @@ describe('DeviceDetailPage', () => {
     expect(screen.getAllByText('Delivered').length).toBeGreaterThan(1)
   })
 
-  // The other half of the two-action split: correcting what the intake file
-  // recorded, from the Device card's own pencil.
-  it('the device-details pencil opens the field editor and posts only what changed', async () => {
-    const calls = stub()
+  // The Device card's pencil is GONE (2026-08-17 ruling): the page edits a
+  // device's LIFECYCLE, and the intake-correction editor it opened was a
+  // second, differently-shaped write sitting on the same screen. Status is the
+  // only edit this page offers now.
+  it('offers no device-details editor on the Device card', async () => {
+    stub()
     renderAt('unit_1', { row: ROW })
     await screen.findAllByText('9990000001001')
-    await userEvent.click(screen.getByRole('button', { name: /edit device details/i }))
-    const sim = await screen.findByLabelText('SIM')
-    await userEvent.clear(sim)
-    await userEvent.type(sim, '89910000000000999999')
-    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    expect(screen.queryByRole('button', { name: /edit device details/i })).toBeNull()
+  })
 
-    await vi.waitFor(() => {
-      expect(calls.some((c) => c.url.includes('/ops/units/unit_1/edit'))).toBe(true)
-    })
-    expect(screen.getByText('89910000000000999999')).toBeTruthy()
+  // Every status surface stamps SYSTEM time: the operator is never asked when
+  // the move happened, so there is no instant to mistype or backdate.
+  it('asks for no timestamp: the status dialog is the picker and nothing else', async () => {
+    stub()
+    renderAt('unit_1', { row: ROW })
+    await screen.findAllByText('9990000001001')
+    await userEvent.click(screen.getByRole('button', { name: /change status/i }))
+    await screen.findByLabelText(/new status/i)
+    expect(screen.queryByLabelText(/when it happened/i)).toBeNull()
   })
 })

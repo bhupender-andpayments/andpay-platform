@@ -24,14 +24,14 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, Check, Download, Loader2 } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Check, CheckCircle2, Download, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { FileDropZone } from '../../components/FileDropZone.js'
-import { PerRowErrors } from '../../components/PerRowErrors.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
-import { ErrorNote, InfoNote, StatusPill } from '../../ui/primitives.js'
+import { ErrorNote } from '../../ui/primitives.js'
+import { pillClass, statusMeta } from '../../ui/format.js'
 import { useToast } from '../../ui/Toast.js'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
@@ -103,7 +103,7 @@ export function BankIngestPage() {
       // Toast only when something actually landed. Every failing outcome is
       // rendered inline below instead, where it stays put and names its cause.
       if (result.accepted > 0) {
-        toast(`${result.accepted} row(s) committed and pooling toward the next batch`)
+        toast(`${result.accepted} row(s) added and pooling toward the next batch`)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to commit the bank request file.')
@@ -112,15 +112,14 @@ export function BankIngestPage() {
     }
   }, [client, file, toast])
 
-  const columns = useMemo<ReadonlyArray<GridColumn<PreviewRowResult>>>(
+  // TWO TABLES, NO OUTCOME COLUMN (16 Aug 2026 team feedback: the single mixed
+  // table behind a Valid/Invalid pill read as clutter). The category IS the
+  // table now: clean rows sit under "Ready to add", failing rows under "Held
+  // for review", so the pill column and the Errors column on clean rows both
+  // had nothing left to say. The held table alone carries a Reason column.
+  const baseColumns = useMemo<ReadonlyArray<GridColumn<PreviewRowResult>>>(
     () => [
-      { key: 'row', header: 'Row', align: 'right', cell: (r) => <span className="num">{r.rowNo}</span>, sortValue: (r) => r.rowNo },
-      {
-        key: 'outcome',
-        header: 'Outcome',
-        cell: (r) => <StatusPill value={r.valid ? 'valid' : 'invalid'} />,
-        sortValue: (r) => (r.valid ? 'valid' : 'invalid'),
-      },
+      { key: 'row', header: '#', align: 'right', cell: (r) => <span className="num">{r.rowNo}</span>, sortValue: (r) => r.rowNo },
       { key: 'merchant', header: 'Merchant', cell: (r) => r.row.displayName, sortValue: (r) => r.row.displayName },
       {
         key: 'vpa',
@@ -128,12 +127,27 @@ export function BankIngestPage() {
         cell: (r) => <span className="font-mono text-xs">{r.row.vpaValue}</span>,
         sortValue: (r) => r.row.vpaValue,
       },
+      // Bank and Branch as their own columns (16 Aug 2026 review): the joined
+      // "3 - 7" cell made two facts unsortable and unsearchable as themselves.
       {
         key: 'bank',
-        header: 'Bank / branch',
-        cell: (r) => `${r.row.bankReferenceCode} - ${r.row.branchCode}`,
+        header: 'Bank',
+        cell: (r) => r.row.bankReferenceCode,
         sortValue: (r) => r.row.bankReferenceCode,
       },
+      {
+        key: 'branch',
+        header: 'Branch',
+        cell: (r) => r.row.branchCode,
+        sortValue: (r) => r.row.branchCode,
+      },
+    ],
+    [],
+  )
+
+  const readyColumns = useMemo<ReadonlyArray<GridColumn<PreviewRowResult>>>(
+    () => [
+      ...baseColumns,
       {
         key: 'asks',
         header: 'Asks for',
@@ -145,19 +159,32 @@ export function BankIngestPage() {
           return <span className="text-xs text-muted-foreground">{parts.join(', ') || 'nothing'}</span>
         },
       },
+    ],
+    [baseColumns],
+  )
+
+  const heldColumns = useMemo<ReadonlyArray<GridColumn<PreviewRowResult>>>(
+    () => [
+      ...baseColumns,
       {
-        key: 'errors',
-        header: 'Errors',
+        // AMBER, not the default pill. These codes are absent from STATUS_MAP,
+        // so a plain StatusPill falls through to the neutral grey-blue that
+        // reads as "no status" rather than "needs a look". `pending` is the
+        // house amber and the only honest facet for a row awaiting a human.
+        key: 'reason',
+        header: 'Reason',
         cell: (r) => (
           <div className="flex flex-wrap gap-1">
             {r.errors.map((code) => (
-              <StatusPill key={code} value={code} />
+              <span key={code} className={pillClass('pending')}>
+                {statusMeta(code).label}
+              </span>
             ))}
           </div>
         ),
       },
     ],
-    [],
+    [baseColumns],
   )
 
   // Derived, not a second state machine: a clean preview IS Review, a landed
@@ -179,8 +206,8 @@ export function BankIngestPage() {
         <CardHeader>
           <CardTitle>Bank request upload</CardTitle>
           <CardDescription>
-            Parsed on the server against the bank&apos;s known layout; nothing is written until you commit. Committed
-            rows pool toward the next batch.
+            Parsed on the server against the bank&apos;s known layout; nothing is written until you add. Added rows
+            pool toward the next batch.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -282,127 +309,182 @@ export function BankIngestPage() {
 
           {previewOk && (
             <>
-              <div className="grid gap-3 sm:grid-cols-2">
-                {invalidRows.length > 0 ? (
-                  <ErrorNote>
-                    <strong>{invalidRows.length} row(s) are blocked.</strong> These will not be committed. Fix them in
-                    the source file and upload again.
-                  </ErrorNote>
-                ) : (
-                  <InfoNote>
-                    <strong>Nothing is blocked.</strong> All {rows.length} rows can be committed.
-                  </InfoNote>
-                )}
-                <InfoNote>
-                  <strong>{recognised.length} columns recognised</strong> against the bank&apos;s layout, so nothing
-                  needed mapping by hand.
-                </InfoNote>
-              </div>
+              {/* One muted sentence where two banner boxes used to sit. The
+                  blocked-row count is the held table's own title now, and a
+                  recognised-columns fact never deserved a colored box. */}
+              <p className="-mt-1 text-xs text-muted-foreground">
+                {recognised.length} columns recognised against the bank&apos;s layout; nothing needed mapping by hand.
+              </p>
 
-              <DataGrid
-                columns={columns}
-                rows={rows}
-                pageSize={20}
-                getRowKey={(r) => String(r.rowNo)}
-                searchPlaceholder="Search merchant, UPI ID or bank code…"
-                emptyTitle="No rows"
-                // Commit sits in the grid's own toolbar so the decision and its
-                // evidence share a screen; below a 340-row table it would sit
-                // several screens under the summary it depends on.
-                //
-                // The badge REPORTS THE OUTCOME rather than the request
-                // finishing. A hardcoded green "Committed" once appeared three
-                // inches above a red box saying nothing was committed, because
-                // green plus a tick is the strongest "all good" signal on the
-                // page and it was firing on `commitResult !== null`.
-                toolbarRight={
-                  commitResult === null ? (
-                    <Button
-                      type="button"
-                      onClick={() => {
-                        void commit()
-                      }}
-                      disabled={busy !== null || validRows.length === 0}
-                    >
-                      {busy === 'committing' && <Loader2 className="animate-spin" aria-hidden="true" />}
-                      Commit {validRows.length} row(s)
-                    </Button>
-                  ) : commitResult.accepted > 0 ? (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
-                      <Check className="size-3.5" aria-hidden="true" />
-                      {commitResult.accepted} committed
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                      <AlertTriangle className="size-3.5" aria-hidden="true" />
-                      {commitResult.quarantined > 0 ? 'Held for review, 0 committed' : 'Nothing committed'}
-                    </span>
-                  )
-                }
-              />
+              {/* STACKED, full width, one panel per category (team decision,
+                  17 Aug 2026, after trying side by side). Full width is what
+                  buys the honest column set: Bank and Branch stay separate
+                  rather than collapsing back into one cramped cell.
+                  Discoverability of the second panel is handled by BOUNDING
+                  each table's body instead of by column layout, so a long
+                  file cannot push the held panel off the bottom of the world.
+
+                  ONE HEADER ROW PER CARD, and the heading goes INSIDE the grid's
+                  toolbar rather than in a strip above it. A separate <header>
+                  meant the title, the column headers and the cells each started
+                  at a different left edge, because the strip's padding and the
+                  grid's own px-4 were not the same number. Sharing the toolbar
+                  makes one left edge for all three, which is the whole visual
+                  difference.
+
+                  SURFACES STAY WHITE. Colour is spent only on the small icon
+                  chip and the reason pills; the tinted header washes and the
+                  red panel border are gone. Amber, not red, on the held side:
+                  these rows are awaiting a human decision, not errors, and
+                  amber is already what quarantined and flagged counts use. */}
+              <div className="space-y-4">
+                <section className="overflow-hidden rounded-lg border bg-card">
+                  <div>
+                    <DataGrid
+                      columns={readyColumns}
+                      rows={validRows}
+                      pageSize={20}
+                      // Bounded so the CARD ends: a long file scrolls inside
+                      // its own panel instead of pushing the held panel and
+                      // the actions below off screen.
+                      maxBodyHeight="38vh"
+                      getRowKey={(r) => String(r.rowNo)}
+                      searchPlaceholder="Search merchant, UPI ID, bank or branch…"
+                      emptyTitle="Nothing to add"
+                      emptyMessage="No row in this file passed the checks. The held table says why, row by row."
+                      // THE OUTCOME PILL BELONGS ON THE LEFT, beside the title it
+                      // is about. It used to replace the Add button in
+                      // toolbarRight, which read as a broken button sitting where
+                      // an action had been, and wrapped "1 added" onto two lines
+                      // in the narrow gap beside the search box. Here it has room,
+                      // and nowrap guarantees it keeps it.
+                      //
+                      // It REPORTS THE OUTCOME rather than the request finishing:
+                      // a hardcoded green "Committed" once appeared inches above a
+                      // message saying nothing was committed.
+                      toolbarLeft={
+                        <>
+                          <span className="flex size-6 items-center justify-center rounded-md bg-emerald-50 text-emerald-600">
+                            <CheckCircle2 className="size-3.5" aria-hidden="true" />
+                          </span>
+                          <h3 className="text-sm font-semibold">Ready to add</h3>
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                            {validRows.length}
+                          </span>
+                          {commitResult !== null &&
+                            (commitResult.accepted > 0 ? (
+                              <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
+                                <Check className="size-3.5" aria-hidden="true" />
+                                {commitResult.accepted} added
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                                <AlertTriangle className="size-3.5" aria-hidden="true" />
+                                {commitResult.quarantined > 0 ? 'Held for review, 0 added' : 'Nothing added'}
+                              </span>
+                            ))}
+                        </>
+                      }
+                      // The action sits in the grid's own toolbar so the decision
+                      // and its evidence share a screen; below a 340-row table it
+                      // would sit several screens under the rows it depends on.
+                      // Gone once committed, leaving the search box alone: there is
+                      // no second Add to offer for a file already added.
+                      toolbarRight={
+                        commitResult === null ? (
+                          <Button
+                            type="button"
+                            onClick={() => {
+                              void commit()
+                            }}
+                            disabled={busy !== null || validRows.length === 0}
+                          >
+                            {busy === 'committing' && <Loader2 className="animate-spin" aria-hidden="true" />}
+                            Add {validRows.length} {validRows.length === 1 ? 'row' : 'rows'}
+                          </Button>
+                        ) : undefined
+                      }
+                    />
+                  </div>
+                </section>
+
+                {invalidRows.length > 0 && (
+                  <section className="overflow-hidden rounded-lg border bg-card">
+                    <div>
+                      <DataGrid
+                        columns={heldColumns}
+                        rows={invalidRows}
+                        pageSize={20}
+                        maxBodyHeight="38vh"
+                        getRowKey={(r) => String(r.rowNo)}
+                        searchPlaceholder="Search merchant, UPI ID, bank or branch…"
+                        emptyTitle="Nothing held"
+                        toolbarLeft={
+                          <>
+                            <span className="flex size-6 items-center justify-center rounded-md bg-amber-50 text-amber-700">
+                              <AlertTriangle className="size-3.5" aria-hidden="true" />
+                            </span>
+                            <h3 className="text-sm font-semibold">
+                              {commitResult === null ? 'Will be held for review' : 'Held for review'}
+                            </h3>
+                            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                              {invalidRows.length}
+                            </span>
+                            <span className="hidden text-xs text-muted-foreground sm:inline">Accept in Queues to add</span>
+                          </>
+                        }
+                      />
+                    </div>
+                  </section>
+                )}
+              </div>
             </>
           )}
 
           {commitResult !== null && (
             <>
-              <PerRowErrors result={commitResult} />
-              {/* CONDITIONAL, and that is the whole point. This note used to
-                  render on `commitResult !== null`, so a commit where every row
-                  was held still announced "Done, the rows now pool toward a
-                  batch" directly under a message saying nothing was committed.
-                  Re-uploading the same file is a NORMAL operator action, so that
-                  contradiction sat on the most travelled path. A results panel
-                  that says "done" has to have something to be done about. */}
-              {commitResult.accepted > 0 ? (
-                <InfoNote>
-                  <strong>{commitResult.accepted} row(s) now pool toward a batch.</strong> When one triggers (lot size,
-                  max wait, or a manual trigger on{' '}
-                  <Link className="underline" to="/batches">
-                    Batches
-                  </Link>
-                  ), it mints a Dispatch ID per merchant, and the print PDFs are generated from that batch.
-                </InfoNote>
-              ) : (
-                <ErrorNote>
-                  <strong>Nothing entered the pool.</strong>{' '}
-                  {commitResult.duplicateVpa > 0
-                    ? `All ${commitResult.duplicateVpa} row(s) repeat a UPI ID already in the system, so every one was held in quarantine rather than committed. A returning UPI ID is often a genuine additional soundbox for a merchant we already have: accept it in Queues after a look.`
-                    : commitResult.duplicate > 0
-                      ? `All ${commitResult.duplicate} row(s) were already ingested from an earlier upload, so this file added nothing.`
-                      : commitResult.quarantined > 0
-                        ? `All ${commitResult.quarantined} row(s) were held for review. The counts above say why each one was held.`
-                        : 'No row in this file was committed, so no batch will change and there is nothing to generate. The counts above say what happened to each row.'}{' '}
-                  {commitResult.quarantined > 0 && (
-                    <>
-                      Held rows wait for you in{' '}
-                      <Link className="underline" to="/queues/quarantine">
-                        Queues
-                      </Link>
-                      ; accepting one there is what puts it in the pool.
-                    </>
-                  )}
-                </ErrorNote>
-              )}
+              {/* BUTTONS ONLY under the tables (team decision, 17 Aug 2026).
+                  The tally line and the notice sentences that used to sit here
+                  are gone. What each table did is now said by its own header
+                  pill and count, so the summary was restating the screen; the
+                  pooling fact is said once by the success toast.
 
-              <div className="flex items-center gap-2 pt-1">
-                <Button asChild variant="outline">
-                  <Link to="/batches">
-                    View batches
-                    <ArrowRight aria-hidden="true" />
-                  </Link>
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setFile(null)
-                    setPreview(null)
-                    setCommitResult(null)
-                    setError(null)
-                  }}
-                >
-                  Upload another file
-                </Button>
+                  Deliberately dropped with them, and worth knowing: the
+                  malformed-QR count (D-8) had no other surface in the portal,
+                  so the "GSCB should still be told" number is no longer
+                  reachable from the UI. Same for the accepted-repeat and
+                  shared-mobile review signals (D-2). The commit response still
+                  carries all three. */}
+
+              {/* The agreed hierarchy (16 Aug 2026): the likely next action is
+                  primary on the left, confirming the outcome is secondary
+                  beside it, and the one thing needing ATTENTION, when it
+                  exists, sits alone on the right in the red-tinted style. */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      setFile(null)
+                      setPreview(null)
+                      setCommitResult(null)
+                      setError(null)
+                    }}
+                  >
+                    Upload another file
+                  </Button>
+                  <Button asChild variant="outline">
+                    <Link to="/batches">
+                      Go to batches
+                      <ArrowRight aria-hidden="true" />
+                    </Link>
+                  </Button>
+                </div>
+                {commitResult.quarantined > 0 && (
+                  <Button asChild variant="destructive">
+                    <Link to="/queues/quarantine">Go to Quarantine</Link>
+                  </Button>
+                )}
               </div>
             </>
           )}

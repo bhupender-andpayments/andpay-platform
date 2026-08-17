@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { DataTable, type DataTableColumn } from '../../src/components/DataTable.js'
 
 // D-9: the browser found that a DataTable wider than its Card was CLIPPED with
@@ -39,6 +39,68 @@ describe('DataTable', () => {
     // IS the observable. A bare <table> whose parent is the Card is exactly the
     // clipped shape this replaced.
     expect(wrapper?.className).toContain('overflow-x-auto')
+    // THE OTHER HALF, and the pair is the invariant: a scroll container around
+    // a `w-full`-only table can never scroll, because the table is pinned to
+    // the container's own width. It cannot overflow, so instead the browser
+    // shrinks the columns and wraps their text - which is how a date stamp
+    // ended up broken across five lines while this test still passed.
+    // min-w-max lets the table outgrow the container so the wrapper above has
+    // something to scroll. Either class without the other is a known bug:
+    // wrapper alone is the silent squeeze, min-w-max alone is D-9's clipping.
+    expect(table?.className).toContain('min-w-max')
+  })
+
+  it('sizes cells to their content by default, and clamps a maxWidth column with an ellipsis', () => {
+    // Default nowrap is what lets a column GROW rather than stack its value
+    // into fragments. `maxWidth` is the answer for genuinely long free text (a
+    // Remarks or Description column): one line, ellipsis, bounded - NOT
+    // wrapping, which would give ragged row heights down the table.
+    const wide: ReadonlyArray<DataTableColumn<Row>> = [
+      { key: 'name', header: 'Name', cell: (r) => r.name },
+      { key: 'notes', header: 'Notes', cell: () => 'a very long note', maxWidth: 240 },
+    ]
+    const { container } = render(<DataTable columns={wide} rows={[{ id: '1', name: 'a' }]} getRowKey={(r) => r.id} />)
+    const cells = container.querySelectorAll('tbody td')
+    // An ordinary column renders no sizing wrapper at all, so it stays exactly
+    // what it was before any of this existed.
+    expect(cells[0]?.querySelector('div.truncate')).toBeNull()
+    const clamped = cells[1]?.querySelector('div.truncate') as HTMLElement | null
+    expect(clamped).not.toBeNull()
+    expect(clamped?.style.maxWidth).toBe('240px')
+  })
+
+  it('resizes a column by dragging its header handle, and double-click restores automatic', () => {
+    const { container } = render(<DataTable columns={columns} rows={[{ id: '1', name: 'a' }]} getRowKey={(r) => r.id} />)
+    const handle = container.querySelector('[data-resize-handle="name"]') as HTMLElement
+    expect(handle).not.toBeNull()
+
+    // jsdom lays nothing out, so getBoundingClientRect() is all zeros and the
+    // drag's start width is 0. That makes the resulting width exactly the
+    // pointer delta, which is what lets this pin the WIRING (listeners on
+    // document, state update, width reaching the cell) without pretending to
+    // test layout jsdom cannot do.
+    fireEvent.mouseDown(handle, { clientX: 0 })
+    fireEvent.mouseMove(document, { clientX: 300 })
+    fireEvent.mouseUp(document)
+
+    const sized = container.querySelector('tbody td div.truncate') as HTMLElement | null
+    expect(sized?.style.width).toBe('300px')
+
+    fireEvent.doubleClick(handle)
+    expect(container.querySelector('tbody td div.truncate')).toBeNull()
+  })
+
+  it('never lets a drag collapse a column past the minimum that keeps its handle grabbable', () => {
+    const { container } = render(<DataTable columns={columns} rows={[{ id: '1', name: 'a' }]} getRowKey={(r) => r.id} />)
+    const handle = container.querySelector('[data-resize-handle="name"]') as HTMLElement
+    // Dragging far to the LEFT: without the floor this would go negative and
+    // the column (and its handle) would be unreachable for the rest of the
+    // session, since the only way back is to grab that same handle.
+    fireEvent.mouseDown(handle, { clientX: 0 })
+    fireEvent.mouseMove(document, { clientX: -500 })
+    fireEvent.mouseUp(document)
+    const sized = container.querySelector('tbody td div.truncate') as HTMLElement | null
+    expect(sized?.style.width).toBe('60px')
   })
 
   it('still renders every column and the row cells inside that wrapper', () => {

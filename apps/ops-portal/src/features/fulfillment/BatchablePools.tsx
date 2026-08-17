@@ -4,12 +4,24 @@ import { newIdempotencyKey } from '../../api/idempotency.js'
 import { getPoolEntries, triggerBatch, getDevices, type PoolEntryRow } from '../../api/endpoints.js'
 import { Card, CardHeader, Button, EmptyState, ErrorNote, InfoNote, CodeChip, SkeletonRows, Field, Input } from '../../ui/primitives.js'
 import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { fmtNumber } from '../../ui/format.js'
 
 // The cap the ops-edge enforces on the trigger reason (BRD 5.3.4). Mirrored
 // here so the operator hits a maxLength on the keyboard rather than a 400 after
 // submitting; the edge and the domain both re-check it, this is only courtesy.
 const MAX_REASON_LENGTH = 500
+
+// The shadcn Card is `flex flex-col gap-(--card-spacing) py-(--card-spacing)`
+// with the token at 24px, and CardHeader takes its own `px` from the same
+// token. So every child sat 24px from the next one ON TOP OF whatever padding
+// it set for itself, and a body div written as `px-5` sat 4px outside the title
+// above it.
+//
+// Setting the token to 20px fixes the alignment (header px matches the body's
+// px-5) and gap-3 sets the vertical rhythm in one place, so the children below
+// carry horizontal padding only and never their own bottom padding.
+const CARD_RHYTHM = 'flex h-full flex-col gap-3 [--card-spacing:--spacing(5)]'
 
 // Redesign step 3, the flagship. This replaces a form with two free-text boxes
 // labelled `tnnt_...` and `prg_...`.
@@ -88,8 +100,9 @@ export function BatchablePools({
   lotSizeFor,
   maxWaitSeconds,
   emptyHint,
-  viewPoolCount,
-  onViewPool,
+  poolRows,
+  poolColumns,
+  poolLoading = false,
 }: {
   onTriggered?: () => void
   /**
@@ -134,10 +147,17 @@ export function BatchablePools({
    * an empty pool actually needs.
    */
   emptyHint?: string
-  /** Count for the "View pool (N)" secondary button in the card header. */
-  viewPoolCount?: number
-  /** Opens the pending-pool dialog, replacing the always-visible table below. */
-  onViewPool?: () => void
+  /**
+   * THE POOL ITSELF, rendered inside this card (2026-08-17 ruling). It used to
+   * sit behind a "View pool (N)" button that opened a dialog, which put the
+   * records an operator is deciding about behind an overlay at the moment they
+   * decide. The rows and their column spec are owned by the page (it already
+   * reads GET /ops/pool for them, and PoolEntryActions writes back through its
+   * `load`), so they are passed in rather than fetched a second time here.
+   */
+  poolRows?: readonly PoolEntryRow[]
+  poolColumns?: GridColumn<PoolEntryRow>[]
+  poolLoading?: boolean
 }) {
   const { client } = useAuth()
   const [pools, setPools] = useState<BatchablePool[] | null>(null)
@@ -224,9 +244,9 @@ export function BatchablePools({
   // removes, at the moment the operator is already dealing with a broken page.
   if (loadError !== null) {
     return (
-      <Card>
-        <CardHeader title="Ready to batch" />
-        <div className="p-5">
+      <Card className={CARD_RHYTHM}>
+        <CardHeader title="Build batch" />
+        <div className="px-5">
           <ErrorNote>{loadError}</ErrorNote>
         </div>
       </Card>
@@ -237,31 +257,54 @@ export function BatchablePools({
   // beside it and has to be able to fill it, otherwise the empty state has no
   // height to centre itself in.
   return (
-    <Card className="flex h-full flex-col">
+    <Card className={CARD_RHYTHM}>
       <CardHeader
-        title="Ready to batch"
+        title="Build batch"
         subtitle="Everything pooled and waiting. One pool per tenant and program, never per bank."
-        actions={
-          onViewPool !== undefined ? (
-            <Button variant="secondary" size="sm" onClick={onViewPool}>
-              View pool{viewPoolCount !== undefined && ` (${fmtNumber(viewPoolCount)})`}
-            </Button>
-          ) : undefined
-        }
       />
 
+      {/* THE POOL, on the page rather than behind a dialog. It leads the card
+          because it is the evidence; the trigger strip below it is the
+          decision. Rendered only when the page hands rows in, so the workflow
+          workspace (which mounts this card without them) is unchanged. */}
+      {poolColumns !== undefined && poolRows !== undefined && (
+        <div className="px-5">
+          <div className="overflow-hidden rounded-xl border">
+            <DataGrid
+              columns={poolColumns}
+              rows={poolRows}
+              loading={poolLoading}
+              getRowKey={(r) => r.asgnId}
+              searchPlaceholder="Search merchant, dispatch id or bank…"
+              emptyTitle="Nothing pooled yet"
+              emptyMessage="Committed bank rows land here and wait for a batch."
+              pageSize={10}
+              pageSizeOptions={[10, 25, 50]}
+              maxBodyHeight="42vh"
+            />
+          </div>
+        </div>
+      )}
+
       {pools === null ? (
-        <div className="px-5 pb-5">
+        <div className="px-5">
           <SkeletonRows rows={2} cols={3} />
         </div>
       ) : pools.length === 0 ? (
         // The shared EmptyState, the same treatment every other empty surface
         // in the portal uses, centred in whatever height the row gives us.
-        <div className="flex flex-1 items-center justify-center px-5 pb-5">
+        <div className="flex flex-1 items-center justify-center px-5">
           <EmptyState title="Nothing waiting to be batched" message={emptyHint} />
         </div>
       ) : (
-        <div className="flex flex-col gap-3 px-5 pb-5">
+        // mt-auto pins the trigger strip to the BOTTOM of the card. The card
+        // stretches to the height of the right-hand column (deliberately, see
+        // the no-items-start note on FulfillmentPage), so without this the
+        // leftover height fell below the strip and left it stranded mid-card
+        // over dead space. Pushed down, the same leftover becomes breathing
+        // room between the evidence and the decision, and the strip reads as
+        // the card's footer bar.
+        <div className="mt-auto flex flex-col gap-3 px-5">
           {pools.map((pool) => {
             const key = `${pool.tenantId}|${pool.programId}`
             const days = ageInDays(pool.oldestCreatedAt)
@@ -277,8 +320,10 @@ export function BatchablePools({
                 key={key}
                 className="overflow-hidden rounded-xl border border-border/70 bg-primary/[0.04] shadow-sm"
               >
-                <div className="h-1 w-full bg-primary/40" aria-hidden="true" />
-                <div className="flex flex-col gap-4 p-4">
+                {/* NO accent bar here any more. The Auto-trigger card beside
+                    this one keeps its own, and two primary accents facing each
+                    other across one row was decoration competing with itself. */}
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 p-3">
                   {/* TWO STATS, not a bank code and not a sentence to parse.
                       This used to lead with `pool.bankNames.join(', ')`, and
                       for a demo tenant with no real Bank Master entry that
@@ -291,43 +336,42 @@ export function BatchablePools({
                       LIVE numbers against those exact two thresholds, giant
                       and legible. The bank still appears in the confirm
                       dialog and the pool table, where it answers a question. */}
-                  <div className="grid grid-cols-2 gap-3 sm:gap-4">
-                    <div className="rounded-xl border bg-card px-4 py-3">
-                      <p className="num text-3xl font-bold leading-none tracking-tight">
+                  {/* A COMPACT STRIP, not the two giant stat boxes this used
+                      to be. The pool's own table now sits directly above it and
+                      the Batch preview card beside it carries the composition,
+                      so full-size tiles here restated in 3xl type what the eye
+                      had just read. The two LIVE numbers against the two
+                      auto-trigger thresholds (BRD FR-033) still lead, because
+                      they are what says whether this batch is early. */}
+                  <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1.5">
+                    <span className="flex items-baseline gap-1.5">
+                      <span className="num text-lg font-bold leading-none tracking-tight">
                         {fmtNumber(pool.records)}
                         {lot !== null && (
-                          <span className="text-lg font-medium text-muted-foreground">/{fmtNumber(lot)}</span>
+                          <span className="text-sm font-medium text-muted-foreground">/{fmtNumber(lot)}</span>
                         )}
-                      </p>
-                      <p className="mt-1.5 text-[12.5px] font-medium text-foreground">
+                      </span>
+                      <span className="text-[12.5px] font-medium text-foreground">
                         {pool.records === 1 ? 'record' : 'records'} pooled
-                      </p>
-                      <p className="text-[11.5px] text-muted-foreground">toward the minimum lot</p>
-                    </div>
-                    <div className="rounded-xl border bg-card px-4 py-3">
-                      <p className="num text-3xl font-bold leading-none tracking-tight">
+                      </span>
+                    </span>
+                    <span className="flex items-baseline gap-1.5">
+                      <span className="num text-lg font-bold leading-none tracking-tight">
                         {days}
                         {maxWaitDays !== null && (
-                          <span className="text-lg font-medium text-muted-foreground">/{maxWaitDays}</span>
+                          <span className="text-sm font-medium text-muted-foreground">/{maxWaitDays}</span>
                         )}
-                      </p>
-                      <p className="mt-1.5 text-[12.5px] font-medium text-foreground">
+                      </span>
+                      <span className="text-[12.5px] font-medium text-foreground">
                         {days === 1 ? 'day' : 'days'} queued
-                      </p>
-                      <p className="text-[11.5px] text-muted-foreground">
-                        {days === 0 ? 'oldest record added today' : 'until the max-wait auto-trigger'}
-                      </p>
-                    </div>
-                  </div>
-                  {shortfall && (
-                    <span className="rounded-md bg-amber-500/10 px-2 py-1 text-[12px] font-medium text-amber-700 dark:text-amber-400">
-                      {inStock === 0
-                        ? 'No devices in stock. The batch can still form; nothing prints against it yet.'
-                        : `Only ${inStock} of ${pool.records} devices in stock. The shortfall will stall at the print vendor.`}
+                      </span>
                     </span>
-                  )}
+                    {/* NO bank names here: the pool table directly above
+                        carries a Bank column per row, and the confirm dialog
+                        restates them at the irreversible moment. A third copy
+                        on this strip said nothing the eye had not just read. */}
+                  </div>
                   <Button
-                    className="self-start"
                     disabled={busyKey !== null}
                     onClick={() => {
                       setError(null)
@@ -337,6 +381,16 @@ export function BatchablePools({
                   >
                     Trigger batch
                   </Button>
+                  {/* basis-full so the advisory takes its own line UNDER the
+                      row rather than squeezing the numbers and the button when
+                      it appears. Last in the DOM for the same reason. */}
+                  {shortfall && (
+                    <span className="basis-full rounded-md bg-amber-500/10 px-2 py-1 text-[12px] font-medium text-amber-700 dark:text-amber-400">
+                      {inStock === 0
+                        ? 'No devices in stock. The batch can still form; nothing prints against it yet.'
+                        : `Only ${inStock} of ${pool.records} devices in stock. The shortfall will stall at the print vendor.`}
+                    </span>
+                  )}
                 </div>
               </div>
             )
@@ -347,7 +401,7 @@ export function BatchablePools({
       {/* A trigger error stays in the dialog it came from, so this only carries
           the outcome of one that got through. */}
       {outcome !== undefined && (
-        <div className="px-5 pb-5">
+        <div className="px-5">
           {outcome === null ? (
             // A real outcome, not a failure: nothing was eligible.
             <InfoNote>Nothing to batch. The pool had no eligible records.</InfoNote>

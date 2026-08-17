@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { fmtDateTime, fmtRelative } from './format.js'
+import { fmtDateTime } from './format.js'
 
 // A HORIZONTAL lifecycle rail: icons in a row, joined by a line, for a
 // lifecycle that is a single unbranched spine.
@@ -94,8 +94,8 @@ export function LifecycleRail({ stages }: { stages: readonly RailStage[] }) {
             </span>
             {/* Only where an instant genuinely exists. */}
             {typeof stage.at === 'string' && stage.at !== '' ? (
-              <span className="num text-center text-[11px] text-muted-foreground" title={fmtDateTime(stage.at)}>
-                {fmtRelative(stage.at)}
+              <span className="num text-center text-[11px] text-muted-foreground">
+                {fmtDateTime(stage.at)}
               </span>
             ) : null}
           </li>,
