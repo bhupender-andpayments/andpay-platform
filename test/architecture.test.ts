@@ -556,6 +556,14 @@ describe('no shared-infrastructure endpoint is ever committed (S4)', () => {
   // rds.amazonaws.com`) is covered, not just single-instance endpoints.
   const RDS_ENDPOINT = /[a-z0-9][a-z0-9-]*\.[a-z0-9-]{8,}\.[a-z0-9-]+\.rds\.amazonaws\.com/i
 
+  // Hoisted to describe scope and shared by both the guard body below and the
+  // teeth test, so editing this pattern into something that matches nothing
+  // turns the whole suite red instead of leaving a second, uncoupled copy of
+  // the guard silently non-guarding. No `g` flag: `.test()` on a `g`-flagged
+  // regex is stateful across calls via `lastIndex`, which would make a shared
+  // instance unsafe to reuse across the many lines checked in the loop below.
+  const PASSWORD_LINE = /^\s*ANDPAY_DB_PASSWORD\s*=\s*\S/
+
   it('has files to check', () => {
     expect(tracked.length).toBeGreaterThan(100)
   })
@@ -581,10 +589,13 @@ describe('no shared-infrastructure endpoint is ever committed (S4)', () => {
     // Prose mentioning the bare suffix while explaining the rule must not trip it.
     expect(RDS_ENDPOINT.test('see rds.amazonaws.com for the endpoint shape')).toBe(false)
 
-    const PASSWORD_LINE = /^\s*ANDPAY_DB_PASSWORD\s*=\s*\S/
     expect(PASSWORD_LINE.test('ANDPAY_DB_PASSWORD=hunter2')).toBe(true)
     // .env.example carries the bare key with nothing after '=', which must not flag.
     expect(PASSWORD_LINE.test('ANDPAY_DB_PASSWORD=')).toBe(false)
+    // PASSWORD_LINE carries no `g` flag, so repeated `.test()` calls must not
+    // alternate results via a persisted `lastIndex`. Prove it on a second
+    // consecutive call against a match.
+    expect(PASSWORD_LINE.test('ANDPAY_DB_PASSWORD=hunter2')).toBe(true)
   })
 
   it('no tracked file contains an RDS endpoint hostname', () => {
@@ -618,7 +629,7 @@ describe('no shared-infrastructure endpoint is ever committed (S4)', () => {
       // `.env.example` carries the bare key with nothing after the '=', which
       // is exactly what it is for. Anything else is a committed credential.
       for (const line of text.split('\n')) {
-        if (/^\s*ANDPAY_DB_PASSWORD\s*=\s*\S/.test(line)) offenders.push(`${file}: ${line.trim().slice(0, 30)}`)
+        if (PASSWORD_LINE.test(line)) offenders.push(`${file}: ${line.trim().slice(0, 30)}`)
       }
     }
     expect(offenders).toEqual([])
