@@ -1539,6 +1539,40 @@ export async function downloadDispatchExcel(btchId: string, group: string): Prom
   return { blob, filename: filenameFromContentDisposition(res, `dispatch-${group}-${btchId}.xlsx`) }
 }
 
+// D-16 (T4.1b): the activation sheet for ONE batch, the file ops sends the CWD.
+//
+// GET /ops/reports/activation/batch/:btchId/xlsx, returning the xlsx media type
+// with `Content-Disposition: attachment; filename="activation-<btchId>.xlsx"`.
+// It is a BINARY body, so it takes the same raw-fetch-with-Bearer path as the
+// two dispatch-package downloads above and for the same recorded reason: the
+// typed `client.request` carries JSON/text only, and client.ts is a SPINE_FILE
+// this work does not touch. The consequence is worth stating rather than
+// rediscovering: a request that lands on an EXPIRED access token gets no
+// 401-refresh-and-retry here, because that interceptor lives inside
+// client.request. It surfaces as an ApiError the caller renders, and the
+// operator clicks the button again after the next typed call has refreshed.
+//
+// `btchId` is percent-encoded even though a wire `btch_` id is
+// path-safe by construction: the encode costs nothing and means an id that ever
+// gains a new character cannot smuggle a path segment into the URL.
+//
+// 404 is a REAL ANSWER here, not a failure: the edge returns it when that batch
+// has nothing awaiting activation. Surfacing it as `null` rather than throwing
+// is the same contract downloadCollateral documents below, so the caller can say
+// so in a sentence instead of showing an error.
+export async function downloadActivationSheet(btchId: string): Promise<DownloadedFile | null> {
+  const res = await fetch(`${opsBaseUrl()}/ops/reports/activation/batch/${encodeURIComponent(btchId)}/xlsx`, {
+    headers: { Authorization: `Bearer ${getAccessToken()}` },
+  })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const text = await res.text()
+    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+  }
+  const blob = await res.blob()
+  return { blob, filename: filenameFromContentDisposition(res, `activation-${btchId}.xlsx`) }
+}
+
 // 404 (no artifact of that type for the batch) is a real, non-error outcome
 // - the edge itself returns 404 deliberately (ops-read.controller.ts's
 // collateral route) rather than an empty/500 - so it is surfaced as `null`,
