@@ -224,13 +224,24 @@ developer-only and synthetic-data-only, in its tags and in
 `docs/platform_build_state.md`, and any promotion beyond that reopens E-3
 first.
 
-**Item 28, Schema and data migration (S23).** Passes with a note. The
-migrations are unchanged and already expand-contract shaped. The bootstrap
-script is additive and config-as-code. One deviation to ratify: this document
-proposes recreating the instance at PostgreSQL 16 before use, because it
-currently runs 18.3 while the compose file, CI, and the Prisma 6.3.0
-toolchain all target 16. RDS cannot downgrade an engine version in place, and
-the instance is empty today, so this is free now and expensive later.
+**Item 28, Schema and data migration (S23).** Passes, with its deviation
+WITHDRAWN. The migrations are unchanged and already expand-contract shaped,
+and the bootstrap script is additive and config-as-code. This document
+originally asked ratification of one deviation, recreating the instance at
+PostgreSQL 16 before use, on the belief that the Prisma toolchain predated
+18. That belief was wrong, see risk 4 for why, and the recreation is not
+needed. Verified on 2026-08-17: all 78 migrations applied cleanly to the live
+18.3 instance across the six schemas, identity 7, tms 20, fulfillment 32,
+orchestrator 3, auth 9, analytics 7, matching the local counts exactly.
+There is no longer any deviation under this item to ratify.
+
+One asymmetry this leaves, stated rather than hidden: the shared instance now
+runs 18.3 while `infra/docker-compose.dev.yml` and CI run postgres:16, so the
+gate is verified against a different major version than the shared dataset.
+That is tolerable for a developer-only, synthetic-data-only instance whose
+gate never touches it, and it is the same class of drift any environment
+split carries. Bringing the compose file to 18 would close it and is a
+separate change, not costed here.
 
 ## 7. Risks and open items
 
@@ -251,11 +262,19 @@ the instance is empty today, so this is free now and expensive later.
    apart from the local docker database, and the TLS discriminator the guard
    also checks is what keeps covering it, so the two decisions cannot drift
    apart.
-4. **Prisma 6.3.0 against PostgreSQL 18.3 is untested** and probably
-   unsupported, since 18 postdates that release. Section 6 item 28 proposes
-   recreating at 16, which removes the question entirely. If instead the team
-   wants to stay on 18, verifying the toolchain is a prerequisite and is not
-   costed here.
+4. **RESOLVED AND WITHDRAWN 2026-08-17, this risk was never real.** It read:
+   "Prisma 6.3.0 against PostgreSQL 18.3 is untested and probably unsupported,
+   since 18 postdates that release", and section 6 item 28 proposed recreating
+   the instance at PostgreSQL 16 to remove the question. Both were wrong.
+   `package.json` declares `prisma ^6.3.0`, and the claim was made by reading
+   the FLOOR of that caret range instead of the resolved version. The
+   installed client is 6.19.3, which postdates PostgreSQL 18. The bootstrap
+   was subsequently run against the live 18.3 instance and all 78 migrations
+   applied cleanly across the six schemas. The instance stays on 18.3, no
+   recreation is needed, and section 6 item 28's deviation is withdrawn.
+   Recorded rather than deleted because the failure mode generalises: a
+   declared semver range is not an installed version, and a compatibility
+   claim made from the floor of a range is a guess wearing a number.
 5. **No backup or restore story is proposed.** The shared dataset will
    accumulate hand-made master data that nothing in the repository can
    rebuild, which is the same class of problem the global teardown's PRESERVE

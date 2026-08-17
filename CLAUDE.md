@@ -160,8 +160,11 @@ portal and demo work.
     source infra/rds-env.sh     # export the six urls for the SHARED dataset
     bash infra/rds-bootstrap.sh # first time only: create and migrate it
 
-The instance must first be recreated at PostgreSQL 16 and the bootstrap has
-not yet been run, so there is no shared dataset to connect to yet.
+Bootstrapped 2026-08-17: all 78 migrations are applied across the six schemas
+and the dataset is live. The instance runs PostgreSQL 18.3, which is fine.
+An earlier note here called for recreating it at 16 on the belief that Prisma
+predated 18; the installed client is 6.19.3, not the 6.3.0 floor declared in
+`package.json`, and it applied every migration cleanly.
 
 Credentials come from a gitignored `.env` holding four keys; see
 `.env.example`. `infra/db-url.mjs` derives the urls, parsing the file
