@@ -551,11 +551,40 @@ describe('no shared-infrastructure endpoint is ever committed (S4)', () => {
 
   // An RDS endpoint: <instance>.<account-suffix>.<region>.rds.amazonaws.com.
   // Anchored on the full shape so prose mentioning "rds.amazonaws.com" while
-  // explaining the rule does not trip it.
-  const RDS_ENDPOINT = /[a-z0-9][a-z0-9-]*\.[a-z0-9]{8,}\.[a-z0-9-]+\.rds\.amazonaws\.com/i
+  // explaining the rule does not trip it. The second label allows a hyphen too
+  // so the RDS cluster/proxy endpoint family (`mydb.cluster-cabc12345.<region>.
+  // rds.amazonaws.com`) is covered, not just single-instance endpoints.
+  const RDS_ENDPOINT = /[a-z0-9][a-z0-9-]*\.[a-z0-9-]{8,}\.[a-z0-9-]+\.rds\.amazonaws\.com/i
 
   it('has files to check', () => {
     expect(tracked.length).toBeGreaterThan(100)
+  })
+
+  it('the guard patterns actually match the shapes they claim to catch', () => {
+    // A guard that has only ever passed proves nothing: if either regex below
+    // were edited into a pattern that matches nothing, the two tests above
+    // would stay green forever while guarding nothing. So assert the patterns
+    // have teeth, both on known-bad shapes and on the shapes they must NOT flag.
+    //
+    // The endpoint sample is assembled at runtime from parts rather than
+    // written out literally: a literal endpoint here would trip THIS file's
+    // own "no tracked file contains an RDS endpoint" guard, since this file is
+    // itself tracked by git. Synthetic throughout; the second label below is
+    // deliberately not a real AWS account suffix.
+    const singleInstance = ['andpay-dev', 'c' + 'abcdefgh123', 'ap-south-1', 'rds', 'amazonaws', 'com'].join('.')
+    expect(RDS_ENDPOINT.test(singleInstance)).toBe(true)
+
+    // The cluster/proxy endpoint family carries a hyphen in the second label.
+    const clusterShaped = ['mydb', 'cluster-cabc12345', 'ap-south-1', 'rds', 'amazonaws', 'com'].join('.')
+    expect(RDS_ENDPOINT.test(clusterShaped)).toBe(true)
+
+    // Prose mentioning the bare suffix while explaining the rule must not trip it.
+    expect(RDS_ENDPOINT.test('see rds.amazonaws.com for the endpoint shape')).toBe(false)
+
+    const PASSWORD_LINE = /^\s*ANDPAY_DB_PASSWORD\s*=\s*\S/
+    expect(PASSWORD_LINE.test('ANDPAY_DB_PASSWORD=hunter2')).toBe(true)
+    // .env.example carries the bare key with nothing after '=', which must not flag.
+    expect(PASSWORD_LINE.test('ANDPAY_DB_PASSWORD=')).toBe(false)
   })
 
   it('no tracked file contains an RDS endpoint hostname', () => {

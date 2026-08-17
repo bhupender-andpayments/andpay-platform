@@ -22,6 +22,24 @@ describe('loopback detection', () => {
   })
 })
 
+describe('loopback plus TLS: a port-forwarded shared instance also presents as localhost', () => {
+  it('accepts a plain localhost url', () => {
+    expect(isLoopbackUrl('postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms')).toBe(true)
+  })
+
+  it('rejects a localhost url that carries sslmode=require, a probable tunnel to shared infrastructure', () => {
+    expect(
+      isLoopbackUrl('postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms&sslmode=require'),
+    ).toBe(false)
+  })
+
+  it('accepts a localhost url that explicitly disables TLS', () => {
+    expect(
+      isLoopbackUrl('postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms&sslmode=disable'),
+    ).toBe(true)
+  })
+})
+
 describe('offender detection across the environment', () => {
   it('returns nothing when every variable is unset, which is the normal local case', () => {
     expect(nonLoopbackVars({})).toEqual([])
@@ -40,9 +58,10 @@ describe('offender detection across the environment', () => {
     expect(offenders.sort()).toEqual(['AUTH_DATABASE_URL', 'TMS_DATABASE_URL'])
   })
 
-  it('covers the outbox library test url as well as the six contexts', () => {
+  it('covers the outbox library test url and the admin bootstrap url, as well as the six contexts', () => {
     expect(SCOPED_URL_VARS).toContain('OUTBOX_TEST_DATABASE_URL')
-    expect(SCOPED_URL_VARS).toHaveLength(7)
+    expect(SCOPED_URL_VARS).toContain('ANDPAY_ADMIN_DATABASE_URL')
+    expect(SCOPED_URL_VARS).toHaveLength(8)
   })
 })
 

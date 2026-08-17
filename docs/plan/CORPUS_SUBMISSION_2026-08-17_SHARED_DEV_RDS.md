@@ -245,7 +245,12 @@ the instance is empty today, so this is free now and expensive later.
    puts a database on the internet and needs an owner for allowlist churn as
    people change networks. A private subnet reached over SSM port forwarding
    or a VPN would be the stronger posture and is a later change, not a
-   blocker.
+   blocker. Moving to that posture interacts with the test gate's loopback
+   guard (`test/db-loopback.ts`): a port-forwarded shared instance presents to
+   every local client as `localhost`, so hostname alone can no longer tell it
+   apart from the local docker database, and the TLS discriminator the guard
+   also checks is what keeps covering it, so the two decisions cannot drift
+   apart.
 4. **Prisma 6.3.0 against PostgreSQL 18.3 is untested** and probably
    unsupported, since 18 postdates that release. Section 6 item 28 proposes
    recreating at 16, which removes the question entirely. If instead the team

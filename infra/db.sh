@@ -20,10 +20,31 @@ export ANALYTICS_DATABASE_URL="${ANALYTICS_DATABASE_URL:-postgresql://andpay:and
 # <CTX>_DATABASE_URL, which is what makes infra/rds-bootstrap.sh work, and is
 # also how somebody migrates the shared instance while believing they are
 # migrating docker.
-echo ">>> migrating host: $(node -e 'process.stdout.write(new URL(process.env.IDENTITY_DATABASE_URL).hostname)')"
+HOST="$(node -e 'process.stdout.write(new URL(process.env.IDENTITY_DATABASE_URL).hostname)')"
+echo ">>> migrating host: ${HOST}"
 
 MODE="${1:-deploy}"
 NAME="${2:-init}"
+
+# `migrate dev` (unlike `migrate deploy`) offers to RESET the database when its
+# state does not match the migration history, that is, drop and recreate it.
+# The host echo above is only a warning; against the shared developer RDS
+# (reachable the moment a shell has sourced infra/rds-env.sh) a reset there
+# destroys the whole team's dataset. So `dev` mode refuses outright unless the
+# resolved host is loopback. `deploy` is additive and keeps only the echo.
+if [ "${MODE}" = "dev" ]; then
+  case "${HOST}" in
+    localhost | 127.0.0.1 | ::1 | \[::1\]) ;;
+    *)
+      echo "REFUSING: 'infra/db.sh dev' targets '${HOST}', not localhost." >&2
+      echo "'prisma migrate dev' can RESET (drop and recreate) a database whose" >&2
+      echo "state does not match the migration history, so it may only ever run" >&2
+      echo "against the local docker Postgres. Open a shell that has NOT sourced" >&2
+      echo "infra/rds-env.sh, then: pnpm db:up && bash ./infra/db.sh dev <name>" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 # ANALYTICS WAS MISSING FROM THIS LIST until 2026-08-08, and it was a silent
 # gap rather than a loud one: this is the documented way to apply migrations, so
