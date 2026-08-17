@@ -151,6 +151,36 @@ Generated Prisma clients live under `services/*/generated` and
 `packages/*/generated` and are gitignored. If a suite fails on a missing
 `generated/client`, run `bash ./infra/db.sh`.
 
+### The shared developer database
+
+`infra/docker-compose.dev.yml` remains the ONLY database the test gate ever
+touches. A shared AWS RDS Postgres in ap-south-1 holds the common dataset for
+portal and demo work.
+
+    source infra/rds-env.sh     # export the six urls for the SHARED dataset
+    bash infra/rds-bootstrap.sh # first time only: create and migrate it
+
+Bootstrapped 2026-08-17: all 78 migrations are applied across the six schemas
+and the dataset is live. The instance runs PostgreSQL 18.3, which is fine.
+An earlier note here called for recreating it at 16 on the belief that Prisma
+predated 18; the installed client is 6.19.3, not the 6.3.0 floor declared in
+`package.json`, and it applied every migration cleanly.
+
+Credentials come from a gitignored `.env` holding four keys; see
+`.env.example`. `infra/db-url.mjs` derives the urls, parsing the file
+literally and percent-encoding the password, because a password containing a
+space or a `#` breaks both a shell `source` and a raw connection string.
+
+`pnpm test` REFUSES to run in a shell that has sourced `rds-env.sh`. The gate
+truncates the four domain schemas and deletes auth rows on every run, so it
+may only ever talk to localhost. The guard lives in `test/db-loopback.ts` and
+fires from both `test/db-tests-ran.setup.ts` and `vitest.global-teardown.ts`.
+
+The instance is developer-only and synthetic-data-only. It runs as the table
+owner and is therefore RLS-exempt, which is the same posture as local docker
+and the subject of go-live blocker E-3. Anything beyond developer use reopens
+E-3 first (S13).
+
 ## Testing contract
 
 - Most suites are integration tests against the real local Postgres, so
