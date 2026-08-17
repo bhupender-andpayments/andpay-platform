@@ -31,6 +31,7 @@
 
 import { existsSync, rmSync } from 'node:fs'
 import { DB_TESTS_RAN_MARKER } from './vitest.db-marker.js'
+import { nonLoopbackVars, loopbackViolationMessage } from './test/db-loopback.js'
 
 // The four DOMAIN contexts. Deliberately a literal list, not "every schema".
 const DOMAIN_CONTEXTS = [
@@ -364,6 +365,19 @@ async function resetDemoConsumerGroups(): Promise<string> {
 }
 
 export async function teardown(): Promise<void> {
+  // GUARD 4: NEVER TRUNCATE SHARED INFRASTRUCTURE (2026-08-17).
+  //
+  // Defence in depth. The per-file guard in test/db-tests-ran.setup.ts should
+  // already have failed every suite before reaching here, but this function
+  // owns the destructive statements, so it refuses on its own authority
+  // rather than trusting a caller. Loud and non-fatal, like the rest of this
+  // file: cleanup failing must never turn a green gate red.
+  const offenders = nonLoopbackVars()
+  if (offenders.length > 0) {
+    console.error(`${TAG} ${loopbackViolationMessage(offenders)}`)
+    return
+  }
+
   // Escape hatch for the case where you WANT the rows: debugging a failing test
   // by inspecting what it left behind.
   if (process.env[SKIP_ENV] === '1') {
