@@ -16,6 +16,12 @@ export ORCHESTRATOR_DATABASE_URL="${ORCHESTRATOR_DATABASE_URL:-postgresql://andp
 export AUTH_DATABASE_URL="${AUTH_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=auth}"
 export ANALYTICS_DATABASE_URL="${ANALYTICS_DATABASE_URL:-postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=analytics}"
 
+# Say where this is about to write. `db.sh` silently honours an exported
+# <CTX>_DATABASE_URL, which is what makes infra/rds-bootstrap.sh work, and is
+# also how somebody migrates the shared instance while believing they are
+# migrating docker.
+echo ">>> migrating host: $(node -e 'process.stdout.write(new URL(process.env.IDENTITY_DATABASE_URL).hostname)')"
+
 MODE="${1:-deploy}"
 NAME="${2:-init}"
 
