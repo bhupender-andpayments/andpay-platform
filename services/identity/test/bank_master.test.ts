@@ -53,6 +53,13 @@ async function auditRowsFor(operation: string): Promise<
     }))
 }
 
+async function tenantFactCount(): Promise<number> {
+  const rows = await db.$queryRaw<{ n: bigint }[]>`
+    SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.tenant.v1'
+  `
+  return Number(rows[0]!.n)
+}
+
 function ingestRow(
   overrides: Partial<RowFactPayload> = {},
   dedupKey = 'file-bm|1',
@@ -203,6 +210,96 @@ describe('editBankMaster (BRD Annexure D.4)', () => {
   })
 })
 
+// The admin write path must PUBLISH what it changes, or TMS never learns the
+// bank exists. Before 2026-08-17 neither create nor edit emitted a tenant fact,
+// so an admin-created bank had no fact anywhere: resolveTenant's mint branch
+// (the only other emitter) never runs for it, because the row already exists.
+// The consequence was not cosmetic. createAssignmentFromEnrollment throws
+// "tenant projection not ready" without that projection, so every row of an
+// admin-created bank's first file died. Proven end to end in
+// test/tms_identity_roundtrip.test.ts; asserted at the source here.
+describe('the tenant fact on the admin write path', () => {
+  async function tenantFacts(): Promise<{ tnntId: string; displayName: string; bankReferenceCode: string; status: string }[]> {
+    const rows = await db.$queryRaw<{ payload: { payload: { tnntId: string; displayName: string; bankReferenceCode: string; status: string } } }[]>`
+      SELECT payload FROM outbox WHERE event_type = 'fct.identity.tenant.v1' ORDER BY created_at ASC
+    `
+    return rows.map((r) => r.payload.payload)
+  }
+
+  it('create emits one tenant fact carrying the admin display name', async () => {
+    const res = await createBankMaster(db, createArgs({ bankReferenceCode: 'BREF-FACT-1', displayName: 'Admin Named Bank' }))
+
+    const facts = await tenantFacts()
+    expect(facts).toHaveLength(1)
+    expect(facts[0]).toEqual({
+      tnntId: res.tnntId,
+      // The admin's own name. resolveTenant's auto-mint can only use the bank
+      // reference code as a placeholder, so this is the one real difference.
+      displayName: 'Admin Named Bank',
+      bankReferenceCode: 'BREF-FACT-1',
+      status: 'ACTIVE',
+    })
+  })
+
+  it('a client-key replay of create emits no second fact', async () => {
+    const args = createArgs({ bankReferenceCode: 'BREF-FACT-REPLAY' })
+    await createBankMaster(db, args)
+    await createBankMaster(db, args)
+    expect(await tenantFacts()).toHaveLength(1)
+  })
+
+  it('an edit that changes a fact-carried field emits the new state', async () => {
+    const created = await createBankMaster(db, createArgs({ bankReferenceCode: 'BREF-FACT-2' }))
+    await editBankMaster(db, {
+      tnntId: created.tnntId as string,
+      displayName: 'Renamed Bank',
+      status: 'SUSPENDED',
+      clientKey: randomUUID(),
+      actorId: 'actor-admin-1',
+      traceId: 'trace-bm-edit',
+    })
+
+    const facts = await tenantFacts()
+    expect(facts).toHaveLength(2)
+    expect(facts[1]).toEqual({
+      tnntId: created.tnntId,
+      displayName: 'Renamed Bank',
+      bankReferenceCode: 'BREF-FACT-2',
+      status: 'SUSPENDED',
+    })
+  })
+
+  // Fact hygiene, the same rule project.ts follows: emit on an actual change to
+  // something the fact carries, never on every write. The address and contact
+  // block is admin-only and rides no fact, so changing it is not news.
+  it('an edit that touches only off-fact fields emits nothing', async () => {
+    const created = await createBankMaster(db, createArgs({ bankReferenceCode: 'BREF-FACT-3' }))
+    await editBankMaster(db, {
+      tnntId: created.tnntId as string,
+      city: 'Mysuru',
+      mobile: '9000000009',
+      clientKey: randomUUID(),
+      actorId: 'actor-admin-1',
+      traceId: 'trace-bm-edit-2',
+    })
+
+    expect(await tenantFacts()).toHaveLength(1)
+  })
+
+  it('an edit that changes nothing at all emits nothing', async () => {
+    const created = await createBankMaster(db, createArgs({ bankReferenceCode: 'BREF-FACT-4' }))
+    await editBankMaster(db, {
+      tnntId: created.tnntId as string,
+      displayName: 'HDFC Bank',
+      clientKey: randomUUID(),
+      actorId: 'actor-admin-1',
+      traceId: 'trace-bm-edit-3',
+    })
+
+    expect(await tenantFacts()).toHaveLength(1)
+  })
+})
+
 describe('listBankMasters (guard-only read)', () => {
   it('returns every Bank Master with its address/contact', async () => {
     await createBankMaster(db, createArgs())
@@ -219,6 +316,12 @@ describe('auto-mint reconciliation: admin-created Bank Master and ingest resolve
     const created = await createBankMaster(db, createArgs())
     expect(await db.tenant.count()).toBe(1)
 
+    // The create's own tenant fact (added 2026-08-17). Counted here so the
+    // ingest assertion below can be about what INGEST emitted, which is what
+    // this test is actually about.
+    const afterCreate = await tenantFactCount()
+    expect(afterCreate).toBe(1)
+
     // an ingest row for the SAME bankReferenceCode: resolveTenant SELECTs and
     // finds the admin row (created:false), so no second tenant and no tenant
     // fact is emitted; the merchant/program/enrollment graph is projected.
@@ -233,11 +336,13 @@ describe('auto-mint reconciliation: admin-created Bank Master and ingest resolve
     expect(row.city).toBe('Bengaluru')
     expect(row.email).toBe('ops@hdfc.example')
 
-    // no tenant fact was emitted (the tenant already existed, created:false)
-    const tenantFacts = await db.$queryRaw<{ n: bigint }[]>`
-      SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.tenant.v1'
-    `
-    expect(Number(tenantFacts[0]!.n)).toBe(0)
+    // THE INGEST emitted no tenant fact: it resolved an existing tenant
+    // (created:false), and fact hygiene says a no-change is not news. The count
+    // is unchanged from afterCreate rather than zero, because the create now
+    // emits its own fact. Asserting a bare zero here is what let the missing
+    // create fact hide: it could not tell "nobody emitted" from "the right one
+    // emitted and the other correctly stayed quiet".
+    expect(await tenantFactCount()).toBe(afterCreate)
   })
 
   it('an admin create AFTER an ingest auto-mint of the same code is rejected as a duplicate 4xx', async () => {

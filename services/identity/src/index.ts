@@ -7,9 +7,11 @@ export { IDENTITY_FACT_SCHEMAS } from './fact-schemas.js'
 export { enterWriteScope, enterWriteRole } from './write-context.js'
 export {
   createBankMaster,
+  createMerchant,
   editBankMaster,
   listBankMasters,
   OpsClientError,
+  type CreateMerchantInput,
   type CreateBankMasterInput,
   type EditBankMasterInput,
   type BankMasterAddressContact,

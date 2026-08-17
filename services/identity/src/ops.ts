@@ -1,10 +1,20 @@
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { onceWithin, enqueue } from '@andpay/outbox'
 import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
-import { instanceKey } from '@andpay/keys'
+import { instanceKey, eventKey } from '@andpay/keys'
+import { merchantBankReference } from '@andpay/merchant-ref'
 import type { Prisma } from '../generated/client/index.js'
 import type { IdentityDb } from './db.js'
 import { enterWriteRole } from './write-context.js'
+import { resolveProgram } from './project.js'
+import {
+  merchantFactEnvelope,
+  programFactEnvelope,
+  tenantFactEnvelope,
+  IDENTITY_MERCHANT_TOPIC,
+  IDENTITY_PROGRAM_TOPIC,
+  IDENTITY_TENANT_TOPIC,
+} from './events.js'
 
 // Phase 3 Task 7 (BRD Annexure D): the Bank Master admin write path. "Bank" is
 // the identity `tenant`; today it is only AUTO-MINTED at ingest by resolveTenant
@@ -29,6 +39,16 @@ const CONSUMER = 'identity'
 
 // Interactive-transaction client, matching project.ts's local alias.
 type Tx = Prisma.TransactionClient
+
+// The Program a hand-created merchant is enrolled in. Soundbox dispatch is the
+// only product today, and this MIRRORS the constant the bank-file profile
+// carries (services/tms/src/bank-source-profile.ts ANNEXURE_B_PROFILE
+// productType). The two must agree or the manual create enrolls the merchant in
+// one Program while the bank file resolves another: not a forked merchant
+// identity like the resolver reference would be, but a second enrollment and a
+// second pool. When a second product arrives this becomes a real input on both
+// sides and both constants go away together.
+const PRODUCT_TYPE = 'SOUNDBOX'
 
 // A discriminated client-error so the ops HTTP edge (T9) maps an expected client
 // condition to a 4xx (via the app-wide OpsErrorFilter duck-typing on `kind`),
@@ -242,6 +262,33 @@ export async function createBankMaster(
             (${candidate}::uuid, ${displayName}, ${bankReferenceCode}, 'ACTIVE',
              ${address1}, ${address2}, ${address3}, ${city}, ${district}, ${country}, ${pin}, ${mobile}, ${email})
         `
+        // The tenant fact, in the SAME transaction as the INSERT (E1). Added
+        // 2026-08-17, fixing a silent hole rather than adding a feature.
+        //
+        // A tenant born at INGEST got its fact from resolveTenant's mint branch
+        // (project.ts), and fact hygiene means a later file that merely RESOLVES
+        // that tenant emits nothing, because nothing changed. An admin-created
+        // bank was born HERE, where nothing was emitted at all, so the resolve
+        // branch was the only path it ever took and no fact for it existed
+        // anywhere. TMS therefore never projected a tenant_projection row, and
+        // createAssignmentFromEnrollment (assignment.ts) threw "tenant
+        // projection not ready" for EVERY row of that bank's first file.
+        //
+        // The payload is the same shape resolveTenant's mint emits, with one
+        // real difference: display_name is the admin's own, where the auto-mint
+        // can only use the bank reference code as a placeholder.
+        await enqueue(tx, {
+          aggregateType: 'tenant',
+          aggregateId: tnntId,
+          eventType: IDENTITY_TENANT_TOPIC,
+          partitionKey: tnntId,
+          payload: tenantFactEnvelope({
+            payload: { tnntId, displayName, bankReferenceCode, status: 'ACTIVE' },
+            dedupKey: eventKey(instanceKey(args.clientKey, 'ops:bank-master-create'), 'identity.tenant'),
+            traceId: args.traceId,
+          }),
+        })
+
         // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the INSERT.
         // The minted tnnt id is the target resource (IDs only, no PII).
         await enqueue(
@@ -368,6 +415,40 @@ export async function editBankMaster(
         WHERE id = ${tnntUuid}::uuid
       `
 
+      // The tenant fact, emitted ON CHANGE only (2026-08-17, the other half of
+      // the create fix above). The fact carries displayName and status, so an
+      // edit to either leaves TMS's tenant_projection stale until something
+      // else happens to re-emit, which for an admin-created bank is never.
+      //
+      // EMIT-ON-CHANGE, not emit-on-write: the address and contact block is
+      // admin-only and rides no fact, so editing it is not news and publishing
+      // it anyway would be the same hygiene breach project.ts avoids by
+      // emitting MerchantUpdated only on an actual diff. changedFields is
+      // already computed above against the stored row, so this reuses the
+      // comparison the audit record makes rather than repeating it.
+      //
+      // bankReferenceCode is read from `before`: it is immutable on this path
+      // (never in the SET list), so the stored value is by definition current.
+      const factFields = ['displayName', 'status']
+      if (changedFields.some((f) => factFields.includes(f))) {
+        await enqueue(tx, {
+          aggregateType: 'tenant',
+          aggregateId: args.tnntId,
+          eventType: IDENTITY_TENANT_TOPIC,
+          partitionKey: args.tnntId,
+          payload: tenantFactEnvelope({
+            payload: {
+              tnntId: args.tnntId,
+              displayName: provided.displayName ?? before.display_name,
+              bankReferenceCode: before.bank_reference_code,
+              status: provided.status ?? before.status,
+            },
+            dedupKey: eventKey(instanceKey(args.clientKey, 'ops:bank-master-edit'), 'identity.tenant'),
+            traceId: args.traceId,
+          }),
+        })
+      }
+
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the UPDATE.
       // resourceIds = the target tnnt id plus a `changed:<field>` token per
       // changed field (enum-like names, never PII values).
@@ -402,6 +483,256 @@ export async function editBankMaster(
  * gated by the class-3 edge guard. A plain ordered SELECT, mapping each row to
  * the wire tnnt id.
  */
+// The BRD 5.1 merchant record, minus everything that belongs to a REQUEST
+// rather than a merchant (bank branch, QR string, kit quantities all arrive on
+// the bank request file, which stays the only door for asking for hardware).
+// Mandatory-ness follows the BRD and is enforced here, never as a DB NOT NULL
+// (the ingest INSERT sets none of the contact block).
+export interface CreateMerchantInput {
+  /**
+   * The WIRE tnnt id of the Bank Master this merchant is sponsored by, picked
+   * from master data. NOT decoration: it is half of the resolver key
+   * (tenant, bank_merchant_reference), so it is what makes the later bank file
+   * land on this merchant instead of minting a second one.
+   */
+  tnntId: string
+  displayName: string
+  legalName: string
+  mcc: string
+  /** The UPI ID. Input to the D1 reference; never stored as a merchant column. */
+  vpa: string
+  contactName: string
+  mobile: string
+  email?: string
+  address: string
+  address2?: string
+  address3?: string
+  city: string
+  state: string
+  pincode: string
+  clientKey: string
+  actorId: string
+  traceId: string
+}
+
+// The six address parts joined the way the bank-file profile joins them
+// (services/tms/src/bank-source-profile.ts joinNonEmpty), so a hand-created
+// merchant and an ingested one describe one address the same way. A MIRROR, not
+// a shared function: this is cosmetic composition, and unlike the resolver
+// reference (@andpay/merchant-ref) a drift here cannot fork a merchant identity.
+function composeRegisteredAddress(parts: readonly string[]): string {
+  return parts
+    .map((p) => p.trim())
+    .filter((p) => p !== '')
+    .join(', ')
+}
+
+/**
+ * Create a merchant by hand (POST /ops/merchants), for the merchant no bank file
+ * has carried yet: a pilot, a correction, a bank that is late with its sheet.
+ * The bank request upload stays the NORMAL door and still creates merchants on
+ * its own; this path adds no request, no pool entry and no assignment.
+ *
+ * WHAT MAKES THIS SAFE, and the reason it writes more than a merchant row. A
+ * merchant is resolved by the Identity-owned (tenant, bank_merchant_reference)
+ * resolver (Fork B, spec 05). A merchant created with NO resolver row would be
+ * invisible to that resolver, so the bank file that arrives for the same shop a
+ * week later would mint a SECOND mrch_, attach the dispatch to it, and leave the
+ * operator looking at the first. So this path writes the resolver row itself,
+ * deriving the reference from the VPA with the SAME @andpay/merchant-ref rule
+ * the bank-file profile uses. The later file then SELECTs, hits this row, reuses
+ * this mrch_, and emits MerchantUpdated only if a field actually differs.
+ *
+ * DUPLICATE VPA FOR ONE BANK is an OpsClientError('invalid') 4xx, never a
+ * resolve-to-existing: UNIQUE(tenant_id, bank_merchant_reference) trips 23505
+ * and the whole transaction rolls back (no partial row, no orphaned 6e). The
+ * same VPA under a DIFFERENT bank is allowed, because that is what the UNIQUE
+ * actually says; this is deliberately NOT the global "one merchant per VPA"
+ * that TASKLIST C-1 refused while D1 remains an interim key.
+ *
+ * NO ENROLLMENT FACT IS EMITTED, unlike projectRowFact. That fact is ROW-scoped
+ * despite its name: it carries a bank-file row's correlation id so TMS can
+ * attach an assignment, and createAssignmentFromEnrollment THROWS when no
+ * pending_row matches it. A manual create has no row behind it, so emitting one
+ * would poison the TMS consumer. The enrollment ROW is still written: the
+ * sponsorship is real, and the later bank file's own enrollment fact carries the
+ * correlation id that does attach.
+ *
+ * `deduped: true` means this call was a client-key replay; `mrchId` is null on a
+ * replay, matching the ops-wrapper contract across the platform.
+ *
+ * Submitted as docs/plan/CORPUS_SUBMISSION_2026-08-17_MERCHANT_CREATE.md and
+ * NOT yet ratified.
+ */
+export async function createMerchant(
+  db: IdentityDb,
+  args: CreateMerchantInput,
+): Promise<{ deduped: boolean; mrchId: string | null }> {
+  const displayName = requireField('displayName', args.displayName)
+  const legalName = requireField('legalName', args.legalName)
+  const mcc = requireField('mcc', args.mcc)
+  const vpa = requireField('vpa', args.vpa)
+  const contactName = requireField('contactName', args.contactName)
+  const mobile = requireField('mobile', args.mobile)
+  const address = requireField('address', args.address)
+  const city = requireField('city', args.city)
+  const state = requireField('state', args.state)
+  const pincode = requireField('pincode', args.pincode)
+  const address2 = args.address2?.trim() ?? null
+  const address3 = args.address3?.trim() ?? null
+  const email = args.email?.trim() ?? null
+
+  const bankMerchantRef = merchantBankReference(vpa)
+  if (bankMerchantRef === '') throw new OpsClientError('invalid', 'vpa is required')
+
+  // The wire id is caller-supplied, so a malformed one is a client error rather
+  // than the raw decode throw that would surface as a 500.
+  let tenantUuid: string
+  try {
+    tenantUuid = toUuid(args.tnntId)
+  } catch {
+    throw new OpsClientError('invalid', 'tnntId is not a valid tenant id')
+  }
+
+  const registeredAddress = composeRegisteredAddress([address, address2 ?? '', address3 ?? '', city, state, pincode])
+
+  const candidate = toUuid(newId('mrch'))
+  const mrchId = fromUuid('mrch', candidate)
+
+  let ran: boolean
+  try {
+    ran = await db.$transaction(async (tx: Tx) => {
+      await enterWriteRole(tx, 'identity_write')
+      return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:merchant-create'), async () => {
+        // The bank must already exist as a Bank Master. Checked INSIDE the
+        // onceWithin effect so a rejected attempt rolls the whole transaction
+        // back and never burns the clientKey.
+        const bank = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM tenant WHERE id = ${tenantUuid}::uuid
+        `
+        if (bank.length === 0) throw new OpsClientError('not-found', 'no bank master with this id')
+
+        // PLAIN INSERT (no ON CONFLICT): a duplicate (tenant, reference) raises
+        // 23505, caught below and mapped to a 4xx. Written FIRST, so the
+        // duplicate is refused before any merchant row exists to orphan.
+        await tx.$executeRaw`
+          INSERT INTO merchant_bank_ref (tenant_id, bank_merchant_reference, merchant_id, vpa_hint)
+          VALUES (${tenantUuid}::uuid, ${bankMerchantRef}, ${candidate}::uuid, ${vpa})
+        `
+
+        await tx.merchant.create({
+          data: {
+            id: candidate,
+            displayName,
+            legalName,
+            mcc,
+            registeredAddress,
+            // Identity-managed, never caller-supplied, and the same values the
+            // ingest mint uses so the two kinds of merchant are one kind.
+            activationState: 'PENDING',
+            status: 'ACTIVE',
+            contactName,
+            mobile,
+            email,
+            address2,
+            address3,
+            city,
+            state,
+            pincode,
+          },
+        })
+
+        // The 3-tier model: exactly ONE default sub-merchant per merchant, in
+        // the same tx, mirroring resolveMerchant's mint-winner branch.
+        await tx.subMerchant.create({
+          data: {
+            id: toUuid(newId('smrch')),
+            merchantId: candidate,
+            registeredAddress,
+            status: 'ACTIVE',
+          },
+        })
+
+        // The SAME resolver projectRowFact uses, so this merchant is enrolled in
+        // the Program the next bank file for this bank will resolve to. It sets
+        // app.program_id itself, which the program and enrollment write-gates
+        // (07.B) then pass on.
+        const program = await resolveProgram(tx, tenantUuid, PRODUCT_TYPE)
+
+        await tx.enrollment.upsert({
+          where: { programId_merchantId: { programId: program.programUuid, merchantId: candidate } },
+          create: { programId: program.programUuid, merchantId: candidate, tenantId: tenantUuid, status: 'ACTIVE' },
+          update: {},
+        })
+
+        const tnntId = fromUuid('tnnt', tenantUuid)
+        const progId = fromUuid('prog', program.programUuid)
+
+        // Emit-on-change, exactly as projectRowFact does: the Program fact only
+        // when this call minted it.
+        if (program.created) {
+          await enqueue(tx, {
+            aggregateType: 'program',
+            aggregateId: progId,
+            eventType: IDENTITY_PROGRAM_TOPIC,
+            partitionKey: progId,
+            payload: programFactEnvelope({
+              payload: { progId, tnntId, productType: PRODUCT_TYPE, status: 'ACTIVE' },
+              dedupKey: eventKey(instanceKey(args.clientKey, 'ops:merchant-create'), 'identity.program'),
+              traceId: args.traceId,
+            }),
+          })
+        }
+
+        // The existing fact, payload SHAPE UNCHANGED: FULL-compat forbids adding
+        // a required attribute (D120), and the contact block is PII that never
+        // rides the bus (S7). This is what puts the merchant on the ops list,
+        // via TMS merchant_projection.
+        await enqueue(tx, {
+          aggregateType: 'merchant',
+          aggregateId: mrchId,
+          eventType: IDENTITY_MERCHANT_TOPIC,
+          partitionKey: mrchId,
+          payload: merchantFactEnvelope({
+            payload: {
+              eventType: 'MerchantCreated',
+              mrchId,
+              displayName,
+              legalName,
+              mcc,
+              registeredAddress,
+              activationState: 'PENDING',
+              status: 'ACTIVE',
+            },
+            dedupKey: eventKey(instanceKey(args.clientKey, 'ops:merchant-create'), 'identity.merchant'),
+            traceId: args.traceId,
+          }),
+        })
+
+        // Co-commit the ALLOW 6e in the SAME tx as the effect (spec 10c CC-1).
+        await enqueue(
+          tx,
+          buildAuthzAuditEvent(
+            opsAllow({
+              operation: 'ops:merchant-create',
+              principalId: args.actorId,
+              resourceIds: [mrchId],
+              traceId: args.traceId,
+            }),
+          ),
+        )
+      })
+    })
+  } catch (err) {
+    if (isRawUniqueViolation(err)) {
+      throw new OpsClientError('invalid', 'a merchant with this VPA already exists for this bank')
+    }
+    throw err
+  }
+
+  return { deduped: !ran, mrchId: ran ? mrchId : null }
+}
+
 export async function listBankMasters(db: IdentityDb): Promise<BankMasterRow[]> {
   const rows = await db.$queryRaw<BankMasterDbRow[]>`
     SELECT id::text AS id, display_name, bank_reference_code, status,

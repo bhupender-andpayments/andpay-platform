@@ -77,7 +77,7 @@ import {
   type DuplicateVpaOriginal,
 } from '@andpay/tms-service'
 import { readDispatchActivationStatus } from '@andpay/analytics-service'
-import { createBankMaster, editBankMaster } from '@andpay/identity-service'
+import { createBankMaster, createMerchant, editBankMaster } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAuthzAudit } from './audit.js'
@@ -249,6 +249,29 @@ interface VendorPrintLayoutSetBody {
 // configures, not principal-scoped tenant data, unlike M7/S16); the actor/
 // traceId/idempotency-key still come from the gate, never the body. address2/
 // address3 are the only optional fields (BRD D.1).
+// The ops Add-merchant body (BRD 5.1, the bank-file field table). `tnntWire` is
+// the Bank Master the merchant is sponsored by, picked from master data: it is
+// half of the (tenant, bank_merchant_reference) resolver key, so it is what
+// makes the later bank file resolve to this merchant instead of minting a
+// second one. Absent, deliberately: bank branch, QR string and the kit
+// quantities, which belong to a REQUEST and arrive on the bank request file.
+interface MerchantCreateBody {
+  tnntWire: string
+  displayName: string
+  legalName: string
+  mcc: string
+  vpa: string
+  contactName: string
+  mobile: string
+  email?: string
+  address: string
+  address2?: string
+  address3?: string
+  city: string
+  state: string
+  pincode: string
+}
+
 interface BankMasterCreateBody {
   bankReferenceCode: string
   displayName: string
@@ -1587,6 +1610,48 @@ export class OpsController {
       pin: body.pin,
       mobile: body.mobile,
       email: body.email,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // The ops Add-merchant write (2026-08-17), the backend the Add merchant
+  // dialog has been posting to since it shipped UI-first on 2026-08-14. Same
+  // posture as the two routes around it: gated, idempotency-keyed, 6e
+  // co-committed, and NOT step-up-gated, matching vendor-create and
+  // bank-master-create (master-data creation, not a destructive action).
+  //
+  // The write is an IDENTITY-context function called with deps.identityDb, so
+  // the edge crosses no context (C4). A duplicate VPA for the bank, an unknown
+  // bank, or a blank mandatory field surfaces as identity's OpsClientError,
+  // which the app-wide OpsErrorFilter maps to a 4xx.
+  //
+  // Submitted as docs/plan/CORPUS_SUBMISSION_2026-08-17_MERCHANT_CREATE.md and
+  // NOT yet ratified; the permission string is item 5.
+  @Post('merchants')
+  @HttpCode(200)
+  async createMerchantRoute(
+    @Req() req: EdgeRequest,
+    @Body() body: MerchantCreateBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; mrchId: string | null }> {
+    const g = await this.gate(req, 'ops:merchant-create', idem, [])
+    return createMerchant(this.deps.identityDb, {
+      tnntId: body.tnntWire,
+      displayName: body.displayName,
+      legalName: body.legalName,
+      mcc: body.mcc,
+      vpa: body.vpa,
+      contactName: body.contactName,
+      mobile: body.mobile,
+      ...(body.email !== undefined ? { email: body.email } : {}),
+      address: body.address,
+      ...(body.address2 !== undefined ? { address2: body.address2 } : {}),
+      ...(body.address3 !== undefined ? { address3: body.address3 } : {}),
+      city: body.city,
+      state: body.state,
+      pincode: body.pincode,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

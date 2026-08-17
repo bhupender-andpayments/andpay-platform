@@ -579,28 +579,41 @@ export function getMerchants(c: Client) {
 }
 
 /**
- * Add a merchant by hand (2026-08-14): for the merchant no bank file has
- * carried yet. The normal door stays the bank request upload, which creates
- * merchants on its own.
+ * Add a merchant by hand (2026-08-14, backend landed 2026-08-17): for the
+ * merchant no bank file has carried yet. The normal door stays the bank request
+ * upload, which creates merchants on its own.
  *
- * THE EDGE ROUTE IS NOT BUILT YET, by decision: the backend team owns
- * POST /ops/merchants and is adding it separately. This contract IS the
- * request for it: the three fields below (status is the server's to default,
- * identity context comes from the authenticated principal per M7/S16, never
- * the body), an Idempotency-Key, a 200 carrying the new row's wire mrchId.
- * Until it lands, the Add-merchant dialog surfaces the edge's 404 inline,
- * which is the honest failure and not a silent one.
+ * THE ROUTE NOW EXISTS (apps/ops-edge/src/ops.controller.ts createMerchantRoute,
+ * over identity's createMerchant). Grounded against that signature, not
+ * invented: an Idempotency-Key, and a 200 carrying `deduped` plus the new row's
+ * wire mrchId, which is null on a client-key replay.
  */
 // The BRD's own merchant record (section 5.1, the bank-file field table),
-// minus the fields that belong to a REQUEST rather than a merchant (bank,
-// branch, QR string, kit quantities). Mandatory flags follow the BRD. This
-// interface IS the contract for the backend team's POST /ops/merchants; the
-// route is theirs to land (UI-first decision, 2026-08-14).
+// minus the fields that belong to a REQUEST rather than a merchant (branch, QR
+// string, kit quantities). Mandatory flags follow the BRD.
 export interface MerchantCreateBody {
+  /**
+   * The Bank Master (GET /ops/bank-masters) sponsoring this merchant. Added
+   * 2026-08-17: it is half of the (tenant, bank_merchant_reference) resolver
+   * key the server writes, which is what makes the bank file that arrives for
+   * this merchant later resolve to THIS merchant instead of minting a second
+   * one. The mode and the principal still come from the token, never here
+   * (M7/S16); the bank is a business choice the operator makes, not identity
+   * context.
+   */
+  tnntWire: string
   displayName: string
   legalName: string
   mcc: string
-  /** The BRD's unique merchant key: a new Merchant ID is minted per VPA. */
+  /**
+   * The UPI ID. The server derives the merchant reference from it
+   * (@andpay/merchant-ref, D1) and stores it as the resolver's vpa hint; it is
+   * never a merchant column. Uniqueness is PER BANK, at the resolver's
+   * UNIQUE(tenant_id, bank_merchant_reference): the same VPA under a different
+   * bank is a different merchant. Deliberately not framed as a global "one
+   * merchant per VPA" (TASKLIST C-1: D1 is an interim key with a re-key
+   * expected, and the UI must not deepen it).
+   */
   vpa: string
   contactName: string
   mobile: string
@@ -614,7 +627,12 @@ export interface MerchantCreateBody {
 }
 
 export function createMerchant(c: Client, body: MerchantCreateBody, idempotencyKey: string) {
-  return c.request<{ mrchId: string }>({ method: 'POST', path: '/ops/merchants', body, idempotencyKey })
+  return c.request<{ deduped: boolean; mrchId: string | null }>({
+    method: 'POST',
+    path: '/ops/merchants',
+    body,
+    idempotencyKey,
+  })
 }
 
 // 404 when the batch does not exist; the edge throws NotFoundException rather
@@ -750,13 +768,15 @@ export type DamageCaseRow = DamageCaseView
 // services/tms/src/damage-reason.ts DamageReasonRow, and
 // services/fulfillment/src/ops-read.ts listBatchingConfigs/BatchingConfigRow):
 // all three are the SAME class-3 guard-only posture as GET /ops/vendors above
-// (no per-op D2 authorize, no 6e; check 3). READ-ONLY here: bank-master
-// create/edit, damage-reason create/activate/deactivate, and the
-// admin/super_admin-only batching-config SET (#24 in B_edge_contracts) are
-// FR-11-deferred (L9), not built by this task. `GET /ops/bank-config` (the
+// (no per-op D2 authorize, no 6e; check 3). `GET /ops/bank-config` (the
 // separate bank/branch COMPOSITION config, i.e. logo/branding) is a distinct
 // route this task does not surface; the brief's read-surface list names
 // bank-masters, not bank-config.
+//
+// THE CREATE HALF LANDED 2026-08-17 (the CREATE writes below). L9 had deferred
+// the whole FR-11 admin console, so these reads shipped read-only; the deferral
+// was reversed for CREATE only. Edit, suspend, activate and deactivate stay
+// deferred and are deliberately absent from this file.
 // -----------------------------------------------------------------------
 
 /** services/identity/src/ops.ts BankMasterRow. */
@@ -819,6 +839,118 @@ export interface BatchingConfigRow {
 
 export function getBatchingConfig(c: Client) {
   return c.request<BatchingConfigRow[]>({ method: 'GET', path: '/ops/batching-config' })
+}
+
+// -----------------------------------------------------------------------
+// Master-data CREATE (2026-08-17, the L9 reversal). Four writes behind the
+// five Master Data tabs; Vendor Registry and Courier Master share one route
+// because a courier IS a vendor row with type COURIER.
+//
+// Every body below is grounded against the edge's own interface in
+// apps/ops-edge/src/ops.controller.ts, never invented here. Each route takes an
+// Idempotency-Key and returns the ops-wrapper `{ deduped, <id> }` shape, where
+// the id is null on a client-key replay.
+// -----------------------------------------------------------------------
+
+/** apps/ops-edge/src/ops.controller.ts VendorCreateBody. */
+export interface VendorCreateBody {
+  /** services/fulfillment/prisma/schema.prisma Vendor.type. */
+  type: 'MANUFACTURER' | 'PRINT' | 'COURIER'
+  displayName: string
+  /** COURIER-applicable only; unique across vendors, so a duplicate is a 4xx. */
+  courierCode?: string
+  /** COURIER-applicable only: the integration channel. */
+  integrationMode?: 'WEBHOOK' | 'BATCH'
+}
+
+export function createVendor(c: Client, body: VendorCreateBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; vndrId: string | null }>({
+    method: 'POST',
+    path: '/ops/vendors',
+    body,
+    idempotencyKey,
+  })
+}
+
+/** apps/ops-edge/src/ops.controller.ts BankMasterCreateBody (BRD Annexure D.1). */
+export interface BankMasterCreateBody {
+  /**
+   * The IMMUTABLE ingest resolver key. It must be the code this bank's own
+   * FILE resolves to, which for the Annexure B layout is the partner code
+   * declared in the profile (`GSCB`), NOT a row's numeric aggregator code. A
+   * mismatch does not error: ingest simply auto-mints a SECOND tenant and this
+   * record is never used.
+   */
+  bankReferenceCode: string
+  displayName: string
+  address1: string
+  address2?: string
+  address3?: string
+  city: string
+  district: string
+  country: string
+  pin: string
+  mobile: string
+  email: string
+}
+
+export function createBankMaster(c: Client, body: BankMasterCreateBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; tnntId: string | null }>({
+    method: 'POST',
+    path: '/ops/bank-masters',
+    body,
+    idempotencyKey,
+  })
+}
+
+/** apps/ops-edge/src/ops.controller.ts DamageReasonCreateBody (BRD FR-08). */
+export interface DamageReasonCreateBody {
+  /** A stable machine identifier, never derived from the label. */
+  code: string
+  /** The human display text the damage-file ingest matches against. */
+  label: string
+}
+
+// Returns the created ROW, not just an id, unlike its three neighbours. Null
+// on a client-key replay, same as they are.
+export function createDamageReason(c: Client, body: DamageReasonCreateBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; damageReason: DamageReasonRow | null }>({
+    method: 'POST',
+    path: '/ops/damage-reasons',
+    body,
+    idempotencyKey,
+  })
+}
+
+/**
+ * apps/ops-edge/src/ops.controller.ts BatchingConfigSetBody (BRD 5.3.3).
+ *
+ * An UPSERT of a tier, not an append: writing the same scope twice replaces
+ * that tier's values. Which tier is addressed is implied by which fields are
+ * present, so the caller must not send a combination the domain refuses:
+ * a BANK tier (bankReferenceCode set) REQUIRES tenantWire and REFUSES
+ * maxWaitSeconds, because max wait stays on the pool tiers where the timer
+ * that reads it is armed (R-7).
+ *
+ * ADMIN-TIER: ops:batching-config-set is in ADMIN_TIER_PERMISSIONS, not the
+ * shared ops bundle, so a baseline `ops` operator gets a 403 here where the
+ * three writes above would succeed.
+ */
+export interface BatchingConfigSetBody {
+  tenantWire?: string
+  programWire?: string
+  bankReferenceCode?: string
+  minLotSize: number
+  maxWaitSeconds?: number
+}
+
+export function setBatchingConfig(c: Client, body: BatchingConfigSetBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; id: string | null }>({
+    method: 'POST',
+    path: '/ops/batching-config',
+    body,
+    idempotencyKey,
+  })
 }
 
 // -----------------------------------------------------------------------

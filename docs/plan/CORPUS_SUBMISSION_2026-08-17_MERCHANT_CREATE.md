@@ -220,6 +220,224 @@ cross-context read.
 
 ---
 
+# Item 6. A defect found while building this, fixed here (for awareness)
+
+| | |
+| - | - |
+| **What the corpus records** | Fact hygiene: emit a fact on an actual state change, never on a no-change (spec 05, ratified after commit f122bd1). E1: a state change and its emitted fact commit atomically in one local transaction. |
+| **What shipped until 2026-08-17** | The Bank Master admin path (`createBankMaster` / `editBankMaster`) wrote its tenant row and enqueued ONLY the ALLOW 6e. It emitted no `fct.identity.tenant.v1` at all. |
+| **Status** | FIXED in this branch, VERIFIED end to end. |
+
+Not a hygiene judgement call, a hole. The tenant fact had exactly one emitter,
+`resolveTenant`'s mint branch in `project.ts`, and that branch cannot fire for a
+bank the admin already created: the row exists, so ingest RESOLVES it
+(`created: false`) and correctly stays quiet. So an admin-created bank had no
+tenant fact anywhere, ever.
+
+The consequence was not cosmetic. TMS never projected a `tenant_projection`
+row, and `createAssignmentFromEnrollment` (`services/tms/src/assignment.ts`)
+throws `tenant projection not ready` without one. **Every row of an
+admin-created bank's first request file died.** The failing path was reproduced
+before the fix in `test/tms_identity_roundtrip.test.ts`, the one file allowed to
+import both services.
+
+Fixed on both halves of the admin path, following the hygiene rule rather than
+bypassing it: create always emits (a creation IS a state change), edit emits
+ONLY when a fact-carried field (`displayName`, `status`) actually changed, so
+an address or contact edit, which rides no fact, stays silent.
+
+An existing assertion had to change, and it is worth recording WHY it was
+wrong. `bank_master.test.ts` asserted a bare `count(*) = 0` of tenant facts
+after an ingest resolved an admin-created bank. Its intent was "the INGEST
+emitted nothing", which is still true and still asserted. As written, though, it
+counted every emitter at once, so it could not tell "the right path emitted and
+the other correctly stayed quiet" from "nobody emitted at all". It now asserts
+the count is unchanged across the ingest.
+
+**Backfill: not needed as things stand, and the query to prove it per
+environment is** a left join of `identity.tenant` against `tms.tenant_projection`
+on id, looking for nulls. It returns zero rows locally. It would return rows in
+any environment holding a bank created through the admin route that has not yet
+received its first file; the remedy there is to re-emit the tenant fact for
+those ids, which is data republication through the existing topic, not a
+migration and not an S23 provisioning event.
+
+---
+
+# Item 7. The L9 reversal: master-data CREATE in the ops portal
+
+| | |
+| - | - |
+| **What the corpus records** | L9 (Phase 7): master-data stays READ-ONLY; the FR-11 admin console is deferred to its own later slice; no master-data CRUD writes in Phase 7. |
+| **What ships now** | An add control on all five master-data tabs: vendor, courier, bank master, damage reason, batching tier. |
+| **Status** | BUILT, reversal ruled by Rahul as product on 2026-08-17. |
+
+The reversal is recorded rather than argued: the BRD asks for FR-11, and L9
+deferred it as a scheduling decision, not a prohibition. What is submitted is
+the SCOPE of the reversal and one consequence.
+
+**Scope is CREATE ONLY.** Edit, suspend, activate and deactivate stay deferred
+under the original L9 and remain absent from the portal. The old in-code
+instruction on the page ("do not add a write control to any tab") is retired
+with the ruling rather than left standing against the code.
+
+**No backend was written.** All five routes already existed, already gated,
+already 6e-audited: `POST /ops/vendors` (couriers post to the same route with
+type COURIER, because a courier IS a vendor row), `/ops/bank-masters`,
+`/ops/damage-reasons`, `/ops/batching-config`. So this is a portal slice, not a
+new surface, and it adds no permission string, no route and no fact.
+
+**The consequence worth ruling on: the batching tier is admin-tier.**
+`ops:batching-config-set` sits in `ADMIN_TIER_PERMISSIONS`, not the shared ops
+bundle, so a baseline `ops` operator gets a 403 there while the other four
+succeed. The button is deliberately NOT hidden by role: the portal gates no
+other control on role, and inventing that pattern for one button is a bigger
+change than the 403 it would avoid. This is acceptable TODAY only because the
+sole operator is an admin. If a baseline operator role is ever really used, this
+becomes a real papercut and the choice should be revisited deliberately.
+
+**What prompted it, for the record.** The read-only page had become a dead end
+rather than merely incomplete. `identity.tenant` was empty, so the Add-merchant
+dialog from items 1 to 5 had an empty bank picker and no merchant could be
+added at all, with no way in the product to create the bank that would unblock
+it. A read-only master-data page is coherent when the data arrives some other
+way; for the bank master, after item 2, it no longer does.
+
+---
+
+# Item 8. Per-bank MAX WAIT: the case R-7 carved out, now asked for
+
+| | |
+| - | - |
+| **What the corpus records** | R-7 (16 Aug 2026) granted a per-bank batching tier carrying MIN LOT ONLY. The 2026-08-16 submission states the exclusion in terms: "max wait stays pool-tier because the timer is armed per pool ... If per-bank max wait is ever wanted, that is a pool re-grain and a new decision." |
+| **What is now asked** | Rahul, 2026-08-17: "For a particular bank, there will be a separate minimum lot size and maximum wait time, set by the admin." |
+| **Status** | NOT BUILT. Raised here for the ruling the earlier submission said it would need. No code was written. |
+
+## Why min lot was cheap and max wait is not
+
+They look symmetrical and are not, which is the whole of this item.
+
+`pending_pool_entry` ALREADY carries `bank_reference_code`. So a per-bank min
+lot needs no new grain at all: the trigger evaluates a COUNT filtered to one
+bank inside the single pool, and claims only that bank's entries
+(`services/fulfillment/src/batching.ts`, the `bank_reference_code` filter on
+the claim and on `resolveBankLotOverride`). Counting a subset is free.
+
+A max wait is not a count, it is a TIMER, and a timer has to be armed on
+something. Today that something is the pool: `batch_pool` is
+`UNIQUE(tenant_id, program_id)` with ONE `pm_instance_id` (one D77 saga
+instance) per pool, and the code maintains an explicit invariant of "exactly
+one pending max_wait timer per pool" (`supersedeAndRearmMaxWait`). There is no
+per-bank thing in that structure to hang a second deadline on.
+
+## Two ways to give it to them, and they are not the same size
+
+**Option A, the pool re-grain** (what the earlier submission assumed). Make the
+pool per-bank: `batch_pool` becomes `UNIQUE(tenant_id, program_id,
+bank_reference_code)`, each bank pool gets its own saga instance and its own
+timer, and the existing invariant survives unchanged because "per pool" now
+means "per bank".
+
+What it touches, and why this is not a small change:
+
+- The `batch_pool` grain and its unique key, plus a migration that fans every
+  existing pool into N bank pools (or keeps a `''` sentinel pool alongside),
+  under expand-contract (S23).
+- One D77 saga instance PER BANK instead of per pool, so instance count grows
+  with the member-bank list (19 aggregator codes in the one real GSCB file).
+- Claim, trigger, supersede and re-arm, all of which currently key on the pool.
+- **What a BATCH is.** Batches are formed from a pool, so a per-bank pool makes
+  every batch single-bank. That may well be desirable (BRD 5.3.3 evaluates "for
+  each bank"), but it changes the print-vendor batch, the dispatch grouping
+  beneath it, and every screen and report that reads a batch. It is the real
+  cost of Option A and it is not confined to batching.
+- The `batching_config` CHECK that currently forbids a bank-tier wait ceiling.
+
+**Option B, a timer per (pool, bank), no re-grain.** Keep one pool and arm N
+timers on its one saga instance, one per bank with a bank-tier wait, each
+firing a MAX_WAIT that claims only that bank's entries, exactly as the min-lot
+path already claims a filtered subset.
+
+- The invariant weakens deliberately from "one pending max_wait timer per pool"
+  to "one per (pool, bank)", which is a change to a documented safety property
+  and must be ruled, not assumed. `supersedeAndRearmMaxWait` would supersede
+  within a bank rather than within a pool.
+- A batch stays what it is today. Nothing outside batching moves.
+- It reuses the mechanism that already made the min-lot tier cheap, which is
+  the argument for it: the bank dimension is already on the entry.
+- The `saga_timer` purpose would need to carry the bank (for example
+  `max_wait:<bank>`), since purpose is what the supersede sweep is scoped by.
+
+## The BRD settles it: Option A
+
+Option B was the recommendation here on mechanics alone, on the reasoning that
+a batch becoming single-bank was a cost to avoid. Reading the BRD
+(`11Aug_BRD_Soundbox_Dispatch_Tracking_System_v1.3.docx`) reverses that: a
+single-bank batch is not a side effect of Option A, it is what the BRD
+specifies. Three passages, none of which is ambiguous.
+
+**FR-033 section 5.3.3, Trigger Logic.** "the system evaluates the pending pool
+of merchant records FOR EACH BANK: If pending records >= Minimum Lot Size ->
+trigger print order immediately. Else if THE OLDEST PENDING RECORD'S AGE >=
+Maximum Wait Time -> trigger print order with whatever is in the pool."
+
+Both arms of that condition sit inside the per-bank evaluation. The wait arm is
+per bank in the BRD already; it is only our implementation that made min lot
+per-bank and left wait pool-wide. The pool the BRD describes IS the bank's pool.
+
+**FR-10, the Batching Report.** "Pending pool per bank, age of oldest pending
+record, projected trigger date based on current parameters."
+
+This is the load-bearing one, because a PROJECTED TRIGGER DATE per bank is
+arithmetic on a per-bank wait deadline. It cannot be computed from a pool
+grained per (tenant, program) with one shared timer, whatever the config table
+allows. The repo already knows this: `computeBatchingReport`
+(`services/analytics/src/mediation.ts`) groups per `bank_code` and carries its
+own note that "the projected-trigger-date column is DEFERRED (a follow-up once
+Fulfillment emits its batching parameters as a fact under FR-11)". That
+deferred column and this item are the same blocker seen from two ends.
+
+**FR-11 plus Annexure D.** "Batching parameters: Minimum Lot Size and Maximum
+Wait Time (global)" as the defaults, with the Bank Master referenced "for
+BATCHING OVERRIDES and contact details". Global defaults plus per-bank
+overrides, unqualified as to which parameter. (Annexure D.1's field table does
+not enumerate the override columns, so the BRD is loose on their shape, not on
+their existence.)
+
+Read together: R-7's "evaluate per bank without re-graining the pool" was a
+deliberate narrowing for UAT speed, and it diverged from the BRD rather than
+implementing it. Option A is not a re-grain of the BRD's model; it is the
+BRD's model, and the current pool grain is the deviation.
+
+Two consequences worth stating plainly, so A is chosen with its eyes open:
+
+- A batch becomes single-bank. That is consistent with collateral being
+  bank-branded (the bank logo is rasterised onto every standee and sticker per
+  Annexure D.2), so a single-bank print run is operationally natural rather
+  than a compromise. The FR-04 dispatch Excel keeps its per-row Bank Code
+  column; the column simply holds one value per file.
+- The deferred projected-trigger-date column of the Batching Report becomes
+  computable as a side effect, closing an FR-10 gap rather than adding one.
+
+## What is asked
+
+1. Ratify Option A, per the BRD passages above, superseding R-7's min-lot-only
+   shape rather than extending it.
+2. Confirm the single-bank batch explicitly, since it changes what a batch IS
+   and therefore touches dispatch grouping and every batch-reading surface.
+   This is the part that deserves a deliberate yes, not the timer.
+3. The `batching_config` CHECK and the domain refusal are relaxed together with
+   the code, never ahead of it.
+4. Sequence the pool migration under expand-contract (S23): existing pools fan
+   out per bank, and the re-grain lands before the config surface is opened,
+   so no admin can set a per-bank wait that nothing yet arms.
+
+Until this is ruled, the portal's batching dialog continues to refuse a bank
+tier wait ceiling: the max-wait field is not rendered on a bank tier at all, so
+an admin cannot type a value the server would reject.
+
+---
+
 # What the corpus is asked to rule, in order
 
 1. **Item 2 first, because everything else is downstream of it.** May a manual
@@ -237,3 +455,10 @@ cross-context read.
    with holding the fact shape constant.
 5. **The C-1 conflict in the shipped dialog hint** ("One merchant per VPA"),
    which is live today and independent of whether this feature lands.
+6. **Item 7's admin-tier batching button**, the one open consequence of the L9
+   reversal. Everything else in item 7 is a record of a product ruling already
+   taken; this is the part that could still be decided differently.
+7. **Item 8, per-bank max wait.** It is the only item here that blocks a stated
+   product requirement AND the only one where the BRD contradicts a recorded
+   decision (R-7's min-lot-only shape). The ask is narrow: ratify Option A and
+   confirm the single-bank batch. Nothing is built until it is ruled.

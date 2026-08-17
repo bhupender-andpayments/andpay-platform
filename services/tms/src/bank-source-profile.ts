@@ -32,6 +32,8 @@
 // NOT DONE HERE: per-column FORMAT validation (lengths, patterns). A profile
 // only reshapes. Row validation stays where it already lives, in ingest.ts.
 
+import { merchantBankReference } from '@andpay/merchant-ref'
+
 /** A raw record keyed by the source file's own header names. */
 export type SourceRecord = Record<string, string>
 
@@ -101,9 +103,13 @@ export const ANNEXURE_B_PROFILE: BankSourceProfile = {
       rec['Pincode'] ?? '',
     ])
     return {
-      // D1: merchant identity is the VPA for now. Lowercased so a casing
-      // difference between two files cannot mint a second merchant for one VPA.
-      bankMerchantReference: vpa === '' ? '' : `v1:vpa:${vpa.toLowerCase()}`,
+      // D1: merchant identity is the VPA for now. The derivation moved to
+      // @andpay/merchant-ref when the ops Add-merchant path became a SECOND
+      // producer of this reference: the manual create writes the resolver row
+      // itself, so both sides must derive the same string byte for byte or a
+      // hand-created merchant and their later bank file become two merchants.
+      // Behaviour here is unchanged (lowercased, blank stays blank).
+      bankMerchantReference: merchantBankReference(vpa),
       displayName: rec['Business Name'] ?? '',
       legalName: rec['Legal Name'] ?? '',
       mcc: rec['Category Code'] ?? '',
