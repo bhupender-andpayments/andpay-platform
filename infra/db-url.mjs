@@ -51,6 +51,47 @@ export function encodeUserinfo(value) {
   )
 }
 
+// Host is placed in the URL authority, never percent-encoded (encoding a
+// hostname breaks resolution: the dots would survive but an encoded
+// character would not resolve), so it is validated to a charset instead. That
+// charset excludes quotes and every other shell metacharacter, which is what
+// keeps the CLI's export lines safe below.
+const DNS_HOST_CHAR = /[A-Za-z0-9.-]/
+const IPV6_LITERAL_CHAR = /[0-9a-fA-F:]/
+
+function validateHost(value) {
+  const bracketed = value.startsWith('[') && value.endsWith(']') && value.length >= 3
+  const inner = bracketed ? value.slice(1, -1) : value
+  const allowed = bracketed ? IPV6_LITERAL_CHAR : DNS_HOST_CHAR
+  if (inner.length === 0) {
+    throw new Error('ANDPAY_DB_HOST is empty inside its brackets.')
+  }
+  for (let i = 0; i < inner.length; i++) {
+    if (!allowed.test(inner[i])) {
+      throw new Error(
+        `ANDPAY_DB_HOST has an invalid character at index ${bracketed ? i + 1 : i}. ` +
+          'Only letters, digits, "." and "-" are allowed, or an IPv6 literal in brackets ' +
+          '(hex digits and ":").',
+      )
+    }
+  }
+  return value
+}
+
+// Port is placed unencoded too; it is validated to digits only rather than
+// percent-encoded, for the same reason as host.
+function validatePort(value) {
+  if (value.length === 0) {
+    throw new Error('ANDPAY_DB_PORT is empty.')
+  }
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] < '0' || value[i] > '9') {
+      throw new Error(`ANDPAY_DB_PORT has a non-digit character at index ${i}.`)
+    }
+  }
+  return value
+}
+
 function credentials(env) {
   const missing = []
   if (!env.ANDPAY_DB_HOST) missing.push('ANDPAY_DB_HOST')
@@ -63,9 +104,11 @@ function credentials(env) {
     )
   }
   return {
-    host: env.ANDPAY_DB_HOST,
-    port: env.ANDPAY_DB_PORT || '5432',
-    database: env.ANDPAY_DB_NAME || 'andpay',
+    host: validateHost(env.ANDPAY_DB_HOST),
+    port: validatePort(env.ANDPAY_DB_PORT || '5432'),
+    // Database sits in a URL path segment, where percent-encoding is valid
+    // and round-trips correctly, unlike host or port.
+    database: encodeUserinfo(env.ANDPAY_DB_NAME || 'andpay'),
     auth: `${encodeUserinfo(env.ANDPAY_DB_USER)}:${encodeUserinfo(env.ANDPAY_DB_PASSWORD)}`,
   }
 }
@@ -93,8 +136,11 @@ export function loadEnvFile(path = join(REPO_ROOT, '.env')) {
   return parseEnvFile(readFileSync(path, 'utf8'))
 }
 
-// CLI mode: emit shell export lines for infra/rds-env.sh to eval. Values are
-// percent-encoded above, so no quote can survive to break the single quoting.
+// CLI mode: emit shell export lines for infra/rds-env.sh to eval. User,
+// password and database are percent-encoded above; host and port are instead
+// validated against a charset that excludes quotes and every other shell
+// metacharacter. Either way, by the time a value reaches this line it cannot
+// contain a quote, so the single quoting below cannot be broken.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const env = loadEnvFile()
   const lines = Object.entries(deriveUrls(env)).map(([k, v]) => `export ${k}='${v}'`)

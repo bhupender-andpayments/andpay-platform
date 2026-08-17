@@ -80,4 +80,28 @@ describe('url derivation', () => {
   it('encodes the characters encodeURIComponent leaves alone, so no quote survives into a shell line', () => {
     expect(encodeUserinfo("a'b(c)*!")).toBe('a%27b%28c%29%2A%21')
   })
+
+  it('percent-encodes a database name containing a single quote so it round-trips and no quote survives', () => {
+    const url = deriveUrls({ ...env, ANDPAY_DB_NAME: "o'brien" }).TMS_DATABASE_URL
+    expect(url).not.toContain("'")
+    const parsed = new URL(url)
+    expect(decodeURIComponent(parsed.pathname.slice(1))).toBe("o'brien")
+  })
+
+  it('rejects a host containing a single quote', () => {
+    expect(() => deriveUrls({ ...env, ANDPAY_DB_HOST: "db'.example.com" })).toThrow(/ANDPAY_DB_HOST/)
+  })
+
+  it('rejects a host containing a space', () => {
+    expect(() => deriveUrls({ ...env, ANDPAY_DB_HOST: 'db .example.com' })).toThrow(/ANDPAY_DB_HOST/)
+  })
+
+  it('rejects a non-numeric port', () => {
+    expect(() => deriveUrls({ ...env, ANDPAY_DB_PORT: '54a2' })).toThrow(/ANDPAY_DB_PORT/)
+  })
+
+  it('accepts a bracketed IPv6 host literal', () => {
+    const url = deriveUrls({ ...env, ANDPAY_DB_HOST: '[::1]' }).TMS_DATABASE_URL
+    expect(url).toContain('@[::1]:5432/andpay?')
+  })
 })
