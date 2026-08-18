@@ -20,10 +20,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
-import { Boxes, Check, Copy, Download, Eye, ExternalLink, FileSpreadsheet, Loader2 } from 'lucide-react'
+import { Boxes, Check, Copy, Download, Eye, ExternalLink, FileSpreadsheet, Loader2, Printer, Truck, PackageCheck, Zap } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { CodeChip, ErrorNote, InfoNote, EmptyState, Spinner } from '../../../ui/primitives.js'
+import { CodeChip, ErrorNote, InfoNote, EmptyState, Spinner, StatusPill } from '../../../ui/primitives.js'
 import { BackLink } from '../../../ui/DetailFacts.js'
 import { DataGrid, type GridColumn } from '../../../ui/DataGrid.js'
 import { fmtDateTime } from '../../../ui/format.js'
@@ -31,11 +31,14 @@ import { useToast } from '../../../ui/Toast.js'
 import { saveBlob } from '../../../lib/saveBlob.js'
 import { COLLATERAL_GROUP_LABELS, excelGroupsFor } from '../../../lib/dispatchGroups.js'
 import { useAuth } from '../../../auth/AuthContext.js'
+import { LifecycleRail, type RailStage } from '../../../ui/LifecycleRail.js'
 import {
   downloadDispatchExcel,
   getBatchDetail,
+  getBatchJourney,
   type BatchDetailView,
   type BatchEntryRow,
+  type BatchJourneyView,
 } from '../../../api/endpoints.js'
 import { DispatchGroupBadge } from '../DispatchGroupBadge.js'
 import { QrPreviewDialog } from './QrPreviewDialog.js'
@@ -60,6 +63,42 @@ interface GenRow {
   card: CardRow
 }
 
+/**
+ * The batch's own AGGREGATE lifecycle, one rung per stage of the workflow,
+ * each showing done/of the batch's own denominator rather than a timestamp
+ * (counts are cumulative rollups over many dispatches, not one instant).
+ * Mirrors DispatchDetailPage's buildRail in spirit, not in data: that rail
+ * dates ONE dispatch's own trail; this one counts ALL of them.
+ *
+ * Activated is dropped entirely when nothing in the batch can ever reach it
+ * (a collateral-only batch), rather than rendering a 0/0 rung that would read
+ * as "definitely not activated" for a batch that was never eligible.
+ */
+function buildBatchRail(j: BatchJourneyView): RailStage[] {
+  const c = j.counts
+  const rung = (key: string, label: string, done: number, of: number, icon: RailStage['icon']): RailStage => ({
+    key,
+    label,
+    icon,
+    state: of > 0 && done >= of ? 'reached' : done > 0 ? 'current' : 'future',
+    sub: (
+      <span className="tabular-nums">
+        {done}/{of}
+      </span>
+    ),
+  })
+  const stages: RailStage[] = [
+    rung('batched', 'Batched', c.total, c.total, Boxes),
+    rung('sent', 'Sent to vendor', c.sentToVendor, c.total, Printer),
+    rung('dispatched', 'Dispatched by vendor', c.dispatched, c.total, Truck),
+    rung('delivered', 'Delivered', c.delivered, c.total, PackageCheck),
+  ]
+  if (c.deliverableAndActivatable > 0) {
+    stages.push(rung('activated', 'Activated', c.activated, c.deliverableAndActivatable, Zap))
+  }
+  return stages
+}
+
 export function BatchGeneratePage() {
   const { btchId } = useParams<{ btchId: string }>()
   const { client, principal } = useAuth()
@@ -75,6 +114,10 @@ export function BatchGeneratePage() {
   const [detail, setDetail] = useState<BatchDetailView | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [notFound, setNotFound] = useState(false)
+  // The aggregate rail is an enhancement over the dispatch list below it, never
+  // a gate on it: null means either "still loading" or "failed to load", and
+  // either way the rest of the page renders exactly as it would without it.
+  const [journey, setJourney] = useState<BatchJourneyView | null>(null)
 
   // Which dispatch's card is open. Null is the normal state: the table is the
   // page, and a card is something you ask for about one row.
@@ -104,6 +147,14 @@ export function BatchGeneratePage() {
       else setDetail(d)
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Could not load the batch.')
+    }
+    // A separate try/catch, not Promise.all: the journey read is an
+    // enhancement, and a failure here must never turn into loadError above,
+    // which would blank the whole page for a report read going down.
+    try {
+      setJourney(await getBatchJourney(client, btchId))
+    } catch {
+      setJourney(null)
     }
   }, [client, btchId])
 
@@ -299,7 +350,11 @@ export function BatchGeneratePage() {
     {
       key: 'dispatchState',
       header: 'State',
-      cell: (e) => e.dispatchState ?? 'not dispatched',
+      // 'not dispatched' has no pill counterpart (statusMeta's null case reads
+      // '-', which would erase the distinction this column exists to show),
+      // so the null case stays a conditional and only a real state reaches
+      // StatusPill.
+      cell: (e) => (e.dispatchState === null ? 'not dispatched' : <StatusPill value={e.dispatchState} />),
       sortValue: (e) => e.dispatchState ?? '',
     },
     {
@@ -387,6 +442,10 @@ export function BatchGeneratePage() {
           </div>
         </dl>
       </div>
+
+      {/* The batch's own aggregate lifecycle: an enhancement over the hero
+          row, present only once the journey read has answered. */}
+      {journey !== null && <LifecycleRail stages={buildBatchRail(journey)} />}
 
       {/* SECTION 1: WHAT IS IN THE BATCH. The page opens on the dispatch list
           because that is the question an operator arrives with ("is this

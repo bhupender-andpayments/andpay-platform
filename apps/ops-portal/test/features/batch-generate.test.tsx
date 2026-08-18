@@ -57,10 +57,37 @@ function artifact(over: Partial<BatchArtifactRow> = {}): BatchArtifactRow {
   }
 }
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+}
+
+// The existing suites below only ever assert on the batch detail body and
+// never on the rail, so the journey call is answered with a 500 here: the
+// page's own failure handling turns that into "no rail", which is inert for
+// every assertion those suites make.
 function stub(body: unknown) {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })),
+    vi.fn(async (url: string) =>
+      url.includes('/ops/reports/batch-journey/') ? jsonResponse({ message: 'boom' }, 500) : jsonResponse(body),
+    ),
+  )
+}
+
+// The journey-aware suite below routes by URL: batch detail on one path,
+// batch-journey on the other, so the rail sees real BatchJourneyView counts
+// and the two fetches cannot be confused with one another.
+function stubWithJourney(detailBody: unknown, journeyStatusOrBody: number | unknown) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.includes('/ops/reports/batch-journey/')) {
+        return typeof journeyStatusOrBody === 'number'
+          ? jsonResponse({ message: 'boom' }, journeyStatusOrBody)
+          : jsonResponse(journeyStatusOrBody)
+      }
+      return jsonResponse(detailBody)
+    }),
   )
 }
 
@@ -142,6 +169,65 @@ describe('The batch page lists its dispatches', () => {
     expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
     expect(screen.queryByText(/\(vendor fills\)/i)).toBeNull()
     expect(screen.queryByText(/showing the first 10/i)).toBeNull()
+  })
+})
+
+// Task 6: the aggregate lifecycle rail, fed by getBatchJourney and rendered
+// under the hero row. It is an enhancement over the dispatch list, never a
+// gate on it: a journey fetch failure must leave the rest of the page fully
+// working.
+describe('The batch page shows the aggregate lifecycle rail', () => {
+  beforeEach(() => {
+    setAccessToken('t')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+    clearAccessToken()
+  })
+
+  const JOURNEY = {
+    batchId: BATCH.id,
+    counts: { total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 1, delivered: 0, activated: 0 },
+    activation: { notRequested: null, requested: null, activated: 0 },
+  }
+
+  it('renders every rung label and the Dispatched rung as a fraction of the total', async () => {
+    stubWithJourney({ batch: BATCH, entries: [entry()], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' }, JOURNEY)
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    // 'Sent to vendor' renders twice here: once as the rail rung label, once
+    // as the grid row's own status pill (the row's dispatchState happens to
+    // be SENT_TO_VENDOR), so it is checked with getAllByText rather than the
+    // single-match getByText the other labels use.
+    for (const label of ['Batched', 'Dispatched by vendor', 'Delivered', 'Activated']) {
+      expect(screen.getByText(label)).toBeTruthy()
+    }
+    expect(screen.getAllByText('Sent to vendor').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('1/4')).toBeTruthy()
+  })
+
+  it('keeps the rest of the page fully working when the journey fetch fails', async () => {
+    stubWithJourney({ batch: BATCH, entries: [entry()], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' }, 500)
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Dispatch ID' })).toBeTruthy()
+    // No rail, since the journey never arrived, but nothing else broke.
+    expect(screen.queryByText('Batched')).toBeNull()
+  })
+
+  it('upgrades the dispatch grid State column to a status pill', async () => {
+    stubWithJourney({ batch: BATCH, entries: [entry({ dispatchState: 'SENT_TO_VENDOR' })], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' }, JOURNEY)
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    // "Sent to vendor" now renders twice: once as the rail rung label, once
+    // as the grid's status pill for this row's dispatchState.
+    const hits = screen.getAllByText('Sent to vendor')
+    expect(hits.length).toBeGreaterThanOrEqual(2)
+    expect(hits.some((el) => el.className.includes('pill'))).toBe(true)
   })
 })
 

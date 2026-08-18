@@ -27,6 +27,13 @@ export interface RailStage {
   icon: (props: { className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }) => ReactNode
   /** Rendered only when something actually recorded this instant. */
   at?: string | null
+  /**
+   * Additive: an arbitrary caption rendered in the same slot as `at`, for a
+   * rail whose stages carry a fraction (done/of) rather than a timestamp.
+   * Only ever consulted when `at` is absent, so an existing caller supplying
+   * `at` is unaffected by this prop's existence.
+   */
+  sub?: ReactNode
   /** Marks a terminal stop (damaged, returned): reached, and the end. */
   terminal?: boolean
 }
@@ -92,11 +99,14 @@ export function LifecycleRail({ stages }: { stages: readonly RailStage[] }) {
             >
               {stage.label}
             </span>
-            {/* Only where an instant genuinely exists. */}
+            {/* Only where an instant genuinely exists; `sub` fills the same
+                slot for a rail with no per-stage timestamps at all. */}
             {typeof stage.at === 'string' && stage.at !== '' ? (
               <span className="num text-center text-[11px] text-muted-foreground">
                 {fmtDateTime(stage.at)}
               </span>
+            ) : stage.sub !== undefined ? (
+              <span className="text-center text-[11px] text-muted-foreground">{stage.sub}</span>
             ) : null}
           </li>,
         ]

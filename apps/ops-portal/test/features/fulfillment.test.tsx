@@ -312,7 +312,14 @@ describe('Batches: a constant is not a status', () => {
   // the invariant travels with it. What is under test is that the page states an
   // instant it can prove rather than a constant posing as a lifecycle.
   it('the batch page states when it formed, not a word that never changes', async () => {
-    stubFetch(() => jsonResponse({ batch: BATCH_ROW, entries: [], artifacts: [], printLayout: 'ONE_PER_PAGE' }))
+    // The journey read is answered with a 500 here: this test only cares
+    // about the Formed fact, and the page's own failure handling turns a
+    // failed journey fetch into "no rail" rather than a crash.
+    stubFetch((url) =>
+      url.includes('/ops/reports/batch-journey/')
+        ? jsonResponse({ message: 'boom' }, 500)
+        : jsonResponse({ batch: BATCH_ROW, entries: [], artifacts: [], printLayout: 'ONE_PER_PAGE' }),
+    )
     render(
       <MemoryRouter
         initialEntries={['/batches/btch_abc']}
