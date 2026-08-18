@@ -21,6 +21,7 @@ import { FileDropZone } from '../../components/FileDropZone.js'
 import { kindBySlug, COURIER_STATUS_COLUMNS, type StepKey } from './uploadKinds.js'
 import { BackLink } from '../../ui/DetailFacts.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
+import { takeStagedFile } from '../../lib/stagedFile.js'
 
 // D-17 (T5.1, 13 Aug 2026): the ops COURIER-STATUS upload, the fourth upload
 // surface and the one D-17's Phase-1 story actually needs. The courier emails a
@@ -109,6 +110,15 @@ export function CourierStatusUploadPage() {
     }
     setFile(picked)
   }
+
+  // A staged file exists only right after smart-drop navigation (Task 10); it
+  // is consumed once and run through the same handler a drop would use.
+  useEffect(() => {
+    const staged = takeStagedFile()
+    if (staged) void handleFile(staged)
+    // mount-only by design
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function handleSubmit(): Promise<void> {
     if (file === null || courierVndrId === '') return

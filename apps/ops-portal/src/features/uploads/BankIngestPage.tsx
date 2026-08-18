@@ -22,7 +22,7 @@
 // original's rich failure toasts are therefore inline notes here, which is where
 // a reason the operator has to act on belongs anyway.
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, ArrowRight, Check, CheckCircle2, Download, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -48,6 +48,7 @@ import { BackLink } from '../../ui/DetailFacts.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
 import { buildSampleBankFile, SAMPLE_BANK_ROW_COUNT } from './sampleBankRequests.js'
 import { saveBlob } from '../../lib/saveBlob.js'
+import { takeStagedFile } from '../../lib/stagedFile.js'
 
 const KIND = kindBySlug('bank')!
 
@@ -92,6 +93,15 @@ export function BankIngestPage() {
     },
     [client],
   )
+
+  // A staged file exists only right after smart-drop navigation (Task 10); it
+  // is consumed once and run through the same handler a drop would use.
+  useEffect(() => {
+    const staged = takeStagedFile()
+    if (staged) void handleFile(staged)
+    // mount-only by design
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const commit = useCallback(async (): Promise<void> => {
     if (file === null) return

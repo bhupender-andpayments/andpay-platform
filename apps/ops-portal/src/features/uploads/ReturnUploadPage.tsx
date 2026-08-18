@@ -16,7 +16,7 @@
 // file usually fails are both visible before committing: the wrong workbook
 // (structural errors), and rows the vendor left half-filled (per-row errors).
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Download, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -44,6 +44,7 @@ import { saveBlob } from '../../lib/saveBlob.js'
 import { kindBySlug, type StepKey } from './uploadKinds.js'
 import { BackLink } from '../../ui/DetailFacts.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
+import { takeStagedFile } from '../../lib/stagedFile.js'
 
 const KIND = kindBySlug('return')!
 
@@ -101,6 +102,15 @@ export function ReturnUploadPage() {
     },
     [client],
   )
+
+  // A staged file exists only right after smart-drop navigation (Task 10); it
+  // is consumed once and run through the same handler a drop would use.
+  useEffect(() => {
+    const staged = takeStagedFile()
+    if (staged) void handleFile(staged)
+    // mount-only by design
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const commit = useCallback(async (): Promise<void> => {
     if (file === null) return
