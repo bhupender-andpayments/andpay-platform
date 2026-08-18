@@ -295,6 +295,41 @@ describe('Batches: Stage column', () => {
     // No chip, because the enhancement failed; the base row still renders.
     expect(screen.queryByText('Needs return sheet')).toBeNull()
   })
+
+  // 2026-08-18 fix: getBatchJourneySummaries is an audited cross-tenant full
+  // scan. It must not ride the 8s poll (usePagePoll's steady interval,
+  // usePagePoll.ts) the way the pool/batches reads do; it refetches only on
+  // mount, on the tab regaining visibility, and after a manual batch trigger.
+  it('does not refetch batch-journey summaries on the 8s poll tick, but does on a visibilitychange to visible', async () => {
+    vi.useFakeTimers()
+    try {
+      const calls = stubWithSummaries()
+      renderFulfillment()
+
+      // Mount fetch: exactly one summaries read.
+      await vi.waitFor(() => {
+        expect(calls.filter((c) => c.url.includes('/ops/reports/batch-journey')).length).toBe(1)
+      })
+      const summaryCallCount = () => calls.filter((c) => c.url.includes('/ops/reports/batch-journey')).length
+      const poolBatchCallCount = () => calls.filter((c) => c.url.includes('/ops/batches') && !c.url.includes('/ops/reports/')).length
+
+      const poolCallsBefore = poolBatchCallCount()
+
+      // Advance past the settle burst (2s, 4s) and a full 8s interval tick:
+      // the pool/batches read fires again (usePagePoll's whole job), but
+      // summaries must stay at exactly the one mount fetch.
+      await vi.advanceTimersByTimeAsync(8_100)
+      expect(poolBatchCallCount()).toBeGreaterThan(poolCallsBefore)
+      expect(summaryCallCount()).toBe(1)
+
+      // The tab becomes visible again: summaries refetch, outside the poll.
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(summaryCallCount()).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('Batches: a constant is not a status', () => {

@@ -360,6 +360,51 @@ describe('The batch page offers a Next step card driven by the batch stage', () 
     expect(document.getElementById('embedded-upload-return')).toBeNull()
   })
 
+  // D-16 controller ruling: activation has no delivery gate. A batch still
+  // SHIPPING (not everything delivered) can already have dispatches sitting
+  // in awaitingActivation, and the CWD block must render right alongside the
+  // courier dropzone rather than waiting for the last shipment to land.
+  it('at SHIPPING with a partial delivery, renders both the courier dropzone and the CWD block', async () => {
+    const AWAITING = [
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null },
+    ]
+    stubRoutes(
+      DETAIL,
+      journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 1, activated: 0 }, AWAITING),
+    )
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(await screen.findByText('Next step')).toBeTruthy()
+    expect(document.getElementById('embedded-upload-courier-status')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /download activation sheet/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^mark sent to cwd$/i })).toBeTruthy()
+    // The activation-file dropzone stays ACTIVATION-only: a shipping batch's
+    // devices are not even confirmed activatable by CWD yet.
+    expect(document.getElementById('embedded-upload-activation')).toBeNull()
+  })
+
+  // Ruling for PRINTING: even though a batch still forming may already list
+  // soundboxes in awaitingActivation, a batch at PRINTING has nothing CWD can
+  // act on (devices are not even paired), so the block stays hidden there
+  // regardless of what awaitingActivation lists.
+  it('at PRINTING, the CWD block stays hidden even with a non-empty awaitingActivation', async () => {
+    const AWAITING = [
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null },
+    ]
+    stubRoutes(
+      DETAIL,
+      journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 1, delivered: 0, activated: 0 }, AWAITING),
+    )
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(await screen.findByText('Next step')).toBeTruthy()
+    expect(document.getElementById('embedded-upload-return')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /download activation sheet/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /mark sent to cwd/i })).toBeNull()
+  })
+
   // The brief's READY_FOR_CWD case, read as ACTIVATION per the controller
   // ruling: everything delivered, something still activatable and not yet
   // activated. Both the CWD send actions and the activation dropzone render

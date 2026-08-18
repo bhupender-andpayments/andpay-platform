@@ -7,8 +7,21 @@
 // original brief for this card assumed) because analytics never projects
 // REQUEST_SENT_TO_CWD (2026-08-18 controller ruling, spec batch-first-ops-ux
 // task 4). Concretely: PRINTING offers the return-sheet dropzone, SHIPPING the
-// courier-status dropzone, ACTIVATION both the CWD send actions and the
-// activation-file dropzone together, COMPLETE nothing at all.
+// courier-status dropzone, ACTIVATION the activation-file dropzone.
+//
+// THE CWD BLOCK IS NOT STAGE-GATED TO ACTIVATION (2026-08-18 controller
+// ruling, D-16: activation has NO delivery gate). It renders whenever
+// `journey.awaitingActivation` is non-empty AND the batch has reached SHIPPING
+// or later, i.e. `(stage === 'SHIPPING' || stage === 'ACTIVATION') &&
+// dispatchIds.length > 0`. A batch still at PRINTING has nothing CWD can act
+// on (devices are not even paired yet), so the block stays hidden there
+// regardless of what `awaitingActivation` happens to list; COMPLETE is
+// excluded because everything activatable is already activated by then. In
+// practice this means SHIPPING can render BOTH the courier-status dropzone
+// AND the CWD block at once, one under the other with its own heading: a
+// partially delivered batch can have some dispatches already activatable
+// while others are still in transit, and the operator should not have to wait
+// for the last shipment to act on the ones that are ready.
 //
 // WHY THE CWD ACTIONS LIVE HERE (adapted from features/activation/
 // ActivationPage.tsx's "THE BATCHES CARD" header block, D-16/T4.1b, ahead of
@@ -27,8 +40,8 @@
 //   /ops/assignments/request-activation, which records REQUEST_SENT_TO_CWD,
 //   an activation REQUEST fact, not an activation. Those dispatches are still
 //   awaiting the CWD's own confirmation afterwards, which is why the
-//   activation-file dropzone is offered alongside the button rather than the
-//   stage advancing on the strength of a request alone.
+//   activation-file dropzone is offered alongside the button (at ACTIVATION)
+//   rather than the stage advancing on the strength of a request alone.
 //
 // NO REMARK BOX on the confirmation, for the same reason ActivationPage's
 // version never had one: /ops/assignments/request-activation accepts no
@@ -95,6 +108,10 @@ export function NextStepCard({
   // Defensive against an older/partial fixture or a genuinely absent field on
   // the wire: an empty list disables the send button rather than throwing.
   const dispatchIds = (journey.awaitingActivation ?? []).map((row) => row.dispatchId)
+  // D-16: activation has no delivery gate. The CWD block renders on SHIPPING
+  // or ACTIVATION whenever something is actually awaiting activation; a batch
+  // still at PRINTING has nothing CWD can act on yet.
+  const showCwd = (stage === 'SHIPPING' || stage === 'ACTIVATION') && dispatchIds.length > 0
 
   async function handleDownload(): Promise<void> {
     setDownloading(true)
@@ -152,8 +169,9 @@ export function NextStepCard({
 
         {stage === 'SHIPPING' && <EmbeddedUploadCard kind="courier-status" batchId={batchId} onDone={onChanged} />}
 
-        {stage === 'ACTIVATION' && (
+        {showCwd && (
           <div className="space-y-4">
+            <p className="text-sm font-semibold text-foreground">Ready for CWD activation</p>
             <div className="flex flex-wrap items-center gap-2">
               <Button type="button" variant="outline" disabled={downloading} onClick={() => void handleDownload()}>
                 {downloading ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Download aria-hidden="true" />}
@@ -177,7 +195,7 @@ export function NextStepCard({
 
             {downloadError !== null && <ErrorNote>{downloadError}</ErrorNote>}
 
-            <EmbeddedUploadCard kind="activation" batchId={batchId} onDone={onChanged} />
+            {stage === 'ACTIVATION' && <EmbeddedUploadCard kind="activation" batchId={batchId} onDone={onChanged} />}
           </div>
         )}
 

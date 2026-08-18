@@ -112,7 +112,11 @@ describe('EmbeddedUploadCard', () => {
     await pickFile('embedded-upload-return', makeFile('return.csv'))
 
     expect(await screen.findByText(/2 rows ready/i)).toBeTruthy()
-    expect(screen.getByText(/1 unreadable/i)).toBeTruthy()
+    // The summary line and the PerRowErrors breakdown below it must agree on
+    // one word for the same rows: both say "invalid", not "unreadable" beside
+    // "Invalid" (2026-08-18 fix).
+    expect(screen.getByText(/1 invalid/i)).toBeTruthy()
+    expect(screen.getByText('Invalid')).toBeTruthy()
     const previewCall = calls.find((c) => c.url.includes('/ops/uploads/return/preview'))
     expect(previewCall).toBeTruthy()
 

@@ -240,7 +240,7 @@ export function EmbeddedUploadCard({
               <p className="text-sm font-medium">
                 {validRows.length} row{validRows.length === 1 ? '' : 's'} ready
                 {invalidRows.length > 0
-                  ? `, ${invalidRows.length} unreadable`
+                  ? `, ${invalidRows.length} invalid`
                   : ''}
               </p>
               {targetingBatch !== null && (

@@ -113,14 +113,22 @@ export function FulfillmentPage() {
   // that is working with an error banner. Same split InventoryPage's
   // `asRefresh` uses, minus the "Updating..." pill, which blinking every eight
   // seconds would be worse than silence.
+  //
+  // The Stage rollup (getBatchJourneySummaries) does NOT ride this fetch
+  // (2026-08-18 controller ruling): it is an audited cross-tenant full scan,
+  // and folding it into the 8s poll this `load` drives meant every tick paid
+  // for a full scan just to keep a stage chip fresh. It is fetched
+  // separately, by `loadSummaries` below, on mount, on the tab regaining
+  // visibility, and once after a manual batch trigger succeeds; never on the
+  // interval tick.
   const load = useCallback(async (quiet = false): Promise<void> => {
     if (!quiet) {
       setLoading(true)
       setLoadError(null)
     }
     try {
-      // All four are on screen, so all four are fetched, in parallel: they are
-      // independent reads and serialising them would make the page four times as
+      // Both are on screen, so both are fetched, in parallel: they are
+      // independent reads and serialising them would make the page twice as
       // slow for no reason.
       // POOLED, not the whole table (16 Aug 2026 UAT). The empty filter returned
       // every entry ever committed, so once a batch claimed its records they
@@ -129,17 +137,9 @@ export function FulfillmentPage() {
       // batched has left it, and its home is the Batches grid below.
       // HELD rows are worked in Queues, which is where accepting one puts it
       // back into this pool.
-      // The Stage rollup rides the SAME Promise.all but `.catch(() => null)` of
-      // its own: it is an enhancement over the batch list, never a blocker, so
-      // a bad read here must not cost the batch rows the operator came for.
-      const [poolRows, batchRows, summaries] = await Promise.all([
-        getPoolEntries(client, 'POOLED'),
-        getBatches(client),
-        getBatchJourneySummaries(client).catch(() => null),
-      ])
+      const [poolRows, batchRows] = await Promise.all([getPoolEntries(client, 'POOLED'), getBatches(client)])
       setPool(poolRows)
       setBatches(batchRows)
-      setStages(summaries ? new Map(summaries.rows.map((s) => [s.batchId, deriveBatchStage(s)])) : null)
     } catch (err) {
       if (!quiet) setLoadError(err instanceof Error ? err.message : 'Failed to load.')
     } finally {
@@ -147,9 +147,33 @@ export function FulfillmentPage() {
     }
   }, [client])
 
+  // Non-blocking by design (`.catch` sets `stages` back to null rather than
+  // throwing): this is an enhancement over the batch list, never a blocker,
+  // so a bad read here must not cost the batch rows the operator came for.
+  const loadSummaries = useCallback((): void => {
+    getBatchJourneySummaries(client)
+      .then((summaries) => setStages(new Map(summaries.rows.map((s) => [s.batchId, deriveBatchStage(s)]))))
+      .catch(() => setStages(null))
+  }, [client])
+
   useEffect(() => {
     void load()
-  }, [load])
+    loadSummaries()
+  }, [load, loadSummaries])
+
+  // The one other trigger for a summaries refetch besides mount: the tab
+  // coming back into view, which is exactly when a stage chip left open in a
+  // background tab is most likely stale. Deliberately its OWN listener
+  // rather than riding usePagePoll's `visibilitychange` (below): that hook's
+  // single `refetch` also fires on the interval tick, and the whole point
+  // here is that summaries must not.
+  useEffect(() => {
+    function onVisible(): void {
+      if (document.visibilityState === 'visible') loadSummaries()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [loadSummaries])
 
   // THE POOL ARRIVES AFTER THE UPLOAD RESPONSE DOES, so one fetch on mount is
   // not enough and never was. pending_pool_entry is written in exactly one
@@ -337,7 +361,10 @@ export function FulfillmentPage() {
           a tall gap beside the rules card and the row read as broken. */}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <BatchablePools
-          onTriggered={() => void load()}
+          onTriggered={() => {
+            void load()
+            loadSummaries()
+          }}
           reloadKey={poolFingerprint}
           lotSizeFor={lotSizeFor}
           // The same resolved rule the AutoTriggerCard beside it displays, so

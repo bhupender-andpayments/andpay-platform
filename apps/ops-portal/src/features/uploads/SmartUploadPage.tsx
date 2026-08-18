@@ -9,7 +9,7 @@
 // page that owns that kind via the staged-file handoff (Task 9). This page's
 // whole job ends the moment the right page has the file.
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -18,7 +18,7 @@ import { FileDropZone } from '../../components/FileDropZone.js'
 import { PageHeader, ErrorNote, InfoNote } from '../../ui/primitives.js'
 import { useToast } from '../../ui/Toast.js'
 import { useAuth } from '../../auth/AuthContext.js'
-import { stageFile } from '../../lib/stagedFile.js'
+import { stageFile, takeStagedFile } from '../../lib/stagedFile.js'
 import { sniffUpload, uploadFileRejection, type SniffKind } from '../../api/endpoints.js'
 
 // Where a single, unambiguous candidate lands. `unit-status` is deliberately
@@ -82,8 +82,24 @@ export function SmartUploadPage() {
   // so its explanation shows without navigating anywhere.
   const [infoKind, setInfoKind] = useState<SniffKind | null>(null)
 
+  // Set true the instant `land()` hands a file off, so the unmount cleanup
+  // below can tell "this file was legitimately staged for the page we are
+  // navigating to" from "this page is going away with a file still sitting
+  // in the module-level slot" (a drop that never landed: back navigation,
+  // an unrelated nav click, the tab closing before a candidate was chosen).
+  const landedRef = useRef(false)
+
+  // A drop that never lands must not leak into whatever upload page mounts
+  // next and auto-fire against a file the operator never meant for it.
+  useEffect(() => {
+    return () => {
+      if (!landedRef.current) takeStagedFile()
+    }
+  }, [])
+
   const land = useCallback(
     (picked: File, kind: SniffKind): void => {
+      landedRef.current = true
       stageFile(picked)
       toast(TOAST_BY_KIND[kind])
       navigate(ROUTE_BY_KIND[kind]!)
@@ -176,7 +192,7 @@ export function SmartUploadPage() {
 
           {error !== null && <ErrorNote>{error}</ErrorNote>}
 
-          {choices !== null && infoKind === null && (
+          {choices !== null && (
             <div className="space-y-2">
               <p className="text-sm font-medium">This file matches more than one kind. Which is it?</p>
               <div className="flex flex-wrap gap-2">

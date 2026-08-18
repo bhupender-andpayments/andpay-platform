@@ -106,7 +106,7 @@ export function LifecycleRail({ stages }: { stages: readonly RailStage[] }) {
                 {fmtDateTime(stage.at)}
               </span>
             ) : stage.sub !== undefined ? (
-              <span className="text-center text-[11px] text-muted-foreground">{stage.sub}</span>
+              <span className="num text-center text-[11px] text-muted-foreground">{stage.sub}</span>
             ) : null}
           </li>,
         ]

@@ -28,6 +28,7 @@ import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { DEVICE_INVENTORY_KIND, DEVICE_INVENTORY_COLUMNS } from './uploadKinds.js'
 import { UploadHelperCards } from './UploadHelperCards.js'
 import { useToast } from '../../ui/Toast.js'
+import { takeStagedFile } from '../../lib/stagedFile.js'
 
 // Phase 7 Task 7 (edge + permission already built Phase-5 Task 1, D-G,
 // FR-01a): the ops device-inventory upload, the THIRD upload surface. Same
@@ -242,6 +243,17 @@ export function DeviceInventoryUploadPage() {
     // answer is the step that was missing. It writes nothing.
     void runPreview(picked)
   }
+
+  // A staged file exists only right after smart-drop navigation (Task 10); it
+  // is consumed once and run through the same handler a drop would use. This
+  // page still requires a manufacturer before commit, so consuming here only
+  // stages the file into the dropzone and previews it, which is correct: the
+  // operator picks the manufacturer afterward.
+  useEffect(() => {
+    const staged = takeStagedFile()
+    if (staged) handleFile(staged)
+    // mount-only by design
+  }, [])
 
   async function runPreview(picked: File): Promise<void> {
     setPreviewing(true)
