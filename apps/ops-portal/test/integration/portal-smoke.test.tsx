@@ -113,10 +113,10 @@ async function renderAuthedShell(): Promise<void> {
 // ReportPage/QueuesPage/MasterDataPage/UploadsPage/OperationsPage/
 // ActivationPage/MerchantsPage).
 //
-// Reports is absent because this test walks the sidebar by CLICKING each item,
-// and HIDDEN_ROUTES (17 Aug 2026) removed that item while the Insights work is
-// in flight. ReportPage itself is unaffected and still covered by
-// test/features/reports*.test.tsx.
+// Reports is BACK in this walk as of 18 Aug 2026: HIDDEN_ROUTES is empty again,
+// so the sidebar offers the item and this test clicks it like every other one,
+// which is also what makes the smoke test cover ReportPage mounting inside the
+// real shell rather than only in test/features/reports*.test.tsx.
 const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
   { label: 'Command Center', heading: /^command center$/i },
   { label: 'Merchants', heading: /^merchants$/i },
@@ -129,6 +129,7 @@ const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
   { label: 'Activation', heading: /^activation$/i },
   // D-24 (T6.6): the damage cases screen.
   { label: 'Damage cases', heading: /^damage cases$/i },
+  { label: 'Reports', heading: /^reports$/i },
 ]
 
 describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
@@ -147,7 +148,7 @@ describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
     consoleErrorSpy.mockRestore()
   })
 
-  it('mounts the shell authenticated and routes through all 10 shown sections with no thrown errors and no console.error', async () => {
+  it('mounts the shell authenticated and routes through all 11 shown sections with no thrown errors and no console.error', async () => {
     await renderAuthedShell()
 
     const nav = screen.getByRole('navigation', { name: /main/i })

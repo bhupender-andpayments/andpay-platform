@@ -150,9 +150,37 @@ describe('TilesPage (Command Center)', () => {
     }
   })
 
-  // The D-31 damage-case counts card was REMOVED from this page on 17 Aug 2026
-  // and its test went with it. What that test actually guarded still is: the
-  // three counts and the ?status= deep-link vocabulary are covered on the screen
-  // that owns them, test/features/damage-cases.test.tsx (the summary chips, the
-  // ?status=Closed landing, and the hyphenless spelling).
+  // D-31 RESTORED (18 Aug 2026). The card was removed on 17 Aug because it was
+  // the only thing in the right-hand column and read as stranded. That was a
+  // layout complaint, and dropping the tile answered it by dropping a BRD FR-09
+  // dashboard tile ("Damaged / replacement open") and the D-31 deep-links with
+  // it. It is back, in the LEFT column under the live rail where it is not
+  // stranded, and the counts are the live TMS read as before: DP-7 means the
+  // analytics tiles cannot answer this, so it is its own request.
+  it('shows the damage-case counts live, and deep-links each into the filtered list', async () => {
+    stub()
+    renderAt()
+
+    const card = await screen.findByTestId('damage-cases-card')
+    // Open / In progress / Closed, the three D-24 states, from the live read.
+    expect(within(card).getByText('4')).toBeTruthy()
+    expect(within(card).getByText('6')).toBeTruthy()
+    expect(within(card).getByText('8')).toBeTruthy()
+
+    // The ?status= vocabulary is the one DamageCasesPage normalizes, hyphen
+    // spelling included: these links were built for this tile and outlived it.
+    const hrefs = within(card)
+      .getAllByRole('link')
+      .map((a) => a.getAttribute('href'))
+    expect(hrefs).toEqual(
+      expect.arrayContaining(['/damage-cases?status=Open', '/damage-cases?status=In-Progress', '/damage-cases?status=Closed']),
+    )
+  })
+
+  it('reads the damage counts from TMS, not from the analytics tiles', async () => {
+    const urls = stub()
+    renderAt()
+    await screen.findByTestId('damage-cases-card')
+    expect(urls.some((u) => u.includes('/ops/damage-cases/summary'))).toBe(true)
+  })
 })

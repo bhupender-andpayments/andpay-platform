@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Boxes, CheckCircle2, Hourglass, PackageX, Printer, Send, Truck, Warehouse, Zap } from 'lucide-react'
+import { Boxes, CheckCircle2, HeartCrack, Hourglass, PackageX, Printer, Send, Truck, Warehouse, Zap } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import {
+  getDamageCaseSummary,
   getReport,
   getTiles,
   type ReportCell,
@@ -343,13 +344,17 @@ export function TilesPage() {
           between "the chosen window" above and "live" below stays visible. */}
       {/* Right now carries four stages and needs the room; Needs attention is
           a short list and reads fine narrow.
-          The damage-case counts card was REMOVED from this column on 17 Aug
-          2026: it was the only thing under Needs attention, so a short
-          exception list left it stranded beside a tall neighbour, and damage is
-          not what this screen is being used for. /damage-cases still owns those
-          counts and the nav still reaches it. */}
+          The damage-case counts sit UNDER the live rail, in the wide column
+          (18 Aug 2026). They were removed from the narrow column on 17 Aug for
+          a layout reason that was real: alone opposite a tall neighbour they
+          read as stranded. Removing them also removed a BRD FR-09 tile and the
+          D-31 deep-links, so they are back on the other side, stacked beneath
+          the rail they belong with. Both are live counts with no date axis. */}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:items-start">
-        {tiles !== null && <PipelineNow tiles={tiles} />}
+        <div className="flex flex-col gap-4">
+          {tiles !== null && <PipelineNow tiles={tiles} />}
+          <DamageCasesCard />
+        </div>
         <ExceptionSurface />
       </div>
 
@@ -381,11 +386,73 @@ function tileCount(tiles: TileSet, key: TileName): number {
   return typeof v === 'object' && v !== null ? v.count : 0
 }
 
-// DamageCasesCard WAS HERE and is gone with its card (17 Aug 2026). It was the
-// D-31 damage-case counts read live from TMS, three tiles linking into
-// /damage-cases?status=. The screen that owns those counts still shows them, so
-// nothing is lost but the duplicate. getDamageCaseSummary keeps its other
-// caller and stays in endpoints.ts.
+// D-31: the damage-case counts, read live from TMS. NOT from the analytics
+// tiles, and that is not an oversight: DP-7 keeps case status out of the
+// analytics projection entirely, so the tile read cannot answer this question
+// and this card asks its own.
+//
+// The three states are the three D-24 grants, and each one is a door: the
+// ?status= values below are exactly the vocabulary DamageCasesPage normalizes
+// (hyphen spelling included), so a count lands on that count's own filtered
+// list rather than on an unfiltered screen the operator then has to filter.
+//
+// Silent on failure, deliberately, and unlike ExceptionSurface beside it: that
+// card must never report all-clear on a failed read because its whole job is to
+// be trusted when it says nothing is wrong. This one reports counts, so the
+// honest failure is to show nothing rather than three zeros, which would read
+// as "no damage cases" when it means "we could not ask".
+const DAMAGE_STATES = [
+  { label: 'Open', key: 'open', status: 'Open' },
+  { label: 'In progress', key: 'inProgress', status: 'In-Progress' },
+  { label: 'Closed', key: 'closed', status: 'Closed' },
+] as const satisfies ReadonlyArray<{ label: string; key: 'open' | 'inProgress' | 'closed'; status: string }>
+
+function DamageCasesCard() {
+  const { client } = useAuth()
+  const [summary, setSummary] = useState<{ open: number; inProgress: number; closed: number } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getDamageCaseSummary(client)
+      .then((s) => {
+        if (!cancelled) setSummary(s)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [client])
+
+  if (summary === null) return null
+
+  return (
+    <div data-testid="damage-cases-card">
+      <Card>
+        <CardHeader
+          title="Damage cases"
+          subtitle="Replacements raised off a damaged dispatch. Open a count for that list."
+        />
+        <div className="grid grid-cols-3 gap-3 px-5 pb-5">
+          {DAMAGE_STATES.map((s) => (
+            <Link
+              key={s.key}
+              to={`/damage-cases?status=${s.status}`}
+              className="flex flex-col gap-1 rounded-xl border border-border bg-card px-3.5 py-3 transition-colors hover:border-foreground/25 hover:bg-muted/40"
+            >
+              <span className="flex items-center gap-2">
+                <span className="flex size-7 items-center justify-center rounded-lg bg-rose-500/10">
+                  <HeartCrack className="size-4 text-rose-600 dark:text-rose-400" aria-hidden="true" />
+                </span>
+                <span className="text-[12px] leading-snug text-muted-foreground">{s.label}</span>
+              </span>
+              <span className="num text-xl font-semibold leading-none text-foreground">{fmtNumber(summary[s.key])}</span>
+            </Link>
+          ))}
+        </div>
+      </Card>
+    </div>
+  )
+}
 
 function PipelineNow({ tiles }: { tiles: TileSet }) {
   return (

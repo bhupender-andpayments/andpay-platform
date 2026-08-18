@@ -127,7 +127,7 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 10 shown sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 11 shown sections, no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
@@ -151,25 +151,28 @@ describe('ops-portal app shell + navigation', () => {
     // look at. The read had existed at the edge since FR08-2 with no surface at
     // all, which is most of why those statuses were stale.
     //
-    // Reports is HIDDEN as of 17 Aug 2026 (HIDDEN_ROUTES) while the Insights
-    // work is in flight, so it is absent here while /reports itself still
-    // resolves. See the deep-link test below, which is what guards that.
+    // Reports is BACK in the nav (18 Aug 2026). It was hidden on 17 Aug while
+    // the Insights work was in flight, which left all six BRD FR-10 reports and
+    // their CSV export reachable only by typing the URL or by finding a Command
+    // Center tile that deep-links into one. Hiding the only door to a delivered
+    // requirement is not a neutral in-flight state, so the item is restored and
+    // the Insights group comes back with it.
     expect([...names].sort()).toEqual(
-      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Uploads'],
+      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })
 
-  it('groups the nav under the object-first headings, less the emptied Insights', async () => {
+  it('groups the nav under the object-first headings, Insights included', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
-    for (const heading of ['Overview', 'Pipeline', 'Operations', 'Setup']) {
+    // Insights holds Reports, so restoring that item brings its heading back.
+    // The empties-a-group rule still holds and is still exercised, by the CS
+    // test below for Setup.
+    for (const heading of ['Overview', 'Pipeline', 'Operations', 'Insights', 'Setup']) {
       expect(within(nav).getByText(heading)).toBeTruthy()
     }
-    // Insights held only Reports, so hiding that item empties the group and its
-    // heading goes with it rather than titling an empty list. Same rule the CS
-    // test below relies on for Setup.
-    expect(within(nav).queryByText('Insights')).toBeNull()
+    expect(within(nav).getByRole('link', { name: 'Reports' }).getAttribute('href')).toBe('/reports')
   })
 
   // The renames must not strand a bookmark or a link in someone's notes.
@@ -270,10 +273,11 @@ describe('ops-portal app shell + navigation', () => {
 
     expect(names).not.toContain('Uploads')
     expect(names).not.toContain('Master Data')
-    // The views D-29 keeps for CS are all still offered. Reports is NOT among
-    // them any more, and not because of this role: HIDDEN_ROUTES drops it for
-    // everyone while the Insights work is in flight.
-    for (const kept of ['Dispatches', 'Merchants', 'Damage cases']) {
+    // The views D-29 keeps for CS are all still offered, Reports among them: the
+    // 16 Aug walkthrough has CS reading reports on screen while the CSV export
+    // stays a 403 server-side and its button stays hidden, so the nav item is
+    // right for this role too. Only Uploads and Master Data are CS-hidden.
+    for (const kept of ['Dispatches', 'Merchants', 'Damage cases', 'Reports']) {
       expect(names).toContain(kept)
     }
     // The Setup group held only Master Data, so its heading goes with it

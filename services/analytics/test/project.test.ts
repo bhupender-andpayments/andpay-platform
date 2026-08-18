@@ -36,6 +36,10 @@ function assignmentEnvelope(o: {
   merchantDisplayName?: string
   billable?: boolean
   branchCode?: string
+  // W-5 dispatch group, optional on the wire exactly like branchCode: omitted
+  // models a pre-split legacy fact, which projects null and is why every
+  // fixture above this line still describes the legacy shape.
+  dispatchGroup?: string
   ts: string
 }): Envelope {
   return newEnvelope({
@@ -68,6 +72,7 @@ function assignmentEnvelope(o: {
       // test does not pass one (undefined -> dropped by JSON), modeling a
       // pre-Task-4 / legacy fact that must still project to null.
       branchCode: o.branchCode,
+      dispatchGroup: o.dispatchGroup,
     },
   })
 }
@@ -192,6 +197,8 @@ function collateralShipmentEnvelope(o: {
   awb: string
   asgnIds: string[]
   fileId?: string
+  status?: string
+  courierTimestamp?: string
   ts: string
 }): Envelope {
   return newEnvelope({
@@ -200,15 +207,16 @@ function collateralShipmentEnvelope(o: {
     subject: o.shptId,
     // the file-scoped grammar the producer uses, mirrored here so the fixture
     // cannot accidentally collide with a birth fact's bare shpt key.
-    dedupKey: `${o.shptId}|collateral|${o.fileId ?? 'return-file-1'}`,
+    dedupKey: `${o.shptId}|collateral|${o.status ?? 'DISPATCHED_BY_VENDOR'}|${o.fileId ?? 'return-file-1'}`,
     traceId: 'trace-proj',
     timestamp: o.ts,
     payload: {
       shptId: o.shptId,
       awb: o.awb,
-      status: 'DISPATCHED_BY_VENDOR',
+      status: o.status ?? 'DISPATCHED_BY_VENDOR',
       collateral: true,
       asgnIds: o.asgnIds,
+      courierTimestamp: o.courierTimestamp,
     },
   })
 }
@@ -436,6 +444,95 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
     expect(row!.courierStatus).toBeNull()
     expect(row!.dispatchDate).toBeNull()
     expect(row!.pipelineState).toBe('RECEIVED')
+
+    const online = await snapshotRows()
+    await rebuildDispatchRows(db)
+    expect(await snapshotRows()).toEqual(online)
+  })
+
+  // W-5 / BRD FR-06: courier status is tracked PER DISPATCH ID, for both product
+  // types. A COLLATERAL dispatch's only parcel is the collateral one, so that
+  // parcel is its PRIMARY parcel and must drive its own courier columns. It did
+  // not: the collateral early-return fired for every row, so a paper leg that had
+  // shipped and delivered still projected awb null, courier_status null and
+  // delivery_date null, and the portal showed it as never dispatched (found
+  // 18 Aug 2026 on the shared dataset, dispatch page and list row both).
+  //
+  // The early-return still exists and still matters, for the row it was written
+  // for: see the SOUNDBOX guard test below.
+  it("a COLLATERAL dispatch's own parcel drives its courier columns", async () => {
+    const asgnColl = newId('asgn')
+    const progP = newId('prog') as ProgId
+    const collateralShpt = newId('shpt')
+
+    await ingestEnvelope(
+      db,
+      assignmentEnvelope({ asgnId: asgnColl, progId: progP, dispatchGroup: 'COLLATERAL', ts: '2026-07-01T00:00:00Z' }),
+    )
+    await ingestEnvelope(
+      db,
+      collateralShipmentEnvelope({ shptId: collateralShpt, awb: 'AWB-COLL-OWN', asgnIds: [asgnColl], ts: '2026-07-02T00:00:00Z' }),
+    )
+    await ingestEnvelope(
+      db,
+      collateralShipmentEnvelope({
+        shptId: collateralShpt,
+        awb: 'AWB-COLL-OWN',
+        asgnIds: [asgnColl],
+        status: 'DELIVERED',
+        courierTimestamp: '2026-07-05T00:00:00Z',
+        ts: '2026-07-05T00:00:00Z',
+      }),
+    )
+
+    const row = await db.dispatchRow.findUnique({ where: { dispatchId: asgnColl } })
+    expect(row!.dispatchGroup).toBe('COLLATERAL')
+    expect(row!.awb).toBe('AWB-COLL-OWN')
+    expect(row!.shptId).toBe(collateralShpt)
+    expect(row!.courierStatus).toBe('DELIVERED')
+    expect(row!.deliveryDate).not.toBeNull()
+    expect(row!.dispatchedAt).not.toBeNull()
+    expect(row!.pipelineState).toBe('DELIVERED')
+
+    const online = await snapshotRows()
+    await rebuildDispatchRows(db)
+    expect(await snapshotRows()).toEqual(online)
+  })
+
+  // THE SAFETY PROPERTY, unchanged and now pinned explicitly for the group it is
+  // about: a late collateral fact must never regress a SOUNDBOX row's delivered
+  // device parcel back to DISPATCHED_BY_VENDOR. This is what the early-return was
+  // written for, and it still fires for this row.
+  it('a late collateral fact still cannot touch a SOUNDBOX row courier columns', async () => {
+    const asgnSb = newId('asgn')
+    const progP = newId('prog') as ProgId
+    const unit = newId('unit')
+    const deviceShpt = newId('shpt')
+    const collateralShpt = newId('shpt')
+
+    await ingestEnvelope(
+      db,
+      assignmentEnvelope({ asgnId: asgnSb, progId: progP, dispatchGroup: 'SOUNDBOX', ts: '2026-07-01T00:00:00Z' }),
+    )
+    await ingestEnvelope(
+      db,
+      printForEnvelope({ asgnId: asgnSb, unitId: unit, deviceId: 'DEV9', shptId: deviceShpt, awb: 'AWB-DEVICE', ts: '2026-07-01T13:00:00Z' }),
+    )
+    await ingestEnvelope(
+      db,
+      shipmentEnvelope({ shptId: deviceShpt, awb: 'AWB-DEVICE', status: 'DELIVERED', courierTimestamp: '2026-07-03T00:00:00Z', ts: '2026-07-03T00:00:00Z' }),
+    )
+    // The standee ships LATER, which is the ordering that used to regress the row.
+    await ingestEnvelope(
+      db,
+      collateralShipmentEnvelope({ shptId: collateralShpt, awb: 'AWB-STANDEE-LATE', asgnIds: [asgnSb], ts: '2026-07-09T00:00:00Z' }),
+    )
+
+    const row = await db.dispatchRow.findUnique({ where: { dispatchId: asgnSb } })
+    expect(row!.awb).toBe('AWB-DEVICE')
+    expect(row!.courierStatus).toBe('DELIVERED')
+    expect(row!.collateralAwb).toBe('AWB-STANDEE-LATE')
+    expect(row!.collateralShptId).toBe(collateralShpt)
 
     const online = await snapshotRows()
     await rebuildDispatchRows(db)

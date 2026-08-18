@@ -429,22 +429,51 @@ export async function commitBankFile(
 // `null`, which is unambiguous, unlike overloading the ingest-level
 // `'duplicate'` outcome (a row-level dedup on correlation_id or
 // (file_id, row_no)), which means something operationally different.
+//
+// `cured: false` means the correction did NOT land, so the hold STAYS in the
+// queue. A cure is only a cure if the corrected row ingested, and this stamp
+// used to run unconditionally, which lost real requests (18 Aug 2026): the
+// resolve dialog pins fileId and rowNo to the row being cured, so a
+// still-invalid correction re-quarantines straight into the
+// ON CONFLICT (file_id, row_no) DO NOTHING of that very row, writes nothing,
+// and reported 'duplicate'. The row was then retired as 'cured' while the
+// merchant's request existed neither in pending_row nor as a fresh hold. An
+// operator who wants a held row retired WITHOUT ingesting it has
+// closeQuarantineRow for exactly that, which is why refusing here costs
+// nothing: the two ways out stay distinct instead of one silently doing the
+// other's job badly. Reported like closeQuarantineRow's `closed`, so a caller
+// reads "it landed" from a flag rather than inferring it from a bare success.
 export async function resolveQuarantineRow(
   db: TmsDb,
   args: { quarantineId: string; correctedRow: BankRequestRow; clientKey: string; actorId: string; traceId: string },
-): Promise<{ deduped: boolean; outcome: 'accepted' | 'quarantined' | 'duplicate' | null }> {
+): Promise<{ deduped: boolean; outcome: 'accepted' | 'quarantined' | 'duplicate' | null; cured: boolean }> {
   let outcome: 'accepted' | 'quarantined' | 'duplicate' | null = null
+  let cured = false
   const ran = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:resolve-quarantine'), async () => {
-      outcome = await ingestRequestRowWithinTx(tx, args.correctedRow, args.traceId)
-      await tx.$executeRaw`
-        UPDATE quarantine_row
-        SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid, resolution = ${'cured'}
-        WHERE id = ${args.quarantineId}::uuid AND resolved_at IS NULL
-      `
+      const ingested = await ingestRequestRowWithinTx(tx, args.correctedRow, args.traceId)
+      outcome = ingested
+      // ONLY an accepted ingest retires the hold. 'quarantined' means the
+      // correction was itself held (as a new row when it carries a different
+      // (file_id, row_no), or not at all when it collides with this one), and
+      // 'duplicate' means nothing was written; in both cases the order is still
+      // unfilled, so the row an operator has to act on must remain actionable.
+      if (ingested === 'accepted') {
+        const stamped = await tx.$queryRaw<{ id: string }[]>`
+          UPDATE quarantine_row
+          SET resolved_at = now(), resolved_by_actor = ${args.actorId}::uuid, resolution = ${'cured'}
+          WHERE id = ${args.quarantineId}::uuid AND resolved_at IS NULL
+          RETURNING id::text AS id
+        `
+        cured = stamped.length > 0
+      }
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the re-ingest
-      // and the resolved-at stamp. The quarantine row is the target resource.
+      // and the resolved-at stamp, whether or not the cure landed: the operator
+      // DID perform an authorized resolve attempt, and an audit that recorded
+      // only the ones that landed would under-report what was tried (the same
+      // reasoning closeQuarantineRow states for its own losing stamp).
+      // The quarantine row is the target resource.
       await enqueue(
         tx,
         buildAuthzAuditEvent(
@@ -458,7 +487,7 @@ export async function resolveQuarantineRow(
       )
     })
   })
-  return { deduped: !ran, outcome }
+  return { deduped: !ran, outcome, cured }
 }
 
 /**

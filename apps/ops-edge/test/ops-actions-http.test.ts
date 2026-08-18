@@ -293,6 +293,66 @@ describe('ops-edge review-queue Close route (D-8)', () => {
   })
 })
 
+// The RESOLVE route's answer shape, which the portal reads to decide whether the
+// hold was retired (18 Aug 2026). The domain rule lives in
+// services/tms/test/ops.test.ts; what this owns is the wire contract: a refused
+// correction is a 200 carrying `cured: false`, not a 4xx and not a bare success,
+// and the row is still in the queue the next time the operator reads it.
+describe('ops-edge review-queue Resolve route: a refused correction over HTTP', () => {
+  it('POST quarantine resolve with a blank corrected row -> 200 cured false, and the row stays in the open queue', async () => {
+    const seeded = await tmsDb.$queryRaw<{ id: string }[]>`
+      INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+      VALUES ('edge-refused-cure', 7, ${'redacted:bank_request'}, 'duplicate_vpa_soundbox')
+      RETURNING id
+    `
+    const id = seeded[0]!.id
+    // A uuid `sub`, for the same reason the close test above uses one:
+    // quarantine_row.resolved_by_actor is a uuid column.
+    const token = await mint({ sub: randomUUID() })
+
+    const res = await request(app.getHttpServer())
+      .post(`/ops/quarantine/${id}/resolve`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', randomUUID())
+      // Exactly what the dialog posts when an operator submits without typing:
+      // identity pinned to the held row, every business field empty.
+      .send({
+        correctedRow: {
+          fileId: 'edge-refused-cure',
+          rowNo: 7,
+          bankMerchantReference: '',
+          displayName: '',
+          legalName: '',
+          mcc: '',
+          registeredAddress: '',
+          bankReferenceCode: '',
+          productType: '',
+          vpaValue: '',
+          qrValue: '',
+          soundbox: false,
+          standeeCount: 0,
+          stickerCount: 0,
+          shipToAddress: '',
+          contactName: '',
+          mobile: '',
+          branchCode: '',
+        },
+      })
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({ deduped: false, cured: false })
+
+    const row = await tmsDb.$queryRaw<{ resolved_at: Date | null; resolution: string | null }[]>`
+      SELECT resolved_at, resolution FROM quarantine_row WHERE id = ${id}::uuid
+    `
+    expect(row[0]!.resolved_at).toBeNull()
+    expect(row[0]!.resolution).toBeNull()
+
+    const open = await request(app.getHttpServer()).get('/ops/quarantine').set('Authorization', `Bearer ${token}`)
+    expect((open.body as { id: string }[]).find((q) => q.id === id)).toBeDefined()
+  })
+})
+
 describe('ops-edge actions: the per-action step-up gate (check 1)', () => {
   it('POST override with a STALE auth_time -> 403 + one step-up-required 6e DENY, no domain op', async () => {
     const now = Math.floor(Date.now() / 1000)

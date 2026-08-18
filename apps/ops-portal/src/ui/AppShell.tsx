@@ -129,14 +129,19 @@ if (UNGROUPED.length > 0) {
 // bar reaches whatever the edge decides they reach, exactly as before.
 const CS_HIDDEN_ROUTES: readonly string[] = ['/uploads', '/masterdata']
 
-// Hidden from EVERY role while the Insights work is in flight (17 Aug 2026).
-// Same posture as CS_HIDDEN_ROUTES above: DISPLAY ONLY, never authorization.
-// The route stays registered in routes.tsx, so /reports still loads when typed
-// and the Command Center tiles that link into it are not dead ends; the crumb
-// still resolves too, because both TopBar lookups read the unfiltered SECTIONS
-// and GROUPED_NAV. Removing the entry from SECTIONS or NAV_GROUPS instead would
-// trip the two invariants above, which is why this filters downstream.
-const HIDDEN_ROUTES: readonly string[] = ['/reports']
+// Hidden from EVERY role, for work genuinely not ready to be found. DISPLAY
+// ONLY, never authorization, same posture as CS_HIDDEN_ROUTES above. The
+// mechanism stays because it earns its keep the moment a surface is half built;
+// it filters downstream rather than dropping the entry from SECTIONS or
+// NAV_GROUPS, which would trip the two invariants above.
+//
+// EMPTY as of 18 Aug 2026. '/reports' sat here from 17 Aug while the Insights
+// work was in flight, which is a reasonable thing to do to a half-built screen
+// and the wrong thing to do to this one: all six BRD FR-10 reports and their CSV
+// export were already delivered and working, so the only doors left were typing
+// the URL and the Command Center tiles that deep-link into a single report. A
+// requirement nobody can navigate to reads as a missing requirement.
+const HIDDEN_ROUTES: readonly string[] = []
 
 function navGroupsFor(roleLabel: string | undefined): typeof GROUPED_NAV {
   const hidden = roleLabel === 'customer_support' ? [...HIDDEN_ROUTES, ...CS_HIDDEN_ROUTES] : HIDDEN_ROUTES
