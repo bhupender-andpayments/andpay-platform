@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { StrictMode } from 'react'
 import { render, screen, cleanup } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -93,6 +94,24 @@ function renderPage() {
   )
 }
 
+// The SAME page as the real app mounts it. `main.tsx` wraps everything in
+// <StrictMode>, which double-invokes every effect: run, clean up, run again.
+// The plain render above never exercised that, and the join this page is built
+// around was lost by exactly that double-invoke in production (18 Aug 2026).
+function renderPageStrict() {
+  return render(
+    <StrictMode>
+      <MemoryRouter initialEntries={[`/dispatches/shipment/${SHPT}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/dispatches/shipment/:shptId" element={<ShipmentDetailPage />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    </StrictMode>,
+  )
+}
+
 describe('ShipmentDetailPage', () => {
   beforeEach(() => {
     setAccessToken('t')
@@ -127,6 +146,92 @@ describe('ShipmentDetailPage', () => {
     expect(await screen.findByText('ALPHA STORE')).toBeTruthy()
     const link = screen.getByRole('link', { name: /asgn_1/ })
     expect(link.getAttribute('href')).toBe('/dispatches/asgn_1')
+  })
+
+  // THE REGRESSION (18 Aug 2026). Under StrictMode the parcel facts rendered but
+  // the owning dispatch never did: the page said "No dispatch is joined to this
+  // AWB in the reporting rail" and "No courier updates for this AWB yet" while
+  // the report row and the detail read had both answered 200. Asserting the join
+  // and the trail together, because they are the same failure: the trail is read
+  // off the dispatch, so losing the dispatch empties the carrier history too.
+  it('keeps the dispatch join and the carrier trail under StrictMode', async () => {
+    stub()
+    renderPageStrict()
+
+    expect(await screen.findByText('ALPHA STORE')).toBeTruthy()
+    expect(screen.getByRole('link', { name: /asgn_1/ })).toBeTruthy()
+    expect(screen.queryByText(/No dispatch is joined/i)).toBeNull()
+
+    expect(await screen.findByText(/picked up/i)).toBeTruthy()
+    expect(screen.queryByText(/No courier updates for this AWB yet/i)).toBeNull()
+  })
+
+  // THE REAL DEFECT behind the 18 Aug 2026 report, and the reason it was first
+  // mis-filed as a state bug: the join and the trail are TWO CHAINED reads
+  // (the delivery report to find the owning dispatch, then that dispatch's
+  // detail), and until they settle this page asserted two definitive negatives.
+  // Against the shared RDS that window is over a second, measured at 450ms
+  // showing both messages and at 4.5s showing neither, so an operator glancing
+  // at a parcel mid-load was TOLD it had no dispatch and no courier history.
+  // A pending read is not an absent dispatch, and must not read as one.
+  it('does not claim the parcel has no dispatch or no courier history while the join is still loading', async () => {
+    let releaseDetail: (() => void) | null = null
+    const detailHeld = new Promise<void>((resolve) => {
+      releaseDetail = resolve
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/dispatches')) return jsonResponse([SHIPMENT])
+        if (url.includes('/ops/vendors')) return jsonResponse([])
+        if (url.includes('/ops/reports/soundbox-delivery')) {
+          return jsonResponse({ rows: [{ dispatchId: 'asgn_1', shptId: SHPT, awb: 'AWB900002' }], watermark: { asOf: null, perTopic: {} } })
+        }
+        if (url.includes('/ops/reports/dispatch/')) {
+          await detailHeld
+          return jsonResponse(DISPATCH)
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    renderPage()
+
+    // The parcel's own facts come from the shipment list and are already up.
+    expect(await screen.findByRole('heading', { name: 'AWB900002' })).toBeTruthy()
+
+    // The join is still in flight, so neither negative may be on screen.
+    expect(screen.queryByText(/No dispatch is joined/i)).toBeNull()
+    expect(screen.queryByText(/No courier updates for this AWB yet/i)).toBeNull()
+
+    releaseDetail!()
+
+    // Once it lands, the join renders.
+    expect(await screen.findByText('ALPHA STORE')).toBeTruthy()
+    expect(await screen.findByText(/picked up/i)).toBeTruthy()
+  })
+
+  // The negatives are still the right answer once the reads HAVE settled and the
+  // parcel genuinely carries no dispatch, which is the collateral-only case the
+  // message was written for.
+  it('still says no dispatch is joined once the report has settled with no owning row', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/dispatches')) return jsonResponse([SHIPMENT])
+        if (url.includes('/ops/vendors')) return jsonResponse([])
+        if (url.includes('/ops/reports/soundbox-delivery')) {
+          // No row carries this shptId: a collateral-only parcel.
+          return jsonResponse({ rows: [], watermark: { asOf: null, perTopic: {} } })
+        }
+        return jsonResponse({})
+      }),
+    )
+
+    renderPage()
+
+    expect(await screen.findByText(/No dispatch is joined/i)).toBeTruthy()
+    expect(screen.getByText(/No courier updates for this AWB yet/i)).toBeTruthy()
   })
 
   it('says an unknown id names no shipment rather than rendering an empty parcel', async () => {

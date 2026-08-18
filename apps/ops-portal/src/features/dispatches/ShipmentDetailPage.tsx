@@ -66,6 +66,16 @@ export function ShipmentDetailPage() {
 
   const [shipment, setShipment] = useState<DispatchRow | null>(null)
   const [dispatch, setDispatch] = useState<DispatchDetailView | null>(null)
+  // `dispatch === null` is TWO different states, and this page used to render
+  // them identically: "the join has not answered yet" and "there is genuinely no
+  // dispatch on this AWB". The join is two chained reads (the delivery report,
+  // then the owning dispatch's detail), which against a remote database is well
+  // over a second, and for that whole window the page asserted "No dispatch is
+  // joined to this AWB" and "No courier updates for this AWB yet". Both are
+  // definitive negatives about a parcel, and both were wrong while merely
+  // pending: it read as a broken join and was mis-filed as one on 18 Aug 2026.
+  // So the absence is only claimed once the reads have SETTLED.
+  const [joinSettled, setJoinSettled] = useState(false)
   const [vendors, setVendors] = useState<readonly VendorRow[]>([])
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
@@ -102,6 +112,7 @@ export function ShipmentDetailPage() {
   // below, so the event the operator just wrote appears in the history.
   const refresh = useCallback(() => {
     setDispatch(null)
+    setJoinSettled(false)
     void load()
   }, [load])
 
@@ -110,6 +121,13 @@ export function ShipmentDetailPage() {
   useEffect(() => {
     if (shipment === null || shptId === undefined) return
     let cancelled = false
+    // Settled means "we now know whether this AWB has an owning dispatch",
+    // whichever way it came out: no matching report row, a detail read that
+    // answered, or a read that failed. Only a CANCELLED run leaves it unsettled,
+    // because the run that replaced it is about to answer the same question.
+    const settle = (): void => {
+      if (!cancelled) setJoinSettled(true)
+    }
     getReport(client, 'soundbox-delivery', {})
       .then((result) => {
         if (cancelled || !Array.isArray(result.rows)) return
@@ -121,6 +139,7 @@ export function ShipmentDetailPage() {
         })
       })
       .catch(() => {})
+      .finally(settle)
     getVendors(client)
       .then((list) => {
         if (!cancelled && Array.isArray(list)) setVendors(list)
@@ -239,7 +258,9 @@ export function ShipmentDetailPage() {
             </FactRow>
 
             <SectionHeading>What is inside</SectionHeading>
-            {dispatch === null ? (
+            {dispatch === null && !joinSettled ? (
+              <p className="py-1.5 text-sm text-muted-foreground">Looking up the dispatch on this AWB…</p>
+            ) : dispatch === null ? (
               <p className="py-1.5 text-sm text-muted-foreground">
                 No dispatch is joined to this AWB in the reporting rail. A collateral-only parcel is tracked here but
                 carries no soundbox dispatch to open.
@@ -284,7 +305,7 @@ export function ShipmentDetailPage() {
             <LifecycleTimeline
               stages={stages.stages}
               terminal={stages.terminal}
-              emptyMessage="No courier updates for this AWB yet."
+              emptyMessage={joinSettled ? 'No courier updates for this AWB yet.' : 'Loading the courier history…'}
             />
           </CardBody>
         </Card>
