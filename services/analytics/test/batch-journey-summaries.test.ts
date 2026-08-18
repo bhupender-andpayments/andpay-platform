@@ -12,7 +12,31 @@ afterAll(async () => { await db.$disconnect() })
 
 const BATCH_A = `btch_${randomUUID().replace(/-/g, '')}`
 const BATCH_B = `btch_${randomUUID().replace(/-/g, '')}`
+const BATCH_C = `btch_${randomUUID().replace(/-/g, '')}`
 let progA = ''
+
+// The OLD JS classification, reimplemented here rather than imported (the
+// mediation module does not export JOURNEY_RANK/atLeast/isSoundboxOrLegacy/
+// isActivated), so the agreement test below proves the SQL FILTER predicates
+// in scopedBatchJourneySummaryRead classify the SAME rows the JS version did,
+// not merely a lookalike. Kept byte-for-byte in shape with
+// services/analytics/src/mediation.ts's own copies.
+const JOURNEY_RANK: Record<string, number> = {
+  RECEIVED: 1,
+  BATCHED: 2,
+  SENT_TO_VENDOR: 3,
+  DISPATCHED: 4,
+  DELIVERED: 5,
+}
+function atLeast(state: string, floor: string): boolean {
+  return (JOURNEY_RANK[state] ?? 0) >= (JOURNEY_RANK[floor] ?? 0)
+}
+function isSoundboxOrLegacy(dispatchGroup: string | null): boolean {
+  return dispatchGroup === null || dispatchGroup === 'SOUNDBOX'
+}
+function isActivated(activationStatus: string | null): boolean {
+  return activationStatus === 'ACTIVATED'
+}
 
 // Mirrors insertRow in batch-journey.test.ts, the readBatchJourney fixture.
 async function insertRow(args: {
@@ -90,5 +114,59 @@ describe('readBatchJourneySummaries', () => {
     await insertRow({ dispatchId: `asgn_${randomUUID()}`, programId: progA, batchId: null, pipelineState: 'RECEIVED' })
     const view = await readBatchJourneySummaries(db)
     expect(view.rows).toHaveLength(0)
+  })
+
+  // Agreement test: proves the SQL FILTER predicates in
+  // scopedBatchJourneySummaryRead classify EXACTLY the rows the old JS
+  // classifiers (JOURNEY_RANK/atLeast, isSoundboxOrLegacy, isActivated) did.
+  // Seeds one batch spanning every journey stage plus a legacy row, a
+  // SOUNDBOX row and a COLLATERAL row, computes the expected rollup by
+  // running the reimplemented JS classifiers over the same fixture, and
+  // asserts the SQL result matches that expectation field by field.
+  it('agrees with the old JS classification across every journey stage, soundbox, legacy and collateral rows', async () => {
+    const fixture: { pipelineState: string; dispatchGroup: string | null; activationStatus: string | null }[] = [
+      { pipelineState: 'RECEIVED', dispatchGroup: 'SOUNDBOX', activationStatus: null },
+      { pipelineState: 'BATCHED', dispatchGroup: 'SOUNDBOX', activationStatus: null },
+      { pipelineState: 'SENT_TO_VENDOR', dispatchGroup: 'SOUNDBOX', activationStatus: null },
+      { pipelineState: 'DISPATCHED', dispatchGroup: 'SOUNDBOX', activationStatus: null },
+      { pipelineState: 'DELIVERED', dispatchGroup: 'SOUNDBOX', activationStatus: 'ACTIVATED' },
+      // Legacy (pre-split, no dispatch_group): counts toward deliverableAndActivatable too.
+      { pipelineState: 'DELIVERED', dispatchGroup: null, activationStatus: 'ACTIVATED' },
+      // COLLATERAL: ships and delivers like everything else, but must never
+      // count toward deliverableAndActivatable or activated.
+      { pipelineState: 'SENT_TO_VENDOR', dispatchGroup: 'COLLATERAL', activationStatus: null },
+      { pipelineState: 'DELIVERED', dispatchGroup: 'COLLATERAL', activationStatus: null },
+    ]
+
+    for (const row of fixture) {
+      await insertRow({
+        dispatchId: `asgn_${randomUUID()}`,
+        programId: progA,
+        batchId: BATCH_C,
+        pipelineState: row.pipelineState,
+        dispatchGroup: row.dispatchGroup,
+        activationStatus: row.activationStatus,
+      })
+    }
+
+    const expected = fixture.reduce(
+      (acc, row) => {
+        acc.total += 1
+        if (isSoundboxOrLegacy(row.dispatchGroup)) acc.deliverableAndActivatable += 1
+        if (atLeast(row.pipelineState, 'SENT_TO_VENDOR')) acc.sentToVendor += 1
+        if (atLeast(row.pipelineState, 'DISPATCHED')) acc.dispatched += 1
+        if (atLeast(row.pipelineState, 'DELIVERED')) acc.delivered += 1
+        if (isActivated(row.activationStatus)) acc.activated += 1
+        return acc
+      },
+      { total: 0, deliverableAndActivatable: 0, sentToVendor: 0, dispatched: 0, delivered: 0, activated: 0 },
+    )
+
+    const view = await readBatchJourneySummaries(db)
+    const c = view.rows.find((r) => r.batchId === BATCH_C)!
+    expect(c.counts).toEqual(expected)
+    expect(c.activation.activated).toBe(expected.activated)
+    expect(c.activation.notRequested).toBeNull()
+    expect(c.activation.requested).toBeNull()
   })
 })

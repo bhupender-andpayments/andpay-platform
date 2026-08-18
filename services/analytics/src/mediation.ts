@@ -1095,28 +1095,83 @@ export type BatchJourneySummaryView = {
   watermark: Watermark
 }
 
-function emptyJourneySummary(batchId: string): BatchJourneySummary {
-  return {
-    batchId,
-    counts: { total: 0, deliverableAndActivatable: 0, sentToVendor: 0, dispatched: 0, delivered: 0, activated: 0 },
-    activation: { notRequested: null, requested: null, activated: 0 },
-  }
+// The aliased shape of the GROUP BY rollup below, one row per batch. Counts
+// come back as Postgres bigint through node-postgres; cast to ::int in the SQL
+// so Prisma hands back a plain JS number here, matching the JS version's type.
+interface BatchJourneySummaryDbRow {
+  batch_id: string
+  total: number
+  deliverable_and_activatable: number
+  sent_to_vendor: number
+  dispatched: number
+  delivered: number
+  activated: number
 }
 
-// The shared per-row classifier readBatchJourney's counts block applies via
-// Array.filter, folded here instead so one pass over the full table can build
-// every batch's rollup at once. Reuses the same free predicates
-// (atLeast/isSoundboxOrLegacy/isActivated) readBatchJourney calls, so the two
-// cannot classify a row differently.
-function accumulateJourneyRow(s: BatchJourneySummary, row: DispatchDbRow): void {
-  s.counts.total += 1
-  if (isSoundboxOrLegacy(row)) s.counts.deliverableAndActivatable += 1
-  if (atLeast(row.pipeline_state, 'SENT_TO_VENDOR')) s.counts.sentToVendor += 1
-  if (atLeast(row.pipeline_state, 'DISPATCHED')) s.counts.dispatched += 1
-  if (atLeast(row.pipeline_state, 'DELIVERED')) s.counts.delivered += 1
-  if (isActivated(row)) {
-    s.counts.activated += 1
-    s.activation.activated += 1
+/**
+ * The mediated read behind readBatchJourneySummaries: ONE GROUP BY batch_id
+ * statement over dispatch_row, so no dispatch row crosses the wire out of
+ * Postgres just to be re-grouped in JS.
+ *
+ * Each COUNT(*) FILTER mirrors an existing JS classifier verbatim, so the two
+ * cannot drift:
+ *   - deliverable_and_activatable mirrors isSoundboxOrLegacy: dispatch_group is
+ *     NULL (legacy, pre-split) or 'SOUNDBOX'.
+ *   - sent_to_vendor/dispatched/delivered mirror atLeast(pipeline_state, floor)
+ *     against JOURNEY_RANK. JOURNEY_RANK is strictly increasing per named
+ *     state (RECEIVED 1, BATCHED 2, SENT_TO_VENDOR 3, DISPATCHED 4,
+ *     DELIVERED 5) and nothing ever writes a pipeline_state outside that
+ *     vocabulary (ACTIVATED left this column entirely at D-16, T4.3), so
+ *     "rank >= floor" is exactly the finite IN-list of states at or above that
+ *     floor: atLeast(state, 'SENT_TO_VENDOR') is true for
+ *     SENT_TO_VENDOR/DISPATCHED/DELIVERED and false for RECEIVED/BATCHED/
+ *     anything unranked, and the IN-lists below enumerate precisely that set
+ *     for each of the three floors.
+ *   - activated mirrors isActivated: activation_status = 'ACTIVATED'.
+ *
+ * Same crossTenant-only scope as before (guardrail G1: this is the class-3
+ * ops-only bulk read, no ReadScope parameter), batch_id IS NOT NULL excludes
+ * batchless rows same as the old Map-building loop did, and GROUP BY batch_id
+ * is the one aggregate this file (NOT services/fulfillment/src/ops-read.ts,
+ * which the no-aggregate DO-NOT guard actually covers) is free to run.
+ */
+async function scopedBatchJourneySummaryRead(db: AnalyticsDb): Promise<BatchJourneySummaryDbRow[]> {
+  return db.$transaction(async (tx: Tx) => {
+    await enterAnalyticsReadScope(tx, { kind: 'crossTenant' })
+    return tx.$queryRaw<BatchJourneySummaryDbRow[]>`
+      SELECT
+        batch_id,
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE dispatch_group IS NULL OR dispatch_group = 'SOUNDBOX')::int
+          AS deliverable_and_activatable,
+        COUNT(*) FILTER (WHERE pipeline_state IN ('SENT_TO_VENDOR', 'DISPATCHED', 'DELIVERED'))::int
+          AS sent_to_vendor,
+        COUNT(*) FILTER (WHERE pipeline_state IN ('DISPATCHED', 'DELIVERED'))::int
+          AS dispatched,
+        COUNT(*) FILTER (WHERE pipeline_state = 'DELIVERED')::int
+          AS delivered,
+        COUNT(*) FILTER (WHERE activation_status = 'ACTIVATED')::int
+          AS activated
+      FROM dispatch_row
+      WHERE batch_id IS NOT NULL
+      GROUP BY batch_id`
+  })
+}
+
+function toBatchJourneySummary(r: BatchJourneySummaryDbRow): BatchJourneySummary {
+  return {
+    batchId: r.batch_id,
+    counts: {
+      total: r.total,
+      deliverableAndActivatable: r.deliverable_and_activatable,
+      sentToVendor: r.sent_to_vendor,
+      dispatched: r.dispatched,
+      delivered: r.delivered,
+      activated: r.activated,
+    },
+    // See the field doc on BatchJourneyView.activation: the projection never
+    // carries REQUEST_SENT_TO_CWD, so this split cannot be computed.
+    activation: { notRequested: null, requested: null, activated: r.activated },
   }
 }
 
@@ -1133,18 +1188,6 @@ function accumulateJourneyRow(s: BatchJourneySummary, row: DispatchDbRow): void 
 export async function readBatchJourneySummaries(db: AnalyticsDb): Promise<BatchJourneySummaryView> {
   // Watermark FIRST (check 4), same rationale as readBatchJourney.
   const watermark = await readFreshness(db)
-  const rows = await scopedDispatchRead(db, { kind: 'crossTenant' })
-
-  const byBatch = new Map<string, BatchJourneySummary>()
-  for (const row of rows) {
-    if (row.batch_id === null) continue
-    let s = byBatch.get(row.batch_id)
-    if (!s) {
-      s = emptyJourneySummary(row.batch_id)
-      byBatch.set(row.batch_id, s)
-    }
-    accumulateJourneyRow(s, row)
-  }
-
-  return { rows: [...byBatch.values()], watermark }
+  const dbRows = await scopedBatchJourneySummaryRead(db)
+  return { rows: dbRows.map(toBatchJourneySummary), watermark }
 }
