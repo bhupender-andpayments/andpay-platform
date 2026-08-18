@@ -82,12 +82,13 @@ describe('ops-portal routing', () => {
     // The queues placeholder heading (task 11 replaces its content).
     expect(await screen.findByRole('heading', { name: /queues/i })).toBeTruthy()
 
-    // The nav lists every SHOWN feature section. Reports is hidden from the
-    // sidebar (HIDDEN_ROUTES, 17 Aug 2026) while its section is being worked
-    // on; the /reports route itself is untouched.
+    // The nav lists every SHOWN feature section, Reports included again as of
+    // 18 Aug 2026: HIDDEN_ROUTES is empty, because the six FR-10 reports behind
+    // that item were already delivered and hiding them left no way to navigate
+    // to them.
     expect(screen.getByRole('link', { name: /merchants/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /command center/i })).toBeTruthy()
-    expect(screen.queryByRole('link', { name: /reports/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /reports/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /master data/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /uploads/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /dispatches/i })).toBeTruthy()
