@@ -51,9 +51,9 @@ const TILES_FIXTURE = {
 // The workflow workspace fetches on mount too (the pool, the batch list, the
 // batching config, and the Needs-you counts) and every one of those falls
 // through to the empty-array default below, which is exactly what that default
-// is for. /uploads no longer needs a branch because it renders an index of
-// cards and issues no mount-time read at all: the bank flow that used to live
-// there is now stages 1 and 2 of the workspace.
+// is for. /uploads no longer needs a branch because it redirects to the smart
+// upload page (Task 10), which issues no mount-time read at all: the bank flow
+// that used to live at the old index is now stages 1 and 2 of the workspace.
 function stubPortalFetch(fakeToken: string): void {
   vi.stubGlobal(
     'fetch',
@@ -122,7 +122,9 @@ const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
   { label: 'Merchants', heading: /^merchants$/i },
   { label: 'Queues', heading: /^queues$/i },
   { label: 'Master Data', heading: /^master data$/i },
-  { label: 'Uploads', heading: /^uploads$/i },
+  // /uploads redirects to the smart upload page as of Task 10 (2026-08-18),
+  // so the heading it lands on is the smart page's own.
+  { label: 'Uploads', heading: /^upload a file$/i },
   { label: 'Batches', heading: /^batches$/i },
   { label: 'Dispatches', heading: /^dispatches$/i },
   { label: 'Inventory', heading: /^inventory$/i },

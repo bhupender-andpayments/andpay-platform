@@ -303,7 +303,9 @@ describe('ops-portal app shell + navigation', () => {
     // rather than fail on the routing it is actually testing.
     await userEvent.click(within(nav).getByRole('link', { name: /^uploads$/i }))
 
-    expect(await screen.findByRole('heading', { name: /^uploads$/i })).toBeTruthy()
+    // /uploads itself redirects to the smart upload page as of Task 10
+    // (2026-08-18), so the landing heading is the smart page's own.
+    expect(await screen.findByRole('heading', { name: /^upload a file$/i })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: /^queues$/i })).toBeNull()
   })
 })

@@ -127,14 +127,18 @@ describe('ops-portal routing', () => {
     )
   }
 
+  // All three destinations resolve through /uploads, which (Task 10,
+  // 2026-08-18) itself now redirects to the smart upload page rather than
+  // rendering the old card catalogue: the honest landing heading is the
+  // smart page's own.
   it('lands on uploads from the root path', async () => {
     await renderAuthedAt('/')
-    expect(await screen.findByRole('heading', { name: /^uploads$/i })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: /^upload a file$/i })).toBeTruthy()
   })
 
   it('sends an unknown path to uploads, the same place as the root', async () => {
     await renderAuthedAt('/nonsense')
-    expect(await screen.findByRole('heading', { name: /^uploads$/i })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: /^upload a file$/i })).toBeTruthy()
   })
 
   it('lands on uploads after signing in', async () => {
@@ -142,6 +146,6 @@ describe('ops-portal routing', () => {
     // the post-login destination: it used to be /command-center, disagreeing
     // with nothing because nothing checked.
     await renderAuthedAt('/login')
-    expect(await screen.findByRole('heading', { name: /^uploads$/i })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: /^upload a file$/i })).toBeTruthy()
   })
 })
