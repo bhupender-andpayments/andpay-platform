@@ -914,6 +914,17 @@ export interface BatchJourneyView {
     activated: number
     failed: number
     simActivated: null
+    /**
+     * The REQUEST_SENT_TO_CWD split of the activation axis (2026-08-18 ruling,
+     * additive to this block). ALWAYS null: `dispatch_row.activation_status` is
+     * written only as NULL or 'ACTIVATED' (project.ts, the T.ACTIVATED case),
+     * and nothing anywhere projects a REQUEST_SENT_TO_CWD value, so a record
+     * sent to the CWD but not yet activated is indistinguishable here from one
+     * never requested at all. Null is what makes the portal render one
+     * Activation stage instead of a split it cannot actually support.
+     */
+    notRequested: number | null
+    requested: number | null
   }
   /**
    * When this batch was FIRST sent to the print vendor: the earliest non-null
@@ -1027,6 +1038,10 @@ export async function readBatchJourney(
     activated: counts.activated,
     failed: rows.filter((r) => r.activation_failure_reason !== null).length,
     simActivated: null,
+    // See the field doc on BatchJourneyView.activation: the projection never
+    // carries REQUEST_SENT_TO_CWD, so this split cannot be computed.
+    notRequested: null,
+    requested: null,
   } as const
 
   // Reduced over the rows already fetched, not re-queried: sent_to_vendor_at is
@@ -1051,4 +1066,85 @@ export async function readBatchJourney(
     })),
     watermark,
   }
+}
+
+/**
+ * One row of the bulk batch-journey rollup: the same rollup readBatchJourney
+ * produces for one batch, at the grain the batch worklist page needs, every
+ * batch at once. Exists so that page can render a stage per row without
+ * issuing one readBatchJourney call per batch on the page.
+ *
+ * `activation.notRequested`/`activation.requested` mirror the doc on
+ * BatchJourneyView.activation: always null here too, for the same reason.
+ */
+export type BatchJourneySummary = {
+  batchId: string
+  counts: {
+    total: number
+    deliverableAndActivatable: number
+    sentToVendor: number
+    dispatched: number
+    delivered: number
+    activated: number
+  }
+  activation: { notRequested: number | null; requested: number | null; activated: number }
+}
+
+export type BatchJourneySummaryView = {
+  rows: BatchJourneySummary[]
+  watermark: Watermark
+}
+
+function emptyJourneySummary(batchId: string): BatchJourneySummary {
+  return {
+    batchId,
+    counts: { total: 0, deliverableAndActivatable: 0, sentToVendor: 0, dispatched: 0, delivered: 0, activated: 0 },
+    activation: { notRequested: null, requested: null, activated: 0 },
+  }
+}
+
+// The shared per-row classifier readBatchJourney's counts block applies via
+// Array.filter, folded here instead so one pass over the full table can build
+// every batch's rollup at once. Reuses the same free predicates
+// (atLeast/isSoundboxOrLegacy/isActivated) readBatchJourney calls, so the two
+// cannot classify a row differently.
+function accumulateJourneyRow(s: BatchJourneySummary, row: DispatchDbRow): void {
+  s.counts.total += 1
+  if (isSoundboxOrLegacy(row)) s.counts.deliverableAndActivatable += 1
+  if (atLeast(row.pipeline_state, 'SENT_TO_VENDOR')) s.counts.sentToVendor += 1
+  if (atLeast(row.pipeline_state, 'DISPATCHED')) s.counts.dispatched += 1
+  if (atLeast(row.pipeline_state, 'DELIVERED')) s.counts.delivered += 1
+  if (isActivated(row)) {
+    s.counts.activated += 1
+    s.activation.activated += 1
+  }
+}
+
+/**
+ * The bulk sibling of readBatchJourney (workflow workspace, batch worklist
+ * page): every batch's rollup in one read instead of one call per batch.
+ *
+ * No ReadScope parameter: like readDispatchActivationStatus above, this is a
+ * class-3 ops-only bulk read (guardrail G1, only a class-3 edge ever
+ * constructs crossTenant), so the scope is fixed here rather than accepted
+ * from a caller that has no legitimate 'own' use for a page listing every
+ * batch.
+ */
+export async function readBatchJourneySummaries(db: AnalyticsDb): Promise<BatchJourneySummaryView> {
+  // Watermark FIRST (check 4), same rationale as readBatchJourney.
+  const watermark = await readFreshness(db)
+  const rows = await scopedDispatchRead(db, { kind: 'crossTenant' })
+
+  const byBatch = new Map<string, BatchJourneySummary>()
+  for (const row of rows) {
+    if (row.batch_id === null) continue
+    let s = byBatch.get(row.batch_id)
+    if (!s) {
+      s = emptyJourneySummary(row.batch_id)
+      byBatch.set(row.batch_id, s)
+    }
+    accumulateJourneyRow(s, row)
+  }
+
+  return { rows: [...byBatch.values()], watermark }
 }
