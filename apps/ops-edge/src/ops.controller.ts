@@ -47,6 +47,8 @@ import {
   ingestReturnSheetOps,
   UNIT_STATUS_ORDER,
   UNIT_TERMINAL_STATUSES,
+  readWorkbookHeader,
+  sniffFulfillmentHeaders,
   type ActivationFileRowError,
   type IntakeSheet,
   type OpsDeviceInventoryResult,
@@ -56,6 +58,7 @@ import {
   type OpsUnitStatusResult,
   type OpsReturnResult,
   type ReturnSheetParseResult,
+  type SniffKind,
 } from '@andpay/fulfillment-service'
 import {
   previewBankFile,
@@ -70,6 +73,8 @@ import {
   activateAssignmentOps,
   requestActivationOps,
   ManualDevicePort,
+  selectBankSourceProfile,
+  BANK_SOURCE_PROFILES,
   type BankRequestRow,
   type BankPreviewResult,
   type FlagDamageResult,
@@ -748,6 +753,49 @@ export class OpsController {
     const result = await ingestReturnSheetOps(this.deps.fulfillmentDb, { fileId, rows: parsed.validRows })
     void g
     return { ...result, invalidRows: parsed.invalidRows }
+  }
+
+  // Task 3 (batch-first ops UX, 2026-08-18): the smart-upload sniff. The
+  // operator drops one Excel file onto a single page, and this route reads
+  // back only that file's OWN header row, run through the same header
+  // vocabularies every dedicated upload adapter already enforces
+  // (`sniffFulfillmentHeaders`, plus the TMS bank profile signature as a
+  // fallback), so the portal can route to the right page without the operator
+  // having to know which one that is.
+  //
+  // NO D2 PERMISSION GATE, deliberately, and this is a narrower posture than
+  // even the `authorizePreview` routes above (bank/device-inventory/unit-
+  // status/return), which still run a plain D2 authorize on their OWN upload's
+  // permission. There is no "own permission" to check here: this route has not
+  // yet been told which of the six upload kinds the file is (that is the
+  // question it is answering), so naming one operation, e.g.
+  // `ops:upload-return-file`, would be a fiction that happens to be wrong five
+  // times out of six. What it reveals is strictly narrower than any preview
+  // too: only the CLIENT'S OWN uploaded bytes' header row, read back to that
+  // same client, never a row of data and never anything read from a store. So
+  // this route runs on exactly the posture OpsReadController's GET routes run
+  // on: `@UseGuards(OpsEdgeGuard)` at the class level (authenticates the class-
+  // 3 principal) and nothing more. It takes no Idempotency-Key (a pure read
+  // needs none) and writes nothing: no db row, no outbox entry, no authz_audit
+  // record, on either a 200 or a 400.
+  @Post('uploads/sniff')
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  async sniffUpload(@UploadedFile() file: UploadedSheet | undefined): Promise<{ candidates: SniffKind[] }> {
+    if (!file) throw new BadRequestException('missing file')
+    const header = await readWorkbookHeader(file.buffer)
+    if (!header) throw new BadRequestException('unreadable file')
+    const kinds = sniffFulfillmentHeaders(header)
+    // Bank detection cannot live in @andpay/fulfillment-service (a fulfillment
+    // module calling into TMS would be a cross-context import, C4), so this
+    // edge runs it itself, and only as a FALLBACK once every fulfillment kind
+    // has already come back empty: the six candidates are mutually exclusive
+    // in practice (a bank file's header never also satisfies a fulfillment
+    // adapter's required columns), so there is no case today where both would
+    // fire, but ordering it this way means a future fulfillment collision
+    // would still win over guessing bank.
+    if (kinds.length === 0 && selectBankSourceProfile(header, BANK_SOURCE_PROFILES)) kinds.push('bank')
+    return { candidates: kinds }
   }
 
   @Post('shipments/:id/correct')

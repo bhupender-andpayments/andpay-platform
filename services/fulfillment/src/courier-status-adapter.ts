@@ -16,7 +16,9 @@ import { parseSheetGrid, headerIndexer } from './sheet-grid.js'
 // against the updates around it. Absent columns fail the FILE; blank or
 // unparseable cells fail their ROW.
 
-const REQUIRED_HEADERS = { awb: 'AWB', status: 'Status', statusDate: 'Status Date' } as const
+// Exported so workbook-sniff.ts can match on this file's OWN accepted column
+// names rather than a hand-typed second copy that could drift from them.
+export const REQUIRED_HEADERS = { awb: 'AWB', status: 'Status', statusDate: 'Status Date' } as const
 
 export type CourierStatusStructuralErrorCode = 'unsupported_extension' | 'unreadable_file' | 'missing_required_column'
 

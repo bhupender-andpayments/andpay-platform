@@ -114,7 +114,8 @@ export {
   type CourierStatusStructuralErrorCode,
   type CourierStatusParseResult,
 } from './courier-status-adapter.js'
-export { parseSheetGrid, headerIndexer, type SheetGrid, type SheetGridError } from './sheet-grid.js'
+export { parseSheetGrid, headerIndexer, normalizeHeader, type SheetGrid, type SheetGridError } from './sheet-grid.js'
+export { sniffFulfillmentHeaders, readWorkbookHeader, type SniffKind } from './workbook-sniff.js'
 export {
   parseActivationFile,
   type ActivationFileRow,

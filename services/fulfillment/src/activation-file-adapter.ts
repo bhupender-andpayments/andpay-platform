@@ -18,7 +18,9 @@ import { parseSheetGrid, headerIndexer } from './sheet-grid.js'
 // because silently dropping a row the CWD reported on is how a device ends up
 // with no recorded outcome at all and nobody notices.
 
-const REQUIRED_HEADERS = { deviceId: 'Device ID', status: 'Status' } as const
+// Exported so workbook-sniff.ts can match on this file's OWN accepted column
+// names rather than a hand-typed second copy that could drift from them.
+export const REQUIRED_HEADERS = { deviceId: 'Device ID', status: 'Status' } as const
 
 // The tokens that mean "the CWD activated this". Spelled generously, because the
 // file is written by another company's ops team and a difference of wording is

@@ -80,7 +80,9 @@ export interface ReturnSheetParseResult {
  * column that has already shipped. Same for `Courier` versus the portal's
  * `Courier Partner`.
  */
-const HEADERS = {
+// Exported so workbook-sniff.ts can match on this file's OWN accepted column
+// names rather than a hand-typed second copy that could drift from them.
+export const HEADERS = {
   asgnId: ['Assignment', 'Dispatch ID'],
   deviceSerial: ['Device ID'],
   // 'Shipment Number' is the print vendor's own word for this column in the

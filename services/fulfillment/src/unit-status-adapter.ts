@@ -9,7 +9,9 @@ import { UNIT_STATUS_ORDER, UNIT_TERMINAL_STATUSES } from './unit-lifecycle.js'
 // own self-contained copy rather than an import from that module, matching
 // this codebase's own documented convention for these small per-file adapters.
 
-const HEADERS = { deviceId: 'Device ID', newStatus: 'Status' } as const
+// Exported so workbook-sniff.ts can match on this file's OWN accepted column
+// names rather than a hand-typed second copy that could drift from them.
+export const HEADERS = { deviceId: 'Device ID', newStatus: 'Status' } as const
 
 function normalizeHeader(h: string): string {
   return h.trim().toLowerCase().replace(/\s+/g, ' ')

@@ -29,8 +29,10 @@ import { parseSheetGrid, headerIndexer } from './sheet-grid.js'
 // in the BRD and "SIM No" by some senders. This adapter previously required the
 // literal "SIM No", so a file matching the BRD was rejected whole with zero rows
 // ingested.
-const REQUIRED_HEADERS = { deviceId: 'Device ID' } as const
-const OPTIONAL_HEADERS = { simNo: 'Sim No', deviceQr: 'Device QR' } as const
+// Exported so workbook-sniff.ts can match on this file's OWN accepted column
+// names rather than a hand-typed second copy that could drift from them.
+export const REQUIRED_HEADERS = { deviceId: 'Device ID' } as const
+export const OPTIONAL_HEADERS = { simNo: 'Sim No', deviceQr: 'Device QR' } as const
 
 export type DeviceInventoryStructuralErrorCode = 'unsupported_extension' | 'unreadable_file' | 'missing_required_column'
 

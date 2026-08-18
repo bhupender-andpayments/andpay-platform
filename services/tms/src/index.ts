@@ -1,4 +1,11 @@
 export { type TmsDb, PrismaClient } from './db.js'
+export {
+  selectBankSourceProfile,
+  BANK_SOURCE_PROFILES,
+  ANNEXURE_B_TENANT_REFERENCE,
+  type BankSourceProfile,
+  type SourceRecord,
+} from './bank-source-profile.js'
 export * from './events.js'
 export * from './row-fact.js'
 export * from './redact.js'
