@@ -15,6 +15,7 @@ import {
   readReport,
   readTileDrilldown,
   readBatchJourney,
+  readBatchJourneySummaries,
   readDispatchDetail,
   toCsv,
   activationSheetXlsx,
@@ -191,6 +192,32 @@ export class ReportsController {
       res.setHeader('Content-Type', 'text/csv; charset=utf-8')
       return toCsv(result.rows)
     }
+    return result
+  }
+
+  // GET /ops/reports/batch-journey (workflow workspace, batch worklist page):
+  // every batch's rollup in ONE call, the bulk sibling of batch-journey/:btchId
+  // just below. DECLARED BEFORE the generic @Get(':name') at the bottom of
+  // this class for the same reason every other specific path here is: Nest
+  // registers routes in declaration order and the first match wins, so a
+  // specific path declared after :name would be swallowed by it.
+  //
+  // Same posture as the per-batch route: analytics-mediated CROSS-TENANT read,
+  // so guardrail G3 binds it to emit both the per-read 6e and the D99
+  // cross-tenant-access entry, reusing the existing 'analytics:read-report'
+  // operation (no new permission minted, same Pattern B the activation xlsx
+  // route above documents). JSON only, so no requireUnrestrictedRead: that
+  // gate exists for binary downloads and CSV exports (D-29/DP-8), and this
+  // route is neither.
+  @Get('batch-journey')
+  @HttpCode(200)
+  async batchJourneySummaries(
+    @Req() req: EdgeRequest,
+    @Res({ passthrough: true }) res: EdgeResponse,
+  ): Promise<unknown> {
+    await this.authorize(req, 'analytics:read-report')
+    const result = await readBatchJourneySummaries(this.deps.analyticsDb)
+    res.setHeader('x-analytics-watermark', result.watermark.asOf ?? 'none')
     return result
   }
 
