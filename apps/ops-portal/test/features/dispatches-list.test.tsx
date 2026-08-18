@@ -46,9 +46,9 @@ function searchBox(): HTMLElement {
 }
 
 /** Mounted with the real detail route so a row click can be observed landing. */
-function renderList() {
+function renderList(initialEntry: string = '/dispatches') {
   return render(
-    <MemoryRouter initialEntries={['/dispatches']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={[initialEntry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
         <Routes>
           <Route path="/dispatches" element={<DispatchesPage />} />
@@ -137,5 +137,75 @@ describe('The dispatch list: tiles, toolbar and links', () => {
     renderList()
     // The code is what the report carries; the roster turns it into a name.
     expect(await screen.findAllByText('GSCB')).toBeTruthy()
+  })
+})
+
+/** The card that owns this text, by whether an ancestor carries `hidden`. */
+function isHidden(text: string | RegExp): boolean {
+  return screen.getByText(text).closest('[hidden]') !== null
+}
+
+describe('The dispatch/shipment view toggle: one pill, two cards, neither unmounts', () => {
+  beforeEach(() => {
+    setAccessToken('t')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+    clearAccessToken()
+  })
+
+  it('defaults to the Dispatches card and hides Shipments', async () => {
+    stub()
+    renderList()
+
+    expect(await screen.findByText('ALPHA STORE')).toBeTruthy()
+    expect(isHidden(/one row per dispatch/i)).toBe(false)
+    expect(isHidden(/carrier view, one row per awb/i)).toBe(true)
+  })
+
+  it('?view=shipments shows the Shipments card and hides Dispatches', async () => {
+    stub()
+    renderList('/dispatches?view=shipments')
+
+    expect(await screen.findByText(/carrier view, one row per awb/i)).toBeTruthy()
+    expect(isHidden(/carrier view, one row per awb/i)).toBe(false)
+    expect(isHidden(/one row per dispatch/i)).toBe(true)
+  })
+
+  it('an unrecognised view value coerces to Dispatches', async () => {
+    stub()
+    renderList('/dispatches?view=bogus')
+
+    expect(await screen.findByText('ALPHA STORE')).toBeTruthy()
+    expect(isHidden(/one row per dispatch/i)).toBe(false)
+    expect(isHidden(/carrier view, one row per awb/i)).toBe(true)
+  })
+
+  it('toggling to Shipments and back preserves the dispatch grid filters', async () => {
+    stub()
+    renderList('/dispatches?bank=3&view=shipments')
+
+    expect(await screen.findByText(/carrier view, one row per awb/i)).toBeTruthy()
+    // The bank filter is still bound to the (hidden) dispatch grid's own select.
+    expect(screen.getByLabelText('Bank').textContent).toContain('GSCB')
+
+    await userEvent.click(screen.getByRole('button', { name: 'By dispatch' }))
+
+    expect(await screen.findByText('ALPHA STORE')).toBeTruthy()
+    expect(screen.getByLabelText('Bank').textContent).toContain('GSCB')
+    expect(isHidden(/carrier view, one row per awb/i)).toBe(true)
+  })
+
+  it('keeps the stat tiles visible in both views', async () => {
+    stub()
+    renderList('/dispatches?view=shipments')
+
+    expect(await screen.findByText(/carrier view, one row per awb/i)).toBeTruthy()
+    expect(isHidden('in the current window')).toBe(false)
+
+    await userEvent.click(screen.getByRole('button', { name: 'By dispatch' }))
+    expect(await screen.findByText('ALPHA STORE')).toBeTruthy()
+    expect(isHidden('in the current window')).toBe(false)
   })
 })

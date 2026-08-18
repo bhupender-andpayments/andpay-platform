@@ -27,6 +27,7 @@ import {
   ErrorNote,
   StatusPill,
   CodeChip,
+  Tabs,
 } from '../../ui/primitives.js'
 import { fmtDateTime } from '../../ui/format.js'
 import { COURIER_STATUSES } from '../dashboards/courierStatuses.js'
@@ -93,6 +94,10 @@ export function DispatchesPage() {
   const from = searchParams.get('from') ?? ''
   const to = searchParams.get('to') ?? ''
   const statusSel = useMemo(() => searchParams.get('status')?.split(',').filter(Boolean) ?? [], [searchParams])
+  // The pill toggle between the two cards below. Anything but the one
+  // recognised value coerces to the default rather than rendering neither
+  // card, so a stale or hand-typed `view` can never blank the page.
+  const view = searchParams.get('view') === 'shipments' ? 'shipments' : 'dispatches'
 
   const setParam = useCallback(
     (key: string, value: string) => {
@@ -369,82 +374,99 @@ export function DispatchesPage() {
 
       <StatTiles tiles={tiles} isActive={tileActive} onSelect={onTile} />
 
+      {/* Both cards stay mounted at all times (hidden by attribute, not by
+          unmounting): the Shipments card has its own fetch effect on mount,
+          and toggling to it should show what it already has, not re-ask the
+          server every time an operator flips the pill. */}
+      <Tabs
+        tabs={[
+          { key: 'dispatches', label: 'By dispatch' },
+          { key: 'shipments', label: 'By shipment' },
+        ]}
+        active={view}
+        onChange={(k) => setParam('view', k === 'dispatches' ? '' : k)}
+      />
+
       {/* The dispatch list mirrors the Shipments card below: one card, a
           heading that says what a row IS, and the filters inside it. The
           filters used to float between the tiles and a bare grid, which
           left this region the only one on the page without a name. */}
-      <Card>
-        <CardHeader
-          title="Dispatches"
-          subtitle="One row per dispatch. Open one for its full lifecycle, its batch and its devices."
-        />
-        <Toolbar className="px-5 pb-1">
-          <Field label="Search" htmlFor="dispSearch" className="w-full sm:w-52">
-            <Input
-              id="dispSearch"
-              placeholder="Dispatch ID, merchant or AWB…"
-              value={q}
-              onChange={(e) => setParam('q', e.target.value)}
-            />
-          </Field>
-          <Field label="Bank" htmlFor="dispBank" className="w-full sm:w-44">
-            <SearchSelect
-              id="dispBank"
-              placeholder="Any bank"
-              value={bank}
-              onChange={(v) => setParam('bank', v)}
-              options={[
-                { value: '', label: 'Any bank' },
-                ...banks.map((b) => ({ value: b.bankReferenceCode, label: b.displayName })),
-              ]}
-            />
-          </Field>
-          <Field label="Courier status" htmlFor="dispStatus" className="w-full sm:w-48">
-            <MultiSelect
-              id="dispStatus"
-              placeholder="All statuses"
-              options={COURIER_STATUSES.map((s) => ({
-                value: s,
-                label: s,
-                count: searched.filter((r) => str(r, 'courierStatus') === s).length,
-              }))}
-              selected={statusSel}
-              onChange={(next) => setParam('status', next.join(','))}
-            />
-          </Field>
-          <Field label="Dispatched from" htmlFor="dispFrom" className="w-full sm:w-40">
-            <Input id="dispFrom" type="date" value={from} onChange={(e) => setParam('from', e.target.value)} />
-          </Field>
-          <Field label="To" htmlFor="dispTo" className="w-full sm:w-40">
-            <Input id="dispTo" type="date" value={to} onChange={(e) => setParam('to', e.target.value)} />
-          </Field>
-          {anyFilter && (
-            <Button variant="ghost" onClick={() => setSearchParams(new URLSearchParams(), { replace: true })}>
-              Clear filters
-            </Button>
-          )}
-        </Toolbar>
-        <DataGrid
-          columns={columns}
-          rows={tableRows}
-          loading={loading}
-          getRowKey={(r, i) => dispatchIdOf(r) ?? String(i)}
-          onRowClick={openDispatch}
-          searchable={false}
-          pageSize={20}
-          pageSizeOptions={[20, 50, 100]}
-          maxBodyHeight="58vh"
-          stickyFirstColumn
-          emptyTitle={anyFilter ? 'No dispatches match these filters' : 'No dispatches yet'}
-          emptyMessage={
-            anyFilter
-              ? 'Loosen or clear the filters above to see the rest.'
-              : 'They appear once a bank request file has been committed and batched.'
-          }
-        />
-      </Card>
+      <div hidden={view !== 'dispatches'}>
+        <Card>
+          <CardHeader
+            title="Dispatches"
+            subtitle="One row per dispatch. Open one for its full lifecycle, its batch and its devices."
+          />
+          <Toolbar className="px-5 pb-1">
+            <Field label="Search" htmlFor="dispSearch" className="w-full sm:w-52">
+              <Input
+                id="dispSearch"
+                placeholder="Dispatch ID, merchant or AWB…"
+                value={q}
+                onChange={(e) => setParam('q', e.target.value)}
+              />
+            </Field>
+            <Field label="Bank" htmlFor="dispBank" className="w-full sm:w-44">
+              <SearchSelect
+                id="dispBank"
+                placeholder="Any bank"
+                value={bank}
+                onChange={(v) => setParam('bank', v)}
+                options={[
+                  { value: '', label: 'Any bank' },
+                  ...banks.map((b) => ({ value: b.bankReferenceCode, label: b.displayName })),
+                ]}
+              />
+            </Field>
+            <Field label="Courier status" htmlFor="dispStatus" className="w-full sm:w-48">
+              <MultiSelect
+                id="dispStatus"
+                placeholder="All statuses"
+                options={COURIER_STATUSES.map((s) => ({
+                  value: s,
+                  label: s,
+                  count: searched.filter((r) => str(r, 'courierStatus') === s).length,
+                }))}
+                selected={statusSel}
+                onChange={(next) => setParam('status', next.join(','))}
+              />
+            </Field>
+            <Field label="Dispatched from" htmlFor="dispFrom" className="w-full sm:w-40">
+              <Input id="dispFrom" type="date" value={from} onChange={(e) => setParam('from', e.target.value)} />
+            </Field>
+            <Field label="To" htmlFor="dispTo" className="w-full sm:w-40">
+              <Input id="dispTo" type="date" value={to} onChange={(e) => setParam('to', e.target.value)} />
+            </Field>
+            {anyFilter && (
+              <Button variant="ghost" onClick={() => setSearchParams(new URLSearchParams(), { replace: true })}>
+                Clear filters
+              </Button>
+            )}
+          </Toolbar>
+          <DataGrid
+            columns={columns}
+            rows={tableRows}
+            loading={loading}
+            getRowKey={(r, i) => dispatchIdOf(r) ?? String(i)}
+            onRowClick={openDispatch}
+            searchable={false}
+            pageSize={20}
+            pageSizeOptions={[20, 50, 100]}
+            maxBodyHeight="58vh"
+            stickyFirstColumn
+            emptyTitle={anyFilter ? 'No dispatches match these filters' : 'No dispatches yet'}
+            emptyMessage={
+              anyFilter
+                ? 'Loosen or clear the filters above to see the rest.'
+                : 'They appear once a bank request file has been committed and batched.'
+            }
+          />
+        </Card>
+      </div>
 
-      <ShipmentsCard />
+      <div hidden={view !== 'shipments'}>
+        <ShipmentsCard />
+      </div>
     </div>
   )
 }
