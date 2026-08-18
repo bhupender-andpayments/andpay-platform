@@ -15,6 +15,10 @@ export default tseslint.config(
       // ledger, plans, and raw acceptance-evidence scripts. Not shipped source.
       'docs/**',
       'evidence/**',
+      // Harness scratch: agent worktrees are full checkouts and would double
+      // every finding.
+      '.claude/**',
+      '.superpowers/**',
     ],
   },
   js.configs.recommended,
@@ -28,6 +32,20 @@ export default tseslint.config(
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
       ],
+    },
+  },
+  {
+    // infra scripts (db-url.mjs and friends) are plain Node ESM run outside
+    // the TypeScript workspace: give them the Node globals so no-undef does
+    // not flag process/console. Behavior of the scripts is untouched.
+    files: ['infra/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        URL: 'readonly',
+        Buffer: 'readonly',
+      },
     },
   },
   {
