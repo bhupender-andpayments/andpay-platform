@@ -41,6 +41,7 @@ import {
   type BatchJourneyView,
 } from '../../../api/endpoints.js'
 import { DispatchGroupBadge } from '../DispatchGroupBadge.js'
+import { NextStepCard } from './NextStepCard.js'
 import { QrPreviewDialog } from './QrPreviewDialog.js'
 import { renderCollateralPdf, type CardRow, type RenderedPdf } from './collateralPdf.js'
 import { OUTPUT_BUNDLES, bundlesFor, type BundleId } from './collateralBundles.js'
@@ -106,6 +107,11 @@ export function BatchGeneratePage() {
   // binary downloads, so the Excel buttons are not shown to them. Display
   // convenience only, never authorization (S24/T14).
   const downloadsHidden = principal?.roleLabel === 'customer_support'
+  // Same gate, same reasoning, for the Next step card's own actions (Task 8).
+  // A separate constant rather than reusing downloadsHidden's name here: the
+  // two happen to share a rule today, not a meaning, and a rename of one must
+  // not silently rename the other.
+  const nextStepHidden = principal?.roleLabel === 'customer_support'
   const { toast } = useToast()
   const location = useLocation()
   const fromSearch = (location.state as { fromSearch?: string } | null)?.fromSearch ?? ''
@@ -223,6 +229,15 @@ export function BatchGeneratePage() {
   const cardByAsgn = useMemo<ReadonlyMap<string, GenRow>>(
     () => new Map(rows.map((r) => [r.entry.asgnId, r])),
     [rows],
+  )
+
+  // The Next step card's own batch-scope hint (Task 8), read off THIS page's
+  // own entries rather than a second fetch: every dispatch id the batch
+  // detail already lists, for the embedded return-sheet dropzone to count
+  // against.
+  const batchAsgnIds = useMemo<ReadonlySet<string>>(
+    () => new Set(detail?.entries.map((e) => e.asgnId) ?? []),
+    [detail],
   )
 
   const generate = useCallback(async (): Promise<void> => {
@@ -446,6 +461,20 @@ export function BatchGeneratePage() {
       {/* The batch's own aggregate lifecycle: an enhancement over the hero
           row, present only once the journey read has answered. */}
       {journey !== null && <LifecycleRail stages={buildBatchRail(journey)} />}
+
+      {/* THE NEXT STEP CARD (Task 8): what this batch needs right now, derived
+          from the same journey read the rail above already fetched. It is an
+          enhancement over everything below it, on the same terms as the rail:
+          no journey yet means no card, never a blocked page. */}
+      {journey !== null && (
+        <NextStepCard
+          batchId={detail.batch.id}
+          journey={journey}
+          batchAsgnIds={batchAsgnIds}
+          hidden={nextStepHidden}
+          onChanged={() => void reload()}
+        />
+      )}
 
       {/* SECTION 1: WHAT IS IN THE BATCH. The page opens on the dispatch list
           because that is the question an operator arrives with ("is this

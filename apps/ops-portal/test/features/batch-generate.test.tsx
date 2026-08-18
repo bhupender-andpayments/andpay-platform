@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -268,5 +268,190 @@ describe('The batch page previews one dispatch QR on demand', () => {
     await userEvent.click(await screen.findByRole('button', { name: /view qr card/i }))
     await screen.findByRole('dialog')
     expect(screen.queryByRole('tablist', { name: /card type/i })).toBeNull()
+  })
+})
+
+// Task 8: the Next step card, fed by the same journey read the rail (Task 6)
+// already renders. The controller ruling (2026-08-18, spec batch-first-ops-ux
+// task 4) collapses the brief's original six-stage vocabulary into four
+// (PRINTING, SHIPPING, ACTIVATION, COMPLETE), so the brief's own
+// READY_FOR_CWD test case is read here as the ACTIVATION stage.
+describe('The batch page offers a Next step card driven by the batch stage', () => {
+  interface Call {
+    url: string
+    init: RequestInit
+  }
+
+  function makeFakeJwt(claims: Record<string, unknown>): string {
+    const json = JSON.stringify(claims)
+    const base64 = btoa(json)
+    const base64url = base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    return `header.${base64url}.signature`
+  }
+
+  // One full BatchJourneyView shape per call, with only the fields a given
+  // stage cares about overridden: a partial object here would silently pass
+  // TypeScript (nothing in this file types the fetch stub's body against the
+  // real interface) while leaving the component to read `undefined` off a
+  // field a different stage happened not to touch.
+  function journeyView(
+    counts: { total: number; deliverableAndActivatable: number; sentToVendor: number; dispatched: number; delivered: number; activated: number },
+    awaitingActivation: { dispatchId: string; merchantDisplay: string; awb: string | null; deliveryDate: string | null }[] = [],
+  ) {
+    return {
+      batchId: BATCH.id,
+      counts,
+      courier: { pickedUp: 0, inTransit: 0, outForDelivery: 0, delivered: 0, exception: 0 },
+      activation: { awaiting: 0, activated: 0, failed: 0, simActivated: null },
+      sentToVendorAt: null,
+      awaitingActivation,
+      watermark: { asOf: null, perTopic: {} },
+    }
+  }
+
+  function stubRoutes(
+    detailBody: unknown,
+    journeyBody: unknown,
+    extra?: (url: string, init: RequestInit) => Response | undefined,
+  ): Call[] {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit = {}) => {
+        calls.push({ url, init })
+        const overridden = extra?.(url, init)
+        if (overridden !== undefined) return overridden
+        if (url.includes('/ops/reports/batch-journey/')) return jsonResponse(journeyBody)
+        return jsonResponse(detailBody)
+      }),
+    )
+    return calls
+  }
+
+  const DETAIL = { batch: BATCH, entries: [entry()], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' }
+
+  beforeEach(() => {
+    setAccessToken('t')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+    clearAccessToken()
+  })
+
+  it('at PRINTING (not everything dispatched) offers the return sheet dropzone', async () => {
+    stubRoutes(DETAIL, journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 1, delivered: 0, activated: 0 }))
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(await screen.findByText('Next step')).toBeTruthy()
+    expect(document.getElementById('embedded-upload-return')).toBeTruthy()
+    expect(document.getElementById('embedded-upload-courier-status')).toBeNull()
+    expect(document.getElementById('embedded-upload-activation')).toBeNull()
+  })
+
+  it('at SHIPPING (dispatched but not all delivered) offers the courier status dropzone', async () => {
+    stubRoutes(DETAIL, journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 1, activated: 0 }))
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(await screen.findByText('Next step')).toBeTruthy()
+    expect(document.getElementById('embedded-upload-courier-status')).toBeTruthy()
+    expect(document.getElementById('embedded-upload-return')).toBeNull()
+  })
+
+  // The brief's READY_FOR_CWD case, read as ACTIVATION per the controller
+  // ruling: everything delivered, something still activatable and not yet
+  // activated. Both the CWD send actions and the activation dropzone render
+  // together (the ruling's "replaces READY_FOR_CWD and AWAITING_ACTIVATION").
+  it('at ACTIVATION offers the CWD download, a confirmed Mark sent to CWD posting dispatchIds with an Idempotency-Key, and the activation dropzone', async () => {
+    const AWAITING = [
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null },
+      { dispatchId: 'asgn_50000000008008000000000002', merchantDisplay: 'SECOND MERCHANT', awb: null, deliveryDate: null },
+    ]
+    const calls = stubRoutes(
+      DETAIL,
+      journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 0 }, AWAITING),
+      (url) => {
+        if (url.includes('/ops/reports/activation/batch/')) {
+          return new Response('xlsx-bytes', {
+            status: 200,
+            headers: { 'content-type': 'application/vnd.ms-excel', 'content-disposition': 'attachment; filename="activation-btch.xlsx"' },
+          })
+        }
+        if (url.includes('/ops/assignments/request-activation')) {
+          return jsonResponse({ deduped: false, recorded: AWAITING.map((a) => a.dispatchId), unknown: [] })
+        }
+        return undefined
+      },
+    )
+    Object.defineProperty(URL, 'createObjectURL', { value: () => 'blob:mock-url', writable: true, configurable: true })
+    Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), writable: true, configurable: true })
+
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(await screen.findByText('Next step')).toBeTruthy()
+    expect(document.getElementById('embedded-upload-activation')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: /download activation sheet/i }))
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/reports/activation/batch/'))).toBe(true)
+    })
+
+    await userEvent.click(screen.getByRole('button', { name: /^mark sent to cwd$/i }))
+    // The first click only asks; nothing has been written yet.
+    expect(calls.some((c) => c.url.includes('/request-activation'))).toBe(false)
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toMatch(/2 dispatches/i)
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /mark sent to cwd/i }))
+
+    const write = await vi.waitFor(() => {
+      const found = calls.find((c) => c.url.includes('/request-activation'))
+      expect(found).toBeTruthy()
+      return found!
+    })
+    expect(write.init.method).toBe('POST')
+    expect(JSON.parse(write.init.body as string).dispatchIds).toEqual(AWAITING.map((a) => a.dispatchId))
+    const headers = write.init.headers as Record<string, string>
+    expect(headers['Idempotency-Key']).toBeTruthy()
+  })
+
+  it('at COMPLETE renders a quiet done note and no actions', async () => {
+    stubRoutes(DETAIL, journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 2 }))
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(await screen.findByText('Next step')).toBeTruthy()
+    expect(screen.getByText(/nothing left to do/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /download activation sheet/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /mark sent to cwd/i })).toBeNull()
+    expect(document.getElementById('embedded-upload-return')).toBeNull()
+    expect(document.getElementById('embedded-upload-courier-status')).toBeNull()
+    expect(document.getElementById('embedded-upload-activation')).toBeNull()
+  })
+
+  it('renders no action-bearing content for customer_support', async () => {
+    clearAccessToken()
+    const fakeToken = makeFakeJwt({ sub: 'ops-1', psr: 'role:customer_support' })
+    stubRoutes(
+      DETAIL,
+      journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 0 }, [
+        { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null },
+      ]),
+      (url) => (url.includes('/session/rehydrate') ? jsonResponse({ accessToken: fakeToken }) : undefined),
+    )
+
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Next step')).toBeNull()
+    })
+    expect(document.getElementById('embedded-upload-activation')).toBeNull()
+    expect(screen.queryByRole('button', { name: /download activation sheet/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /mark sent to cwd/i })).toBeNull()
   })
 })
