@@ -274,10 +274,32 @@ export function applyFact(
       // order is by occurred_at, and the collateral fact is a legitimate later
       // event on a legitimate different shpt. The producer marks it, and this
       // branches on the mark.
+      //
+      // UNLESS THIS ROW IS ITSELF THE COLLATERAL LEG (18 Aug 2026). Since W-5
+      // split soundbox and collateral into their OWN dispatch ids, a COLLATERAL
+      // row has no device parcel at all: the collateral consignment IS its only
+      // parcel, so those facts are its PRIMARY ones and belong in awb /
+      // courier_status / delivery_date like any other row's. Early-returning for
+      // it left the paper leg projecting as never dispatched however far the
+      // courier had actually taken it, which the portal then showed as the truth
+      // and BRD FR-06 (courier status per Dispatch ID, both product types)
+      // forbids. The guard is on the ROW's group, not the fact's, so the safety
+      // property above is untouched for the soundbox row it was written for, and
+      // a legacy pre-split row (dispatchGroup null) keeps the old behaviour
+      // exactly.
       if (p.collateral === true) {
-        s.collateralAwb = p.awb
-        s.collateralShptId = p.shptId
-        return s
+        if (s.dispatchGroup !== 'COLLATERAL') {
+          s.collateralAwb = p.awb
+          s.collateralShptId = p.shptId
+          return s
+        }
+        // The collateral leg's own parcel. awb and shpt_id are normally set by
+        // the print_for fact, which pairs a DEVICE to a parcel and therefore
+        // never fires for a paper-only dispatch, so this fact is the only place
+        // its parcel identity can come from. Set here and then fall through to
+        // the shared status handling below, so one ladder governs both groups.
+        s.awb = p.awb
+        s.shptId = p.shptId
       }
       s.courierStatus = p.status // latest status wins by fold order
       if (p.status === 'DISPATCHED_BY_VENDOR') {
