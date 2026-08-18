@@ -115,7 +115,6 @@ export function ActivationUploadPage() {
     const staged = takeStagedFile()
     if (staged) void handleFile(staged)
     // mount-only by design
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function handleSubmit(): Promise<void> {
