@@ -1975,3 +1975,46 @@ export function getBatchJourney(c: Client, btchId: string) {
     path: `/ops/reports/batch-journey/${encodeURIComponent(btchId)}`,
   })
 }
+
+/**
+ * services/analytics/src/mediation.ts BatchJourneySummary: the same rollup
+ * readBatchJourney produces for one batch, at the grain the batch worklist
+ * page needs, every batch at once. `activation.notRequested`/`.requested`
+ * mirror the doc on BatchJourneyView.activation above: always null on this
+ * wire too, because analytics never projects REQUEST_SENT_TO_CWD (2026-08-18
+ * controller ruling, spec batch-first-ops-ux task 1). batchStage.ts's
+ * deriveBatchStage is written against that always-null reality.
+ */
+export type BatchJourneySummary = {
+  batchId: string
+  counts: {
+    total: number
+    deliverableAndActivatable: number
+    sentToVendor: number
+    dispatched: number
+    delivered: number
+    activated: number
+  }
+  activation: { notRequested: number | null; requested: number | null; activated: number }
+}
+
+/** GET /ops/reports/batch-journey (bulk sibling of getBatchJourney above): every batch's rollup in one call. */
+export function getBatchJourneySummaries(c: Client): Promise<{ rows: BatchJourneySummary[]; watermark: Watermark }> {
+  return c.request<{ rows: BatchJourneySummary[]; watermark: Watermark }>({
+    method: 'GET',
+    path: '/ops/reports/batch-journey',
+  })
+}
+
+/**
+ * services/fulfillment/src/workbook-sniff.ts SniffKind, declared locally
+ * because the portal never imports service packages (C4): a header-only,
+ * no-Idempotency-Key read that answers which of the upload kinds a file's
+ * header row matches, so a smart upload surface can route without the
+ * operator having to know which kind it is. Mirrors postFile's use above.
+ */
+export type SniffKind = 'return-sheet' | 'courier-status' | 'activation' | 'unit-status' | 'device-inventory' | 'bank'
+
+export function sniffUpload(c: Client, file: File): Promise<{ candidates: SniffKind[] }> {
+  return postFile<{ candidates: SniffKind[] }>(c, '/ops/uploads/sniff', file)
+}
