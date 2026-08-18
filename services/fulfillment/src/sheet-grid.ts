@@ -112,7 +112,11 @@ function tokenizeCsv(text: string): string[][] {
   return rows
 }
 
-function readCsvGrid(file: Uint8Array): string[][] {
+// Exported so workbook-sniff.ts can fall back to this SAME CSV reading path
+// (rather than a second tokenizer) when a dropped file is not an xlsx: every
+// dedicated adapter this sniffer routes to is CSV-capable, and a file the
+// sniffer calls readable must stay one every adapter would also parse.
+export function readCsvGrid(file: Uint8Array): string[][] {
   const text = new TextDecoder('utf-8').decode(file)
   return tokenizeCsv(text)
 }

@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs'
-import { normalizeHeader } from './sheet-grid.js'
+import { normalizeHeader, readCsvGrid } from './sheet-grid.js'
 import { HEADERS as RETURN_HEADERS } from './return-sheet-adapter.js'
 import { REQUIRED_HEADERS as COURIER_HEADERS } from './courier-status-adapter.js'
 import { REQUIRED_HEADERS as ACTIVATION_HEADERS } from './activation-file-adapter.js'
@@ -7,9 +7,10 @@ import { HEADERS as UNIT_STATUS_HEADERS } from './unit-status-adapter.js'
 import { REQUIRED_HEADERS as DEVICE_REQUIRED_HEADERS, OPTIONAL_HEADERS as DEVICE_OPTIONAL_HEADERS } from './device-inventory-adapter.js'
 
 // The smart-upload sniffer (batch-first ops UX, Task 3): the operator drops one
-// Excel file onto a single page, and this pure header match decides which of
-// the dedicated upload pages it belongs on, BEFORE any of those pages' own
-// parsers ever see it.
+// file (.csv or .xlsx, exactly the two formats every dedicated upload adapter
+// already accepts) onto a single page, and this pure header match decides
+// which of the dedicated upload pages it belongs on, BEFORE any of those
+// pages' own parsers ever see it.
 //
 // WHY THIS CANNOT INVENT ITS OWN VOCABULARY. Each upload's own adapter is the
 // only place its accepted column names are allowed to live; a second, hand-typed
@@ -88,21 +89,13 @@ export function sniffFulfillmentHeaders(headers: string[]): SniffKind[] {
   return kinds
 }
 
-/**
- * Read the first (header) row of an uploaded .xlsx workbook as plain strings,
- * or null when the bytes are not a readable workbook (a corrupt file, a
- * BIFF8 .xls, or a workbook with no worksheet or no rows at all).
- *
- * Reuses the SAME ExcelJS load-then-read-row-1 path every adapter in this file
- * already uses (see e.g. `sheet-grid.ts`'s `readXlsxGrid`), so a file this
- * sniffer calls "readable" is exactly one every dedicated adapter would also
- * attempt to parse.
- *
- * Never logs the bytes, the header cells, or the caller-supplied filename
- * (there is none: this sniffer does not need one, unlike the CSV-capable
- * adapters, because the smart-upload page only ever hands it an .xlsx).
- */
-export async function readWorkbookHeader(bytes: Buffer): Promise<string[] | null> {
+// Reads row 1 of an .xlsx workbook, or null when ExcelJS cannot load the bytes
+// at all, or loads them but finds no worksheet, no rows, or a wholly blank
+// first row (a BIFF8 .xls loaded under an .xlsx name lands here with zero
+// worksheets rather than throwing, the same trap return-sheet-adapter.ts
+// documents). Reuses the SAME ExcelJS load-then-read-row-1 path every xlsx
+// adapter already uses (see e.g. `sheet-grid.ts`'s `readXlsxGrid`).
+async function readXlsxHeader(bytes: Buffer): Promise<string[] | null> {
   let workbook: ExcelJS.Workbook
   try {
     workbook = new ExcelJS.Workbook()
@@ -110,8 +103,6 @@ export async function readWorkbookHeader(bytes: Buffer): Promise<string[] | null
   } catch {
     return null
   }
-  // A BIFF8 .xls loaded under an .xlsx name lands here with zero worksheets
-  // rather than throwing (the same trap return-sheet-adapter.ts documents).
   const ws = workbook.worksheets[0]
   if (!ws || ws.rowCount === 0) return null
 
@@ -123,4 +114,41 @@ export async function readWorkbookHeader(bytes: Buffer): Promise<string[] | null
   }
   if (cells.every((c) => c === '')) return null
   return cells
+}
+
+// Reads the first NON-BLANK row of a CSV as its header, or null when the file
+// carries no non-blank row at all (empty, or whitespace/blank-lines only).
+// Reuses sheet-grid.ts's OWN `readCsvGrid` tokenizer rather than a second CSV
+// reader, and drops wholly-blank rows exactly as `parseSheetGrid` does, so a
+// header this returns is one every CSV-capable adapter would also read as
+// row 1.
+function readCsvHeader(bytes: Buffer): string[] | null {
+  const grid = readCsvGrid(bytes)
+  const firstNonBlank = grid.find((row) => row.some((c) => c.trim() !== ''))
+  if (!firstNonBlank) return null
+  return firstNonBlank.map((c) => c.trim())
+}
+
+/**
+ * Read the first (header) row of an uploaded workbook as plain strings, or
+ * null when the bytes are not a readable file at all under EITHER format.
+ *
+ * Tries .xlsx first (via ExcelJS); when that load fails, or succeeds but
+ * yields no worksheet, no rows, or a blank first row, falls back to the SAME
+ * CSV reading path `sheet-grid.ts`'s adapters use. Every dedicated upload
+ * this sniffer routes to (return sheet, courier status, activation, unit
+ * status, device inventory) accepts BOTH .csv and .xlsx, so a file this
+ * sniffer calls "readable" must stay one every one of those adapters would
+ * also attempt to parse; an xlsx-only sniff would 400 a plain, valid CSV drop
+ * that the dedicated page downstream would have accepted just fine.
+ *
+ * Never logs the bytes, the header cells, or a filename (there is none: this
+ * function takes no filename, unlike the CSV-capable adapters, because format
+ * here is decided by what the bytes actually parse as, not by an extension
+ * string the client controls).
+ */
+export async function readWorkbookHeader(bytes: Buffer): Promise<string[] | null> {
+  const xlsxHeader = await readXlsxHeader(bytes)
+  if (xlsxHeader) return xlsxHeader
+  return readCsvHeader(bytes)
 }

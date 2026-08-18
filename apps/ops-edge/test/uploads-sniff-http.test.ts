@@ -135,13 +135,35 @@ describe('ops-edge uploads: POST /ops/uploads/sniff (parse-only, persists nothin
     expect(res.body).toEqual({ candidates: ['bank'] })
   })
 
+  // Fix round 1 (2026-08-18): the sniffer is now CSV-capable (see below), so
+  // plain, non-blank text is a valid one-column CSV header, not "unreadable".
+  // Genuinely unreadable is a file with no non-blank row under EITHER format:
+  // ExcelJS fails the zip load, and the CSV fallback finds only blank lines.
   it('rejects an unreadable file with 400', async () => {
     const token = await mint({})
     const res = await request(app.getHttpServer())
       .post('/ops/uploads/sniff')
       .set('Authorization', `Bearer ${token}`)
-      .attach('file', Buffer.from('not a workbook'), 'garbage.xlsx')
+      .attach('file', Buffer.from('\n\n   \n\n'), 'garbage.xlsx')
     expect(res.status).toBe(400)
+  })
+
+  // Fix round 1 (2026-08-18): readWorkbookHeader was xlsx-only, but every
+  // dedicated ingest adapter this sniffer routes to (and the demo assets under
+  // docs/plan/phase7_demo/demo-assets/, e.g. the bank demo file) is CSV. A
+  // valid CSV drop must sniff exactly as its .xlsx twin does, never 400.
+  it('sniffs a CSV the same as its xlsx twin (a bank-shaped demo-asset header)', async () => {
+    const csv = Buffer.from(
+      'Business Name,VPA,Bank code,Mobile,QR String\nAcme,acme@hdfcbank,3,9000000000,upi://pay?pa=acme@hdfcbank\n',
+      'utf8',
+    )
+    const token = await mint({})
+    const res = await request(app.getHttpServer())
+      .post('/ops/uploads/sniff')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', csv, 'annexure-b.csv')
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ candidates: ['bank'] })
   })
 
   it('takes no Idempotency-Key and admits any class-3 ops principal (no D2 gate)', async () => {
