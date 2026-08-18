@@ -1354,6 +1354,11 @@ export class OpsController {
     return result
   }
 
+  // `cured: false` in the 200 body is a REFUSED correction, not a failed call:
+  // the corrected row did not ingest, so the hold stays in the queue for the
+  // operator to fix or close. Reported as a flag rather than a 4xx for the same
+  // reason `closed` is on the close route: the authorized operation ran and its
+  // outcome is part of the answer, and the two routes stay readable side by side.
   @Post('quarantine/:id/resolve')
   @HttpCode(200)
   async resolveQuarantine(
@@ -1361,7 +1366,7 @@ export class OpsController {
     @Param('id') id: string,
     @Body() body: ResolveQuarantineBody,
     @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ deduped: boolean; outcome: string | null }> {
+  ): Promise<{ deduped: boolean; outcome: string | null; cured: boolean }> {
     const g = await this.gate(req, 'ops:resolve-quarantine', idem, [id])
     const result = await resolveQuarantineRow(this.deps.tmsDb, {
       quarantineId: id,

@@ -146,7 +146,21 @@ export function QuarantineTab() {
       return
     }
     try {
-      await resolveQuarantine(client, pending.rowId, correctedRow, newIdempotencyKey())
+      const res = await resolveQuarantine(client, pending.rowId, correctedRow, newIdempotencyKey())
+      // `cured: false` on a call that RAN is a REFUSED correction, not a failed
+      // request: the corrected row did not ingest, so the row is still held.
+      // Dismissing on that used to tell the operator they had fixed a row that
+      // was still sitting in the queue, and before the server stopped stamping
+      // those as cured it was worse: the row left the queue and the request
+      // existed nowhere. A replay (`deduped`) is NOT a refusal, because the
+      // original call already did the work. Same read as submitClose's `closed`.
+      if (!res.cured && !res.deduped) {
+        setFormError(
+          'That correction was not accepted, so the row is still held. Check the values and submit again, or close the row if it needs no correction.',
+        )
+        await load()
+        return
+      }
       dismiss()
       await load()
     } catch (err) {

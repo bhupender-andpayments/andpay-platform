@@ -690,6 +690,186 @@ describe('soundbox duplicate-VPA hold (ruling 2026-08-10): commitBankFile', () =
     expect(await count('pending_row')).toBe(0)
   })
 
+  // A CURE THAT INGESTS NOTHING IS NOT A CURE (regression, 18 Aug 2026).
+  //
+  // The test above passes a correction whose fileId DIFFERS from the held row's,
+  // so its re-quarantine wins a fresh (file_id, row_no) and reports
+  // 'quarantined'. The resolve dialog cannot do that: fileId and rowNo are
+  // read-only identity fields pinned to the row being cured, so a still-invalid
+  // correction re-quarantines into the ON CONFLICT (file_id, row_no) DO NOTHING
+  // of the very row being cured, reports 'duplicate', and writes nothing at all.
+  // resolveQuarantineRow stamped resolution = 'cured' regardless of that
+  // outcome, so the row left the queue while the merchant's request existed
+  // nowhere: not in pending_row, not as a fresh hold. Found by driving the real
+  // portal against the shared dataset, where an all-blank submit was accepted.
+  describe('a cure that ingests nothing must not retire the held row', () => {
+    async function seedHeldAt(fileId: string, rowNo: number, reason: string): Promise<string> {
+      const seeded = await db.$queryRaw<{ id: string }[]>`
+        INSERT INTO quarantine_row (file_id, row_no, raw_row, reason_code)
+        VALUES (${fileId}, ${rowNo}, ${'redacted:bank_request'}, ${reason})
+        RETURNING id
+      `
+      return seeded[0]!.id
+    }
+
+    async function resolutionOf(id: string): Promise<{ resolved_at: Date | null; resolution: string | null }> {
+      const rows = await db.$queryRaw<{ resolved_at: Date | null; resolution: string | null }[]>`
+        SELECT resolved_at, resolution FROM quarantine_row WHERE id = ${id}::uuid
+      `
+      return rows[0]!
+    }
+
+    // The exact production repro: every business field empty, identity pinned,
+    // which is what emptyBankRequestRowForm hands the route when an operator
+    // opens the dialog and submits without typing.
+    function blankRow(fileId: string, rowNo: number): BankRequestRow {
+      return {
+        fileId,
+        rowNo,
+        bankMerchantReference: '',
+        displayName: '',
+        legalName: '',
+        mcc: '',
+        registeredAddress: '',
+        bankReferenceCode: '',
+        productType: '',
+        vpaValue: '',
+        qrValue: '',
+        soundbox: false,
+        standeeCount: 0,
+        stickerCount: 0,
+        shipToAddress: '',
+        contactName: '',
+        mobile: '',
+        branchCode: '',
+      }
+    }
+
+    it('refuses an all-blank correction: cured false, nothing ingested, row still held', async () => {
+      const id = await seedHeldAt('blank-file', 2, 'duplicate_vpa_soundbox')
+
+      const res = await resolveQuarantineRow(db, {
+        quarantineId: id,
+        correctedRow: blankRow('blank-file', 2),
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-blank-cure',
+      })
+
+      expect(res.cured).toBe(false)
+      expect(await count('pending_row')).toBe(0)
+
+      const row = await resolutionOf(id)
+      expect(row.resolved_at).toBeNull()
+      expect(row.resolution).toBeNull()
+    })
+
+    it('leaves a refused row in the OPEN queue, where the operator can still act on it', async () => {
+      const id = await seedHeldAt('blank-file-2', 3, 'missing_mobile')
+      await resolveQuarantineRow(db, {
+        quarantineId: id,
+        correctedRow: blankRow('blank-file-2', 3),
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-blank-open',
+      })
+
+      const open = await readQuarantineQueue(db, { includeResolved: false })
+      expect(open.find((q) => q.id === id)).toBeDefined()
+    })
+
+    // Not only the all-blank form. ANY correction that fails validation on the
+    // held row's own (file_id, row_no) hit this, which is the wider bug: the
+    // operator fixed one field, missed another, and the row was retired anyway.
+    it('refuses a correction that is still invalid in one field', async () => {
+      const id = await seedHeldAt('one-bad-field', 1, 'missing_mobile')
+
+      const res = await resolveQuarantineRow(db, {
+        quarantineId: id,
+        correctedRow: validRow({ fileId: 'one-bad-field', rowNo: 1, mobile: '' }),
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-one-bad',
+      })
+
+      expect(res.cured).toBe(false)
+      expect(await count('pending_row')).toBe(0)
+      expect((await resolutionOf(id)).resolution).toBeNull()
+    })
+
+    // A correction that is still a soundbox duplicate is held, not cured, even
+    // though the gate leaves the original reason_code in place on the row.
+    it('refuses a correction that is still a soundbox duplicate', async () => {
+      await seedOriginalAssignment('stillduped@gscb', '3')
+      const id = await seedHeldAt('still-duped', 1, 'duplicate_vpa_soundbox')
+
+      const res = await resolveQuarantineRow(db, {
+        quarantineId: id,
+        correctedRow: validRow({
+          fileId: 'still-duped',
+          rowNo: 1,
+          vpaValue: 'stillduped@gscb',
+          qrValue: 'upi://pay?pa=stillduped@gscb',
+        }),
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-still-duped',
+      })
+
+      expect(res.cured).toBe(false)
+      expect((await resolutionOf(id)).resolution).toBeNull()
+    })
+
+    // The happy path still cures, which is what makes the gate a gate and not a
+    // wall: a genuinely corrected row ingests and retires the hold.
+    it('still cures a genuinely corrected row', async () => {
+      const id = await seedHeldAt('good-cure', 1, 'missing_mobile')
+
+      const res = await resolveQuarantineRow(db, {
+        quarantineId: id,
+        correctedRow: validRow({
+          fileId: 'good-cure',
+          rowNo: 1,
+          vpaValue: 'goodcure@gscb',
+          qrValue: 'upi://pay?pa=goodcure@gscb',
+        }),
+        clientKey: randomUUID(),
+        actorId: randomUUID(),
+        traceId: 't-good-cure',
+      })
+
+      expect(res).toMatchObject({ deduped: false, outcome: 'accepted', cured: true })
+      expect(await count('pending_row')).toBe(1)
+      expect((await resolutionOf(id)).resolution).toBe('cured')
+    })
+
+    // The 6e is co-committed either way, exactly as closeQuarantineRow does it:
+    // the operator DID perform an authorized resolve attempt, and an audit that
+    // recorded only the attempts that landed would under-report what was tried.
+    it('co-commits one ALLOW 6e even when the cure is refused', async () => {
+      const id = await seedHeldAt('refused-audit', 1, 'missing_mobile')
+      const actorId = randomUUID()
+
+      await resolveQuarantineRow(db, {
+        quarantineId: id,
+        correctedRow: blankRow('refused-audit', 1),
+        clientKey: randomUUID(),
+        actorId,
+        traceId: 't-refused-audit',
+      })
+
+      const audit = await db.$queryRaw<{ payload: { operation: string; decision: string; resourceIds: string[] } }[]>`
+        SELECT payload FROM outbox WHERE event_type = 'authz.audit'
+      `
+      expect(audit).toHaveLength(1)
+      expect(audit[0]!.payload).toMatchObject({
+        operation: 'ops:resolve-quarantine',
+        decision: 'ALLOW',
+        resourceIds: [id],
+      })
+    })
+  })
+
   // D-8's SECOND action, which did not exist: "Close: it was a genuine
   // duplicate. Record is closed and removed from the queue (retained in
   // archive)." Before this, the only action re-drove an ingest, so an operator

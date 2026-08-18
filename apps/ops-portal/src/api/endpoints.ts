@@ -347,8 +347,16 @@ export function getStatusExceptions(c: Client, includeResolved = false) {
   })
 }
 
+/**
+ * `cured: false` on a call that RAN (deduped false) is a refused correction:
+ * the corrected row did not ingest, so the hold stays in the queue rather than
+ * being retired (services/tms/src/ops.ts resolveQuarantineRow). It is the same
+ * shape as the close route's `closed`, and callers must read it for the same
+ * reason: a 200 here means the operation was authorized and ran, not that the
+ * row was cured.
+ */
 export function resolveQuarantine(c: Client, id: string, correctedRow: BankRequestRow, idempotencyKey: string) {
-  return c.request<{ deduped: boolean; outcome: string | null }>({
+  return c.request<{ deduped: boolean; outcome: string | null; cured: boolean }>({
     method: 'POST',
     path: `/ops/quarantine/${id}/resolve`,
     body: { correctedRow },

@@ -85,7 +85,9 @@ describe('QueuesPage', () => {
       vi.fn(async (url: string, init: RequestInit) => {
         calls.push({ url, init })
         if (url.includes('/ops/quarantine/qr-1/resolve')) {
-          return jsonResponse({ deduped: false, outcome: 'accepted' })
+          // `cured: true` is part of the real 200 body: an accepted ingest is
+          // what retires the hold (services/tms/src/ops.ts resolveQuarantineRow).
+          return jsonResponse({ deduped: false, outcome: 'accepted', cured: true })
         }
         if (url.includes('/ops/quarantine')) {
           return jsonResponse([
@@ -186,6 +188,99 @@ describe('QueuesPage', () => {
       const after = calls.filter((c) => c.url.includes('/ops/quarantine') && !c.url.includes('resolve')).length
       expect(after).toBeGreaterThan(getCallsBeforeResolve)
     })
+  })
+
+  // A REFUSED cure must not read as a success (18 Aug 2026). The route answers
+  // 200 with `cured: false` when the corrected row did not ingest, which means
+  // the hold is still in the queue; dismissing the dialog on that would tell the
+  // operator they fixed a row that is still sitting there. Same shape as the
+  // close route's `closed: false`, and handled the same way: the dialog STAYS
+  // OPEN with the message where the operator is looking.
+  it('keeps the dialog open and says so when the server refuses the correction (cured false)', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init })
+        if (url.includes('/ops/quarantine/qr-9/resolve')) {
+          // Nothing ingested: the correction was still invalid on the held row's
+          // own (file_id, row_no), so the re-quarantine collided with it.
+          return jsonResponse({ deduped: false, outcome: 'duplicate', cured: false })
+        }
+        if (url.includes('/ops/quarantine')) {
+          return jsonResponse([
+            {
+              id: 'qr-9',
+              fileId: 'file-9',
+              rowNo: 2,
+              reasonCode: 'duplicate_vpa_soundbox',
+              createdAt: '2026-08-18T00:00:00.000Z',
+              resolvedAt: null,
+              resolvedByActor: null,
+            },
+          ])
+        }
+        return jsonResponse([])
+      }),
+    )
+
+    renderQueues('quarantine')
+
+    expect(await screen.findByText('file-9')).toBeTruthy()
+    await openRowActions('qr-9')
+    await userEvent.click(screen.getByRole('menuitem', { name: /resolve quarantine row qr-9/i }))
+
+    // Submitted with every business field left as the dialog opened it, which is
+    // the exact production repro: an all-blank correction.
+    await userEvent.click(screen.getByRole('button', { name: /submit correction/i }))
+
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/quarantine/qr-9/resolve'))).toBe(true)
+    })
+
+    expect(await screen.findByText(/still held/i)).toBeTruthy()
+    // The dialog is still open, so the operator can correct and resubmit.
+    expect(screen.getByRole('button', { name: /submit correction/i })).toBeTruthy()
+  })
+
+  // A client-key REPLAY is not a refusal. `deduped: true` means the original
+  // call already did the work, so `cured: false` on the replay carries no
+  // failure and must not be reported as one.
+  it('treats a deduped replay as done, not as a refused correction', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/quarantine/qr-8/resolve')) {
+          return jsonResponse({ deduped: true, outcome: null, cured: false })
+        }
+        if (url.includes('/ops/quarantine')) {
+          return jsonResponse([
+            {
+              id: 'qr-8',
+              fileId: 'file-8',
+              rowNo: 1,
+              reasonCode: 'missing_mobile',
+              createdAt: '2026-08-18T00:00:00.000Z',
+              resolvedAt: null,
+              resolvedByActor: null,
+            },
+          ])
+        }
+        return jsonResponse([])
+      }),
+    )
+
+    renderQueues('quarantine')
+
+    expect(await screen.findByText('file-8')).toBeTruthy()
+    await openRowActions('qr-8')
+    await userEvent.click(screen.getByRole('menuitem', { name: /resolve quarantine row qr-8/i }))
+    await userEvent.click(screen.getByRole('button', { name: /submit correction/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /submit correction/i })).toBeNull()
+    })
+    expect(screen.queryByText(/still held/i)).toBeNull()
   })
 
   // D-8's second action. The queue offers exactly two, and Close must not be a
