@@ -10,9 +10,11 @@ import {
   type DamageCaseView,
   type VpaDispatchRow,
 } from '../../api/endpoints.js'
-// PlainTable, not the grid: these rows hold a focused note input, which the
-// grid's TanStack re-render remounts mid-typing. See DataTable.tsx. The VPA
-// results below hold no inputs, so THEY use the grid (DataTable).
+// PlainTable, not the grid: kept from when these rows held a focused note
+// input, which the grid's TanStack re-render remounts mid-typing. See
+// DataTable.tsx. The note now lives in the confirmation dialog, so the reason
+// has lapsed and this could move to DataGrid; left as-is deliberately, because
+// that swap is a table change and this pass is only the actions menu.
 import { DataTable, PlainTable, type DataTableColumn } from '../../components/DataTable.js'
 import {
   PageHeader,
@@ -28,6 +30,15 @@ import {
   CodeChip,
   StatusPill,
 } from '../../ui/primitives.js'
+import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu'
+import { buttonVariants } from '@/components/ui/button'
+import { MoreVertical } from 'lucide-react'
 import { DispatchGroupBadge } from '../fulfillment/DispatchGroupBadge.js'
 import { fmtDateTime, pillClass } from '../../ui/format.js'
 import { cn } from '@/lib/utils'
@@ -57,11 +68,48 @@ import { cn } from '@/lib/utils'
 // list client-side, and the count under the heading is always the count of what
 // is on screen.
 
-// The three values D-24 grants. The middle one is spelled with a hyphen in the
-// column and without one in the walkthrough; the server normalizes both, so the
-// label an operator reads is the walkthrough's and the value on the wire is
-// whichever this list carries.
-const CASE_STATUSES = ['Open', 'In Progress', 'Closed'] as const
+// The three values D-24 grants, in LIFECYCLE ORDER, which is what lets the
+// dialog below tell a forward move from a backward one.
+//
+// `wire` is the walkthrough's spelling and `label` is what an operator reads.
+// The column itself stores 'In-Progress', a third spelling; the server
+// normalizes all of them (normalizeCaseStatus), so nothing here has to pick a
+// winner. What every comparison MUST use is statusKey, never `===`: comparing
+// 'In Progress' to the stored 'In-Progress' is always unequal, which is exactly
+// why an in-progress case used to be offered "In Progress" as somewhere to move
+// to. The status a case is already in is not a move.
+const CASE_MOVES = [
+  { wire: 'Open', label: 'Open' },
+  { wire: 'In Progress', label: 'In progress' },
+  { wire: 'Closed', label: 'Closed' },
+] as const
+
+type CaseMove = (typeof CASE_MOVES)[number]
+
+// The cap the ops-edge enforces on the note (MAX_OPS_REMARKS_LENGTH in
+// services/tms/src/ops.ts), mirrored so the operator hits a maxLength on the
+// keyboard rather than a 400 after confirming.
+const MAX_CASE_NOTE_LENGTH = 500
+
+/** The label an operator reads for whatever spelling the column stored. */
+function statusLabelOf(status: string | null | undefined): string {
+  return CASE_MOVES.find((m) => statusKey(m.wire) === statusKey(status))?.label ?? (status ?? 'unknown')
+}
+
+/** Position in the lifecycle, or -1 for a status this screen does not know. */
+function rankOf(status: string | null | undefined): number {
+  return CASE_MOVES.findIndex((m) => statusKey(m.wire) === statusKey(status))
+}
+
+// What each status CLAIMS once it is set. The confirmation says this back to
+// the operator, because the whole point of the status is that someone else
+// reads it later and believes it.
+const MOVE_MEANING: Record<string, string> = {
+  Open: 'Open says the replacement is raised and nobody is working it yet.',
+  'In Progress': 'In progress says someone is actively working this replacement.',
+  Closed:
+    'Closed says the replacement reached the merchant. Cases close on their own when a soundbox replacement activates or a collateral replacement is delivered.',
+}
 
 // The ?status= vocabulary (D-31): the dashboard tile links with these exact
 // values. Comparison is spelling-insensitive (statusKey below) because the
@@ -107,10 +155,13 @@ export function DamageCasesPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNote, setActionNote] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
-  // The note an operator is writing, per case. Held per id rather than as one
-  // shared field, so opening a second case does not silently move what was
-  // typed for the first.
-  const [notes, setNotes] = useState<ReadonlyMap<string, string>>(new Map())
+  // The move awaiting confirmation, and the note being written for it. ONE of
+  // each, not a per-row map: a status change is now picked from a row's menu
+  // and confirmed in a dialog, so exactly one can be in flight and the note
+  // belongs to it. (The per-case map existed because the note used to be an
+  // input living in every row.)
+  const [pendingMove, setPendingMove] = useState<{ row: DamageCaseView; move: CaseMove } | null>(null)
+  const [moveNote, setMoveNote] = useState('')
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -163,23 +214,24 @@ export function DamageCasesPage() {
     )
   }
 
-  async function handleTransition(row: DamageCaseView, status: string): Promise<void> {
+  async function handleTransition(row: DamageCaseView, move: CaseMove): Promise<void> {
     setActionError(null)
     setActionNote(null)
     setBusyId(row.asgnId)
     try {
-      const note = notes.get(row.asgnId)
-      await updateDamageCaseStatus(client, row.asgnId, status, newIdempotencyKey(), note)
+      const note = moveNote.trim()
+      await updateDamageCaseStatus(client, row.asgnId, move.wire, newIdempotencyKey(), note === '' ? undefined : note)
       // Name the merchant, not the wire id: the operator picked a row that said
       // "Flow Alpha Store".
-      setActionNote(`${row.merchantDisplayName} moved to ${status}.`)
-      setNotes((prev) => {
-        const next = new Map(prev)
-        next.delete(row.asgnId)
-        return next
-      })
+      setActionNote(`${row.merchantDisplayName} moved to ${move.label}.`)
+      // Only once the write has returned does the dialog close, the same
+      // posture the batch trigger takes: dismissing on click would leave the
+      // operator watching an unchanged table with no idea whether it landed.
+      setPendingMove(null)
+      setMoveNote('')
       await load()
     } catch (err) {
+      // Stays inside the open dialog, pinned to the button that caused it.
       setActionError(err instanceof Error ? err.message : 'Could not update the case.')
     } finally {
       setBusyId(null)
@@ -321,40 +373,44 @@ export function DamageCasesPage() {
     { key: 'createdAt', header: 'Raised', cell: (r) => fmtDateTime(r.createdAt) },
     {
       key: 'actions',
-      header: 'Move to',
+      header: 'Actions',
+      // ONE kebab, not a row of buttons. Every status change here is a claim
+      // somebody downstream reads as fact, so each one is picked deliberately
+      // and confirmed, rather than fired by a stray click on a button sitting
+      // permanently under the cursor.
       cell: (r) => {
-        const busy = busyId === r.asgnId
+        const moves = CASE_MOVES.filter((m) => statusKey(m.wire) !== statusKey(r.caseStatus))
         return (
-          <div className="flex flex-col gap-2">
-            <input
-              type="text"
-              aria-label={`Note for ${r.merchantDisplayName}`}
-              placeholder="Add a note (optional)"
-              className="w-48 rounded-md border border-border bg-input/50 px-2 py-1 text-[12px]"
-              value={notes.get(r.asgnId) ?? ''}
-              disabled={busy}
-              onChange={(e) => {
-                const value = e.target.value
-                setNotes((prev) => new Map(prev).set(r.asgnId, value))
-              }}
-            />
-            <div className="flex gap-1">
-              {CASE_STATUSES.filter((s) => s !== r.caseStatus).map((s) => (
-                <Button
-                  key={s}
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy}
-                  loading={busy}
-                  onClick={() => {
-                    void handleTransition(r, s)
+          <DropdownMenu>
+            {/* Styled with buttonVariants directly rather than `asChild` around
+                our Button, which is a plain function component and cannot take
+                the trigger's ref. Same shape QuarantineTab's kebab uses. */}
+            <DropdownMenuTrigger
+              aria-label={`Actions for ${r.merchantDisplayName}`}
+              className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
+            >
+              <MoreVertical className="size-4" aria-hidden="true" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {moves.map((m) => (
+                <DropdownMenuItem
+                  key={m.wire}
+                  // Backward moves read destructive because they contradict
+                  // what the case currently claims, and a reopened case is the
+                  // one an operator most needs to mean on purpose.
+                  variant={rankOf(m.wire) < rankOf(r.caseStatus) ? 'destructive' : 'default'}
+                  onSelect={() => {
+                    setActionError(null)
+                    setActionNote(null)
+                    setMoveNote('')
+                    setPendingMove({ row: r, move: m })
                   }}
                 >
-                  {s}
-                </Button>
+                  Move to {m.label}
+                </DropdownMenuItem>
               ))}
-            </div>
-          </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )
       },
     },
@@ -482,6 +538,51 @@ export function DamageCasesPage() {
           />
         )}
       </Card>
+
+      {/* THE CONFIRMATION. A case status is read later as fact by people who
+          were not here, so each move is stated in words before it is made, and
+          the optional note rides with it rather than sitting in the row where
+          it was easy to type into the wrong case. */}
+      {pendingMove !== null && (
+        <ConfirmDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) {
+              setPendingMove(null)
+              setActionError(null)
+            }
+          }}
+          title={`Move this case to ${pendingMove.move.label}?`}
+          description={`${pendingMove.row.merchantDisplayName} is ${statusLabelOf(pendingMove.row.caseStatus)}. ${MOVE_MEANING[pendingMove.move.wire] ?? ''}`}
+          confirmLabel={`Move to ${pendingMove.move.label}`}
+          tone={rankOf(pendingMove.move.wire) < rankOf(pendingMove.row.caseStatus) ? 'danger' : 'default'}
+          busy={busyId === pendingMove.row.asgnId}
+          error={actionError}
+          onConfirm={() => {
+            void handleTransition(pendingMove.row, pendingMove.move)
+          }}
+        >
+          {/* Only for a BACKWARD move, and only then: the automation still
+              owns the forward transitions, so a case walked back can be moved
+              on again by the very fact that set it. */}
+          {rankOf(pendingMove.move.wire) < rankOf(pendingMove.row.caseStatus) && (
+            <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-[12.5px] font-medium text-amber-700 dark:text-amber-400">
+              This moves the case backwards. If the replacement later activates or is delivered, the case closes
+              itself again.
+            </p>
+          )}
+          <Field label="Note" htmlFor="case-move-note" hint="Optional, and recorded on the case.">
+            <Input
+              id="case-move-note"
+              autoFocus
+              maxLength={MAX_CASE_NOTE_LENGTH}
+              placeholder="e.g. bank confirmed the courier lost it"
+              value={moveNote}
+              onChange={(e) => setMoveNote(e.target.value)}
+            />
+          </Field>
+        </ConfirmDialog>
+      )}
     </div>
   )
 }

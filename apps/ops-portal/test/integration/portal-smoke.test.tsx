@@ -43,7 +43,7 @@ const TILES_FIXTURE = {
   activatedSuccessfully: 0,
 }
 
-// A single fetch stub that answers every mount-time read the 12 sections'
+// A single fetch stub that answers every mount-time read the 14 sections'
 // DEFAULT tab issues (dashboards tiles, the reports page's default report,
 // queues' default quarantine tab, master-data's default vendor-registry tab,
 // the activation worklist report), plus login/rehydrate.
@@ -107,7 +107,7 @@ async function renderAuthedShell(): Promise<void> {
   await screen.findByRole('navigation', { name: /main/i })
 }
 
-// The 10 SHOWN sidebar sections in AppShell's own order (src/ui/AppShell.tsx),
+// The 14 SHOWN sidebar sections in AppShell's own order (src/ui/AppShell.tsx),
 // each paired with the exact heading its page renders (PageHeader's title
 // prop, confirmed by reading every feature page: WorkflowPage/TilesPage/
 // ReportPage/QueuesPage/MasterDataPage/UploadsPage/OperationsPage/
@@ -119,12 +119,17 @@ async function renderAuthedShell(): Promise<void> {
 // real shell rather than only in test/features/reports*.test.tsx.
 const SECTIONS: ReadonlyArray<{ label: string; heading: RegExp }> = [
   { label: 'Command Center', heading: /^command center$/i },
+  // Static content, no reads: it mounts with nothing stubbed.
+  { label: 'Platform overview', heading: /^platform overview$/i },
   { label: 'Merchants', heading: /^merchants$/i },
   { label: 'Queues', heading: /^queues$/i },
   { label: 'Master Data', heading: /^master data$/i },
   { label: 'Uploads', heading: /^uploads$/i },
+  { label: 'Pool', heading: /^pool$/i },
   { label: 'Batches', heading: /^batches$/i },
   { label: 'Dispatches', heading: /^dispatches$/i },
+  // Its own section since 19 Aug 2026, no longer ?view=shipments on the list above.
+  { label: 'Shipments', heading: /^shipments$/i },
   { label: 'Inventory', heading: /^inventory$/i },
   { label: 'Activation', heading: /^activation$/i },
   // D-24 (T6.6): the damage cases screen.
@@ -148,7 +153,7 @@ describe('ops-portal consistency smoke test (Phase 7 Task 13a)', () => {
     consoleErrorSpy.mockRestore()
   })
 
-  it('mounts the shell authenticated and routes through all 11 shown sections with no thrown errors and no console.error', async () => {
+  it('mounts the shell authenticated and routes through all 14 shown sections with no thrown errors and no console.error', async () => {
     await renderAuthedShell()
 
     const nav = screen.getByRole('navigation', { name: /main/i })

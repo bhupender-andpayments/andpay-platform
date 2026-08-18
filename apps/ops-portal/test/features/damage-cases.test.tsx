@@ -132,23 +132,64 @@ describe('DamageCasesPage (D-24, T6.6)', () => {
     expect(within(row).getByText(/chased the bank twice/i)).toBeTruthy()
   })
 
+  // THE MOVES LIVE IN A KEBAB (18 Aug 2026). They used to be buttons sitting
+  // permanently in every row, which put an irreversible-feeling status change
+  // one stray click away and made the row a wall of controls.
+  async function openActions(rowText: string): Promise<void> {
+    const row = (await screen.findByText(rowText)).closest('tr')!
+    await userEvent.click(within(row).getByRole('button', { name: /^actions for/i }))
+  }
+
   it('offers only the statuses the case is NOT already in', async () => {
     stub()
     renderPage()
-    const row = (await screen.findByText('Flow Alpha Store')).closest('tr')!
+    await openActions('Flow Alpha Store')
     // The case is Open, so Open is not offered as somewhere to move it.
-    expect(within(row).queryByRole('button', { name: /^open$/i })).toBeNull()
-    expect(within(row).getByRole('button', { name: /^in progress$/i })).toBeTruthy()
-    expect(within(row).getByRole('button', { name: /^closed$/i })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: /move to open/i })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: /move to in progress/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /move to closed/i })).toBeTruthy()
+  })
+
+  // The regression this menu was built on top of: the column stores
+  // 'In-Progress' and the option list carried 'In Progress', so a `!==`
+  // comparison never matched and an in-progress case was offered "In Progress"
+  // as somewhere to move to. Every comparison goes through statusKey now.
+  it('does not offer In progress to a case that is ALREADY in progress', async () => {
+    stub([{ ...CASES[0], caseStatus: 'In-Progress' }])
+    renderPage()
+    await openActions('Flow Alpha Store')
+    expect(screen.queryByRole('menuitem', { name: /move to in progress/i })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: /move to open/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /move to closed/i })).toBeTruthy()
+  })
+
+  it('confirms before moving, and does not write while the dialog is merely open', async () => {
+    const calls = stub()
+    renderPage()
+    await openActions('Flow Alpha Store')
+    await userEvent.click(screen.getByRole('menuitem', { name: /move to closed/i }))
+
+    expect(await screen.findByText(/move this case to closed\?/i)).toBeTruthy()
+    expect(calls.some((c) => c.url.includes('/damage-case-status'))).toBe(false)
+  })
+
+  it('warns that a BACKWARD move can be undone by the automation', async () => {
+    stub([{ ...CASES[0], caseStatus: 'Closed' }])
+    renderPage()
+    await openActions('Flow Alpha Store')
+    await userEvent.click(screen.getByRole('menuitem', { name: /move to open/i }))
+    expect(await screen.findByText(/moves the case backwards/i)).toBeTruthy()
   })
 
   it('sends the operator note with the transition, in the walkthrough spelling', async () => {
     const calls = stub()
     renderPage()
 
-    const row = (await screen.findByText('Flow Alpha Store')).closest('tr')!
-    await userEvent.type(within(row).getByLabelText(/note for flow alpha store/i), 'awaiting bank reply')
-    await userEvent.click(within(row).getByRole('button', { name: /^in progress$/i }))
+    await openActions('Flow Alpha Store')
+    await userEvent.click(screen.getByRole('menuitem', { name: /move to in progress/i }))
+    // The note rides with the confirmation now, not with the row.
+    await userEvent.type(await screen.findByLabelText(/^note$/i), 'awaiting bank reply')
+    await userEvent.click(screen.getByRole('button', { name: /^move to in progress$/i }))
 
     await waitFor(() => {
       expect(calls.some((c) => c.url.includes('/ops/records/asgn_repl1/damage-case-status'))).toBe(true)
@@ -157,7 +198,7 @@ describe('DamageCasesPage (D-24, T6.6)', () => {
     const body = JSON.parse(String(write.init.body)) as { status: string; opsRemarks?: string }
     // "In Progress" is the walkthrough's spelling; the column stores
     // "In-Progress" and the server normalizes, so the portal sends what an
-    // operator read on the button.
+    // operator read on the menu item.
     expect(body.status).toBe('In Progress')
     expect(body.opsRemarks).toBe('awaiting bank reply')
   })

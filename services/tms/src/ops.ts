@@ -25,7 +25,12 @@ import { CASE_STATUS_VALUES, normalizeCaseStatus } from './damage-case.js'
 // column is a note and not a document store.
 const MAX_OPS_REMARKS_LENGTH = 500
 import { parseBankRequestFile, type StructuralParseError } from './bank-file-adapter.js'
-import { createDamageReasonWithinTx, setDamageReasonActiveWithinTx, type DamageReasonRow } from './damage-reason.js'
+import {
+  createDamageReasonWithinTx,
+  setDamageReasonActiveWithinTx,
+  updateDamageReasonWithinTx,
+  type DamageReasonRow,
+} from './damage-reason.js'
 import { activateAssignmentWithinTx } from './assignment.js'
 import { recordActivationStatusWithinTx } from './activation-branch.js'
 import type { DevicePort } from './device-port.js'
@@ -684,6 +689,55 @@ export async function createDamageReasonOps(
     // clean 4xx via OpsClientError rather than letting the raw constraint
     // error reach the edge as a 500. The transaction rolled back (no
     // partial row, no orphaned 6e).
+    if (isRawUniqueViolation(err)) {
+      throw new OpsClientError('invalid', 'a damage reason with this code or label already exists')
+    }
+    throw err
+  }
+  return { deduped: !ran, damageReason: ran ? damageReason : null }
+}
+
+/**
+ * Edit a damage reason (18 Aug 2026). Same shape as createDamageReasonOps:
+ * class-3 ops write, platform-only (no program to resolve, bare
+ * enterWriteRole), onceWithin dedup, co-committed ALLOW 6e. A missing row is
+ * an OpsClientError inside the onceWithin body so the dedup insert itself
+ * rolls back with the rest of the transaction, rather than committing a
+ * "handled" marker for an edit that touched nothing.
+ */
+export async function editDamageReasonOps(
+  db: TmsDb,
+  args: { id: string; code?: string; label?: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean; damageReason: DamageReasonRow | null }> {
+  const code = args.code?.trim()
+  const label = args.label?.trim()
+  if (code === '' || label === '') {
+    throw new OpsClientError('invalid', 'code and label cannot be blank')
+  }
+
+  let damageReason: DamageReasonRow | null = null
+  let ran: boolean
+  try {
+    ran = await db.$transaction(async (tx: Tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE tms_write')
+      return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:damage-reason-edit'), async () => {
+        const updated = await updateDamageReasonWithinTx(tx, args.id, { code, label })
+        if (updated === null) throw new OpsClientError('not-found', 'damage reason not found')
+        damageReason = updated
+        await enqueue(
+          tx,
+          buildAuthzAuditEvent(
+            opsAllow({
+              operation: 'ops:damage-reason-edit',
+              principalId: args.actorId,
+              resourceIds: [args.id],
+              traceId: args.traceId,
+            }),
+          ),
+        )
+      })
+    })
+  } catch (err) {
     if (isRawUniqueViolation(err)) {
       throw new OpsClientError('invalid', 'a damage reason with this code or label already exists')
     }

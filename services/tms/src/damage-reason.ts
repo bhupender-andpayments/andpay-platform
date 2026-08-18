@@ -61,3 +61,27 @@ export async function setDamageReasonActiveWithinTx(tx: Tx, id: string, active: 
     UPDATE damage_reason SET active = ${active}, updated_at = now() WHERE id = ${id}::uuid
   `
 }
+
+/**
+ * Edit a damage reason's code and/or label (18 Aug 2026: the last of the five
+ * Master Data tabs to gain edit; the other four had a route already, this one
+ * did not). COALESCE against the existing row, mirroring editVendorWithinTx's
+ * partial-update shape: either field may be omitted, and an omitted field is
+ * left as it was rather than nulled.
+ */
+export async function updateDamageReasonWithinTx(
+  tx: Tx,
+  id: string,
+  input: { code?: string; label?: string },
+): Promise<DamageReasonRow | null> {
+  const rows = await tx.$queryRaw<DamageReasonDbRow[]>`
+    UPDATE damage_reason
+    SET code = COALESCE(${input.code ?? null}, code),
+        label = COALESCE(${input.label ?? null}, label),
+        updated_at = now()
+    WHERE id = ${id}::uuid
+    RETURNING id, code, label, active, created_at, updated_at
+  `
+  if (rows.length === 0) return null
+  return toDamageReasonDto(rows[0]!)
+}

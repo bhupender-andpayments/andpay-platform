@@ -127,7 +127,7 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 11 shown sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 14 shown sections, no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
@@ -158,7 +158,14 @@ describe('ops-portal app shell + navigation', () => {
     // requirement is not a neutral in-flight state, so the item is restored and
     // the Insights group comes back with it.
     expect([...names].sort()).toEqual(
-      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Queues', 'Reports', 'Uploads'],
+      // Sorted, so this is alphabetical and not the sidebar's own order. Pool
+      // joined on 18 Aug 2026 when the queue moved off the batches page, and
+      // Shipments on 19 Aug 2026 when the carrier view stopped being a tab on
+      // Dispatches: a parcel's page is somewhere an operator arrives holding an
+      // AWB, so leaving it needs a list to return to.
+      // Platform overview joined on 19 Aug 2026: the flow itself, explained, which
+      // is the one thing the console had no page for.
+      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Platform overview', 'Pool', 'Queues', 'Reports', 'Shipments', 'Uploads'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })

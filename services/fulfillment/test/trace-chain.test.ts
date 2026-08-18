@@ -3,7 +3,7 @@ import { newId, toUuid, fromUuid } from '@andpay/ids'
 import type { LeanClaim } from '@andpay/authz'
 import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
-import { consumeBatchFact } from '../src/dispatch.js'
+import { consumeBatchFact, sendBatchToVendorWithinTx } from '../src/dispatch.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 import { ingestReturnSheet, type ReturnSheet } from '../src/return-sheet.js'
 import { batchFactEnvelope } from '../src/events.js'
@@ -162,6 +162,17 @@ describe('end-to-end trace chain (check 9): the consumed batch fact trace_id pro
     const dispatchRes = await consumeBatchFact(db, env, assetStore)
     expect(dispatchRes.deduped).toBe(false)
     expect(dispatchRes.composed).toBe(4) // 2 entries x (SOUNDBOX_IMG + STANDEE_IMG)
+
+    // (1b) the operator's send (18 Aug 2026, decision D4). It used to run inside
+    // consumeBatchFact, so the SENT_TO_VENDOR fact appeared without anybody
+    // asking. It is now its own action, and it is handed the SAME trace as the
+    // batch fact: the chain this test guards is a trace flowing through every
+    // emitted fact, and an operator action in the middle must not break it.
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+      await tx.$queryRaw`SELECT set_config('app.program_id', ${programUuid}, true)`
+      await sendBatchToVendorWithinTx(tx, { btchId: btchWire, btchUuid, programUuid, traceId: TRACE })
+    })
 
     // (2) ingestReturnSheet: pairs both devices to their asgn's PRINT vendor
     // return sheet. The snapshot trace_id (seeded as 'trace-116' above) is what

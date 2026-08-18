@@ -108,6 +108,10 @@ export type TileName = keyof TileSet
 
 /** The six FR-10 reports (services/analytics/src/mediation.ts ReportName). */
 export type ReportName =
+  // Every dispatch leg from the moment it is minted (D12, 18 Aug 2026). The
+  // Dispatches page reads this; soundbox-delivery stays for the Command Center,
+  // which genuinely wants the delivery-only view.
+  | 'dispatches'
   | 'soundbox-delivery'
   | 'activation'
   | 'damaged-replacement'
@@ -461,12 +465,18 @@ export function getVendors(c: Client) {
 /** services/fulfillment/src/ops-read.ts BatchRow. */
 export interface BatchRow {
   id: string
-  // NO `status`. It was declared here and the server stopped sending it: the
-  // 2026-08-10 ruling dropped batch.status ("derive a batch's state from its
-  // children, never store a second copy") and corrected
-  // services/fulfillment/src/ops-read.ts, whose BatchRow projects no such column.
-  // This copy outlived it and made RecentBatches render an empty pill in the real
-  // app. Do not add a stage or status here without a read that can answer it.
+  /**
+   * The batch lifecycle: BATCHED, SENT_TO_PRINT_VENDOR, CLOSED.
+   *
+   * This field was once declared here with no read behind it, which made
+   * RecentBatches render an empty pill, and the standing instruction was not to
+   * add a status without a read that can answer it. As of 18 Aug 2026 there is
+   * one: batch.status is stored again, written by exactly three named writers
+   * (the batching trigger, the ops send-to-vendor action, the ops close
+   * action), and ops-read.ts BatchRow projects it. Mirrors BATCH_STATUSES in
+   * services/fulfillment/src/batch-status.ts.
+   */
+  status: string
   triggerReason: string
   unitCount: number
   printVndr: string | null
@@ -496,6 +506,16 @@ export interface BatchEntryRow {
   // combined row; 'SOUNDBOX' / 'COLLATERAL' otherwise. See
   // services/fulfillment/src/package.ts excelLinesFor for what this decides.
   dispatchGroup: string | null
+  /**
+   * The merchant REQUEST this dispatch came from ({file_id}|{row_no}). Both
+   * dispatch groups minted from one bank row share it, so it is what groups a
+   * soundbox and its collateral back into the one request an operator made.
+   * The server's minimum-lot gate counts DISTINCT source_event_id, so counting
+   * requests here is counting the same unit the server decides on.
+   *
+   * Optional so an older server that predates the projection still parses.
+   */
+  sourceEventId?: string
 }
 
 /** services/fulfillment/src/ops-read.ts PoolEntryRow. */
@@ -528,6 +548,26 @@ export interface BatchArtifactRow {
   labelDisplayName: string
 }
 
+/**
+ * services/fulfillment/src/ops-read.ts BatchSettlement: how far a batch's
+ * dispatches have finished travelling, and therefore whether it can be closed.
+ * A dispatch settles at DELIVERED, RETURNED, or its device DAMAGED.
+ */
+export interface BatchSettlement {
+  total: number
+  delivered: number
+  returned: number
+  pending: number
+  settled: boolean
+  /**
+   * The same verdict per dispatch, keyed by wire asgn id, so the batch's own
+   * dispatch table can mark which rows are holding the batch open instead of
+   * making an operator subtract one count from another. Optional so an older
+   * server that predates the projection still parses.
+   */
+  perDispatch?: Record<string, 'DELIVERED' | 'RETURNED' | 'PENDING'>
+}
+
 /** services/fulfillment/src/ops-read.ts BatchDetailView. */
 export interface BatchDetailView {
   batch: BatchRow
@@ -536,6 +576,11 @@ export interface BatchDetailView {
   // W-6 (Task 14): the BOUND print vendor's press layout, ONE_PER_PAGE or
   // GRID_3X2, defaulting to ONE_PER_PAGE when the batch has no bound vendor.
   printLayout: string
+  /**
+   * Whether this batch can be closed, and what it is still waiting for (D5).
+   * Optional so an older server that predates the read still parses.
+   */
+  settlement?: BatchSettlement
 }
 
 /** services/fulfillment/src/ops-read.ts DispatchRow (PII-free by construction). */
@@ -874,6 +919,26 @@ export function createVendor(c: Client, body: VendorCreateBody, idempotencyKey: 
   })
 }
 
+/**
+ * apps/ops-edge/src/ops.controller.ts VendorEditBody (18 Aug 2026). The route
+ * existed and was wired end to end before any Master Data tab called it;
+ * every field is a partial update, an omitted one left as it was.
+ */
+export interface VendorEditBody {
+  displayName?: string
+  courierCode?: string
+  integrationMode?: 'WEBHOOK' | 'BATCH'
+}
+
+export function editVendor(c: Client, vndrId: string, body: VendorEditBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean }>({
+    method: 'POST',
+    path: `/ops/vendors/${encodeURIComponent(vndrId)}/edit`,
+    body,
+    idempotencyKey,
+  })
+}
+
 /** apps/ops-edge/src/ops.controller.ts BankMasterCreateBody (BRD Annexure D.1). */
 export interface BankMasterCreateBody {
   /**
@@ -905,6 +970,35 @@ export function createBankMaster(c: Client, body: BankMasterCreateBody, idempote
   })
 }
 
+/**
+ * apps/ops-edge/src/ops.controller.ts BankMasterEditBody (18 Aug 2026).
+ * `bankReferenceCode` is deliberately ABSENT: it is the immutable ingest
+ * resolver key (see the doc comment on BankMasterCreateBody above) and the
+ * edit route never accepts it.
+ */
+export interface BankMasterEditBody {
+  displayName?: string
+  address1?: string
+  address2?: string
+  address3?: string
+  city?: string
+  district?: string
+  country?: string
+  pin?: string
+  mobile?: string
+  email?: string
+  status?: string
+}
+
+export function editBankMaster(c: Client, tnntId: string, body: BankMasterEditBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; changedFields: string[] }>({
+    method: 'POST',
+    path: `/ops/bank-masters/${encodeURIComponent(tnntId)}/edit`,
+    body,
+    idempotencyKey,
+  })
+}
+
 /** apps/ops-edge/src/ops.controller.ts DamageReasonCreateBody (BRD FR-08). */
 export interface DamageReasonCreateBody {
   /** A stable machine identifier, never derived from the label. */
@@ -919,6 +1013,21 @@ export function createDamageReason(c: Client, body: DamageReasonCreateBody, idem
   return c.request<{ deduped: boolean; damageReason: DamageReasonRow | null }>({
     method: 'POST',
     path: '/ops/damage-reasons',
+    body,
+    idempotencyKey,
+  })
+}
+
+/** apps/ops-edge/src/ops.controller.ts DamageReasonEditBody (18 Aug 2026). */
+export interface DamageReasonEditBody {
+  code?: string
+  label?: string
+}
+
+export function editDamageReason(c: Client, id: string, body: DamageReasonEditBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; damageReason: DamageReasonRow | null }>({
+    method: 'POST',
+    path: `/ops/damage-reasons/${encodeURIComponent(id)}/edit`,
     body,
     idempotencyKey,
   })
@@ -1167,6 +1276,34 @@ export function deviceInventoryStructuralReasons(err: unknown): DeviceInventoryS
   return out
 }
 
+/**
+ * The reason code on a 409, or null when the refusal carried none.
+ *
+ * The sibling of deviceInventoryStructuralReasons above, for the other status
+ * the edge lets a closed reason code cross on (added 19 Aug 2026). A conflict is
+ * the status where the operator's next move depends entirely on WHICH rule
+ * refused, and the domain message never crosses the boundary by design (S4/5c),
+ * so without this every conflict read as the same generic sentence.
+ *
+ * Returns the FIRST code only: a lifecycle action is refused by one rule at a
+ * time, unlike an upload whose sheet can fail several structural checks at once.
+ * Any other failure returns null so the caller falls back to its own wording and
+ * a conflict is never confused with an unrelated error.
+ */
+export function conflictReasonCode(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null
+  const body = err.body
+  if (typeof body !== 'object' || body === null) return null
+  const raw = (body as { reasons?: unknown }).reasons
+  if (!Array.isArray(raw)) return null
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const { code } = item as { code?: unknown }
+    if (typeof code === 'string' && code !== '') return code
+  }
+  return null
+}
+
 // The 5 MB multipart cap the ops-edge FileInterceptor enforces
 // (apps/ops-edge/src/deps.ts MAX_UPLOAD_BYTES). Checked client-side against
 // File.size BEFORE any network call, so an oversized file never posts.
@@ -1272,7 +1409,15 @@ export interface ReturnPreviewResult {
 
 export interface ReturnCommitResult {
   /** Whole-file refusals. Absent on a (possibly partial) accept. */
-  rejected?: 'schema_invalid' | 'no_resolvable_dispatch' | 'mixed_vendors' | 'batch_has_no_vendor'
+  rejected?:
+    | 'schema_invalid'
+    | 'no_resolvable_dispatch'
+    | 'mixed_vendors'
+    | 'batch_has_no_vendor'
+    // Sent WITH a batchId and at least one row belongs to another batch, or to
+    // no batch at all. Mirrors OpsReturnRejection in
+    // services/fulfillment/src/return-sheet.ts.
+    | 'foreign_dispatch'
   /** The print vendor the sheet resolved to, once resolution succeeded. */
   vndrId?: string
   pairedUnitIds: string[]
@@ -1287,8 +1432,34 @@ export function previewReturnUpload(c: Client, file: File): Promise<ReturnPrevie
   return postFile<ReturnPreviewResult>(c, '/ops/uploads/return/preview', file)
 }
 
-export function commitReturnUpload(c: Client, file: File, idempotencyKey: string): Promise<ReturnCommitResult> {
-  return postFile<ReturnCommitResult>(c, '/ops/uploads/return', file, idempotencyKey)
+/**
+ * Commit a print-vendor return sheet.
+ *
+ * `batchId` is sent when the operator uploaded from a BATCH's own return page,
+ * and the server then refuses the whole file if any row's dispatch belongs
+ * elsewhere ('foreign_dispatch'). Omitted from the generic Uploads entry, where
+ * there is no batch in hand.
+ *
+ * It is an intent assertion, not an authorization scope: the caller says which
+ * batch this sheet is about and the server checks the claim against the
+ * dispatches it already resolves for vendor binding. Scope itself still comes
+ * from the principal (M7/S16). Until 19 Aug 2026 this claim was checked ONLY in
+ * the browser, so the page's own promise that a foreign row refuses the sheet
+ * was cosmetic.
+ */
+export function commitReturnUpload(
+  c: Client,
+  file: File,
+  idempotencyKey: string,
+  batchId?: string,
+): Promise<ReturnCommitResult> {
+  return postFile<ReturnCommitResult>(
+    c,
+    '/ops/uploads/return',
+    file,
+    idempotencyKey,
+    batchId === undefined || batchId === '' ? undefined : { batchId },
+  )
 }
 
 /**
@@ -1433,6 +1604,39 @@ export function triggerBatch(c: Client, body: BatchTriggerBody, idempotencyKey: 
   })
 }
 
+/**
+ * Hand a formed batch to its print vendor (D4, 18 Aug 2026). No body: this is
+ * the designed forward step of the batch lifecycle, not an override, so no
+ * reason is owed (contrast triggerBatch and holdRecord above).
+ *
+ * `sent` false with `deduped` true is a replay of the same idempotency key.
+ * The edge answers 409 when the batch has already been sent, when its QR
+ * generation has not finished, or when the print vendor roster does not hold
+ * exactly one active vendor.
+ */
+export function sendBatchToVendor(c: Client, btchId: string, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; sent: boolean }>({
+    method: 'POST',
+    path: `/ops/batches/${encodeURIComponent(btchId)}/send-to-vendor`,
+    idempotencyKey,
+  })
+}
+
+/**
+ * Close a batch whose dispatches have all settled (D5, 18 Aug 2026).
+ *
+ * The edge answers 409 when any dispatch is still in flight, and the message
+ * names how many, so the refusal can be shown as-is. Also 409 when the batch is
+ * already closed.
+ */
+export function closeBatch(c: Client, btchId: string, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; closed: boolean }>({
+    method: 'POST',
+    path: `/ops/batches/${encodeURIComponent(btchId)}/close`,
+    idempotencyKey,
+  })
+}
+
 export interface StatusCorrectionBody {
   status: string
   courierTimestamp: string
@@ -1544,13 +1748,13 @@ export async function downloadDispatchExcel(btchId: string, group: string): Prom
     throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
   }
   const blob = await res.blob()
-  return { blob, filename: filenameFromContentDisposition(res, `dispatch-${group}-${btchId}.xlsx`) }
+  return { blob, filename: filenameFromContentDisposition(res, `${btchId}-dispatch-${group.toLowerCase()}.xlsx`) }
 }
 
 // D-16 (T4.1b): the activation sheet for ONE batch, the file ops sends the CWD.
 //
 // GET /ops/reports/activation/batch/:btchId/xlsx, returning the xlsx media type
-// with `Content-Disposition: attachment; filename="activation-<btchId>.xlsx"`.
+// with `Content-Disposition: attachment; filename="<btchId>-activation.xlsx"`.
 // It is a BINARY body, so it takes the same raw-fetch-with-Bearer path as the
 // two dispatch-package downloads above and for the same recorded reason: the
 // typed `client.request` carries JSON/text only, and client.ts is a SPINE_FILE
@@ -1578,7 +1782,7 @@ export async function downloadActivationSheet(btchId: string): Promise<Downloade
     throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
   }
   const blob = await res.blob()
-  return { blob, filename: filenameFromContentDisposition(res, `activation-${btchId}.xlsx`) }
+  return { blob, filename: filenameFromContentDisposition(res, `${btchId}-activation.xlsx`) }
 }
 
 // 404 (no artifact of that type for the batch) is a real, non-error outcome
@@ -1595,7 +1799,7 @@ export async function downloadCollateral(btchId: string, artifactType: string): 
     throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
   }
   const blob = await res.blob()
-  return { blob, filename: filenameFromContentDisposition(res, `${artifactType}-${btchId}.pdf`) }
+  return { blob, filename: filenameFromContentDisposition(res, `${btchId}-${artifactType.toLowerCase()}.pdf`) }
 }
 
 // -----------------------------------------------------------------------

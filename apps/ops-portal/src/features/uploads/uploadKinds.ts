@@ -178,7 +178,7 @@ export const UPLOAD_KINDS: readonly UploadKind[] = [
       ],
       review: ['Clean rows sit under Ready to add; failing rows under Held for review, each naming its reason.', 'The Add button sits on the ready table.'],
       commit: [
-        'Added rows pool toward the next batch; the batch is what mints Dispatch IDs.',
+        'Added rows land in Pool and count toward the next batch; the batch is what mints Dispatch IDs.',
         'Held rows wait in Queues, where accepting one is what puts it in the pool.',
       ],
     },

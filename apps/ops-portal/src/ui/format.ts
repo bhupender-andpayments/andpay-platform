@@ -16,13 +16,48 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   ALLOCATED: { variant: 'pending', label: 'Allocated' },
   PRINTED: { variant: 'info', label: 'At print vendor' },
   DAMAGED: { variant: 'negative', label: 'Damaged' },
+  // batch lifecycle (BATCH_STATUSES in services/fulfillment/src/batch-status.ts).
+  // BATCHED is 'pending' because it is a batch WAITING on an operator to send
+  // it, which is the one batch state that wants acting on.
+  BATCHED: { variant: 'pending', label: 'Batched' },
+  SENT_TO_PRINT_VENDOR: { variant: 'info', label: 'Sent to print vendor' },
+  // CLOSED is deliberately NOT redeclared here: the damage-case vocabulary
+  // further down already maps it to exactly the neutral Closed pill a closed
+  // batch wants, and two entries for one key is a compile error in this object.
   // pipeline
   RECEIVED: { variant: 'neutral', label: 'Received' },
   POOLED: { variant: 'neutral', label: 'Pooled' },
-  SENT_TO_VENDOR: { variant: 'info', label: 'Sent to vendor' },
+  // PENDING_BATCH is a rung of the BRD 6.2 ladder that no column stores: it is
+  // the position "exists, not batched yet", which the dispatch page derives.
+  // It is here because that page's header pill renders the SAME value its rail
+  // highlights, and a pill with no entry would read as a title-cased fallback
+  // beside a rail that spells the rung properly.
+  PENDING_BATCH: { variant: 'pending', label: 'Pending batch' },
+  // 'Sent to vendor' until 19 Aug 2026. There is exactly one vendor this state
+  // can mean (D-9a: the single ACTIVE PRINT vendor), the BRD calls the rung
+  // "Sent to Print Vendor", and the batch-level SENT_TO_PRINT_VENDOR above
+  // already says so. Two labels for one event on two axes is the disparity the
+  // dispatch page was just fixed for.
+  SENT_TO_VENDOR: { variant: 'info', label: 'Sent to print vendor' },
   DISPATCHED: { variant: 'info', label: 'Dispatched' },
+  // The per-dispatch fulfillment axis (pending_pool_entry.dispatch_state),
+  // added 18 Aug 2026 when the batch page's State column became a pill. Both
+  // fell through to the neutral title-case default before, so a dispatch that
+  // had actually shipped read as unremarkable next to one that had not.
+  // DISPATCHED_BY_VENDOR is also the birth status of a shpt row, so this
+  // colours the Shipments table's Status cell too, consistently.
+  QR_GENERATED: { variant: 'pending', label: 'QR generated' },
+  DISPATCHED_BY_VENDOR: { variant: 'info', label: 'Dispatched by vendor' },
   DELIVERED: { variant: 'positive', label: 'Delivered' },
   ACTIVATED: { variant: 'positive', label: 'Activated' },
+  // NOT_ACTIVATED IS NOT A BACKEND VALUE. Activation is a timestamp axis, not an
+  // enum (unit.activated_at, D-16), so its negative has no token to arrive as.
+  // It is here because the device page renders the axis as a PILL PAIR beside the
+  // status pill (19 Aug 2026), and a pill needs a variant and a label. The
+  // inventory table's Activation column keeps its muted "not activated" text
+  // instead: in a list of twenty devices, most of them legitimately in stock,
+  // twenty red pills would read as twenty faults.
+  NOT_ACTIVATED: { variant: 'negative', label: 'Not activated' },
   // courier
   PICKED_UP: { variant: 'info', label: 'Picked up' },
   IN_TRANSIT: { variant: 'info', label: 'In transit' },

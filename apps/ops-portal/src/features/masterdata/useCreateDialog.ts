@@ -13,16 +13,30 @@ import { useEffect, useState } from 'react'
 // still yields a string, and an empty numeric field must be distinguishable
 // from a zero, which `Number('')` is not. Each dialog converts at the edge,
 // where it also validates.
-export function useCreateDialog(open: boolean) {
+/**
+ * `seed`, added 18 Aug 2026 so the same hook serves edit dialogs too: an edit
+ * opens with the row's own values rather than a blank form. Read only at the
+ * moment `open` flips true (not a dependency of the effect), the same
+ * deliberate choice `UnitStatusEditDialog` makes for its own re-seeding: a
+ * function identity that changes every render must not retrigger the reset
+ * while the dialog is sitting open and being typed into.
+ */
+export function useCreateDialog(open: boolean, seed?: () => Record<string, string>) {
   const [form, setForm] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Reset on every open so an abandoned draft never pre-fills the next one.
+  // Reset on every open so an abandoned draft never pre-fills the next one,
+  // UNLESS a seed says otherwise (the edit case: the row's OWN values are the
+  // correct starting draft, not a blank one).
   useEffect(() => {
     if (!open) return
-    setForm({})
+    setForm(seed?.() ?? {})
     setError(null)
+    // `seed` is deliberately NOT a dependency: a caller typically passes a
+    // fresh closure every render, and this effect must fire only on the
+    // open-flip, never because that closure's identity happened to change
+    // while the dialog sits open being typed into.
   }, [open])
 
   const f = (key: string): string => form[key] ?? ''

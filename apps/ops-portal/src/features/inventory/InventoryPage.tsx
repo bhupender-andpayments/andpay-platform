@@ -21,7 +21,6 @@ import { buildSampleInventoryFile, SAMPLE_ROW_COUNT } from './sampleInventory.js
 import { saveBlob } from '../../lib/saveBlob.js'
 import { fmtDate, fmtDateTime } from '../../ui/format.js'
 import { useToast } from '../../ui/Toast.js'
-import { usePagePoll } from '../../lib/usePagePoll.js'
 import { cn } from '@/lib/utils'
 
 // The inventory workspace (BRD Workflow 3, FR-01a): the device pool, owned end
@@ -143,30 +142,30 @@ export function InventoryPage() {
   const anyFilter =
     statusSel.length > 0 || mfrSel.length > 0 || q !== '' || from !== '' || to !== '' || srcSel !== '' || actOnly
 
-  // Three moods, not two. 'initial' owns the skeletons, 'refresh' paints the
-  // grid's "Updating..." pill for a re-read the operator asked for, and
-  // 'quiet' is the background poll below: it touches neither flag and keeps
-  // its errors to itself, because a pill blinking every eight seconds, or an
-  // error banner replacing a working page because tick 12 hit a blip, is
-  // worse than no poll at all.
+  // Two moods. 'initial' owns the skeletons; 'refresh' paints the grid's
+  // "Updating..." pill for a re-read the page triggers itself (a write this
+  // page just made, e.g. an upload committing). There used to be a third,
+  // 'quiet', for a background poll; the poll was removed (18 Aug 2026, at the
+  // user's explicit correction that a page must not keep re-reading its own
+  // endpoint on a timer), and this page never grew its own Refresh button
+  // (removed 2026-08-13: a browser reload already does this), so nothing
+  // calls 'quiet' any more.
   const load = useCallback(
-    async (mode: 'initial' | 'refresh' | 'quiet' = 'initial'): Promise<void> => {
+    async (mode: 'initial' | 'refresh' = 'initial'): Promise<void> => {
       if (mode === 'refresh') setRefreshing(true)
-      else if (mode === 'initial') setLoading(true)
-      if (mode !== 'quiet') setLoadError(null)
+      else setLoading(true)
+      setLoadError(null)
       try {
         const devices = await getDevices(client)
         // Non-array guard, the lesson this page already carries: an error
         // envelope reaching the grid takes the whole screen down.
         setRows(Array.isArray(devices) ? devices : [])
-        if (!Array.isArray(devices) && mode !== 'quiet') setLoadError('Could not read the device list.')
+        if (!Array.isArray(devices)) setLoadError('Could not read the device list.')
       } catch (err) {
-        if (mode !== 'quiet') setLoadError(err instanceof Error ? err.message : 'Failed to load the device inventory.')
+        setLoadError(err instanceof Error ? err.message : 'Failed to load the device inventory.')
       } finally {
-        if (mode !== 'quiet') {
-          setLoading(false)
-          setRefreshing(false)
-        }
+        setLoading(false)
+        setRefreshing(false)
       }
     },
     [client],
@@ -175,14 +174,6 @@ export function InventoryPage() {
   useEffect(() => {
     void load()
   }, [load])
-
-  // Device writes land synchronously (the upload commits fulfillment rows in
-  // the ops-edge request), so the mount fetch above already shows a fresh
-  // upload. What this adds is the page KEEPING UP afterwards: stock corrected
-  // from another tab, a return sheet pairing devices, an operator coming back
-  // to a Batches-era background tab. Same cadence as /batches, same hook, so
-  // the two pages cannot drift on what "live" means.
-  usePagePoll(() => void load('quiet'))
 
   // The three name/flag lookups are silent on failure: ids still render, which
   // is what this screen would have shown anyway. They must never error over

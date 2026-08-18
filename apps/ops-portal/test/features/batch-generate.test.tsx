@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -17,6 +17,7 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
 const BATCH: BatchRow = {
   id: 'btch_50000000008008000000000009',
+  status: 'BATCHED',
   triggerReason: 'MANUAL',
   unitCount: 2,
   printVndr: null,
@@ -95,12 +96,23 @@ describe('The batch page lists its dispatches', () => {
 
     expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
     // The three ordered quantities are each their own column, so they can be
-    // scanned and sorted rather than read out of one sentence.
-    for (const header of ['Dispatch ID', 'Soundbox', 'Standee', 'Sticker']) {
+    // scanned and sorted rather than read out of one sentence. Bank and Branch
+    // are two columns as of 18 Aug 2026, for the same reason: they used to be
+    // one "3 / 30" cell that could be sorted by neither half.
+    for (const header of ['Dispatch ID', 'Bank', 'Branch', 'Soundbox', 'Standee', 'Sticker']) {
       expect(screen.getByRole('columnheader', { name: header })).toBeTruthy()
     }
-    expect(screen.getByText('3')).toBeTruthy()
-    expect(screen.getByText('4')).toBeTruthy()
+    const row = screen.getByText('BRILLIANT PERFUME').closest('tr')!
+    // The fixture's bank code and standee count are BOTH '3', so this asserts
+    // per cell rather than by page-wide text: a single getByText('3') would be
+    // ambiguous and would pass for the wrong reason.
+    const cells = within(row).getAllByRole('cell')
+    const text = cells.map((c) => c.textContent)
+    expect(text).toContain('3') // bank code, and separately the standee count
+    expect(text).toContain('30') // branch, no longer glued to the bank
+    expect(text).toContain('4') // stickers
+    // The combined form is gone.
+    expect(within(row).queryByText('3 / 30')).toBeNull()
   })
 
   it('lists a dispatch whose card has not composed, with its preview disabled rather than missing', async () => {
@@ -168,6 +180,45 @@ describe('The batch page previews one dispatch QR on demand', () => {
     // bank's file.
     expect(dialog.textContent).toContain('brilliant@hdfcbank')
     expect(dialog.textContent).toContain('upi://pay?pa=')
+  })
+
+  // 19 Aug 2026: HOW FAR THROUGH THE VENDOR IS.
+  //
+  // A batch reads "Sent to print vendor" from the moment it is sent until every
+  // dispatch settles, which is most of its life and says nothing about progress.
+  // The vendor ships what is ready and sends the rest later, and nowhere else
+  // surfaces that: the Activation worklist DROPS an unpaired dispatch (no device,
+  // nothing to activate), so activating 4 of 5 gives no signal that a 5th is
+  // still awaited. Counted off dispatch_state, the same column the State cells
+  // render, so the pill and the rows cannot disagree.
+  it('shows how many dispatches the vendor has shipped, once the batch has been sent', async () => {
+    stub({
+      batch: { ...BATCH, status: 'SENT_TO_PRINT_VENDOR' },
+      entries: [
+        entry({ asgnId: 'asgn_a', dispatchState: 'DISPATCHED_BY_VENDOR' }),
+        entry({ asgnId: 'asgn_b', dispatchState: 'DISPATCHED_BY_VENDOR' }),
+        entry({ asgnId: 'asgn_c', dispatchState: 'SENT_TO_VENDOR' }),
+      ],
+      artifacts: [artifact()],
+      printLayout: 'ONE_PER_PAGE',
+    })
+    renderPage()
+
+    // The count is split across <span class="num"> elements so the digits get the
+    // tabular font, so the assertion reads the whole cell rather than one node.
+    const label = await screen.findByText('Shipped by vendor')
+    const cell = label.parentElement!
+    expect(cell.textContent?.replace(/\s+/g, ' ')).toContain('2 of 3 dispatched')
+  })
+
+  it('says nothing about vendor progress before the batch has been sent', async () => {
+    // 0 of N on a batch nobody has sent yet reads as a fault rather than a
+    // not-yet, so the pill is absent until there is progress to report.
+    stub({ batch: BATCH, entries: [entry()], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' })
+    renderPage()
+
+    await screen.findByText('BRILLIANT PERFUME')
+    expect(screen.queryByText('Shipped by vendor')).toBeNull()
   })
 
   it('offers the card-type switch only when the dispatch really has both cards', async () => {

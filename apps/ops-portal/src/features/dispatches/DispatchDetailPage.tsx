@@ -4,16 +4,14 @@ import {
   AlertTriangle,
   Boxes,
   Building2,
-  Hourglass,
-  Inbox,
   Landmark,
   Package,
   PackageCheck,
-  Printer,
   QrCode,
-  Route,
+  Repeat,
   Smartphone,
   Store,
+  Pencil,
   Truck,
   Undo2,
 } from 'lucide-react'
@@ -21,11 +19,13 @@ import { useAuth } from '../../auth/AuthContext.js'
 import {
   flagDamage,
   getBatchDetail,
+  getDamageCases,
   getDamageReasons,
   getDevices,
   getDispatchDetail,
   getPoolEntries,
   type BatchEntryRow,
+  type DamageCaseRow,
   type DamageReasonRow,
   type DispatchDetailView,
   type UnitInventoryRow,
@@ -48,6 +48,14 @@ import {
   CodeChip,
 } from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
+import { DispatchStatusEditDialog } from './DispatchStatusEditDialog.js'
+import {
+  COURIER_RUNG,
+  DISPATCH_LADDER,
+  FIRST_COURIER_RUNG,
+  isOffLadder,
+  rungOf,
+} from './dispatchStatus.js'
 import { BackLink, FactRow, NoValue, SectionHeading } from '../../ui/DetailFacts.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import { DispatchGroupBadge } from '../fulfillment/DispatchGroupBadge.js'
@@ -77,6 +85,14 @@ import { fmtDateTime, statusMeta } from '../../ui/format.js'
 // is the POSITION SUMMARY; the per-event courier trail with its two clocks
 // (S22: reported by the courier vs recorded by us), source channels and
 // override reasons lives on the shipment page, one click away through the AWB.
+//
+// ONE STATUS CONTROL, and it is Change status on the rail's own card (19 Aug
+// 2026). It routes each rung to that rung's real owner, because no per-dispatch
+// status route exists: the batch's send-to-vendor action, or the shipment's
+// courier correction. See DispatchStatusEditDialog.tsx for the full mapping.
+// Record courier update was ALSO offered here under decision D11 and has been
+// removed: it wrote the same courier status this page's own control writes, so
+// the page asked the operator to choose between two doors to one room.
 //
 // WHERE EVERY STAGE'S TIME COMES FROM, and where none exists. The courier legs
 // are genuine append-only events, so they carry real instants. Everything
@@ -108,6 +124,40 @@ export function DispatchDetailPage() {
   const [batchFormedAt, setBatchFormedAt] = useState<string | null>(null)
   const [labelQr, setLabelQr] = useState<string | null>(null)
   const [deviceIdBySerial, setDeviceIdBySerial] = useState<ReadonlyMap<string, string>>(new Map())
+
+  // D-26/D-24: neither direction of the damage overlay is on the analytics
+  // read (case_status/replacement_of/billable are TMS-local and deliberately
+  // never projected, same reason readDamageCases documents), so this page
+  // enriches from GET /ops/damage-cases exactly like InventoryPage already
+  // does for the "Replacement" device pill. includeClosed=true because a
+  // dispatch's OWN identity as a replacement never stops being true, even
+  // after its case closes; only the "flag new damage" gate below cares about
+  // Closed vs live.
+  const [damageCases, setDamageCases] = useState<DamageCaseRow[]>([])
+  const loadDamageCases = useCallback(async () => {
+    try {
+      const rows = await getDamageCases(client, true)
+      if (Array.isArray(rows)) setDamageCases(rows)
+    } catch {
+      // Silent, matching every other enrichment fetch on this page: the
+      // dispatch itself still renders from the analytics read alone.
+    }
+  }, [client])
+  useEffect(() => {
+    void loadDamageCases()
+  }, [loadDamageCases])
+
+  // This dispatch AS THE ORIGINAL: a live (non-Closed) case naming it is what
+  // gates the "Flag damage" button, mirroring the server's own DP-3 rule.
+  const openCaseAsOriginal = useMemo(
+    () => damageCases.find((c) => c.replacementOf === asgnId && c.caseStatus !== 'Closed') ?? null,
+    [damageCases, asgnId],
+  )
+  // This dispatch AS THE REPLACEMENT: a case whose OWN asgnId is this
+  // dispatch. Unlike above, this is checked regardless of case status: being
+  // born from a damage case is a permanent fact about this dispatch, not a
+  // live-state gate.
+  const caseAsReplacement = useMemo(() => damageCases.find((c) => c.asgnId === asgnId) ?? null, [damageCases, asgnId])
 
   const load = useCallback(async () => {
     if (asgnId === undefined) return
@@ -192,6 +242,39 @@ export function DispatchDetailPage() {
     [detail, entry, batchFormedAt],
   )
 
+  // WHERE THIS DISPATCH IS, as one value, taken OUT OF THE RAIL rather than
+  // computed a second time. The header pill used to render `courierStatus`,
+  // which is null until a courier reports something, so every dispatch before
+  // its first scan showed a bare "-" beside a rail that knew the answer
+  // perfectly well. Reading the rail's own highlighted stage means the pill and
+  // the rail are the same fact rendered twice and cannot drift.
+  //
+  // The terminal stop wins when there is one, because that is where the parcel
+  // actually is; it is last in the array, so a plain findLast over both states
+  // picks it up without special-casing.
+  const currentStage = useMemo(
+    () => [...rail].reverse().find((s) => s.state === 'current') ?? rail.at(-1) ?? null,
+    [rail],
+  )
+  /**
+   * The ladder index the rail is highlighting.
+   *
+   * A terminal stop (failed, returned) carries no rung of its own, and it only
+   * ever appears with a courier trail behind it, so its position is the furthest
+   * LADDER rung the rail marked reached. Returning -1 there would have hidden the
+   * damage card from exactly the parcels most likely to need it: an RTO is
+   * usually an RTO because something was wrong with the parcel.
+   */
+  const currentRung = useMemo(() => {
+    const onLadder = DISPATCH_LADDER.findIndex((r) => r.key === currentStage?.key)
+    if (onLadder !== -1) return onLadder
+    return rail.reduce(
+      (max, stage, i) => (i < DISPATCH_LADDER.length && stage.state === 'reached' ? i : max),
+      FIRST_COURIER_RUNG,
+    )
+  }, [currentStage, rail])
+  const [changingStatus, setChangingStatus] = useState(false)
+
   // D-26: damage is flagged HERE, on the dispatch it happened to, now that
   // the damage-file upload is gone (D-25). The operator names the reason from
   // the master (code stored, label shown, DP-5), writes the why into remarks,
@@ -208,6 +291,14 @@ export function DispatchDetailPage() {
   const [flagBusy, setFlagBusy] = useState(false)
   const [flagError, setFlagError] = useState<string | null>(null)
   const [flagged, setFlagged] = useState<{ childAsgnId: string } | null>(null)
+
+  // The button-suppressing note used to come ONLY from `flagged`, set purely
+  // in-memory right after a successful flag in THIS tab: reload the page, or
+  // arrive here fresh, and it read as never-flagged even with a live case
+  // open, which is the bug the user hit. `flagged` still wins immediately
+  // after a submit (no round trip lag); `openCaseAsOriginal` is what makes the
+  // note survive a reload.
+  const flaggedDisplay = flagged ?? (openCaseAsOriginal !== null ? { childAsgnId: openCaseAsOriginal.asgnId } : null)
 
   // The master is read when the dialog first opens, not on page mount: most
   // visits to this page never flag anything.
@@ -251,7 +342,7 @@ export function DispatchDetailPage() {
       )
       setFlagged({ childAsgnId: res.childAsgnId })
       setFlagOpen(false)
-      await load()
+      await Promise.all([load(), loadDamageCases()])
     } catch (e) {
       // DP-3: one live case per dispatch. The 409 is that rule answering, so
       // it gets its own sentence rather than the generic conflict wording.
@@ -292,7 +383,7 @@ export function DispatchDetailPage() {
           </p>
         </div>
         <div className="ml-auto flex items-center gap-3">
-          <StatusPill value={detail.courierStatus ?? ''} />
+          <StatusPill value={currentStage?.key ?? ''} />
           <WatermarkBadge watermark={detail.watermark.asOf} />
         </div>
       </div>
@@ -301,11 +392,20 @@ export function DispatchDetailPage() {
           grammar as the device page. */}
       <Card>
         <CardBody>
-          <div className="pb-5">
-            <h2 className="text-base font-medium">Dispatch lifecycle</h2>
-            <p className="text-[12.5px] text-muted-foreground">
-              The BRD delivery ladder, Received through Delivered. The AWB below opens the full courier trail.
-            </p>
+          {/* The status control sits in this card's TOP-RIGHT, on the card that
+              SHOWS the status (19 Aug 2026, at the user's direction). Same
+              placement rule as every other card here, and the same dialog
+              grammar as the device editor. */}
+          <div className="flex items-start justify-between gap-3 pb-5">
+            <div>
+              <h2 className="text-base font-medium">Dispatch lifecycle</h2>
+              <p className="text-[12.5px] text-muted-foreground">
+                The BRD delivery ladder, Received through Delivered. The AWB below opens the full courier trail.
+              </p>
+            </div>
+            <Button variant="secondary" size="sm" onClick={() => setChangingStatus(true)}>
+              <Pencil className="mr-1.5 size-3.5" aria-hidden="true" /> Change status
+            </Button>
           </div>
           <LifecycleRail stages={rail} />
         </CardBody>
@@ -338,6 +438,22 @@ export function DispatchDetailPage() {
 
         <Card>
           <CardBody>
+            {/* NO ACTION IN THIS HEADER, as of 19 Aug 2026.
+
+                A pencil here opened Record courier update, and it went through
+                two placements before being removed outright: inline after the
+                AWB value (read as "edit this AWB"), then this card's top-right.
+                Placement was never the problem. THE ACTION DID NOT BELONG ON
+                THIS PAGE AT ALL, and once Change status landed on the lifecycle
+                card above, this page offered the SAME courier write from two
+                controls, one of them an unlabelled pencil.
+
+                The division now: this page changes the DISPATCH's status
+                (Change status, on the card that draws it), and the SHIPMENT page
+                owns the courier axis in full, reached by clicking the AWB below.
+                That page is also where the fine-grained scans live, PICKED_UP and
+                OUT_FOR_DELIVERY, which the BRD ladder here folds onto their
+                neighbouring rungs and so cannot offer. One axis, one owner. */}
             <SectionHeading>Fulfilment</SectionHeading>
             <FactRow icon={Package} label="Batch">
               {detail.batchId === null ? (
@@ -354,7 +470,17 @@ export function DispatchDetailPage() {
               ) : detail.shptId === null ? (
                 <span className="num">{detail.awb}</span>
               ) : (
-                <Link className="num underline underline-offset-2" to={`/dispatches/shipment/${detail.shptId}`}>
+                // THE LINK IS THE COURIER SURFACE NOW. Decision D11 brought
+                // Record courier update onto this page on the argument that the
+                // write targets the shipment either way, so only the button had
+                // moved. That was true and still is, and it was reverted anyway
+                // (19 Aug 2026, at the user's direction): a dispatch's courier
+                // status is DERIVED from its shipment, the shipment page owns
+                // that axis with its full event history and both clocks, and one
+                // page offering the identical write from an unlabelled pencil
+                // beside a Change status button is a choice with no meaning
+                // behind it. Clicking the AWB is the whole affordance.
+                <Link className="num underline underline-offset-2" to={`/shipments/${detail.shptId}`}>
                   {detail.awb}
                 </Link>
               )}
@@ -393,16 +519,63 @@ export function DispatchDetailPage() {
         {/* D-26: the damage flag lives on the dispatch it happened to. Legacy
             combined rows (null group) predate the leg split the flag's count
             rules key on (DP-2), so they get no flag control rather than a
-            write the server holds no rule for. */}
-        {detail.dispatchGroup !== null && (
+            write the server holds no rule for.
+
+            AND NOT UNTIL THE VENDOR HAS SHIPPED IT (19 Aug 2026, at the user's
+            direction). A parcel that has not left the print vendor cannot have
+            been damaged in the field, so offering the flag on a dispatch still at
+            QR generated invites a case against nothing. The gate is the first
+            courier rung, so Dispatched by vendor, In transit, Delivered and both
+            terminal stops all keep it.
+
+            THE ROUTE IS NOT GATED, and that is deliberate rather than an
+            oversight worth "fixing" here. flagDamageOps (services/tms/src/
+            flag-damage.ts) checks that the dispatch exists, the leg's group, the
+            reason and the counts, and no delivery-state rule appears in D-26,
+            D-27 or D-28. So this is a UI policy over a route that would still
+            accept the write, and making it an invariant is an architecture-chat
+            question, not a portal edit. */}
+        {/* This dispatch AS THE REPLACEMENT: the same fact Inventory's amber
+            "Replacement" pill shows for the device that lands here, now shown
+            on the dispatch itself, which had nothing at all before. Shown
+            regardless of case status or courier rung: being a replacement is
+            where this dispatch came from, not where it is now.
+
+            AMBER, not the neutral card every other section on this page uses
+            (19 Aug 2026, at the user's direction): a fact this consequential
+            read as background noise next to REQUEST/FULFILMENT, so it gets the
+            same amber tone as Inventory's own "Replacement" pill instead of a
+            new colour invented for this one card. */}
+        {caseAsReplacement !== null && (
+          <Card className="border-amber-300 bg-amber-500/[0.06] dark:border-amber-800 dark:bg-amber-500/10">
+            <CardBody>
+              <div className="flex items-center gap-1.5 pb-1">
+                <Repeat className="h-4 w-4 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                  Replacement
+                </p>
+              </div>
+              <p className="text-[13px] text-foreground/90">
+                Non-billable replacement for{' '}
+                <Link className="underline underline-offset-2" to={`/dispatches/${caseAsReplacement.replacementOf}`}>
+                  <CodeChip>{caseAsReplacement.replacementOf}</CodeChip>
+                </Link>
+                , raised over {caseAsReplacement.damageReason ?? 'an unspecified reason'}. Case{' '}
+                {caseAsReplacement.caseStatus ?? 'Open'}.
+              </p>
+            </CardBody>
+          </Card>
+        )}
+
+        {detail.dispatchGroup !== null && currentRung >= FIRST_COURIER_RUNG && (
           <Card>
             <CardBody>
               <SectionHeading>Damage</SectionHeading>
-              {flagged !== null ? (
+              {flaggedDisplay !== null ? (
                 <InfoNote>
                   Damage case opened. The replacement dispatch is{' '}
-                  <Link className="underline underline-offset-2" to={`/dispatches/${flagged.childAsgnId}`}>
-                    <CodeChip>{flagged.childAsgnId}</CodeChip>
+                  <Link className="underline underline-offset-2" to={`/dispatches/${flaggedDisplay.childAsgnId}`}>
+                    <CodeChip>{flaggedDisplay.childAsgnId}</CodeChip>
                   </Link>
                   , non-billable, already in the normal pool.
                 </InfoNote>
@@ -423,6 +596,23 @@ export function DispatchDetailPage() {
           </Card>
         )}
       </div>
+
+      {/* Change status, from the lifecycle card's header. It owns no write of its
+          own: it routes each rung to that rung's real owner (the batch's
+          send-to-vendor action, or the shipment's courier correction), because no
+          per-dispatch status route exists. Its own file says which and why. */}
+      <DispatchStatusEditDialog
+        asgnId={detail.dispatchId}
+        merchantDisplay={detail.merchantDisplay}
+        currentKey={currentStage?.key ?? ''}
+        currentRung={currentRung}
+        batchId={detail.batchId}
+        shptId={detail.shptId}
+        courierStatus={detail.courierStatus}
+        open={changingStatus}
+        onOpenChange={setChangingStatus}
+        onSaved={() => void load()}
+      />
 
       <ConfirmDialog
         open={flagOpen}
@@ -527,61 +717,52 @@ function parseCount(raw: string): number | null {
   return /^\d{1,2}$/.test(raw.trim()) ? Number(raw.trim()) : null
 }
 
-/** The BRD 6.2 ladder, as rail rungs. Order IS the lifecycle. */
-const RAIL_LADDER = [
-  { key: 'RECEIVED', label: 'Received', icon: Inbox },
-  { key: 'PENDING_BATCH', label: 'Pending batch', icon: Hourglass },
-  { key: 'QR_GENERATED', label: 'QR generated', icon: QrCode },
-  { key: 'SENT_TO_VENDOR', label: 'Sent to print vendor', icon: Printer },
-  { key: 'DISPATCHED_BY_VENDOR', label: 'Dispatched by vendor', icon: Truck },
-  { key: 'IN_TRANSIT', label: 'In transit', icon: Route },
-  { key: 'DELIVERED', label: 'Delivered', icon: PackageCheck },
-] as const
-
-/** Where a courier status sits on the ladder above. */
-const COURIER_RUNG: Record<string, number> = {
-  DISPATCHED_BY_VENDOR: 4,
-  IN_TRANSIT: 5,
-  DELIVERED: 6,
-}
-
 /**
  * The BRD's ladder with the row's real position on it.
  *
  * The first four rungs are inferred from where the row SITS, because nothing
  * records their transitions: a dispatch that exists was received; one with no
  * batch is still pending a batch; a composed card proves QR generation; a
- * dispatch_state past QR_GENERATED proves the vendor has it. Inferred rungs
+ * dispatch_state of SENT_TO_VENDOR proves the vendor has it. Inferred rungs
  * carry no instant (the pool-exit exception is noted at the top of this file).
  * Courier rungs are dated from the trail's own append-only events, latest
  * event per rung, since a rung can be scanned twice.
  *
+ * THE RETURNED INDEX IS THE RUNG THE DISPATCH IS AT, not the next one, which is
+ * what the renderer below assumes (`i < currentIdx` reached, `i === currentIdx`
+ * current). It did not hold before 19 Aug 2026: the pre-trail branch read
+ * `sentToVendor ? 4 : composed ? 3 : ...`, one past every state, so a dispatch
+ * at QR_GENERATED lit "Sent to print vendor" as its current rung while the
+ * batch page correctly showed QR generated for the same row. `rungOf` in
+ * dispatchStatus.ts is that mapping now, written out by name and shared with the
+ * status editor so the dropdown and the rail cannot disagree about position.
+ *
  * RETURNED is terminal (the parcel came back) and closes the rail in red.
  * FAILED is NOT terminal in the domain - a failed attempt can be re-attempted
  * and still deliver - so it renders as a red stop while Delivered stays ahead
- * of it as a future rung.
+ * of it as a future rung. Those TWO are the whole off-ladder set: the check used
+ * to be "not a key of COURIER_RUNG", and that map was missing PICKED_UP and
+ * OUT_FOR_DELIVERY, so recording either ordinary status drew the parcel as a red
+ * failure with a warning triangle.
  */
 function buildRail(detail: DispatchDetailView, entry: BatchEntryRow | null, batchFormedAt: string | null): RailStage[] {
   const batched = detail.batchId !== null
   const dispatchState = entry?.dispatchState ?? null
-  const composed = dispatchState !== null
-  const sentToVendor = dispatchState === 'SENT_TO_VENDOR' || dispatchState === 'DISPATCHED_BY_VENDOR'
   const trail = detail.deliveryTrail
   const last = trail.at(-1) ?? null
-  const offLadder = last !== null && !(last.status in COURIER_RUNG)
+  const offLadder = last !== null && isOffLadder(last.status)
 
   // The furthest rung the trail proves, which for a FAILED/RETURNED parcel is
   // the furthest ORDINARY rung any of its events reached.
-  const provenByTrail = trail.reduce((max, e) => Math.max(max, COURIER_RUNG[e.status] ?? 4), -1)
+  const provenByTrail = trail.reduce((max, e) => Math.max(max, COURIER_RUNG[e.status] ?? FIRST_COURIER_RUNG), -1)
 
-  const currentIdx =
-    trail.length > 0 ? provenByTrail : sentToVendor ? 4 : composed ? 3 : batched ? 2 : 1
+  const currentIdx = trail.length > 0 ? provenByTrail : batched ? rungOf(dispatchState) : 1
 
   /** The latest real instant the courier reported for one specific rung. */
   const rungTime = (key: string): string | null =>
     trail.reduce<string | null>((latest, e) => (e.status === key ? e.courierTimestamp : latest), null)
 
-  const stages: RailStage[] = RAIL_LADDER.map((rung, i) => ({
+  const stages: RailStage[] = DISPATCH_LADDER.map((rung, i) => ({
     key: rung.key,
     label: rung.label,
     icon: rung.icon,

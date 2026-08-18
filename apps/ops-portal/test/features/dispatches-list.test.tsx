@@ -10,11 +10,16 @@ import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 // the filter, filters in a toolbar above the grid rather than buried in the card,
 // and rows that open the dispatch they name.
 
+// pipelineState arrived with the D12 read: the page now shows every dispatch
+// from the moment it is minted, so a fixture row without a stage would be
+// testing the page against data the server no longer sends. DELTA DEPOT is the
+// pre-vendor row that the old "awaiting vendor" tile claimed to count and
+// structurally never could.
 const ROWS = [
-  { dispatchId: 'asgn_transit', merchantDisplay: 'ALPHA STORE', bankCode: '3', awb: 'AWB1', shptId: 'shpt_1', courierStatus: 'IN_TRANSIT' },
-  { dispatchId: 'asgn_delivered', merchantDisplay: 'BETA TRADERS', bankCode: '3', awb: 'AWB2', shptId: 'shpt_2', courierStatus: 'DELIVERED' },
-  { dispatchId: 'asgn_returned', merchantDisplay: 'GAMMA GOODS', bankCode: '3', awb: 'AWB3', shptId: 'shpt_3', courierStatus: 'RETURNED' },
-  { dispatchId: 'asgn_waiting', merchantDisplay: 'DELTA DEPOT', bankCode: '3', awb: null, shptId: null, courierStatus: null },
+  { dispatchId: 'asgn_transit', merchantDisplay: 'ALPHA STORE', bankCode: '3', awb: 'AWB1', shptId: 'shpt_1', courierStatus: 'IN_TRANSIT', pipelineState: 'DISPATCHED' },
+  { dispatchId: 'asgn_delivered', merchantDisplay: 'BETA TRADERS', bankCode: '3', awb: 'AWB2', shptId: 'shpt_2', courierStatus: 'DELIVERED', pipelineState: 'DELIVERED' },
+  { dispatchId: 'asgn_returned', merchantDisplay: 'GAMMA GOODS', bankCode: '3', awb: 'AWB3', shptId: 'shpt_3', courierStatus: 'RETURNED', pipelineState: 'DISPATCHED' },
+  { dispatchId: 'asgn_waiting', merchantDisplay: 'DELTA DEPOT', bankCode: '3', awb: null, shptId: null, courierStatus: null, pipelineState: 'BATCHED' },
 ]
 
 function jsonResponse(body: unknown): Response {
@@ -42,7 +47,7 @@ function tile(hint: string): HTMLButtonElement {
 
 /** The toolbar's own search box, not the shipments grid's. */
 function searchBox(): HTMLElement {
-  return screen.getByPlaceholderText(/dispatch id, merchant or awb/i)
+  return screen.getByPlaceholderText(/dispatch id, merchant, awb, batch or device/i)
 }
 
 /** Mounted with the real detail route so a row click can be observed landing. */
@@ -77,11 +82,13 @@ describe('The dispatch list: tiles, toolbar and links', () => {
     // also column headers, and a test that cannot tell them apart is a test that
     // would pass on the wrong element.
     expect(await screen.findByText('in the current window')).toBeTruthy()
-    for (const hint of ['no AWB reported yet', 'picked up, on its way', 'courier confirmed delivery']) {
+    for (const hint of ['pending batch or batched', 'picked up, on its way', 'courier confirmed delivery']) {
       expect(screen.getByText(hint)).toBeTruthy()
     }
-    // DELTA DEPOT has no AWB, which is exactly what "awaiting vendor" means.
-    expect(tile('no AWB reported yet').textContent).toContain('1')
+    // DELTA DEPOT is BATCHED, so it counts in the pre-vendor tile. That tile used
+    // to key off a missing AWB and sat at zero forever, because the read it
+    // counted could not contain a row that had not shipped.
+    expect(tile('pending batch or batched').textContent).toContain('1')
   })
 
   it('a tile narrows the grid to its own slice, and clicking it again clears it', async () => {

@@ -25,12 +25,19 @@ import {
 // pool status, so they belong on the row. The old forms could not know that:
 // they accepted any id and let the edge reject the nonsensical combinations.
 //
-// STEP-UP IS UNCHANGED. Release is gated by 'hold-release' in
-// OPS_STEP_UP_GATED_OPERATIONS, and the round trip is owned by the client
-// interceptor and StepUpDialog, not by the calling component. Moving the call
-// from a form onto a row does not touch that, and this component makes no
-// authorization decision of its own (S24/T14): it renders the action enabled
-// and lets the edge be the authority.
+// NO STEP-UP ON EITHER ACTION as of 19 Aug 2026. Release used to be gated by
+// 'hold-release', so an operator more than five minutes past login was asked
+// for a TOTP to undo a hold they had just placed; that entry was removed from
+// OPS_STEP_UP_CATALOG at the product owner's direction (the reasoning, and the
+// architecture-review flag, are recorded in packages/authz/src/stepup.ts).
+//
+// Nothing changes HERE, and that is the point worth keeping: this component
+// makes no authorization decision of its own (S24/T14). It renders both actions
+// enabled and lets the edge be the authority, and the step-up round trip, when
+// some other action does need one, is owned by the client interceptor and
+// StepUpDialog rather than by any calling component. So the TOTP prompt
+// disappearing from Release is entirely a consequence of the edge no longer
+// answering 403 step-up-required, with no client-side list to keep in sync.
 
 // 12 Aug 2026: a HOLD now carries a reason, so it stops being one click. The
 // reason is REQUIRED (the edge rejects a blank one before it authorizes

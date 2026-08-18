@@ -47,6 +47,7 @@ export interface TileSet {
 
 /** The 6 reports (FR-10). Task 6 fills each report body. */
 export type ReportName =
+  | 'dispatches'
   | 'soundbox-delivery'
   | 'activation'
   | 'damaged-replacement'
@@ -491,6 +492,51 @@ function soundboxDeliveryRow(r: DispatchDbRow): ReportRow {
   }
 }
 
+/**
+ * EVERY dispatch leg, whatever stage it has reached (decision D12, 18 Aug 2026).
+ *
+ * The Dispatches page used to read soundbox-delivery, whose predicate is
+ * `dispatched_at !== null`. That made the page a DELIVERY report wearing a
+ * dispatch page's name: nothing pooled, batched, or sitting at the print vendor
+ * could appear, its own "Awaiting vendor" tile could never be non-zero, and
+ * collateral legs were present but unlabelled because the row did not carry
+ * dispatch_group. So this row exists, with no lifecycle predicate at all, and it
+ * carries the three fields that page could not previously show.
+ *
+ * PROJECTION ONLY: scopedDispatchRead already selects every column below, so
+ * this costs no new query, grant, or role.
+ *
+ * NO SIM HERE, deliberately. The ICCID never enters analytics (S7); the edge
+ * merges it from fulfillment by device serial, which is why deviceIds is
+ * projected and simNos is not.
+ */
+function dispatchesRow(r: DispatchDbRow): ReportRow {
+  return {
+    dispatchId: r.dispatch_id,
+    programId: r.program_id,
+    dispatchGroup: r.dispatch_group,
+    sourceRef: r.source_ref,
+    batchId: r.batch_id,
+    bankCode: r.bank_code,
+    bankDisplay: r.bank_display,
+    branch: r.branch,
+    merchantDisplay: r.merchant_display,
+    deviceIds: r.device_ids,
+    awb: r.awb,
+    shptId: r.shpt_id,
+    courierStatus: r.courier_status,
+    // The lifecycle the portal labels: RECEIVED, BATCHED, SENT_TO_VENDOR,
+    // DISPATCHED, DELIVERED. Never projected by any report before this one, which
+    // is why a dispatch page could not say where a dispatch had reached.
+    pipelineState: r.pipeline_state,
+    receivedAt: iso(r.received_at),
+    sentToVendorAt: iso(r.sent_to_vendor_at),
+    dispatchDate: iso(r.dispatch_date),
+    deliveryDate: iso(r.delivery_date),
+    billable: r.billable_flag,
+  }
+}
+
 // The FR-07 awaiting-activation worklist row. deviceIds
 // mirrors the same generic device_ids exposure toReportRow already uses
 // (raw hardware serials, no encode/decode; @andpay/ids has no registered
@@ -519,6 +565,12 @@ function activationRow(r: DispatchDbRow): ReportRow {
     merchantDisplay: r.merchant_display,
     deviceIds: r.device_ids ?? [],
     deliveryDate: iso(r.delivery_date),
+    // The lifecycle stage, projected as of 18 Aug 2026 (decision D15) so the
+    // Activation tab can tell a batch that is READY to be sent to the CWD from
+    // one that is not. Readiness is DISPATCHED_BY_VENDOR, not delivery: that is
+    // the moment the device, dispatch and AWB mappings all exist, which is
+    // everything the CWD file needs.
+    pipelineState: r.pipeline_state,
     activationStatus: r.activation_status,
     simActivationStatus: r.sim_activation_status,
     activationDate: iso(r.activation_date),
@@ -612,6 +664,13 @@ function computeBatchingReport(rows: DispatchDbRow[], filters: ReportFilters): R
 
 function computeReport(report: ReportName, rows: DispatchDbRow[], filters: ReportFilters): ReportRow[] {
   switch (report) {
+    case 'dispatches':
+      // NO lifecycle predicate: this report's whole point is that a dispatch is
+      // visible from the moment it is minted. The date window still applies, and
+      // it anchors on received_at rather than dispatch_date, because a dispatch
+      // that has not shipped has no dispatch_date and filtering on one would
+      // silently drop exactly the rows this report exists to surface.
+      return rows.filter((r) => withinReportWindow(r.received_at, filters)).map(dispatchesRow)
     case 'soundbox-delivery':
       return rows
         .filter((r) => r.dispatched_at !== null && withinReportWindow(r.dispatch_date, filters))

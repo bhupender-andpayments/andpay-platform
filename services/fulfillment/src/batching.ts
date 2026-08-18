@@ -364,8 +364,8 @@ export async function triggerBatchWithinTx(
         // the MANUAL ops path; `?? null` is what makes a LOT_SIZE or MAX_WAIT
         // batch persist a NULL note rather than an invented placeholder.
         await tx.$executeRaw`
-          INSERT INTO batch (id, tenant_id, program_id, trigger_reason, triggered_by_actor, trigger_note, unit_count, updated_at)
-          VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, ${reason}, ${opts.actorUuid ?? null}::uuid, ${opts.triggerNote ?? null}, ${claimed.length}, now())
+          INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, triggered_by_actor, trigger_note, unit_count, updated_at)
+          VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BATCHED', ${reason}, ${opts.actorUuid ?? null}::uuid, ${opts.triggerNote ?? null}, ${claimed.length}, now())
         `
 
         await enqueue(tx, {

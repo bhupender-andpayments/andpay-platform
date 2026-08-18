@@ -87,25 +87,21 @@ export function toCsv(rows: ReportRow[]): string {
 // registry. Every value it writes was resolved server-side upstream.
 // ---------------------------------------------------------------------------
 
-// The seven columns, in the product-approved order and wording. `key` is the
-// internal name the per-device addRow object uses; it is NOT a ReportRow key,
-// because two of the cells (the device serial and its SIM) are per-INDEX values
-// that no single row-level key can name.
+// THREE columns (18 Aug 2026, at the user's correction, cut down from seven).
+// `key` is the internal name the per-device addRow object uses; it is NOT a
+// ReportRow key, because two of the cells (the device serial and its SIM) are
+// per-INDEX values that no single row-level key can name.
+//
+// Batch ID is safe to drop: the downloaded file's own name now carries it
+// (`${btchId}-activation.xlsx`, apps/ops-edge/src/reports.controller.ts).
+// Bank, Merchant and Delivered are a genuine product decision, not a cleanup:
+// the CWD loses those as ways to identify a row and is left with only Device
+// ID, SIM No and Dispatch ID.
 const ACTIVATION_COLUMNS = [
-  { header: 'Batch ID', key: 'batchId' },
-  { header: 'Dispatch ID', key: 'dispatchId' },
-  { header: 'Bank', key: 'bank' },
-  { header: 'Merchant', key: 'merchant' },
   { header: 'Device ID', key: 'deviceId' },
   { header: 'SIM No', key: 'simNo' },
-  { header: 'Delivered', key: 'delivered' },
+  { header: 'Dispatch ID', key: 'dispatchId' },
 ]
-
-// The 'not yet delivered' wording is product-owner approved and is deliberately
-// a sentence, not a blank. A blank cell in a sheet that leaves the platform
-// reads as a data gap the CWD should chase; this reads as the actual state of
-// the dispatch, which is that there is nothing to activate yet.
-const NOT_YET_DELIVERED = 'not yet delivered'
 
 // Null, undefined and every non-string cell collapse to '' rather than to the
 // string "null". Same contract as the writeRows helper in the fulfillment
@@ -124,32 +120,11 @@ function textCell(cell: ReportCell | undefined): string {
   return String(cell)
 }
 
-// A leading YYYY-MM-DD, which is exactly the prefix mediation's iso() emits
-// (Date.toISOString(), always UTC).
-const ISO_DATE_PREFIX = /^(\d{4}-\d{2}-\d{2})T/
-
-/**
- * Render the Delivered cell.
- *
- * A present date is written as a plain calendar date, NOT the raw ISO
- * timestamp. The awaiting-activation worklist screen deliberately stopped
- * showing the wire format, and a sheet that is emailed to a party outside the
- * platform is the last place it should reappear: the recipient has no use for
- * a millisecond field or a Z suffix, and it invites them to read a UTC instant
- * as a local one.
- *
- * The date is taken by SLICING the ISO string's own date prefix rather than by
- * round-tripping through `new Date(...)`. Two reasons: the prefix is already
- * the UTC calendar day the mediation layer committed to, so slicing cannot
- * shift the day by a timezone; and a malformed value cannot make this throw
- * mid-workbook, it just falls through and is written verbatim.
- */
-function deliveredCell(cell: ReportCell | undefined): string {
-  if (cell === null || cell === undefined || cell === '') return NOT_YET_DELIVERED
-  const text = textCell(cell)
-  const match = ISO_DATE_PREFIX.exec(text)
-  return match?.[1] ?? text
-}
+// deliveredCell, NOT_YET_DELIVERED and ISO_DATE_PREFIX were removed 18 Aug
+// 2026 with the Delivered column. They rendered a delivery date as a plain
+// UTC calendar day (never the raw ISO timestamp) and an absent one as the
+// sentence "not yet delivered" rather than a blank. If a Delivered column ever
+// returns to this sheet, both of those rules are worth restoring with it.
 
 // Read one positional entry out of a ReportRow cell that should be a string[].
 // A cell that is not an array at all (a report row that never carried it) is
@@ -195,27 +170,14 @@ export async function activationSheetXlsx(rows: ReportRow[]): Promise<Buffer> {
   for (const row of rows) {
     const deviceIds = row['deviceIds']
     if (!Array.isArray(deviceIds)) continue
-    // bankDisplay is the bank in words and is what the CWD reads; bankCode is
-    // the fallback so a row whose display name never landed still names its
-    // bank rather than leaving the column blank. An EMPTY display name falls
-    // back too: it is the same missing-value case, differently shaped.
-    const bankDisplay = textCell(row['bankDisplay'])
-    const bank = bankDisplay === '' ? textCell(row['bankCode']) : bankDisplay
-    const batchId = textCell(row['batchId'])
     const dispatchId = textCell(row['dispatchId'])
-    const merchant = textCell(row['merchantDisplay'])
-    const delivered = deliveredCell(row['deliveryDate'])
     const simNos = row['simNos']
 
     for (let i = 0; i < deviceIds.length; i++) {
       ws.addRow({
-        batchId,
-        dispatchId,
-        bank,
-        merchant,
         deviceId: atIndex(deviceIds, i),
         simNo: atIndex(simNos, i),
-        delivered,
+        dispatchId,
       })
     }
   }

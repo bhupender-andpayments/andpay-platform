@@ -46,13 +46,6 @@ import type { BatchEntryRow } from '../../api/endpoints.js'
 const BASE_HEADER = ['Dispatch ID', 'Device ID', 'AWB'] as const
 const COURIER_HEADER = 'Courier'
 
-/**
- * Caps, so a 30 entry batch does not produce a 30 row sample nobody reads. Both
- * are ceilings, not targets: the real bound is what is actually available.
- */
-const MAX_SOUNDBOX_ROWS = 6
-const MAX_COLLATERAL_ROWS = 4
-
 /** The dispatch state that means "sent to the vendor, not yet returned". */
 const AWAITING_RETURN = 'SENT_TO_VENDOR'
 
@@ -66,18 +59,32 @@ export interface SampleReturnSource {
   courierCode: string | null
 }
 
+/**
+ * One downloadable file. Two of these come back from one build, soundbox and
+ * collateral, mirroring the two vendor Excels an operator already downloads
+ * for the same batch (18 Aug 2026, at the user's correction): a real return
+ * sheet arrives from the vendor as two files, one per delivery group, never
+ * one CSV with both grains stacked in it.
+ */
 export interface SampleReturnFile {
   filename: string
   csv: string
-  batchId: string
-  soundboxRows: number
-  collateralRows: number
-  /** The two consignment AWBs, so the caller can name them in a toast. */
+  rows: number
+  /** One AWB per row (18 Aug 2026): a real shipment is one parcel, and two
+   *  dispatches sharing one AWB in the sample was never how they travel. */
   awbs: string[]
 }
 
+export interface SampleReturnBundle {
+  batchId: string
+  /** Null when the batch has no eligible SOUNDBOX rows or no free devices. */
+  soundbox: SampleReturnFile | null
+  /** Null when the batch has no eligible COLLATERAL rows. */
+  collateral: SampleReturnFile | null
+}
+
 export type SampleReturnOutcome =
-  | { ok: true; file: SampleReturnFile }
+  | { ok: true; file: SampleReturnBundle }
   | { ok: false; problem: string }
 
 function digits(n: number, width: number): string {
@@ -85,21 +92,46 @@ function digits(n: number, width: number): string {
 }
 
 /**
- * A fresh AWB per consignment per download. One AWB is one shipment: the ingest
- * dedups shpt birth ON the AWB, so reusing one across downloads would attach
- * new rows to the earlier shipment instead of creating this one.
+ * A fresh AWB per ROW per download (18 Aug 2026, at the user's correction: a
+ * real parcel does not share its tracking number with nine others). `slot`
+ * must be unique across the whole build, soundbox and collateral together, so
+ * the two files this produces never collide with each other either. One AWB
+ * is one shipment: the ingest dedups shpt birth ON the AWB, so a reused one
+ * would attach new rows to an earlier shipment instead of creating this one.
  */
-function awbFor(runMs: number, runSalt: number, leg: number): string {
-  return `${digits(runMs, 9)}${digits(runSalt, 2)}${leg}`
+function awbFor(runMs: number, runSalt: number, slot: number): string {
+  return `${digits(runMs, 9)}${digits(runSalt, 2)}${digits(slot, 4)}`
+}
+
+/** One delivery group's file: its own header, its own rows, its own AWBs. */
+function buildGroupFile(
+  filenamePrefix: string,
+  rows: ReadonlyArray<{ asgnId: string; serial: string; awb: string }>,
+  courierCode: string | null,
+): SampleReturnFile | null {
+  if (rows.length === 0) return null
+  const withCourier = courierCode !== null
+  const header = withCourier ? [...BASE_HEADER, COURIER_HEADER] : [...BASE_HEADER]
+  const lines: string[] = [csvLine(header)]
+  for (const r of rows) {
+    lines.push(csvLine(withCourier ? [r.asgnId, r.serial, r.awb, courierCode!] : [r.asgnId, r.serial, r.awb]))
+  }
+  return {
+    filename: `${filenamePrefix}.csv`,
+    csv: `${lines.join('\n')}\n`,
+    rows: rows.length,
+    awbs: rows.map((r) => r.awb),
+  }
 }
 
 /**
- * Builds one return sheet whose rows all ingest, or explains why it cannot.
- *
- * Rows are grouped onto TWO AWBs, soundbox under one and collateral under the
- * other, because that is how the parcels actually travel and it is the case the
- * ingest comments call out (one dispatch id under two AWBs, the kit under one
- * and the standee under another).
+ * Builds the batch's return sheets, one per delivery group, or explains why it
+ * cannot. TWO FILES, not one (18 Aug 2026, at the user's correction): a real
+ * return sheet arrives from the print vendor as two files, soundbox and
+ * collateral, exactly mirroring the two vendor Excels already downloaded for
+ * this batch, never one CSV with both grains stacked in it. Each row gets its
+ * own AWB, and nothing here caps how much of the batch is covered: the only
+ * real ceiling is how many free devices exist for the soundbox rows.
  */
 export function buildSampleReturnSheet(
   source: SampleReturnSource,
@@ -120,8 +152,8 @@ export function buildSampleReturnSheet(
   const soundboxEntries = awaiting.filter((e) => e.dispatchGroup === 'SOUNDBOX')
   const collateralEntries = awaiting.filter((e) => e.dispatchGroup === 'COLLATERAL')
 
-  const soundboxCount = Math.min(soundboxEntries.length, source.freeSerials.length, MAX_SOUNDBOX_ROWS)
-  const collateralCount = Math.min(collateralEntries.length, MAX_COLLATERAL_ROWS)
+  const soundboxCount = Math.min(soundboxEntries.length, source.freeSerials.length)
+  const collateralCount = collateralEntries.length
 
   if (soundboxCount === 0 && collateralCount === 0) {
     // Say which of the two ran out, because the fix differs: one needs a batch,
@@ -140,53 +172,36 @@ export function buildSampleReturnSheet(
     }
   }
 
-  const soundboxAwb = awbFor(runMs, salt, 1)
-  const collateralAwb = awbFor(runMs, salt, 2)
-  const withCourier = source.courierCode !== null
-
-  const header = withCourier ? [...BASE_HEADER, COURIER_HEADER] : [...BASE_HEADER]
-  const lines: string[] = [csvLine(header)]
-
-  const row = (asgnId: string, serial: string, awb: string): string =>
-    csvLine(withCourier ? [asgnId, serial, awb, source.courierCode!] : [asgnId, serial, awb])
-
-  for (let i = 0; i < soundboxCount; i += 1) {
-    lines.push(row(soundboxEntries[i]!.asgnId, source.freeSerials[i]!, soundboxAwb))
-  }
-  // Device ID stays BLANK here, deliberately. The column is required, the value
-  // is not, and a serial on a collateral row is its own quarantine reason.
-  for (let i = 0; i < collateralCount; i += 1) {
-    lines.push(row(collateralEntries[i]!.asgnId, '', collateralAwb))
-  }
-
-  const awbs: string[] = []
-  if (soundboxCount > 0) awbs.push(soundboxAwb)
-  if (collateralCount > 0) awbs.push(collateralAwb)
+  const soundboxRows = Array.from({ length: soundboxCount }, (_, i) => ({
+    asgnId: soundboxEntries[i]!.asgnId,
+    serial: source.freeSerials[i]!,
+    awb: awbFor(runMs, salt, i),
+  }))
+  // Collateral slots start right after the soundbox count, so the two files'
+  // AWBs never collide however large this batch is, with no magic ceiling to
+  // outgrow.
+  // Device ID stays BLANK here, deliberately. The column is required, the
+  // value is not, and a serial on a collateral row is its own quarantine
+  // reason.
+  const collateralRows = Array.from({ length: collateralCount }, (_, i) => ({
+    asgnId: collateralEntries[i]!.asgnId,
+    serial: '',
+    awb: awbFor(runMs, salt, soundboxCount + i),
+  }))
 
   return {
     ok: true,
     file: {
-      filename: `sample-vendor-return-${now.toISOString().slice(0, 10)}-${digits(runMs, 6)}${digits(salt, 2)}.csv`,
-      csv: `${lines.join('\n')}\n`,
       batchId: source.batchId,
-      soundboxRows: soundboxCount,
-      collateralRows: collateralCount,
-      awbs,
+      soundbox: buildGroupFile(`${source.batchId}-return-soundbox`, soundboxRows, source.courierCode),
+      collateral: buildGroupFile(`${source.batchId}-return-collateral`, collateralRows, source.courierCode),
     },
   }
 }
 
-/**
- * Picks the batch a sample should be built from: the newest one that has a
- * bound print vendor, because a batch without one is refused whole
- * (batch_has_no_vendor) and picking it would produce a file that cannot work.
- */
-export function selectSampleReturnBatch<T extends { id: string; printVndr: string | null; createdAt: string }>(
-  batches: readonly T[],
-): T | null {
-  return (
-    [...batches]
-      .filter((b) => b.printVndr !== null)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null
-  )
-}
+// selectSampleReturnBatch was REMOVED 18 Aug 2026. It picked the newest batch
+// with a bound print vendor when the caller named none, and that guess is what
+// read as "the sample downloads a random batch": an operator got a file for
+// whichever batch happened to be newest rather than the one they meant. The
+// control is now only offered with a batch already in scope
+// (ReturnUploadPage's `?batch=`), so there is nothing left to guess from.

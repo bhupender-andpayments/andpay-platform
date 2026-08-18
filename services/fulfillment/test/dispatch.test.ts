@@ -4,7 +4,7 @@ import { onceWithin, enqueue } from '@andpay/outbox'
 import { stepKey } from '@andpay/keys'
 import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
-import { consumeBatchFact, TemplateTrimMismatchError } from '../src/dispatch.js'
+import { consumeBatchFact, sendBatchToVendorWithinTx, TemplateTrimMismatchError } from '../src/dispatch.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 import { buildDispatchPackage, assembleGroupPdf, dispatchGroupXlsx, AssetResolutionError } from '../src/package.js'
 import { PDFDocument, rgb } from 'pdf-lib'
@@ -198,6 +198,24 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     const res = await consumeBatchFact(db, env, assetStore)
     expect(res.deduped).toBe(false)
     expect(res.composed).toBe(4) // 2 entries x (SOUNDBOX_IMG + STANDEE_IMG)
+
+    // TWO STEPS NOW, not one (18 Aug 2026, decision D4). Consuming the batch
+    // fact composes and stops; handing the run to the print vendor is an
+    // operator action. This test still walks the whole spine, so it performs
+    // that action explicitly, which is also what proves the two halves compose
+    // into the same end state the automatic version used to reach.
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+      await tx.$queryRaw`SELECT set_config('app.program_id', ${toUuid(programWire)}, true)`
+      await sendBatchToVendorWithinTx(tx, {
+        btchId: btchWire,
+        btchUuid,
+        programUuid: toUuid(programWire),
+        // The batch fact's own trace, so the "both facts carry env.traceId"
+        // assertion below keeps meaning what it meant.
+        traceId: 'trace-batch-1',
+      })
+    })
 
     // composed_artifact: one row per (asgn, artifact_type), snapshot content
     // carried through, and structurally NO shipping-PII column.
@@ -403,12 +421,17 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     const c1 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM composed_artifact`
     const o1 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM outbox WHERE event_type = ${DISPATCH_TOPIC}`
     expect(Number(c1[0]!.n)).toBe(2)
-    expect(Number(o1[0]!.n)).toBe(2)
+    // ONE dispatch fact, not two (18 Aug 2026, decision D4): consuming the batch
+    // fact composes and stops. The SENT_TO_VENDOR fact now belongs to the
+    // operator's send action, so it is not part of this transaction and not part
+    // of what this test is about, which is compose committing atomically with
+    // its inbox row.
+    expect(Number(o1[0]!.n)).toBe(1)
 
     const entryAfterReal = await db.$queryRaw<{ dispatch_state: string | null }[]>`
       SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${entry.asgnUuid}::uuid
     `
-    expect(entryAfterReal[0]!.dispatch_state).toBe('SENT_TO_VENDOR')
+    expect(entryAfterReal[0]!.dispatch_state).toBe('QR_GENERATED')
   })
 
   // Phase 3 Task 5a: bankConfigRefFor's branch-aware fallback order (mirrors
@@ -794,7 +817,7 @@ describe('consumeBatchFact (dispatch-lifecycle PM: compose + dispatch off the ba
     expect(await assembleGroupPdf(db, assetStore, btchWire, 'NOT_A_GROUP')).toBeNull()
 
     // the sorted dispatch Excel is a real PK zip
-    const xlsx = await dispatchGroupXlsx(lines, 'SOUNDBOX')
+    const xlsx = await dispatchGroupXlsx(lines, 'SOUNDBOX', btchWire)
     expect(xlsx.subarray(0, 2).toString('latin1')).toBe('PK')
   })
 
@@ -916,6 +939,16 @@ describe('crash between the pre-render and the commit (three-phase idempotency)'
 // credential got a 403 on a real batch, and a NULL column reads as "not mine"
 // rather than as an error. These tests assert the binding itself AND the thing
 // the binding is FOR, which is that the vendor read can now reach the batch.
+// D-9a still holds, and it moved. Binding the batch to its print vendor used to
+// happen inside consumeBatchFact's automatic dispatch step; as of 18 Aug 2026
+// (decision D4) sending is an operator action, and the binding travels with it
+// into sendBatchToVendorWithinTx.
+//
+// These tests drive that helper directly rather than the ops wrapper around it,
+// on purpose: the subject here is the VENDOR BINDING, including the two
+// fail-closed paths and their messages. The wrapper's own concerns (its client
+// key idempotency, its guards, and how it turns these faults into 409s an
+// operator can act on) belong to test/send-to-vendor.test.ts.
 describe('D-9a: dispatch binds the batch to the single ACTIVE PRINT vendor', () => {
   async function dispatchOneBatch(): Promise<{ btchWire: string; btchUuid: string; programUuid: string }> {
     const tenantWire = newId('tnnt')
@@ -938,7 +971,13 @@ describe('D-9a: dispatch binds the batch to the single ACTIVE PRINT vendor', () 
       dedupKey: btchWire,
       traceId: 'trace-pv',
     })
+    // Compose (automatic, still the consumer's job), then send (the operator's).
     await consumeBatchFact(db, env, assetStore)
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_write')
+      await tx.$queryRaw`SELECT set_config('app.program_id', ${programUuid}, true)`
+      await sendBatchToVendorWithinTx(tx, { btchId: btchWire, btchUuid, programUuid, traceId: 'trace-pv' })
+    })
     return { btchWire, btchUuid, programUuid }
   }
 

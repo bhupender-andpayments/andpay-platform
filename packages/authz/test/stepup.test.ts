@@ -19,6 +19,10 @@ describe('step-up single-sourced in @andpay/authz', () => {
     expect(() => requireStepUp({ ...base, auth_time: 0 }, OPS_STEP_UP_CATALOG['vendor-suspend']!, 100000)).toThrow(/stale-auth-time/)
   })
   it('passes a fresh, sufficient claim', () => {
-    expect(() => requireStepUp(base, OPS_STEP_UP_CATALOG['hold-release']!, 1100)).not.toThrow()
+    // Was OPS_STEP_UP_CATALOG['hold-release'] until 19 Aug 2026, when that
+    // entry was removed (see stepup.ts). Any remaining entry exercises the same
+    // requireStepUp branch; terminal-override is the one this file already uses
+    // above.
+    expect(() => requireStepUp(base, OPS_STEP_UP_CATALOG['terminal-override']!, 1100)).not.toThrow()
   })
 })

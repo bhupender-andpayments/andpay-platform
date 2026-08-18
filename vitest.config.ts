@@ -1,4 +1,5 @@
 import { configDefaults, defineConfig } from 'vitest/config'
+import { TEST_DB_ENV } from './vitest.db-target.js'
 
 // The node/NestJS suites and the ops-portal (jsdom + React) suite need
 // different test environments. `projects` isolates them: each project
@@ -30,12 +31,25 @@ export default defineConfig({
           include: ['packages/**/test/**/*.test.ts', 'services/**/test/**/*.test.ts', 'apps/**/test/**/*.test.ts', 'test/**/*.test.ts'],
           exclude: [...configDefaults.exclude, 'apps/ops-portal/**', 'apps/vendor-portal/**'],
           environment: 'node',
+          // THE GATE RUNS AGAINST ITS OWN DATABASE (19 Aug 2026). Every suite
+          // resolves its connection as `process.env.X ?? <hardcoded andpay>`,
+          // and nothing set those variables, so the destructive gate ran
+          // against the SAME database the local demo lives in and wiped the
+          // seeded dataset on every run. Setting them here overrides all ~100
+          // fallbacks at once, before any worker builds a Prisma client. See
+          // vitest.db-target.ts for the full account.
+          env: TEST_DB_ENV,
           // Marks that a DATABASE-BACKED suite actually ran, which is the only
           // condition under which the global teardown is allowed to truncate
           // anything (its GUARD 3). Without this, a jsdom-only run - which
           // opens no connection - still triggered the truncation and destroyed
           // live dev data. This project is the only one whose suites use
           // Postgres, so the marker belongs here and nowhere else.
+          //
+          // It is written per FILE and unconditionally, so it cannot actually
+          // tell a DB-backed file from a pure-text one; that is why the
+          // separate database above, not this marker, is what protects the demo
+          // data.
           setupFiles: ['./test/db-tests-ran.setup.ts'],
           typecheck: {
             // Under `projects`, the root's CLI-forwarded options are filtered

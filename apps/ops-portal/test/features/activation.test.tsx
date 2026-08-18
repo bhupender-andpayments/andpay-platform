@@ -1,25 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, useParams } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { ActivationPage } from '../../src/features/activation/ActivationPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
 
-// FR-07 Phase-1 MANUAL activation SUCCESS mark (Phase 7 Task 11, D-H.1). The
-// confirmed ops-edge contract (apps/ops-edge/src/ops.controller.ts's
-// activateAssignmentRoute + services/analytics/src/mediation.ts's
-// activationRow, docs/plan/phase7_grounding/B_edge_contracts.md row #11):
-//   GET  /ops/reports/activation   -> { rows: ReportRow[], watermark }
-//     (server-filtered to soundbox-or-legacy rows with activation_status
-//     IS NULL: every row awaiting activation. The delivery half of that
-//     filter went away with D-16 / T4.2. Row shape copied verbatim from
-//     mediation.ts's activationRow, never invented here.)
-//   POST /ops/assignments/activate  body { dispatchId } -> { activated }
-//     (dispatchId IS the wire asgn id; NOT step-up-gated.)
-// C3 fence: SUCCESS path only. No failure-mark control, no distinct
-// SIM-activation control (simActivationStatus mirrors activationStatus and
-// is read-only text in v1).
+// REWRITTEN 18 Aug 2026, at the user's correction, alongside the page. The
+// page went from a two-card design (a batches summary above a per-dispatch
+// worklist, each with its own action buttons) to ONE table, batch-grain only:
+//   - "Mark sent to CWD" is gone entirely (it recorded REQUEST_SENT_TO_CWD,
+//     an in-flight marker with no observable effect, which read as doing
+//     nothing).
+//   - The per-dispatch worklist, its checkboxes and its own "Mark activated"
+//     button are gone. A batch's devices are activated together.
+//   - Activate calls POST /ops/assignments/activate-bulk with the batch's own
+//     dispatch ids, independent of delivery and courier status (D-16), and
+//     the batch leaves the table once it returns.
+//   - Download Excel is renamed Download CWD file; the route is unchanged
+//     (GET /ops/reports/activation/batch/:btchId/xlsx).
 
 interface Call {
   url: string
@@ -39,21 +38,152 @@ function headerValue(call: Call, name: string): string | null {
   return headers[name] ?? null
 }
 
-// Every write now passes through the shared ConfirmDialog: the first click
-// opens it, and the write fires only from its confirm button.
-async function confirmInDialog(): Promise<void> {
-  const dialog = await screen.findByRole('dialog')
-  await userEvent.click(within(dialog).getByRole('button', { name: /mark activated/i }))
+function DevicesPageStub() {
+  const { btchId } = useParams<{ btchId: string }>()
+  return <div>DEVICES PAGE for {btchId}</div>
 }
 
 function renderActivationPage() {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={['/activation']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
-        <ActivationPage />
+        <Routes>
+          <Route path="/activation" element={<ActivationPage />} />
+          <Route path="/activation/batch/:btchId" element={<DevicesPageStub />} />
+          <Route path="/inventory" element={<div>INVENTORY PAGE</div>} />
+        </Routes>
       </AuthProvider>
     </MemoryRouter>,
   )
+}
+
+// btch_alpha: TWO dispatches and THREE devices, deliberately different
+// numbers. The sheet carries one row per DEVICE, so a table that counted
+// dispatches and called them devices would understate what the CWD receives.
+const BATCH_ROWS = {
+  rows: [
+    {
+      dispatchId: 'asgn_1',
+      programId: 'prg_1',
+      batchId: 'btch_alpha',
+      bankCode: 'HDFC',
+      bankDisplay: 'HDFC Bank',
+      merchantDisplay: 'Alpha Store',
+      deviceIds: ['DEV-1', 'DEV-2'],
+      deliveryDate: null,
+      activationStatus: null,
+      // D15: a batch shows on the table only once every one of its dispatches
+      // has been dispatched by vendor. These fixture rows are already there.
+      pipelineState: 'DISPATCHED',
+    },
+    {
+      dispatchId: 'asgn_2',
+      programId: 'prg_1',
+      batchId: 'btch_alpha',
+      bankCode: 'HDFC',
+      bankDisplay: 'HDFC Bank',
+      merchantDisplay: 'Beta Store',
+      deviceIds: ['DEV-3'],
+      deliveryDate: null,
+      activationStatus: null,
+      pipelineState: 'DISPATCHED',
+    },
+    {
+      dispatchId: 'asgn_3',
+      programId: 'prg_1',
+      batchId: 'btch_beta',
+      bankCode: 'ICIC',
+      bankDisplay: 'ICICI Bank',
+      merchantDisplay: 'Gamma Store',
+      deviceIds: ['DEV-4'],
+      deliveryDate: null,
+      activationStatus: null,
+      pipelineState: 'DISPATCHED',
+    },
+    {
+      dispatchId: 'asgn_legacy',
+      programId: 'prg_1',
+      batchId: null,
+      bankCode: 'HDFC',
+      bankDisplay: 'HDFC Bank',
+      merchantDisplay: 'Legacy Store',
+      deviceIds: ['DEV-5'],
+      deliveryDate: null,
+      activationStatus: null,
+      pipelineState: 'DISPATCHED',
+    },
+  ],
+  watermark: { asOf: null, perTopic: {} },
+}
+
+// The xlsx route's response, faked as a plain object rather than a real
+// `Response`: the body is OPAQUE CARGO and the portal must hand it straight
+// to the browser, so `text`/`arrayBuffer` are spies that must never be called.
+function xlsxResponse(filename: string | null, blob: unknown, status = 200): unknown {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: {
+      get: (name: string) =>
+        name.toLowerCase() === 'content-disposition' && filename !== null
+          ? `attachment; filename="${filename}"`
+          : null,
+    },
+    blob: async () => blob,
+    text: async () => '',
+  }
+}
+
+// jsdom has no Blob-URL implementation to spy on, so createObjectURL and
+// revokeObjectURL are defined directly, and document.createElement('a') is
+// wrapped so `.click()` is a spy instead of a real navigation.
+function captureSaveBlob(): { objectUrlArgs: unknown[]; anchors: HTMLAnchorElement[] } {
+  const objectUrlArgs: unknown[] = []
+  Object.defineProperty(URL, 'createObjectURL', {
+    value: (blob: unknown) => {
+      objectUrlArgs.push(blob)
+      return 'blob:mock-url'
+    },
+    writable: true,
+    configurable: true,
+  })
+  Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), writable: true, configurable: true })
+
+  const anchors: HTMLAnchorElement[] = []
+  const realCreateElement = document.createElement.bind(document)
+  vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+    const el = realCreateElement(tag)
+    if (tag === 'a') {
+      ;(el as HTMLAnchorElement).click = vi.fn()
+      anchors.push(el as HTMLAnchorElement)
+    }
+    return el
+  }) as typeof document.createElement)
+  return { objectUrlArgs, anchors }
+}
+
+// The batch row that owns a given batch id, found by its DataGrid cell text.
+function batchRowFor(batchId: string): HTMLElement {
+  return screen.getByText(batchId).closest('tr')!
+}
+
+async function confirmActivateInDialog(): Promise<void> {
+  const dialog = await screen.findByRole('dialog')
+  await userEvent.click(within(dialog).getByRole('button', { name: /^activate$/i }))
+}
+
+function stubBatches(handler?: (url: string, init: RequestInit) => unknown): Call[] {
+  const calls: Call[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      const handled = handler?.(url, init)
+      if (handled !== undefined) return handled
+      return jsonResponse(BATCH_ROWS)
+    }),
+  )
+  return calls
 }
 
 describe('ActivationPage', () => {
@@ -64,591 +194,81 @@ describe('ActivationPage', () => {
   })
   afterEach(() => {
     cleanup()
-  })
-
-  it('lists DELIVERED (activation-report) assignments from GET /ops/reports/activation', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        return jsonResponse({
-          rows: [
-            {
-              dispatchId: 'asgn_1',
-              programId: 'prg_1',
-              bankCode: 'HDFC',
-              merchantDisplay: 'Acme Traders',
-              deviceIds: ['DEV-1'],
-              deliveryDate: '2026-08-01T00:00:00.000Z',
-              activationStatus: null,
-              simActivationStatus: null,
-              activationDate: null,
-              activationFailureReason: null,
-            },
-          ],
-          watermark: { asOf: '2026-08-05T00:00:00.000Z', perTopic: {} },
-        })
-      }),
-    )
-
-    renderActivationPage()
-
-    expect(await screen.findByText('asgn_1')).toBeTruthy()
-    expect(screen.getByText('Acme Traders')).toBeTruthy()
-    const call = calls.find((c) => c.url.includes('/ops/reports/activation'))
-    expect(call).toBeTruthy()
-    expect(call!.init.method).toBe('GET')
-  })
-
-  // 16 Aug 2026 UAT: activation is of a device+SIM, so a dispatch the report
-  // returns with NO device paired (pre print-vendor return) must not be
-  // offered for activation. There is no hardware the CWD could have confirmed.
-  it('hides a dispatch with no device paired: nothing exists to activate', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          rows: [
-            {
-              dispatchId: 'asgn_no_device',
-              bankCode: 'HDFC',
-              merchantDisplay: 'Not Printed Yet Stores',
-              deviceIds: [],
-              deliveryDate: null,
-              activationStatus: null,
-              simActivationStatus: null,
-              activationDate: null,
-              activationFailureReason: null,
-            },
-            {
-              dispatchId: 'asgn_paired',
-              bankCode: 'HDFC',
-              merchantDisplay: 'Paired Traders',
-              deviceIds: ['DEV-7'],
-              deliveryDate: null,
-              activationStatus: null,
-              simActivationStatus: null,
-              activationDate: null,
-              activationFailureReason: null,
-            },
-          ],
-          watermark: { asOf: null, perTopic: {} },
-        }),
-      ),
-    )
-
-    renderActivationPage()
-
-    // The paired row is the proof the page rendered; the deviceless one is
-    // absent, and the count says 1, not 2.
-    expect(await screen.findByText('asgn_paired')).toBeTruthy()
-    expect(screen.queryByText('asgn_no_device')).toBeNull()
-    expect(screen.getByText('1 row')).toBeTruthy()
-  })
-
-  it('marking a DELIVERED assignment calls ops:mark-activated (POST /ops/assignments/activate) with the wire asgn id + an Idempotency-Key', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.includes('/ops/assignments/activate')) return jsonResponse({ activated: true })
-        return jsonResponse({
-          rows: [
-            {
-              dispatchId: 'asgn_delivered',
-              bankCode: 'HDFC',
-              merchantDisplay: 'Acme Traders',
-              deviceIds: ['DEV-1'],
-              deliveryDate: '2026-08-01T00:00:00.000Z',
-              activationStatus: null,
-              simActivationStatus: null,
-              activationFailureReason: null,
-            },
-          ],
-          watermark: { asOf: null, perTopic: {} },
-        })
-      }),
-    )
-
-    renderActivationPage()
-
-    const row = (await screen.findByText('asgn_delivered')).closest('tr')!
-    const button = within(row).getByRole('button', { name: /mark activated/i })
-    expect((button as HTMLButtonElement).disabled).toBe(false)
-
-    await userEvent.click(button)
-    // The first click only opens the confirmation; nothing is written yet.
-    expect(calls.some((c) => c.url.includes('/ops/assignments/activate'))).toBe(false)
-    await confirmInDialog()
-
-    const call = await vi.waitFor(() => {
-      const found = calls.find((c) => c.url.includes('/ops/assignments/activate'))
-      expect(found).toBeTruthy()
-      return found!
-    })
-    expect(call.init.method).toBe('POST')
-    const body = parseBody(call)
-    expect(body.dispatchId).toBe('asgn_delivered')
-    expect(headerValue(call, 'Idempotency-Key')).toBeTruthy()
-  })
-
-  // THE RE-PIN (D-16, T4.2). This used to assert the control was disabled,
-  // which pinned the delivered-gate as a rule. Activation no longer waits on
-  // delivery, so an undelivered row is markable and the cell says plainly that
-  // delivery has not happened yet rather than leaving a blank that would read
-  // as missing data.
-  it('an UNDELIVERED assignment IS markable, and its delivery cell says so rather than sitting blank', async () => {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        return jsonResponse({
-          rows: [
-            {
-              dispatchId: 'asgn_not_delivered',
-              bankCode: 'HDFC',
-              merchantDisplay: 'Acme Traders',
-              deviceIds: ['DEV-2'],
-              deliveryDate: null,
-              activationStatus: null,
-              simActivationStatus: null,
-              activationFailureReason: null,
-            },
-          ],
-          watermark: { asOf: null, perTopic: {} },
-        })
-      }),
-    )
-
-    renderActivationPage()
-
-    const row = (await screen.findByText('asgn_not_delivered')).closest('tr')!
-    expect(within(row).getByText(/not yet delivered/i)).toBeTruthy()
-    const button = within(row).getByRole('button', { name: /mark activated/i }) as HTMLButtonElement
-    expect(button.disabled).toBe(false)
-
-    await userEvent.click(button)
-    await confirmInDialog()
-
-    const write = await vi.waitFor(() => {
-      const found = calls.find((c) => c.url.includes('/ops/assignments/activate'))
-      expect(found).toBeTruthy()
-      return found
-    })
-    expect(JSON.parse(String(write!.init.body)).dispatchId).toBe('asgn_not_delivered')
-  })
-
-  // D-19 (T5.4): bulk marking, and the shape of the objection it had to answer.
-  // The recorded refusal was that a client-side loop failing halfway leaves an
-  // operator unable to tell which records went through. So the result is per
-  // row, and the confirmation counts what HAPPENED rather than what was asked.
-  describe('bulk mark activated', () => {
-    const TWO_ROWS = {
-      rows: [
-        {
-          dispatchId: 'asgn_a',
-          bankCode: 'HDFC',
-          merchantDisplay: 'Alpha Store',
-          deviceIds: ['DEV-A'],
-          deliveryDate: '2026-08-09T06:30:00.000Z',
-          activationStatus: null,
-          simActivationStatus: null,
-          activationFailureReason: null,
-        },
-        {
-          dispatchId: 'asgn_b',
-          bankCode: 'HDFC',
-          merchantDisplay: 'Beta Store',
-          deviceIds: ['DEV-B'],
-          deliveryDate: null,
-          activationStatus: null,
-          simActivationStatus: null,
-          activationFailureReason: null,
-        },
-      ],
-      watermark: { asOf: null, perTopic: {} },
-    }
-
-    function stubBulk(results: { dispatchId: string; activated: boolean; reason: string | null }[]): Call[] {
-      const calls: Call[] = []
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async (url: string, init: RequestInit) => {
-          calls.push({ url, init })
-          if (url.includes('/ops/assignments/activate-bulk')) return jsonResponse({ results })
-          return jsonResponse(TWO_ROWS)
-        }),
-      )
-      return calls
-    }
-
-    it('posts only the ticked rows, and nothing at all with none ticked', async () => {
-      const calls = stubBulk([{ dispatchId: 'asgn_a', activated: true, reason: null }])
-      renderActivationPage()
-
-      const bulkButton = (await screen.findByRole('button', { name: /mark selected activated/i })) as HTMLButtonElement
-      expect(bulkButton.disabled).toBe(true)
-
-      await userEvent.click(screen.getByLabelText('Select Alpha Store'))
-      // The label counts the selection, so an operator can see what they are
-      // about to act on before they act on it.
-      await userEvent.click(await screen.findByRole('button', { name: /mark 1 activated/i }))
-      // The bulk button also only opens the confirmation.
-      expect(calls.some((c) => c.url.includes('/ops/assignments/activate-bulk'))).toBe(false)
-      await confirmInDialog()
-
-      const write = await vi.waitFor(() => {
-        const found = calls.find((c) => c.url.includes('/ops/assignments/activate-bulk'))
-        expect(found).toBeTruthy()
-        return found
-      })
-      expect(parseBody(write!).dispatchIds).toEqual(['asgn_a'])
-    })
-
-    it('reports what ACTUALLY happened per row, never what was asked for', async () => {
-      stubBulk([
-        { dispatchId: 'asgn_a', activated: true, reason: null },
-        { dispatchId: 'asgn_b', activated: false, reason: 'not-activatable' },
-      ])
-      renderActivationPage()
-
-      await userEvent.click(await screen.findByLabelText('Select Alpha Store'))
-      await userEvent.click(screen.getByLabelText('Select Beta Store'))
-      await userEvent.click(screen.getByRole('button', { name: /mark 2 activated/i }))
-      await confirmInDialog()
-
-      // 1 of 2, not 2. Claiming both is the exact failure the refusal named.
-      expect(await screen.findByText(/1 of 2 marked activated/i)).toBeTruthy()
-      // And the row that did not go through says why, next to itself, in words
-      // rather than in the edge's code vocabulary.
-      expect(screen.getByText(/collateral does not activate/i)).toBeTruthy()
-    })
-  })
-
-  it('has NO failure-mark control and NO distinct SIM-activation control anywhere on the page (C3 fence)', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          rows: [
-            {
-              dispatchId: 'asgn_1',
-              bankCode: 'HDFC',
-              merchantDisplay: 'Acme Traders',
-              deviceIds: ['DEV-1'],
-              deliveryDate: '2026-08-01T00:00:00.000Z',
-              activationStatus: null,
-              simActivationStatus: null,
-              activationFailureReason: null,
-            },
-          ],
-          watermark: { asOf: null, perTopic: {} },
-        }),
-      ),
-    )
-
-    renderActivationPage()
-    await screen.findByText('asgn_1')
-
-    // No failure-mark button/control of any kind.
-    expect(screen.queryByRole('button', { name: /fail/i })).toBeNull()
-    // No distinct, editable SIM-activation control (input/select); SIM status
-    // is read-only text only.
-    expect(screen.queryByRole('button', { name: /sim/i })).toBeNull()
-    expect(screen.queryByLabelText(/sim/i)).toBeNull()
-    expect(screen.queryAllByRole('combobox').length).toBe(0)
-    // Only one write control per row: "Mark activated".
-    expect(screen.getAllByRole('button', { name: /mark activated/i })).toHaveLength(1)
-  })
-})
-
-// The worklist reads the ANALYTICS projection, which the fact rail feeds
-// asynchronously, while the activation WRITE lands in TMS. So the re-read that
-// already followed a successful mark could legitimately return the row again,
-// and did: the operator saw a confirmation and the row they had just actioned
-// still sitting there, still offering the button. That is a read-your-own-write
-// problem over an eventually consistent view, NOT a missing refetch.
-describe('ActivationPage: a row the operator has just actioned', () => {
-  beforeEach(() => {
-    clearAccessToken()
-    setAccessToken('tok-1')
-    vi.unstubAllGlobals()
-  })
-  afterEach(() => {
-    cleanup()
-  })
-
-  function stubWithStaleProjection(): Call[] {
-    const calls: Call[] = []
-    const row = {
-      dispatchId: 'asgn_stale',
-      programId: 'prg_1',
-      bankCode: 'HDFC',
-      merchantDisplay: 'Stale Projection Store',
-      deviceIds: ['DEV-9'],
-      deliveryDate: '2026-08-01T00:00:00.000Z',
-      activationStatus: null,
-      simActivationStatus: null,
-      activationDate: null,
-      activationFailureReason: null,
-    }
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        if (url.includes('/ops/assignments/activate')) return jsonResponse({ activated: true })
-        // Deliberately ALWAYS returns the row, which is exactly what a
-        // projection that has not caught up does.
-        return jsonResponse({ rows: [row], watermark: { asOf: null, perTopic: {} } })
-      }),
-    )
-    return calls
-  }
-
-  it('leaves the worklist even when the projection still returns it', async () => {
-    stubWithStaleProjection()
-    renderActivationPage()
-
-    expect(await screen.findByText('Stale Projection Store')).toBeTruthy()
-    await userEvent.click(screen.getByRole('button', { name: /mark activated/i }))
-    await confirmInDialog()
-
-    await vi.waitFor(() => {
-      expect(screen.queryByText('Stale Projection Store')).toBeNull()
-    })
-  })
-
-  it('counts what it is showing, so the header cannot claim a row the table does not have', async () => {
-    stubWithStaleProjection()
-    renderActivationPage()
-
-    expect(await screen.findByText('Stale Projection Store')).toBeTruthy()
-    expect(screen.getByText('1 row')).toBeTruthy()
-    await userEvent.click(screen.getByRole('button', { name: /mark activated/i }))
-    await confirmInDialog()
-
-    await vi.waitFor(() => {
-      expect(screen.getByText('0 rows')).toBeTruthy()
-    })
-  })
-
-  it('names the merchant in the confirmation rather than the wire id', async () => {
-    stubWithStaleProjection()
-    renderActivationPage()
-
-    expect(await screen.findByText('Stale Projection Store')).toBeTruthy()
-    await userEvent.click(screen.getByRole('button', { name: /mark activated/i }))
-    await confirmInDialog()
-
-    await vi.waitFor(() => {
-      expect(screen.getByText(/Stale Projection Store marked activated/)).toBeTruthy()
-    })
-    expect(screen.queryByText(/asgn_stale marked activated/)).toBeNull()
-  })
-
-  it('formats the delivered date rather than printing the wire ISO string', async () => {
-    stubWithStaleProjection()
-    renderActivationPage()
-
-    expect(await screen.findByText('Stale Projection Store')).toBeTruthy()
-    expect(screen.queryByText('2026-08-01T00:00:00.000Z')).toBeNull()
-  })
-})
-
-// D-16 (T4.1b): "Batches ready to send to CWD", the card above the worklist.
-//
-// TWO FIXED CONTRACTS are exercised here and neither is invented by the portal:
-//   the `activation` report row now also carries `batchId` (the wire `btch_` id,
-//   null for a legacy pre-batch row) and `bankDisplay`
-//   (services/analytics/src/mediation.ts's activationRow); and
-//   GET /ops/reports/activation/batch/:btchId/xlsx returns the sheet as a
-//   BINARY body with a Content-Disposition filename, 404 when that batch has
-//   nothing awaiting activation.
-//
-// The send itself is POST /ops/assignments/request-activation, which
-// `requestActivation` in api/endpoints.ts has always described and which had no
-// caller in the portal until this card.
-describe('ActivationPage: batches ready to send to CWD', () => {
-  // btch_alpha: TWO dispatches and THREE devices, deliberately different
-  // numbers. The sheet carries one row per DEVICE, so a card that counted
-  // dispatches and called them devices would understate what the CWD receives,
-  // and a fixture where the two counts agreed could not catch that.
-  const BATCH_ROWS = {
-    rows: [
-      {
-        dispatchId: 'asgn_1',
-        programId: 'prg_1',
-        batchId: 'btch_alpha',
-        bankCode: 'HDFC',
-        bankDisplay: 'HDFC Bank',
-        merchantDisplay: 'Alpha Store',
-        deviceIds: ['DEV-1', 'DEV-2'],
-        deliveryDate: null,
-        activationStatus: null,
-        simActivationStatus: null,
-        activationDate: null,
-        activationFailureReason: null,
-      },
-      {
-        dispatchId: 'asgn_2',
-        programId: 'prg_1',
-        batchId: 'btch_alpha',
-        bankCode: 'HDFC',
-        bankDisplay: 'HDFC Bank',
-        merchantDisplay: 'Beta Store',
-        deviceIds: ['DEV-3'],
-        deliveryDate: null,
-        activationStatus: null,
-        simActivationStatus: null,
-        activationDate: null,
-        activationFailureReason: null,
-      },
-      {
-        dispatchId: 'asgn_3',
-        programId: 'prg_1',
-        batchId: 'btch_beta',
-        bankCode: 'ICIC',
-        bankDisplay: 'ICICI Bank',
-        merchantDisplay: 'Gamma Store',
-        deviceIds: ['DEV-4'],
-        deliveryDate: null,
-        activationStatus: null,
-        simActivationStatus: null,
-        activationDate: null,
-        activationFailureReason: null,
-      },
-      {
-        dispatchId: 'asgn_legacy',
-        programId: 'prg_1',
-        batchId: null,
-        bankCode: 'HDFC',
-        bankDisplay: 'HDFC Bank',
-        merchantDisplay: 'Legacy Store',
-        deviceIds: ['DEV-5'],
-        deliveryDate: null,
-        activationStatus: null,
-        simActivationStatus: null,
-        activationDate: null,
-        activationFailureReason: null,
-      },
-    ],
-    watermark: { asOf: null, perTopic: {} },
-  }
-
-  // The xlsx route's response, faked as a plain object rather than a real
-  // `Response`, for the reason apps/vendor-portal/test/features/pull.test.tsx
-  // records: the body is OPAQUE CARGO and the portal must hand it straight to
-  // the browser, so `text`/`arrayBuffer` are spies that must never be called.
-  function xlsxResponse(filename: string | null, blob: unknown, status = 200): unknown {
-    return {
-      status,
-      ok: status >= 200 && status < 300,
-      headers: {
-        get: (name: string) =>
-          name.toLowerCase() === 'content-disposition' && filename !== null
-            ? `attachment; filename="${filename}"`
-            : null,
-      },
-      blob: async () => blob,
-      text: async () => '',
-    }
-  }
-
-  // jsdom has no Blob-URL implementation to spy on, so createObjectURL and
-  // revokeObjectURL are defined directly, and document.createElement('a') is
-  // wrapped so `.click()` is a spy instead of a real navigation. Copied from
-  // test/features/reports.test.tsx's CSV-export test, which needed exactly this.
-  function captureSaveBlob(): { objectUrlArgs: unknown[]; anchors: HTMLAnchorElement[] } {
-    const objectUrlArgs: unknown[] = []
-    Object.defineProperty(URL, 'createObjectURL', {
-      value: (blob: unknown) => {
-        objectUrlArgs.push(blob)
-        return 'blob:mock-url'
-      },
-      writable: true,
-      configurable: true,
-    })
-    Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), writable: true, configurable: true })
-
-    const anchors: HTMLAnchorElement[] = []
-    const realCreateElement = document.createElement.bind(document)
-    vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
-      const el = realCreateElement(tag)
-      if (tag === 'a') {
-        ;(el as HTMLAnchorElement).click = vi.fn()
-        anchors.push(el as HTMLAnchorElement)
-      }
-      return el
-    }) as typeof document.createElement)
-    return { objectUrlArgs, anchors }
-  }
-
-  // The batch row that owns a given action button. The same idiom the row tests
-  // above use with `.closest('tr')`: no test-only attribute is added to the
-  // page just to be findable.
-  function batchRowFor(batchId: string): HTMLElement {
-    const button = screen.getByRole('button', { name: new RegExp(`download excel for ${batchId}`, 'i') })
-    return button.closest('li')!
-  }
-
-  async function confirmSendInDialog(): Promise<void> {
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.click(within(dialog).getByRole('button', { name: /mark sent to cwd/i }))
-  }
-
-  function stubBatches(handler?: (url: string, init: RequestInit) => unknown): Call[] {
-    const calls: Call[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: RequestInit) => {
-        calls.push({ url, init })
-        const handled = handler?.(url, init)
-        if (handled !== undefined) return handled
-        return jsonResponse(BATCH_ROWS)
-      }),
-    )
-    return calls
-  }
-
-  beforeEach(() => {
-    clearAccessToken()
-    setAccessToken('tok-1')
-    vi.unstubAllGlobals()
-  })
-  afterEach(() => {
-    cleanup()
-    // The createElement spy would otherwise outlive its test: this file has no
-    // global restoreMocks, and a leaked spy silently changes every later render.
+    // The createElement spy would otherwise outlive its test.
     vi.restoreAllMocks()
   })
 
-  it('groups the worklist by batch and counts dispatches and DEVICES separately', async () => {
+  // THREE COLUMNS as of 18 Aug 2026: Batch, Bank NAME, Soundboxes. The
+  // dispatch count is deliberately not a column any more (a batch's collateral
+  // legs inflate it without adding anything the CWD activates), and the bank is
+  // its name off the report row rather than a raw code.
+  it('shows one row per batch with the bank NAME and the SOUNDBOX count, not the dispatch count', async () => {
     stubBatches()
     renderActivationPage()
 
-    expect(await screen.findByText('Batches ready to send to CWD')).toBeTruthy()
+    expect(await screen.findByText('Batches ready for activation')).toBeTruthy()
 
     const alpha = batchRowFor('btch_alpha')
-    expect(within(alpha).getByText('btch_alpha')).toBeTruthy()
-    expect(within(alpha).getByText('2 dispatches')).toBeTruthy()
-    // THREE devices from TWO dispatches: the sheet has one row per device.
-    expect(within(alpha).getByText('3 devices')).toBeTruthy()
+    expect(within(alpha).getByText('HDFC Bank')).toBeTruthy()
+    // THREE devices from TWO dispatches: the sheet has one row per device, so
+    // 3 is the number shown and 2 must not appear as a count column.
+    expect(within(alpha).getByText('3')).toBeTruthy()
+    expect(within(alpha).queryByText('2')).toBeNull()
 
     const beta = batchRowFor('btch_beta')
-    expect(within(beta).getByText('1 dispatch')).toBeTruthy()
-    expect(within(beta).getByText('1 device')).toBeTruthy()
+    expect(within(beta).getByText('ICICI Bank')).toBeTruthy()
+    expect(within(beta).getByText('1')).toBeTruthy()
   })
 
-  it('links each batch id to its batch page', async () => {
+  // 16 Aug 2026 UAT, still true under the batch table: a dispatch with no
+  // device paired contributes nothing to activate, so it must not inflate a
+  // batch's counts or appear as its own group.
+  it('excludes a dispatch with no device paired from every batch it would otherwise join', async () => {
+    stubBatches((url) =>
+      url.includes('/ops/reports/activation')
+        ? jsonResponse({
+            rows: [
+              { ...BATCH_ROWS.rows[0]!, deviceIds: [] },
+              { ...BATCH_ROWS.rows[1]! },
+            ],
+            watermark: { asOf: null, perTopic: {} },
+          })
+        : undefined,
+    )
+    renderActivationPage()
+
+    await screen.findByText('Batches ready for activation')
+    const alpha = batchRowFor('btch_alpha')
+    // Only asgn_2 counted: 1 soundbox. asgn_1's TWO device ids are excluded
+    // entirely because it has no device paired, so a count of 3 here would be
+    // the bug this pins.
+    expect(within(alpha).getByText('1')).toBeTruthy()
+    expect(within(alpha).queryByText('3')).toBeNull()
+  })
+
+  it('clicking a batch row opens its devices page, not the dispatch-grain batch page (decision D8)', async () => {
     stubBatches()
     renderActivationPage()
 
-    await screen.findByText('Batches ready to send to CWD')
-    const link = within(batchRowFor('btch_alpha')).getByRole('link', { name: /btch_alpha/i })
-    expect(link.getAttribute('href')).toBe('/batches/btch_alpha')
+    await screen.findByText('Batches ready for activation')
+    await userEvent.click(batchRowFor('btch_alpha'))
+
+    expect(await screen.findByText('DEVICES PAGE for btch_alpha')).toBeTruthy()
+  })
+
+  it('keeps a not-yet-dispatched batch OFF the table, and says so (decision D15)', async () => {
+    stubBatches((url) =>
+      url.includes('/ops/reports/activation')
+        ? jsonResponse({
+            rows: [{ ...BATCH_ROWS.rows[0]!, batchId: 'btch_pending', pipelineState: 'SENT_TO_VENDOR' }],
+            watermark: { asOf: null, perTopic: {} },
+          })
+        : undefined,
+    )
+    renderActivationPage()
+
+    expect(await screen.findByText(/still with the print vendor, not yet dispatched/i)).toBeTruthy()
+    expect(screen.queryByText('btch_pending')).toBeNull()
   })
 
   it('downloads the batch xlsx from the batch route and saves it under the SERVED filename, without ever reading the bytes', async () => {
@@ -656,13 +276,13 @@ describe('ActivationPage: batches ready to send to CWD', () => {
     const arrayBufferSpy = vi.fn(async () => new ArrayBuffer(0))
     const fakeBlob = { text: textSpy, arrayBuffer: arrayBufferSpy }
     const calls = stubBatches((url) =>
-      url.includes('/xlsx') ? xlsxResponse('activation-btch_alpha.xlsx', fakeBlob) : undefined,
+      url.includes('/xlsx') ? xlsxResponse('btch_alpha-activation.xlsx', fakeBlob) : undefined,
     )
     const { objectUrlArgs, anchors } = captureSaveBlob()
 
     renderActivationPage()
-    await screen.findByText('Batches ready to send to CWD')
-    await userEvent.click(screen.getByRole('button', { name: /download excel for btch_alpha/i }))
+    await screen.findByText('Batches ready for activation')
+    await userEvent.click(within(batchRowFor('btch_alpha')).getByRole('button', { name: /download cwd file/i }))
 
     const download = await vi.waitFor(() => {
       const found = calls.find((c) => c.url.includes('/xlsx'))
@@ -671,11 +291,9 @@ describe('ActivationPage: batches ready to send to CWD', () => {
     })
     expect(download.url).toContain('/ops/reports/activation/batch/btch_alpha/xlsx')
 
-    // The filename comes off Content-Disposition, never re-derived client-side.
     await vi.waitFor(() => {
-      expect(anchors.some((a) => a.download === 'activation-btch_alpha.xlsx')).toBe(true)
+      expect(anchors.some((a) => a.download === 'btch_alpha-activation.xlsx')).toBe(true)
     })
-    // And it is the SERVED blob object that was handed to the browser.
     expect(objectUrlArgs).toContain(fakeBlob)
     expect(textSpy).not.toHaveBeenCalled()
     expect(arrayBufferSpy).not.toHaveBeenCalled()
@@ -686,101 +304,102 @@ describe('ActivationPage: batches ready to send to CWD', () => {
     captureSaveBlob()
 
     renderActivationPage()
-    await screen.findByText('Batches ready to send to CWD')
-    await userEvent.click(screen.getByRole('button', { name: /download excel for btch_alpha/i }))
+    await screen.findByText('Batches ready for activation')
+    await userEvent.click(within(batchRowFor('btch_alpha')).getByRole('button', { name: /download cwd file/i }))
 
     expect(await screen.findByText(/nothing awaiting activation/i)).toBeTruthy()
-    // The other batch is untouched: one batch's 404 is not the card's verdict.
+    // The other batch is untouched: one batch's 404 is not the table's verdict.
     expect(within(batchRowFor('btch_beta')).queryByText(/nothing awaiting activation/i)).toBeNull()
   })
 
-  it('marking a batch sent opens the confirmation and POSTs only after it is confirmed', async () => {
+  // THE CORE OF THE REDESIGN. Activate calls the bulk route with the batch's
+  // own dispatch ids, independent of delivery and courier status (D-16): it
+  // does not touch any dispatch or shipment endpoint at all.
+  it('activating a batch opens the confirmation and posts only the batch dispatch ids after it is confirmed', async () => {
     const calls = stubBatches((url) =>
-      url.includes('/request-activation')
-        ? jsonResponse({ deduped: false, recorded: ['asgn_1', 'asgn_2'], unknown: [] })
+      url.includes('/activate-bulk')
+        ? jsonResponse({
+            results: [
+              { dispatchId: 'asgn_1', activated: true, reason: null },
+              { dispatchId: 'asgn_2', activated: true, reason: null },
+            ],
+          })
         : undefined,
     )
 
     renderActivationPage()
-    await screen.findByText('Batches ready to send to CWD')
-    await userEvent.click(screen.getByRole('button', { name: /mark btch_alpha sent to cwd/i }))
+    await screen.findByText('Batches ready for activation')
+    await userEvent.click(within(batchRowFor('btch_alpha')).getByRole('button', { name: /activate the devices in btch_alpha/i }))
 
     // The first click only asks. Nothing has been written.
-    expect(calls.some((c) => c.url.includes('/request-activation'))).toBe(false)
-    await confirmSendInDialog()
+    expect(calls.some((c) => c.url.includes('/activate-bulk'))).toBe(false)
+    await confirmActivateInDialog()
 
     const write = await vi.waitFor(() => {
-      const found = calls.find((c) => c.url.includes('/request-activation'))
+      const found = calls.find((c) => c.url.includes('/activate-bulk'))
       expect(found).toBeTruthy()
       return found!
     })
     expect(write.init.method).toBe('POST')
-    // The GROUP's dispatch ids, and only those: btch_beta's is not in the send.
+    // btch_beta's dispatch id is not in this batch's send.
     expect(parseBody(write).dispatchIds).toEqual(['asgn_1', 'asgn_2'])
     expect(headerValue(write, 'Idempotency-Key')).toBeTruthy()
   })
 
-  it('counts recorded and unknown from the RESPONSE, never the number requested', async () => {
+  it('reports what ACTUALLY activated in the success dialog, never what was asked for', async () => {
     stubBatches((url) =>
-      url.includes('/request-activation')
-        ? jsonResponse({ deduped: false, recorded: ['asgn_1'], unknown: ['asgn_2'] })
+      url.includes('/activate-bulk')
+        ? jsonResponse({
+            results: [
+              { dispatchId: 'asgn_1', activated: true, reason: null },
+              { dispatchId: 'asgn_2', activated: false, reason: 'already-activated' },
+            ],
+          })
         : undefined,
     )
 
     renderActivationPage()
-    await screen.findByText('Batches ready to send to CWD')
-    await userEvent.click(screen.getByRole('button', { name: /mark btch_alpha sent to cwd/i }))
-    await confirmSendInDialog()
+    await screen.findByText('Batches ready for activation')
+    await userEvent.click(within(batchRowFor('btch_alpha')).getByRole('button', { name: /activate the devices in btch_alpha/i }))
+    await confirmActivateInDialog()
 
-    // Two were asked for; one was recorded and one was not found. Saying
-    // "2 recorded" is the exact false claim this assertion exists to block.
-    expect(await screen.findByText(/1 recorded/i)).toBeTruthy()
-    expect(screen.getByText(/1 not found/i)).toBeTruthy()
-    expect(screen.queryByText(/2 recorded/i)).toBeNull()
+    // Two were sent; only one actually activated. Saying "2" would be the
+    // exact false claim the old bulk-outcome test existed to block.
+    expect(await screen.findByText(/1 device activated/i)).toBeTruthy()
+    expect(screen.queryByText(/2 devices activated/i)).toBeNull()
   })
 
-  // THE REGRESSION THAT MATTERS MOST. REQUEST_SENT_TO_CWD is an
-  // activation-REQUEST record, not an activation: nobody has activated anything
-  // yet, so the rows must stay on the worklist and stay actionable. Hiding them
-  // would make rows vanish before the CWD confirmed a single device.
-  it('keeps a sent batch and its rows on the worklist, still actionable', async () => {
+  it('removes an activated batch from the table, and the success dialog can jump to Inventory', async () => {
     stubBatches((url) =>
-      url.includes('/request-activation')
-        ? jsonResponse({ deduped: false, recorded: ['asgn_1', 'asgn_2'], unknown: [] })
+      url.includes('/activate-bulk')
+        ? jsonResponse({ results: [{ dispatchId: 'asgn_1', activated: true, reason: null }, { dispatchId: 'asgn_2', activated: true, reason: null }] })
         : undefined,
     )
 
     renderActivationPage()
-    await screen.findByText('Batches ready to send to CWD')
-    await userEvent.click(screen.getByRole('button', { name: /mark btch_alpha sent to cwd/i }))
-    await confirmSendInDialog()
+    await screen.findByText('Batches ready for activation')
+    await userEvent.click(within(batchRowFor('btch_alpha')).getByRole('button', { name: /activate the devices in btch_alpha/i }))
+    await confirmActivateInDialog()
 
-    expect(await screen.findByText(/2 recorded/i)).toBeTruthy()
-    // Both of the batch's rows are still in the table below.
-    expect(screen.getByText('asgn_1')).toBeTruthy()
-    expect(screen.getByText('asgn_2')).toBeTruthy()
-    expect(screen.getByText('4 rows')).toBeTruthy()
-    // Still actionable: the row's own activate control is still there.
-    const row = screen.getByText('asgn_1').closest('tr')!
-    expect(within(row).getByRole('button', { name: /mark activated/i })).toBeTruthy()
-    // And the batch itself is still on the card, not hidden by its own send.
-    expect(within(batchRowFor('btch_alpha')).getByText('2 dispatches')).toBeTruthy()
+    expect(await screen.findByText(/2 devices activated/i)).toBeTruthy()
+    // btch_alpha is gone from behind the dialog; btch_beta is untouched.
+    expect(screen.queryByText('btch_alpha')).toBeNull()
+    expect(screen.getByText('btch_beta')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: /view inventory/i }))
+    expect(await screen.findByText('INVENTORY PAGE')).toBeTruthy()
   })
 
-  // A legacy pre-batch row is shown honestly rather than given a fabricated id
-  // or dropped: it is still awaiting activation and still on the worklist, it
-  // just has no batch for a download to name.
-  it('renders a batchless legacy group with no actions and says why', async () => {
+  // A legacy pre-batch row cannot download (nothing to name the sheet after)
+  // but can still be activated: markActivatedBulk needs only dispatch ids.
+  it('lets a batchless legacy group activate, with no download offered', async () => {
     stubBatches()
     renderActivationPage()
 
-    await screen.findByText('Batches ready to send to CWD')
-    const legacy = screen.getByText('No batch').closest('li')!
-    expect(within(legacy).getByText('1 dispatch')).toBeTruthy()
-    expect(within(legacy).queryByRole('button')).toBeNull()
-    expect(within(legacy).getByText(/needs a batch to name/i)).toBeTruthy()
-    // The row is still on the worklist below, not hidden.
-    expect(screen.getByText('asgn_legacy')).toBeTruthy()
+    await screen.findByText('Batches ready for activation')
+    const legacy = screen.getByText('No batch').closest('tr')!
+    expect(within(legacy).queryByRole('button', { name: /download cwd file/i })).toBeNull()
+    expect(within(legacy).getByRole('button', { name: /activate/i })).toBeTruthy()
   })
 
   it('shows the number of banks rather than picking one when a batch spans several', async () => {
@@ -789,8 +408,8 @@ describe('ActivationPage: batches ready to send to CWD', () => {
       vi.fn(async () =>
         jsonResponse({
           rows: [
-            { ...BATCH_ROWS.rows[0]!, batchId: 'btch_mixed', bankCode: 'HDFC' },
-            { ...BATCH_ROWS.rows[1]!, batchId: 'btch_mixed', bankCode: 'ICIC' },
+            { ...BATCH_ROWS.rows[0]!, batchId: 'btch_mixed', bankDisplay: 'HDFC Bank' },
+            { ...BATCH_ROWS.rows[1]!, batchId: 'btch_mixed', bankDisplay: 'ICICI Bank' },
           ],
           watermark: { asOf: null, perTopic: {} },
         }),
@@ -798,17 +417,48 @@ describe('ActivationPage: batches ready to send to CWD', () => {
     )
     renderActivationPage()
 
-    await screen.findByText('Batches ready to send to CWD')
+    await screen.findByText('Batches ready for activation')
     expect(within(batchRowFor('btch_mixed')).getByText('2 banks')).toBeTruthy()
   })
 
-  it('renders no batches card at all when nothing is awaiting activation', async () => {
+  // ONE FILTER, on the batch id. The old dispatch/merchant/device search box
+  // and bank multi-select both filtered by things this table no longer shows.
+  it('filters on the batch id only, and offers no other filter control', async () => {
+    stubBatches()
+    renderActivationPage()
+
+    await screen.findByText('Batches ready for activation')
+    expect(screen.getByText('btch_beta')).toBeTruthy()
+
+    await userEvent.type(screen.getByLabelText(/batch id/i), 'alpha')
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText('btch_beta')).toBeNull()
+    })
+    expect(screen.getByText('btch_alpha')).toBeTruthy()
+    // No bank picker, and no search box naming columns that do not exist.
+    expect(screen.queryByLabelText(/^bank$/i)).toBeNull()
+    expect(screen.queryByPlaceholderText(/dispatch, merchant or device/i)).toBeNull()
+  })
+
+  it('renders the empty state when nothing is awaiting activation', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ rows: [], watermark: { asOf: null, perTopic: {} } })))
     renderActivationPage()
 
-    // The worklist's own empty state is the page's answer; a card announcing
-    // zero batches beside it would be a second way of saying nothing.
     expect(await screen.findByText(/nothing is awaiting activation/i)).toBeTruthy()
-    expect(screen.queryByText('Batches ready to send to CWD')).toBeNull()
+  })
+
+  // THE REMOVED CONTROLS. Neither the per-dispatch worklist nor the
+  // request-activation ("Mark sent to CWD") write exists on this page any
+  // more; asserting their absence is what would catch either regressing back.
+  it('has no per-dispatch worklist, no checkboxes, and no Mark sent to CWD control anywhere', async () => {
+    stubBatches()
+    renderActivationPage()
+
+    await screen.findByText('Batches ready for activation')
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: /mark sent to cwd/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^mark activated$/i })).toBeNull()
+    expect(screen.queryByText('Awaiting activation')).toBeNull()
   })
 })

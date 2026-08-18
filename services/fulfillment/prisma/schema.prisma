@@ -245,6 +245,17 @@ model Batch {
   /// free text lives on the domain row, never on the IDs-only 6e authz record
   /// (DD1) and never on the batch fact.
   triggerNote      String?  @map("trigger_note")
+  /// The ratified batch lifecycle (18 Aug 2026), replacing the write-once
+  /// column dropped by 20260810040000_drop_batch_status. That migration allowed
+  /// a status column back only as "a designed state machine with named
+  /// writers", which this is: BATCHED is written by the batching trigger,
+  /// SENT_TO_PRINT_VENDOR by the ops send-to-vendor action, CLOSED by the ops
+  /// close action once every dispatch in the batch has settled (delivered,
+  /// returned or damaged). Nothing else writes it. Stored rather than derived
+  /// because it drives filtering on the batches list, the tiles and the
+  /// activation worklist, none of which should have to read child rows to
+  /// answer. Activation is deliberately absent: it is device-level.
+  status           String   @default("BATCHED")
   unitCount        Int      @map("unit_count")
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)

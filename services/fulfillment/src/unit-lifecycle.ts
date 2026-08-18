@@ -27,9 +27,30 @@ import { enterWriteRole } from './write-context.js'
 // device backwards, correctly, and the ladder had wrongly told it that delivery
 // was backwards. Activation is now unit.activated_at, a parallel axis, and the
 // two can be read together without either overwriting the other.
+// ALLOCATED WAS THE SECOND RUNG and is gone as of 19 Aug 2026. It meant
+// "reserved for a batch, before the print vendor has it" and NO PATH EVER WROTE
+// IT: the real flow goes from intake straight to the print vendor's return sheet,
+// which reports printing and dispatch together, and the monotonic guard below
+// permits that skip because it only requires b > a. This file's own comment had
+// recorded the hole ("reachable by nothing") and argued for keeping the rung
+// anyway, on the grounds that reserving stock ahead of printing is a real step
+// with no hook yet, and that a gap mid-spine would read worse than an unused
+// rung.
+//
+// It read worse than a gap. The portal draws every rung BEFORE the current one as
+// reached, because `unit` keeps no per-transition history to consult, so every
+// dispatched device in the demo carried a green tick on a stage it had never
+// entered. An unused rung is not inert; on a rail it is a false claim about a
+// specific device. Raised by the product owner on the demo data, and removed at
+// their direction.
+//
+// IF STOCK RESERVATION IS BUILT, this is a one-line restoration plus the writer
+// that justifies it, and the portal follows through the parity guard in
+// test/device_status_parity.test.ts. Nothing about the shape below prevents it.
+// Recorded for the architecture chat rather than dropped silently: this narrows a
+// ratified vocabulary, even though it narrows it to what the code actually does.
 export const UNIT_STATUS_ORDER = [
   'IN_STOCK', // born at manufacturer intake
-  'ALLOCATED', // reserved for a batch, before the print vendor has it
   'PRINTED', // the print vendor confirmed this serial was printed
   'DISPATCHED', // handed to the courier (the return sheet carries the AWB)
   'DELIVERED', // the courier confirmed delivery
@@ -58,11 +79,11 @@ function isTerminal(status: string): boolean {
 /**
  * True when `to` is a legal move from `from`.
  *
- * ALLOCATED is currently reachable by nothing: the real flow goes from intake
- * straight to the print vendor's return sheet, which reports printing and
- * dispatch together. It is kept in the order because reserving stock ahead of
- * printing is a real step that simply has no hook yet, and leaving a hole in
- * the middle of the spine would be worse than an unused rung.
+ * SKIPPING IS LEGAL, and stays legal now that the spine has no unwritten rung in
+ * it: the rule is `b > a`, strictly forward, not "the next one". The return sheet
+ * relies on it (it reports printing and dispatch together), and a courier file
+ * that arrives with DELIVERED for a device we never saw dispatched should record
+ * the delivery rather than refuse the fact.
  */
 export function canAdvanceUnitStatus(from: string, to: AnyUnitStatus): boolean {
   // Nothing leaves a terminal branch. A stale ACTIVATED fact must not resurrect

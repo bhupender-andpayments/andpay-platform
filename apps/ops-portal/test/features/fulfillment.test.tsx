@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { FulfillmentPage } from '../../src/features/fulfillment/FulfillmentPage.js'
@@ -44,6 +44,7 @@ const POOL_ROW = {
 
 const BATCH_ROW = {
   id: 'btch_abc',
+  status: 'BATCHED',
   triggerReason: 'LOT_SIZE',
   unitCount: 42,
   printVndr: null,
@@ -84,17 +85,18 @@ afterEach(() => {
 })
 
 describe('FulfillmentPage', () => {
-  it('reads GET /ops/pool on mount and shows the pool inline, with nothing to click first', async () => {
-    const calls = stubFetch(() => jsonResponse([POOL_ROW]))
+  // THE POOL IS NOT ON THIS PAGE ANY MORE (18 Aug 2026, decision D14). It moved
+  // to /pool, with its own request-grain table and its own tests
+  // (test/features/pool.test.tsx). This assertion is the guard against it
+  // drifting back: two pages both showing the queue is how the batches page got
+  // to be two pages' worth of work in the first place.
+  it('does not read or render the pool, which lives at /pool now', async () => {
+    const calls = stubFetch((url) => jsonResponse(url.includes('/ops/batches') ? [BATCH_ROW] : []))
     renderFulfillment()
-    // 2026-08-17: the pool is ON the page. It used to sit behind a "View pool"
-    // button that opened a dialog, which put the records an operator is
-    // deciding about behind an overlay at the moment they decide.
-    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /view pool/i })).toBeNull()
-    expect(calls.some((c) => c.url.includes('/ops/pool'))).toBe(true)
-    const headers = calls[0]!.init.headers as Record<string, string>
-    expect(headers['Idempotency-Key']).toBeUndefined()
+    await screen.findByText('btch_abc')
+    expect(calls.some((c) => c.url.includes('/ops/pool'))).toBe(false)
+    expect(screen.queryByText(/build batch/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /create trigger/i })).toBeNull()
   })
 
   it('the batches region calls GET /ops/batches and shows the stored unit count', async () => {
@@ -105,37 +107,6 @@ describe('FulfillmentPage', () => {
     expect(calls.some((c) => c.url.includes('/ops/batches'))).toBe(true)
   })
 
-  it('renders NO recipient PII, because the server projection carries none', async () => {
-    // A server that wrongly leaked PII must still not have it rendered: the
-    // columns are a fixed PII-free set, not a spread of whatever arrived.
-    const leaky = { ...POOL_ROW, shipToAddress: 'PLOT 42 SECRET LANE', shipToMobile: '9537908017' }
-    stubFetch(() => jsonResponse([leaky]))
-    renderFulfillment()
-    await screen.findByText('BRILLIANT PERFUME')
-    expect(screen.queryByText(/PLOT 42 SECRET LANE/)).toBeNull()
-    expect(screen.queryByText(/9537908017/)).toBeNull()
-  })
-
-  // Final review minor 2 (2026-08-11): spec 1.9 wants a dispatch group badge
-  // in the pool view too, not only batch detail. The pool table had no
-  // Dispatch ID cell at all before this fix; this test pins both the new
-  // chip and the badge rule (SB for a SOUNDBOX row, nothing for a legacy row).
-  it('shows the Dispatch ID chip with an SB badge on a SOUNDBOX row, and no badge on a legacy row', async () => {
-    stubFetch(() =>
-      jsonResponse([
-        { ...POOL_ROW, asgnId: 'asgn_sb', merchantDisplayName: 'ALPHA TRADERS', dispatchGroup: 'SOUNDBOX' },
-        { ...POOL_ROW, asgnId: 'asgn_legacy', merchantDisplayName: 'GAMMA TRADERS', dispatchGroup: null },
-      ]),
-    )
-    renderFulfillment()
-    await screen.findByText('ALPHA TRADERS')
-    expect(await screen.findByText('asgn_sb')).toBeTruthy()
-    expect(await screen.findByText('asgn_legacy')).toBeTruthy()
-    expect(screen.getByText('SB')).toBeTruthy()
-    expect(screen.getByLabelText('Soundbox dispatch')).toBeTruthy()
-    // Only ONE badge span exists for two rows: the legacy row gets nothing.
-    expect(screen.queryAllByText(/^(SB|COLL)$/)).toHaveLength(1)
-  })
 })
 
 describe('FulfillmentPage navigation', () => {
@@ -148,15 +119,11 @@ describe('FulfillmentPage navigation', () => {
   })
 })
 
-// Spec 7.2: "Two regions on one page." The tab strip was the same shape
-// principle 4 names as the defect and that the redesign had already removed
-// from Uploads and Operations. Worse here, because the pending pool and the
-// batches formed FROM it are two halves of one question.
-// The old "two regions on one page" ruling has been relaxed 2026-08-14: the
-// page opens on Ready to batch + Batches, and the pending pool is one click
-// away in a dialog (users wanted the page not to be a long scroll of tables).
-// The suite below still pins two things: no tab strip, and no shipments list.
-describe('Batches: default landing, no tab strip', () => {
+// What this page is, and is not. It carried a tab strip once, then two regions,
+// then the pool inline; as of 18 Aug 2026 (decision D14) it is the batches and
+// nothing else, and the suite pins the things that have each been wrong before:
+// no tab strip, no shipments list, no pool.
+describe('Batches: the page is the batches and nothing else', () => {
   beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup(); clearAccessToken() })
 
@@ -164,7 +131,7 @@ describe('Batches: default landing, no tab strip', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (url.includes('/ops/batches')) {
         return new Response(JSON.stringify([{
-          id: 'btch_1', triggerReason: 'MANUAL', unitCount: 3,
+          id: 'btch_1', status: 'BATCHED', triggerReason: 'MANUAL', unitCount: 3,
           printVndr: null, triggeredByActor: null,
           createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
         }]), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -182,26 +149,27 @@ describe('Batches: default landing, no tab strip', () => {
     }
   })
 
-  it('opens on Build batch + Batches, with the pool itself on screen', async () => {
+  it('opens straight on the batches list', async () => {
     stubBoth()
     renderFulfillment()
     expect(await screen.findByText(/newest first\. open a batch/i)).toBeTruthy()
-    // The pool is inline now, so there is nothing to open and nothing to open it.
+    // Nothing to open and nothing to open it with: no pool dialog, no pool
+    // filter, no pool at all.
     expect(screen.queryByRole('button', { name: /view pool/i })).toBeNull()
-    // No sidebar Card claiming to be the pool's own filter Toolbar.
     expect(screen.queryByLabelText(/pool status/i)).toBeNull()
   })
 
-  // An empty pool used to say so TWICE in one card: "Nothing pooled yet" from
-  // the inline grid, and "Nothing waiting to be batched" stacked directly
-  // beneath it. Both branches read the same POOLED rows, so once the table came
-  // out from behind its dialog they became the same condition. The grid owns
-  // the message whenever it is on screen.
-  it('says the pool is empty ONCE, not once per component that noticed', async () => {
-    stubBoth()
+  it('says no batches have formed rather than rendering a bare table', async () => {
+    // No batches at all, which is a different empty state from "none match your
+    // filters": the page distinguishes them because the fix for each is different.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })),
+    )
     renderFulfillment()
-    expect(await screen.findByText(/nothing pooled yet/i)).toBeTruthy()
-    expect(screen.queryByText(/nothing waiting to be batched/i)).toBeNull()
+    expect(await screen.findByText(/no batches have formed yet/i)).toBeTruthy()
+    // The pool's own empty state belongs to /pool now, not here.
+    expect(screen.queryByText(/nothing pooled yet/i)).toBeNull()
   })
 
   it('no longer carries the shipments list, which moved to /dispatches', async () => {
@@ -218,15 +186,49 @@ describe('Batches: default landing, no tab strip', () => {
 // 10 Aug"), which asserts a lifecycle the domain does not have. Adding the
 // missing states would be inventing a state machine, so the portal stops
 // claiming instead.
-describe('Batches: a constant is not a status', () => {
+// THIS SUITE USED TO SAY THE OPPOSITE, and the reversal is the point.
+//
+// It was written when batch.status had been dropped: the column was
+// write-once-read-never, every batch held the same word, and a pill showing one
+// constant to everybody says nothing, so the right assertion then was that no
+// Status column exists.
+//
+// As of 18 Aug 2026 a batch has a real three-state lifecycle with three named
+// writers (BATCHED by the trigger, SENT_TO_PRINT_VENDOR by the send action,
+// CLOSED by the close action), so the status now distinguishes batches from each
+// other and is what the list filters on. The pin flips to guard the new
+// contract: the column exists AND it renders the server's value, not a constant.
+describe('Batches: the status is a real lifecycle now', () => {
   beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup(); clearAccessToken() })
 
-  it('the batch list has no Status column', async () => {
+  it('the batch list has a Status column carrying the value the server sent', async () => {
     stubFetch((url) => jsonResponse(url.includes('/ops/batches') ? [BATCH_ROW] : []))
     renderFulfillment()
     expect(await screen.findByRole('columnheader', { name: 'Trigger' })).toBeTruthy()
-    expect(screen.queryByRole('columnheader', { name: 'Status' })).toBeNull()
+    expect(screen.getByRole('columnheader', { name: 'Status' })).toBeTruthy()
+    // BATCH_ROW is BATCHED, and statusMeta renders that as "Batched". Scoped to
+    // the ROW, because the word is deliberately on screen twice: the tile band
+    // above counts batches by status and labels one of its tiles the same thing.
+    const row = screen.getByRole('row', { name: new RegExp(BATCH_ROW.id) })
+    expect(within(row).getByText('Batched')).toBeTruthy()
+  })
+
+  it('offers Send to print vendor on a BATCHED batch, the one state it is legal in', async () => {
+    stubFetch((url) => jsonResponse(url.includes('/ops/batches') ? [BATCH_ROW] : []))
+    renderFulfillment()
+    expect(await screen.findByRole('button', { name: /send batch .* to the print vendor/i })).toBeTruthy()
+  })
+
+  it('offers no send control once the batch has already been sent', async () => {
+    stubFetch((url) =>
+      jsonResponse(url.includes('/ops/batches') ? [{ ...BATCH_ROW, status: 'SENT_TO_PRINT_VENDOR' }] : []),
+    )
+    renderFulfillment()
+    // The status has to be on screen before the absence of the button means
+    // anything: asserting on an empty grid would pass for the wrong reason.
+    expect(await screen.findByText('Sent to print vendor')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /send batch .* to the print vendor/i })).toBeNull()
   })
 
   // Retargeted 13 Aug 2026: the batch page is now the collateral generator, and

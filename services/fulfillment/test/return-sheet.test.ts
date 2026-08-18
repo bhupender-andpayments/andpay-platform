@@ -4,7 +4,7 @@ import type { LeanClaim } from '@andpay/authz'
 import { onceWithin, enqueue } from '@andpay/outbox'
 import type { Envelope } from '@andpay/envelope'
 import { PrismaClient } from '../generated/client/index.js'
-import { ingestReturnSheet, type ReturnSheet, type ReturnRow } from '../src/return-sheet.js'
+import { ingestReturnSheet, ingestReturnSheetOps, type ReturnSheet, type ReturnRow } from '../src/return-sheet.js'
 import { consumeBatchFact } from '../src/dispatch.js'
 import { listDispatches } from '../src/ops-read.js'
 import { readShipments } from '../src/read.js'
@@ -709,14 +709,13 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
   // asgn and the group emits NO dispatch fact at all (skip-on-zero-advance).
   // The entry must also NOT be left "stuck": a legitimate consumeBatchFact
   // run afterward (its compose half gated on `dispatch_state IS NULL`) can
-  // still pick it up exactly as if the return had never arrived. Note:
-  // consumeBatchFact runs compose AND dispatch as two chained steps inside
-  // ONE call, so the observable end state after that single call is
-  // SENT_TO_VENDOR (compose flips NULL->QR_GENERATED, then its own
-  // already-existing dispatch-step guard immediately flips
-  // QR_GENERATED->SENT_TO_VENDOR); what matters for this regression is that
-  // it was free to move at all, proving the earlier zero-row UPDATE left no
-  // residue blocking compose's own `IS NULL` guard.
+  // still pick it up exactly as if the return had never arrived. The observable
+  // end state after that call is QR_GENERATED: as of 18 Aug 2026 (decision D4)
+  // consumeBatchFact composes and stops, and SENT_TO_VENDOR belongs to the
+  // operator's send action. What matters for this regression is unchanged and
+  // is in fact shown more directly now: the entry was free to MOVE at all,
+  // proving the earlier zero-row UPDATE left no residue blocking compose's own
+  // `IS NULL` guard.
   it('(i) monotonicity: a return-sheet arriving before compose never regresses dispatch_state, and compose can still advance it afterward', async () => {
     const fx = await fullFixture('SER-MONO', 'trace-mono-1', null) // dispatch_state deliberately left NULL
     const claim = classSixClaim(fx.vndrId, fx.workQueue)
@@ -773,7 +772,7 @@ describe('ingestReturnSheet (print/ship return-sheet ingest, checks 3/4/7)', () 
     const entryAfterCompose = await db.$queryRaw<{ dispatch_state: string | null }[]>`
       SELECT dispatch_state FROM pending_pool_entry WHERE asgn_id = ${fx.asgnUuid}::uuid
     `
-    expect(entryAfterCompose[0]!.dispatch_state).toBe('SENT_TO_VENDOR') // compose then dispatch both ran within consumeBatchFact
+    expect(entryAfterCompose[0]!.dispatch_state).toBe('QR_GENERATED') // compose ran; sending is now a separate operator action
   })
 
   // (b) the normal happy path, mixed with a NULL sibling in the SAME
@@ -1633,5 +1632,163 @@ describe('ingestReturnSheet collateral rows (legacy null-group dispatch id, up t
 
     const unscoped = await readShipments(db, [])
     expect(unscoped).toEqual([]) // fail-closed on an empty scope, unchanged
+  })
+})
+
+// ---------------------------------------------------------------------- //
+// BATCH SCOPE ON THE OPS UPLOAD (19 Aug 2026).
+//
+// The batch-scoped return page told the operator "every Dispatch ID in the file
+// must belong to this batch; a row from any other batch refuses the whole
+// sheet", and that check existed ONLY in the browser, as a disabled Commit
+// button. The server's sole cross-batch defence was mixed_vendors, and under
+// D-9a there is exactly one ACTIVE PRINT vendor, so every batch resolves to the
+// same vendor and that refusal can never fire. A sheet naming another batch's
+// dispatches would have paired them and advanced that other batch, behind a
+// success screen reporting only counts.
+//
+// So ingestReturnSheetOps takes an optional batchId. It is an INTENT ASSERTION,
+// never a scope (M7/S16): the caller says which batch the sheet is about and the
+// domain checks the claim against dispatches it already reads for vendor
+// binding. Absent, every one of these paths behaves exactly as before.
+// ---------------------------------------------------------------------- //
+
+/** A fixture whose batch is BOUND to a print vendor, which the ops path requires. */
+async function opsFixture(deviceSerial: string, traceId: string): Promise<Fixture> {
+  const fx = await fullFixture(deviceSerial, traceId)
+  await db.$executeRaw`
+    UPDATE batch SET print_vndr = ${toUuid(fx.vndrId)}::uuid WHERE id = ${fx.batchUuid}::uuid
+  `
+  return fx
+}
+
+async function unitStateOf(deviceSerial: string): Promise<{ status: string; shipment: string | null }> {
+  const rows = await db.$queryRaw<{ status: string; shipment: string | null }[]>`
+    SELECT status, shipment::text AS shipment FROM unit WHERE device_serial = ${deviceSerial}
+  `
+  return rows[0]!
+}
+
+describe('ingestReturnSheetOps: the sheet must stay inside the batch it was uploaded for', () => {
+  it('ingests when every row belongs to the named batch', async () => {
+    const serial = 'SER-SCOPE-1'
+    const fx = await opsFixture(serial, 'trace-scope-1')
+    const res = await ingestReturnSheetOps(db, {
+      fileId: 'return-scope-ok',
+      batchId: fromUuid('btch', fx.batchUuid),
+      rows: [{ deviceSerial: serial, asgnId: fx.asgnWire, awb: 'AWB-SCOPE-1' }],
+    })
+    expect(res.rejected).toBeUndefined()
+    expect(res.pairedUnitIds).toHaveLength(1)
+    expect((await unitStateOf(serial)).status).toBe('DISPATCHED')
+  })
+
+  it('refuses the WHOLE sheet, writing nothing, when a row belongs to another batch', async () => {
+    const mine = 'SER-SCOPE-2A'
+    const theirs = 'SER-SCOPE-2B'
+    const a = await opsFixture(mine, 'trace-scope-2a')
+    const b = await opsFixture(theirs, 'trace-scope-2b')
+
+    const res = await ingestReturnSheetOps(db, {
+      fileId: 'return-scope-foreign',
+      batchId: fromUuid('btch', a.batchUuid),
+      rows: [
+        { deviceSerial: mine, asgnId: a.asgnWire, awb: 'AWB-SCOPE-2A' },
+        { deviceSerial: theirs, asgnId: b.asgnWire, awb: 'AWB-SCOPE-2B' },
+      ],
+    })
+
+    expect(res.rejected).toBe('foreign_dispatch')
+    // WHOLE-file, so the row that WAS in scope is untouched too: a partial apply
+    // would leave the operator to work out which half landed.
+    expect(res.pairedUnitIds).toHaveLength(0)
+    expect(res.shptIds).toHaveLength(0)
+    for (const serial of [mine, theirs]) {
+      const u = await unitStateOf(serial)
+      expect(u.status).toBe('IN_STOCK')
+      expect(u.shipment).toBeNull()
+    }
+  })
+
+  it('treats a dispatch id that belongs to NO batch as foreign, not as a quarantine row', async () => {
+    const serial = 'SER-SCOPE-3'
+    const fx = await opsFixture(serial, 'trace-scope-3')
+    const res = await ingestReturnSheetOps(db, {
+      fileId: 'return-scope-unknown',
+      batchId: fromUuid('btch', fx.batchUuid),
+      rows: [
+        { deviceSerial: serial, asgnId: fx.asgnWire, awb: 'AWB-SCOPE-3A' },
+        // Well-formed and resolves to nothing. Without a batch in hand this is a
+        // per-row asgn_not_found quarantine; WITH one the operator has said which
+        // batch the sheet is about, so it is the wrong sheet.
+        { deviceSerial: undefined, asgnId: newId('asgn'), awb: 'AWB-SCOPE-3B' },
+      ],
+    })
+    expect(res.rejected).toBe('foreign_dispatch')
+    expect((await unitStateOf(serial)).status).toBe('IN_STOCK')
+  })
+
+  it('answers foreign_dispatch for a malformed batchId rather than throwing', async () => {
+    const serial = 'SER-SCOPE-4'
+    const fx = await opsFixture(serial, 'trace-scope-4')
+    const res = await ingestReturnSheetOps(db, {
+      fileId: 'return-scope-badbatch',
+      batchId: 'not-a-batch-id',
+      rows: [{ deviceSerial: serial, asgnId: fx.asgnWire, awb: 'AWB-SCOPE-4' }],
+    })
+    // It cannot match anything, so nothing in the sheet can belong to it.
+    expect(res.rejected).toBe('foreign_dispatch')
+    expect((await unitStateOf(serial)).status).toBe('IN_STOCK')
+  })
+
+  it('WITHOUT a batchId, a sheet spanning two batches of the same vendor still ingests', async () => {
+    // The pre-19-Aug behaviour, unchanged: the generic Uploads entry has no batch
+    // in hand, so per-row resolution is the only truth available and a
+    // consolidated sheet is legitimate there.
+    const one = 'SER-SCOPE-5A'
+    const two = 'SER-SCOPE-5B'
+    const a = await opsFixture(one, 'trace-scope-5a')
+    const b = await opsFixture(two, 'trace-scope-5b')
+    // Same vendor on both batches, so mixed_vendors cannot be what saves us.
+    await db.$executeRaw`
+      UPDATE batch SET print_vndr = ${toUuid(a.vndrId)}::uuid WHERE id = ${b.batchUuid}::uuid
+    `
+    const res = await ingestReturnSheetOps(db, {
+      fileId: 'return-scope-unscoped',
+      rows: [
+        { deviceSerial: one, asgnId: a.asgnWire, awb: 'AWB-SCOPE-5A' },
+        { deviceSerial: two, asgnId: b.asgnWire, awb: 'AWB-SCOPE-5B' },
+      ],
+    })
+    expect(res.rejected).toBeUndefined()
+    expect(res.pairedUnitIds).toHaveLength(2)
+  })
+
+  it('a refused sheet does NOT burn its file hash: the same bytes ingest once corrected', async () => {
+    // The scope gate runs BEFORE the inbox insert, so a refusal is not recorded
+    // as "already processed". Re-sending the identical payload unscoped works.
+    const serial = 'SER-SCOPE-6'
+    const fx = await opsFixture(serial, 'trace-scope-6')
+    const other = await opsFixture('SER-SCOPE-6B', 'trace-scope-6b')
+    // Both batches on ONE vendor, so the unscoped retry below is not saved by
+    // mixed_vendors: the point is that the earlier REFUSAL left no inbox row.
+    await db.$executeRaw`
+      UPDATE batch SET print_vndr = ${toUuid(fx.vndrId)}::uuid WHERE id = ${other.batchUuid}::uuid
+    `
+    const rows = [
+      { deviceSerial: serial, asgnId: fx.asgnWire, awb: 'AWB-SCOPE-6' },
+      { deviceSerial: 'SER-SCOPE-6B', asgnId: other.asgnWire, awb: 'AWB-SCOPE-6B' },
+    ]
+    const refused = await ingestReturnSheetOps(db, {
+      fileId: 'return-scope-samehash',
+      batchId: fromUuid('btch', fx.batchUuid),
+      rows,
+    })
+    expect(refused.rejected).toBe('foreign_dispatch')
+
+    const accepted = await ingestReturnSheetOps(db, { fileId: 'return-scope-samehash', rows })
+    expect(accepted.rejected).toBeUndefined()
+    expect(accepted.deduped).toBe(false)
+    expect(accepted.pairedUnitIds).toHaveLength(2)
   })
 })

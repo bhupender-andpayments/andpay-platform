@@ -19,11 +19,12 @@
 // says that instead of rendering from data the store never saw.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useLocation, useParams } from 'react-router-dom'
-import { Boxes, Check, Copy, Download, Eye, ExternalLink, FileSpreadsheet, Loader2 } from 'lucide-react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Boxes, Check, CheckCircle2, Copy, Download, Eye, ExternalLink, FileSpreadsheet, Loader2, Send, Upload } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { CodeChip, ErrorNote, InfoNote, EmptyState, Spinner } from '../../../ui/primitives.js'
+import { CodeChip, ErrorNote, InfoNote, EmptyState, Spinner, StatusPill } from '../../../ui/primitives.js'
+import { LifecycleRail, type RailStage } from '../../../ui/LifecycleRail.js'
 import { BackLink } from '../../../ui/DetailFacts.js'
 import { DataGrid, type GridColumn } from '../../../ui/DataGrid.js'
 import { fmtDateTime } from '../../../ui/format.js'
@@ -32,11 +33,16 @@ import { saveBlob } from '../../../lib/saveBlob.js'
 import { COLLATERAL_GROUP_LABELS, excelGroupsFor } from '../../../lib/dispatchGroups.js'
 import { useAuth } from '../../../auth/AuthContext.js'
 import {
+  closeBatch,
   downloadDispatchExcel,
   getBatchDetail,
+  sendBatchToVendor,
   type BatchDetailView,
   type BatchEntryRow,
 } from '../../../api/endpoints.js'
+import { newIdempotencyKey } from '../../../api/idempotency.js'
+import { sendToVendorErrorMessage } from '../sendToVendorError.js'
+import { ConfirmDialog } from '../../../ui/ConfirmDialog.js'
 import { DispatchGroupBadge } from '../DispatchGroupBadge.js'
 import { QrPreviewDialog } from './QrPreviewDialog.js'
 import { renderCollateralPdf, type CardRow, type RenderedPdf } from './collateralPdf.js'
@@ -68,6 +74,7 @@ export function BatchGeneratePage() {
   // convenience only, never authorization (S24/T14).
   const downloadsHidden = principal?.roleLabel === 'customer_support'
   const { toast } = useToast()
+  const navigate = useNavigate()
   const location = useLocation()
   const fromSearch = (location.state as { fromSearch?: string } | null)?.fromSearch ?? ''
   const [copied, setCopied] = useState(false)
@@ -88,6 +95,16 @@ export function BatchGeneratePage() {
   const cancelRef = useRef(false)
   const [downloadingExcel, setDownloadingExcel] = useState<string | null>(null)
   const [excelError, setExcelError] = useState<string | null>(null)
+
+  // Handing this batch to the print vendor (decision D4).
+  const [sendOpen, setSendOpen] = useState(false)
+  const [sendBusy, setSendBusy] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+
+  // Retiring it once every dispatch has settled (decision D5).
+  const [closeOpen, setCloseOpen] = useState(false)
+  const [closeBusy, setCloseBusy] = useState(false)
+  const [closeError, setCloseError] = useState<string | null>(null)
 
   /**
    * Re-read the batch. Separate from the mount effect because compose lands
@@ -110,6 +127,40 @@ export function BatchGeneratePage() {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  const confirmClose = useCallback(async (): Promise<void> => {
+    if (btchId === undefined) return
+    setCloseBusy(true)
+    setCloseError(null)
+    try {
+      await closeBatch(client, btchId, newIdempotencyKey())
+      setCloseOpen(false)
+      await reload()
+    } catch (err) {
+      setCloseError(err instanceof Error ? err.message : 'Could not close this batch.')
+    } finally {
+      setCloseBusy(false)
+    }
+  }, [client, btchId, reload])
+
+  const confirmSend = useCallback(async (): Promise<void> => {
+    if (btchId === undefined) return
+    setSendBusy(true)
+    setSendError(null)
+    try {
+      await sendBatchToVendor(client, btchId, newIdempotencyKey())
+      setSendOpen(false)
+      // Re-read rather than patching state locally: sending also binds the print
+      // vendor, which decides the print layout this page renders with.
+      await reload()
+    } catch (err) {
+      // The coded 409 reasons get their real sentence; anything else keeps the
+      // generic one. See sendToVendorError.ts for why that mattered.
+      setSendError(sendToVendorErrorMessage(err, 'Could not send this batch.'))
+    } finally {
+      setSendBusy(false)
+    }
+  }, [client, btchId, reload])
 
   /**
    * One CardRow per batch entry, QR taken from the entry's composed artifact.
@@ -257,12 +308,51 @@ export function BatchGeneratePage() {
 
   const running = renderProgress !== null
   const totalCards = OUTPUT_BUNDLES.reduce((n, b) => n + (bundleRows.get(b.id)?.length ?? 0), 0)
+
+  /**
+   * How many of this batch's dispatches the print vendor has actually handed to
+   * the courier, or null before the batch has been sent at all.
+   *
+   * DISPATCHED_BY_VENDOR is written by the return-sheet ingest, one dispatch at a
+   * time as sheets arrive, so this is the batch's real progress through the half
+   * of its life that its own status word cannot describe.
+   */
+  const dispatchedCount =
+    detail === null || detail.batch.status === 'BATCHED'
+      ? null
+      : detail.entries.filter((e) => e.dispatchState === 'DISPATCHED_BY_VENDOR').length
+  const settlement = detail.settlement
+  // An ABSENT settlement read is not permission to close. It means this server
+  // predates the read (the field is optional for exactly that reason), so the
+  // honest answer is "cannot tell from here" and the close stays blocked rather
+  // than sending a write the server would 409 anyway.
+  const canClose = settlement?.settled === true
   // Which vendor workbooks this batch actually has, from its ENTRIES rather than
   // its artifacts: the Excel is a picking sheet for what was ordered, and a
   // collateral-only dispatch has a sheet without ever composing a card. Sharing
   // the predicate with the edge (lib/dispatchGroups.ts) is what stops a button
   // offering a download the server answers 404 to.
   const excelGroups = excelGroupsFor(detail.entries)
+
+  // The batch's three states as a rail. Driven off `batch.status`, the real
+  // column (BATCH_STATUSES in services/fulfillment/src/batch-status.ts), so it
+  // cannot disagree with the Status chip above it.
+  //
+  // Only FORMED carries a timestamp: the batch row records createdAt and
+  // nothing else. A sent-at or closed-at would have to be invented here, and
+  // the rail is honest about what it knows (the same contract LifecycleRail's
+  // own header states), so those two rungs show their label alone.
+  const batchRail: RailStage[] = (() => {
+    const order = ['BATCHED', 'SENT_TO_PRINT_VENDOR', 'CLOSED']
+    const at = order.indexOf(detail.batch.status)
+    const stateFor = (i: number): RailStage['state'] =>
+      at === -1 ? 'future' : i < at ? 'reached' : i === at ? 'current' : 'future'
+    return [
+      { key: 'BATCHED', label: 'Batched', state: stateFor(0), icon: Boxes, at: detail.batch.createdAt },
+      { key: 'SENT_TO_PRINT_VENDOR', label: 'Sent to print vendor', state: stateFor(1), icon: Send },
+      { key: 'CLOSED', label: 'Closed', state: stateFor(2), icon: CheckCircle2 },
+    ]
+  })()
 
   // WHAT IS IN THIS BATCH, one row per Dispatch ID, in the order the server sorted
   // them (bank then branch), which is the same order the vendor Excel uses.
@@ -286,9 +376,19 @@ export function BatchGeneratePage() {
     },
     {
       key: 'bank',
-      header: 'Bank / branch',
-      cell: (e) => `${e.bankReferenceCode} / ${e.branchCode ?? '-'}`,
+      // TWO COLUMNS, not one "3 / 30" string (18 Aug 2026, at the user's
+      // correction): a combined cell cannot be sorted or scanned by either
+      // half, which is the same reasoning the three ordered quantities above
+      // already carry.
+      header: 'Bank',
+      cell: (e) => e.bankReferenceCode,
       sortValue: (e) => e.bankReferenceCode,
+    },
+    {
+      key: 'branchCode',
+      header: 'Branch',
+      cell: (e) => e.branchCode ?? <span className="text-muted-foreground">-</span>,
+      sortValue: (e) => e.branchCode ?? '',
     },
     // The three ordered quantities, each its own column: this is the sheet the
     // print vendor picks against, and "Soundbox, 3 standee" as one string cannot
@@ -299,9 +399,24 @@ export function BatchGeneratePage() {
     {
       key: 'dispatchState',
       header: 'State',
-      cell: (e) => e.dispatchState ?? 'not dispatched',
+      // A StatusPill, like every other status cell on the portal (18 Aug 2026,
+      // at the user's correction): this column was the one rendering a raw
+      // uppercase token as plain text.
+      cell: (e) =>
+        e.dispatchState === null ? (
+          <span className="text-muted-foreground">not dispatched</span>
+        ) : (
+          <StatusPill value={e.dispatchState} />
+        ),
       sortValue: (e) => e.dispatchState ?? '',
     },
+    // A separate "Settled" column was tried here and cut on sight (18 Aug 2026,
+    // at the user's correction): State above already answers "what is this
+    // dispatch's status" more usefully, and a second column saying "Still in
+    // flight" for every row that has not yet reached a courier terminal state
+    // added a label without adding information. The close dialog's own
+    // breakdown (perDispatch on `settlement`) is what still answers "why can't
+    // I close this batch"; it does not need a column of its own on this table.
     {
       key: 'qr',
       header: '',
@@ -315,7 +430,10 @@ export function BatchGeneratePage() {
             disabled={row === undefined}
             title={row === undefined ? 'No card has been composed for this dispatch yet.' : undefined}
             aria-label={`View QR card for ${e.merchantDisplayName}`}
-            onClick={() => {
+            onClick={(ev) => {
+              // The row navigates to the dispatch; opening the card preview
+              // must not also do that.
+              ev.stopPropagation()
               if (row !== undefined) setPreview(row)
             }}
           >
@@ -363,16 +481,107 @@ export function BatchGeneratePage() {
             </h1>
             <p className="text-sm text-muted-foreground">Batch collateral: cards, print PDFs and the vendor Excel.</p>
           </div>
+          {/* The lifecycle action lives beside the id it acts on, offered only
+              while the batch is BATCHED because that is the only state it is
+              legal in. The server refuses anything else with a 409 regardless;
+              hiding it spares the operator learning that by being told no. */}
+          {detail.batch.status === 'BATCHED' && (
+            <Button
+              aria-label={`Send batch ${detail.batch.id} to the print vendor`}
+              onClick={() => {
+                setSendError(null)
+                setSendOpen(true)
+              }}
+            >
+              <Send className="size-4" aria-hidden="true" /> Send to print vendor
+            </Button>
+          )}
+          {/* MOVED HERE from the Batches list header (18 Aug 2026, the user's
+              explicit correction). Offered anywhere else, the upload has no
+              batch in hand to check a file against; here it always does, and
+              the page it opens (ReturnUploadPage) refuses whole any file
+              naming a dispatch that is not one of THIS batch's own entries. */}
+          {detail.batch.status === 'SENT_TO_PRINT_VENDOR' && (
+            <Button
+              variant="secondary"
+              onClick={() => navigate(`/uploads/return?batch=${encodeURIComponent(detail.batch.id)}`)}
+            >
+              <Upload className="size-4" aria-hidden="true" /> Upload return sheet
+            </Button>
+          )}
+          {/* Closing is offered from the moment the batch is with the vendor and
+              is ALWAYS CLICKABLE (18 Aug 2026, at the user's correction). It
+              used to be rendered disabled with the count beside it, and a faded
+              button reads as "not implemented yet" rather than "not yet": the
+              reason was on screen but easy to miss, and there was nowhere to
+              find out WHICH dispatches were holding the batch open. Clicking now
+              always opens the dialog, and the dialog either confirms the close
+              or explains what it is waiting on. The confirm action inside is
+              what stays disabled, and the server re-checks regardless. */}
+          {detail.batch.status === 'SENT_TO_PRINT_VENDOR' && (
+            <Button
+              variant="secondary"
+              aria-label={`Close batch ${detail.batch.id}`}
+              onClick={() => {
+                setCloseError(null)
+                setCloseOpen(true)
+              }}
+            >
+              <CheckCircle2 className="size-4" aria-hidden="true" /> Close batch
+            </Button>
+          )}
         </div>
         {/* The deleted detail page's Summary tile, folded in. Its three facts
             (records, trigger, print vendor) were the only thing that page
             reported which this one did not, so they move here rather than being
             dropped along with the page. */}
         <dl className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border bg-muted/30 px-4 py-2.5 text-[12.5px]">
+          {/* Where this batch is in its lifecycle, first, because it decides
+              which of the actions below the operator can take. */}
+          <div>
+            <dt className="text-[11px] text-muted-foreground">Status</dt>
+            <dd className="font-semibold">
+              <StatusPill value={detail.batch.status} />
+            </dd>
+          </div>
           <div>
             <dt className="text-[11px] text-muted-foreground">Dispatches</dt>
             <dd className="num font-semibold">{detail.entries.length}</dd>
           </div>
+          {/* HOW MANY THE VENDOR HAS ACTUALLY SHIPPED (19 Aug 2026, at the user's
+              direction). The batch status alone says "sent to print vendor" from
+              the moment the operator sends it and keeps saying it until every
+              dispatch settles, which is most of a batch's life and tells nobody
+              how far through it is. A print vendor ships what is ready and sends
+              the rest later, and this is the only place that fact is visible: the
+              Activation worklist drops an unpaired dispatch entirely (no device,
+              nothing to activate), so an operator activating 4 of 5 gets no
+              signal anywhere that a 5th is still awaited. This pill is that
+              signal.
+
+              Shown only once the batch has been sent, because before that the
+              answer is always 0 of N and reads as a problem rather than a
+              not-yet. Counted off dispatch_state, the same column the State
+              column below renders per row, so the two cannot disagree. */}
+          {dispatchedCount !== null && (
+            <div>
+              <dt className="text-[11px] text-muted-foreground">Shipped by vendor</dt>
+              <dd className="font-semibold">
+                <span
+                  className={
+                    dispatchedCount === detail.entries.length
+                      ? 'pill pill-positive'
+                      : dispatchedCount === 0
+                        ? 'pill pill-pending'
+                        : 'pill pill-info'
+                  }
+                >
+                  <span className="num">{dispatchedCount}</span> of{' '}
+                  <span className="num">{detail.entries.length}</span> dispatched
+                </span>
+              </dd>
+            </div>
+          )}
           <div>
             <dt className="text-[11px] text-muted-foreground">Cards</dt>
             <dd className="num font-semibold">{totalCards}</dd>
@@ -387,6 +596,23 @@ export function BatchGeneratePage() {
           </div>
         </dl>
       </div>
+
+      {/* THE BATCH'S OWN LIFECYCLE (18 Aug 2026, at the user's correction). The
+          same shared rail the dispatch, shipment and device pages use, so all
+          four read identically: a batch has three states and the summary chip
+          above named only the current one, leaving where it sits in the whole
+          progression to be worked out. */}
+      <Card>
+        <CardContent>
+          <div className="pb-5">
+            <CardTitle>Batch lifecycle</CardTitle>
+            <CardDescription>
+              Formed, sent to the print vendor, then closed once every dispatch has settled.
+            </CardDescription>
+          </div>
+          <LifecycleRail stages={batchRail} />
+        </CardContent>
+      </Card>
 
       {/* SECTION 1: WHAT IS IN THE BATCH. The page opens on the dispatch list
           because that is the question an operator arrives with ("is this
@@ -407,6 +633,10 @@ export function BatchGeneratePage() {
             columns={dispatchColumns}
             rows={detail.entries}
             getRowKey={(e) => e.asgnId}
+            // Clicking a row opens that dispatch (18 Aug 2026, at the user's
+            // correction). The QR button in the trailing cell stops its own
+            // propagation, so the two do not fight.
+            onRowClick={(e) => navigate(`/dispatches/${e.asgnId}`)}
             searchPlaceholder="Search merchant, bank or dispatch…"
             emptyTitle="This batch has no dispatches"
             emptyMessage="Nothing was claimed into it, which should not happen once a trigger has run."
@@ -648,6 +878,86 @@ export function BatchGeneratePage() {
           card={preview.card}
         />
       )}
+
+      <ConfirmDialog
+        open={closeOpen}
+        title={canClose ? 'Close this batch' : 'This batch cannot be closed yet'}
+        description={
+          settlement === undefined
+            ? `Close ${detail.batch.id}.`
+            : canClose
+              ? `All ${String(settlement.total)} dispatches have settled. Closing retires the batch; its dispatches and devices are unaffected.`
+              : `A batch closes only once every one of its dispatches has finished travelling. ${String(settlement.pending)} of ${String(settlement.total)} in ${detail.batch.id} have not, so there is nothing to retire yet.`
+        }
+        confirmLabel="Close batch"
+        confirmDisabled={!canClose}
+        busy={closeBusy}
+        error={closeError}
+        onConfirm={() => void confirmClose()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCloseOpen(false)
+            setCloseError(null)
+          }
+        }}
+      >
+        {settlement !== undefined && (
+          <div className="space-y-3">
+            {/* The arithmetic, so "why not" is answered with numbers rather than
+                a single count an operator has to subtract from the total
+                themselves. Delivered and Returned are separate because they are
+                not interchangeable: a returned dispatch settles the batch without
+                the merchant ever receiving anything.
+
+                NO DAMAGED ROW (19 Aug 2026, at the user's direction). There was
+                one, counted off `unit.status`, and it read a different axis from
+                everything else on this page: the table's State column renders
+                dispatch_state, which has no damaged value, so the dialog reported
+                "1 damaged" over a list of identical Dispatched by vendor rows and
+                the operator could not find the row it meant. This breakdown is
+                about DISPATCHES now, top to bottom, and its numbers can be
+                located in the table below it. */}
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-xl border bg-muted/30 px-4 py-3 text-[12.5px] sm:grid-cols-4">
+              {(
+                [
+                  ['Dispatches', settlement.total],
+                  ['Delivered', settlement.delivered],
+                  ['Returned', settlement.returned],
+                  ['Still in flight', settlement.pending],
+                ] as ReadonlyArray<[string, number]>
+              ).map(([label, value]) => (
+                <div key={label}>
+                  <dt className="text-[11px] text-muted-foreground">{label}</dt>
+                  <dd className="num font-semibold">{value}</dd>
+                </div>
+              ))}
+            </dl>
+            {!canClose && (
+              <InfoNote>
+                A dispatch settles when its parcel reaches DELIVERED or RETURNED. Flagging a device damaged raises a
+                replacement and does not settle anything: the original parcel is still with the courier. The unsettled
+                ones are the rows in the dispatch table below that have not reached a courier terminal state.
+              </InfoNote>
+            )}
+          </div>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={sendOpen}
+        title="Send this batch to the print vendor"
+        description={`${String(detail.entries.length)} dispatches in ${detail.batch.id} move to sent to print vendor, the batch is bound to the active print vendor, and the vendor can pull the run. The return sheet can only be uploaded after this.`}
+        confirmLabel="Send to print vendor"
+        busy={sendBusy}
+        error={sendError}
+        onConfirm={() => void confirmSend()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSendOpen(false)
+            setSendError(null)
+          }
+        }}
+      />
 
       {/* NO RECOMPOSE FORM HERE. I carried one over from the deleted detail page
           on the reasoning that it would otherwise be unreachable; that was the

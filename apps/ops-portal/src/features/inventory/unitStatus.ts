@@ -19,7 +19,7 @@
 // offers only moves that will succeed, not to decide whether they may.
 
 /** The ordered delivery spine. Mirrors the server's UNIT_STATUS_ORDER. */
-export const UNIT_SPINE = ['IN_STOCK', 'ALLOCATED', 'PRINTED', 'DISPATCHED', 'DELIVERED'] as const
+export const UNIT_SPINE = ['IN_STOCK', 'PRINTED', 'DISPATCHED', 'DELIVERED'] as const
 
 /**
  * Terminal branches, deliberately outside the spine: a device does not pass
@@ -33,7 +33,6 @@ export const UNIT_STATUS_ORDER = [...UNIT_SPINE, ...UNIT_TERMINAL] as const
 
 export const STATUS_LABEL: Record<string, string> = {
   IN_STOCK: 'In stock',
-  ALLOCATED: 'Allocated',
   // The stored token stays PRINTED (it means "its merchant collateral was
   // printed at the print vendor"), but a DEVICE is not printed, so the label
   // says where the device is instead of what happened to paper.
@@ -51,7 +50,6 @@ export function statusLabel(status: string): string {
 /** What each rung MEANS, in the operator's words. Used by the lifecycle rail. */
 export const STAGE_COPY: Record<string, { label: string; sub: string }> = {
   IN_STOCK: { label: 'In stock', sub: 'registered from the manufacturer file' },
-  ALLOCATED: { label: 'Allocated', sub: 'reserved for a dispatch' },
   PRINTED: { label: 'At print vendor', sub: 'its merchant collateral printed, awaiting handover' },
   DISPATCHED: { label: 'Dispatched', sub: 'handed to the courier by the print vendor' },
   DELIVERED: { label: 'Delivered', sub: 'courier confirmed delivery' },

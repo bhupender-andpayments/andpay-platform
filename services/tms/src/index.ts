@@ -70,6 +70,7 @@ export {
   resolveQuarantineRow,
   closeQuarantineRow,
   createDamageReasonOps,
+  editDamageReasonOps,
   activateDamageReasonOps,
   deactivateDamageReasonOps,
   updateDamageCaseStatusOps,

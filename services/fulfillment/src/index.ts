@@ -62,6 +62,7 @@ export {
   ingestIntakeSheetWithinTx,
   isSheetStructurallyValid,
 } from './intake.js'
+export { BATCH_STATUSES, type BatchStatus } from './batch-status.js'
 export { consumeBatchFact, TemplateTrimMismatchError } from './dispatch.js'
 export {
   type AdapterFunction,
@@ -152,6 +153,8 @@ export {
   recomposeArtifact,
   holdRecord,
   releaseRecord,
+  sendBatchToVendor,
+  closeBatch,
   manualBatch,
   suspendVendor,
   createVendorOps,
@@ -221,6 +224,7 @@ export {
   type BatchRow,
   readBatchDetail,
   type BatchDetailView,
+  type BatchSettlement,
   type BatchEntryRow,
   type BatchArtifactRow,
   listPoolEntries,

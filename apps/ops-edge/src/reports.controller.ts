@@ -61,6 +61,7 @@ interface EdgeBinaryResponse {
 }
 
 const REPORT_NAMES: ReadonlySet<string> = new Set<ReportName>([
+  'dispatches',
   'soundbox-delivery',
   'activation',
   'damaged-replacement',
@@ -351,7 +352,12 @@ export class ReportsController {
     const merged = await this.mergeActivationSims(rows)
     const sheet = await activationSheetXlsx(merged)
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition', `attachment; filename="activation-${btchId}.xlsx"`)
+    // Batch id FIRST (18 Aug 2026, same correction as the vendor Excel and
+    // collateral downloads): several of these pile up in one Downloads folder
+    // across different batches, and a btch_... id buried at the end of the
+    // name is what read as "random" when trying to tell which files belong
+    // together.
+    res.setHeader('Content-Disposition', `attachment; filename="${btchId}-activation.xlsx"`)
     res.status(200).send(sheet)
   }
 
@@ -377,7 +383,12 @@ export class ReportsController {
     // result.rows in place, so this route's JSON and CSV bodies are byte for
     // byte what they were before the extraction. Every other report keeps its
     // own column set and gains no simNos key.
-    if (name === 'activation') {
+    // The SIM merge now serves TWO reports, and for the same reason each time:
+    // the ICCID never enters analytics (S7), so any report that wants to show it
+    // has to have it joined in here, from fulfillment, by device serial. The
+    // dispatches report (D12) shows the SIM beside the device on a soundbox
+    // dispatch, which is what an operator chasing an activation asks for.
+    if (name === 'activation' || name === 'dispatches') {
       result.rows = await this.mergeActivationSims(result.rows)
     }
 
