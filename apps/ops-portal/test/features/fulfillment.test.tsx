@@ -218,6 +218,85 @@ describe('Batches: default landing, no tab strip', () => {
 // 10 Aug"), which asserts a lifecycle the domain does not have. Adding the
 // missing states would be inventing a state machine, so the portal stops
 // claiming instead.
+// Task 5: the derived Stage column. `deriveBatchStage`/`stagePill`/
+// `stageSortRank` are exercised directly in batchStage.test.ts; this suite
+// only pins the wiring: the summaries fetch is an enhancement (a Promise.all
+// member that resolves to null on failure, never a page blocker), the chip
+// and fraction render from it, and the default row order puts a batch that
+// needs action ahead of one that is done.
+describe('Batches: Stage column', () => {
+  beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
+  afterEach(() => { cleanup(); clearAccessToken() })
+
+  const BATCH_PRINTING = {
+    id: 'btch_print',
+    triggerReason: 'LOT_SIZE',
+    unitCount: 4,
+    printVndr: null,
+    triggeredByActor: null,
+    createdAt: '2026-05-01T00:00:00.000Z',
+    updatedAt: '2026-05-01T00:00:00.000Z',
+  }
+  const BATCH_COMPLETE = {
+    id: 'btch_complete',
+    triggerReason: 'MANUAL',
+    unitCount: 4,
+    printVndr: null,
+    triggeredByActor: null,
+    createdAt: '2026-05-03T00:00:00.000Z',
+    updatedAt: '2026-05-03T00:00:00.000Z',
+  }
+  const SUMMARY_PRINTING = {
+    batchId: 'btch_print',
+    counts: { total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 1, delivered: 0, activated: 0 },
+    activation: { notRequested: null, requested: null, activated: 0 },
+  }
+  const SUMMARY_COMPLETE = {
+    batchId: 'btch_complete',
+    counts: { total: 4, deliverableAndActivatable: 4, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 4 },
+    activation: { notRequested: null, requested: null, activated: 4 },
+  }
+
+  function stubWithSummaries(summariesStatus = 200) {
+    return stubFetch((url) => {
+      if (url.includes('/ops/reports/batch-journey')) {
+        return summariesStatus === 200
+          ? jsonResponse({ rows: [SUMMARY_PRINTING, SUMMARY_COMPLETE], watermark: { asOf: null, perTopic: {} } })
+          : jsonResponse({ message: 'boom' }, summariesStatus)
+      }
+      // API order deliberately puts the COMPLETE batch first: the sort under
+      // test has to reorder it, not merely preserve server order.
+      if (url.includes('/ops/batches')) return jsonResponse([BATCH_COMPLETE, BATCH_PRINTING])
+      return jsonResponse([])
+    })
+  }
+
+  it('renders the stage chip and fraction from the batch-journey summaries', async () => {
+    stubWithSummaries()
+    renderFulfillment()
+    expect(await screen.findByText('Needs return sheet')).toBeTruthy()
+    expect(await screen.findByText('Complete')).toBeTruthy()
+    expect(await screen.findByText('1/4')).toBeTruthy()
+  })
+
+  it('sorts a PRINTING batch above a COMPLETE one by default, regardless of API order', async () => {
+    stubWithSummaries()
+    renderFulfillment()
+    await screen.findByText('Needs return sheet')
+    const ids = screen.getAllByRole('button', { name: /^btch_/ }).map((el) => el.textContent)
+    expect(ids.indexOf('btch_print')).toBeLessThan(ids.indexOf('btch_complete'))
+  })
+
+  it('still renders the batch list fully when the batch-journey summaries call fails', async () => {
+    stubWithSummaries(500)
+    renderFulfillment()
+    expect(await screen.findByRole('button', { name: 'btch_print' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'btch_complete' })).toBeTruthy()
+    // No chip, because the enhancement failed; the base row still renders.
+    expect(screen.queryByText('Needs return sheet')).toBeNull()
+  })
+})
+
 describe('Batches: a constant is not a status', () => {
   beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup(); clearAccessToken() })

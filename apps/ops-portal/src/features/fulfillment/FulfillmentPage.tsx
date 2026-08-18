@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Package, Timer, Upload } from 'lucide-react'
 import { fmtWait } from './BatchingRules.js'
@@ -9,9 +9,11 @@ import { BatchPreviewCard } from './BatchPreviewCard.js'
 import { resolveGlobalRule } from './BatchingRules.js'
 import { PoolEntryActions } from './PoolEntryActions.js'
 import { DispatchGroupBadge } from './DispatchGroupBadge.js'
+import { deriveBatchStage, stagePill, stageSortRank, type StagedBatch } from './batchStage.js'
 import {
   getBatches,
   getBatchingConfig,
+  getBatchJourneySummaries,
   getPoolEntries,
   getVendors,
   type BatchingConfigRow,
@@ -20,7 +22,7 @@ import {
   type VendorRow,
 } from '../../api/endpoints.js'
 import { PageHeader, Card, CardHeader, Button, ErrorNote, CodeChip } from '../../ui/primitives.js'
-import { fmtDateTime, fmtNumber } from '../../ui/format.js'
+import { fmtDateTime, fmtNumber, pillClass } from '../../ui/format.js'
 import { usePagePoll } from '../../lib/usePagePoll.js'
 
 // The Batches section: what is waiting to be batched, the rules that decide when
@@ -30,12 +32,20 @@ import { usePagePoll } from '../../lib/usePagePoll.js'
 //
 // WHAT THIS PAGE DELIBERATELY DOES NOT SHOW.
 //
-// No batch status column. `batch.status` was dropped from the schema on purpose
-// (migration 20260810040000_drop_batch_status) because it only ever held one
-// value, and the state a batch really passes through belongs to its records:
-// dispatch_state advances to SENT_TO_VENDOR automatically as soon as the batch
-// fact is consumed and the package composes. A column repeating that on every
-// row teaches an operator to ignore a field.
+// No STORED batch status column. `batch.status` was dropped from the schema on
+// purpose (migration 20260810040000_drop_batch_status) because it only ever
+// held one value, and the state a batch really passes through belongs to its
+// records: dispatch_state advances to SENT_TO_VENDOR automatically as soon as
+// the batch fact is consumed and the package composes. A stored column
+// repeating that on every row would teach an operator to ignore a field. That
+// ruling still stands; it was never a ruling against showing stage at all.
+//
+// Stage IS shown (2026-08-18, controller ruling, spec batch-first-ops-ux task
+// 5): this is the column the 2026-08-10 ruling above was waiting on. It is a
+// DERIVED rollup read fresh from GET /ops/reports/batch-journey each load, not
+// a stored field an operator could mistake for ground truth, and it is what
+// tells an operator which batch needs them next (PRINTING, then ACTIVATION,
+// then SHIPPING, then COMPLETE), see ./batchStage.ts.
 //
 // No dispatch IDs. A batch row is a batch; its Dispatch IDs are what you open it
 // to see. Listing them here made the batch list unreadable at any real volume.
@@ -88,6 +98,10 @@ export function FulfillmentPage() {
   const [batches, setBatches] = useState<BatchRow[]>([])
   const [configs, setConfigs] = useState<BatchingConfigRow[] | null>(null)
   const [vendors, setVendors] = useState<readonly VendorRow[]>([])
+  // The derived Stage rollup, keyed by batch id. `null` means the enhancement
+  // read has not landed (or failed); the column then shows a placeholder
+  // instead of blocking the batch list it rides on.
+  const [stages, setStages] = useState<Map<string, StagedBatch> | null>(null)
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -115,9 +129,17 @@ export function FulfillmentPage() {
       // batched has left it, and its home is the Batches grid below.
       // HELD rows are worked in Queues, which is where accepting one puts it
       // back into this pool.
-      const [poolRows, batchRows] = await Promise.all([getPoolEntries(client, 'POOLED'), getBatches(client)])
+      // The Stage rollup rides the SAME Promise.all but `.catch(() => null)` of
+      // its own: it is an enhancement over the batch list, never a blocker, so
+      // a bad read here must not cost the batch rows the operator came for.
+      const [poolRows, batchRows, summaries] = await Promise.all([
+        getPoolEntries(client, 'POOLED'),
+        getBatches(client),
+        getBatchJourneySummaries(client).catch(() => null),
+      ])
       setPool(poolRows)
       setBatches(batchRows)
+      setStages(summaries ? new Map(summaries.rows.map((s) => [s.batchId, deriveBatchStage(s)])) : null)
     } catch (err) {
       if (!quiet) setLoadError(err instanceof Error ? err.message : 'Failed to load.')
     } finally {
@@ -247,12 +269,40 @@ export function FulfillmentPage() {
       ),
       sortValue: (r) => r.id,
     },
+    {
+      key: 'stage',
+      header: 'Stage',
+      cell: (r) => {
+        const s = stages?.get(r.id)
+        if (!s) return <span className="text-muted-foreground">-</span>
+        const pill = stagePill(s.stage)
+        return (
+          <span className="flex items-center gap-2">
+            <span className={pillClass(pill.variant)}>{pill.label}</span>
+            <span className="tabular-nums text-xs text-muted-foreground">
+              {s.done}/{s.of}
+            </span>
+          </span>
+        )
+      },
+      sortValue: (r) => stageSortRank(stages?.get(r.id)),
+    },
     // The STORED batch.unit_count the batching PM maintains, never recomputed.
     { key: 'unitCount', header: 'Records', cell: (r) => fmtNumber(r.unitCount), sortValue: (r) => r.unitCount },
     { key: 'printVndr', header: 'Print vendor', cell: (r) => vendorName(r.printVndr), sortValue: (r) => vendorName(r.printVndr) },
     { key: 'triggerReason', header: 'Trigger', cell: (r) => r.triggerReason, sortValue: (r) => r.triggerReason },
     { key: 'createdAt', header: 'Formed', cell: (r) => fmtDateTime(r.createdAt), sortValue: (r) => r.createdAt },
   ]
+
+  // DataGrid has no initial-sort prop (its own `sorting` state starts empty),
+  // so the attention-first default order is applied here, once, before the
+  // rows reach it; the grid's own column sort still overrides it the moment
+  // an operator clicks a header. `Array.prototype.sort` is a stable sort, so
+  // batches that tie on stage keep the server's own newest-first order.
+  const sortedBatches = useMemo(
+    () => [...batches].sort((a, b) => stageSortRank(stages?.get(a.id)) - stageSortRank(stages?.get(b.id))),
+    [batches, stages],
+  )
 
   return (
     <div className="space-y-6">
@@ -321,7 +371,7 @@ export function FulfillmentPage() {
           />
           <DataGrid
             columns={batchColumns}
-            rows={batches}
+            rows={sortedBatches}
             loading={loading}
             getRowKey={(r) => r.id}
             onRowClick={(r) => navigate(`/batches/${r.id}`, { state: { fromSearch: searchParams.toString() } })}
