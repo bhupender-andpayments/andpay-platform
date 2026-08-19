@@ -121,6 +121,12 @@ model Tenant {
   pin               String?
   mobile            String?
   email             String?
+  // Bank Master hierarchy (spec 2026-08-19): a member (child) bank points at
+  // its aggregator (parent). NULL = top-level. ONE level only, enforced in
+  // ops.ts (createBankMaster/editBankMaster), never by a trigger.
+  parentTenantId    String?  @map("parent_tenant_id") @db.Uuid
+  parent            Tenant?  @relation("TenantHierarchy", fields: [parentTenantId], references: [id])
+  children          Tenant[] @relation("TenantHierarchy")
   // Present in the table since 20260721054958_identity_domain but undeclared
   // here until 2026-08-17. The omission was a latent landmine, not a spare
   // column: `prisma migrate dev` diffs the model against the database, so the
@@ -131,6 +137,7 @@ model Tenant {
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@map("tenant")
+  @@index([parentTenantId])
 }
 
 /// The Program (the sponsorship wrapper), Program-scoped by its own id. STATED
