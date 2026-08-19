@@ -261,6 +261,74 @@ describe('editBankMaster (BRD Annexure D.4)', () => {
       }),
     ).rejects.toMatchObject({ kind: 'not-found' })
   })
+
+  it('sets and clears the parent, recording changed:parentTnntId', async () => {
+    const parent = await createBankMaster(db, createArgs())
+    const solo = await createBankMaster(
+      db,
+      createArgs({ bankReferenceCode: 'VSC', displayName: 'VSC Bank', clientKey: randomUUID() }),
+    )
+    const setRes = await editBankMaster(db, {
+      tnntId: solo.tnntId!,
+      parentBankReferenceCode: 'BREF-ADMIN-1',
+      clientKey: randomUUID(),
+      actorId: 'actor-admin-1',
+      traceId: 'trace-bm-parent',
+    })
+    expect(setRes.changedFields).toContain('parentTnntId')
+    let rows = await listBankMasters(db)
+    expect(rows.find((r) => r.bankReferenceCode === 'VSC')!.parentTnntId).toBe(parent.tnntId)
+
+    const clearRes = await editBankMaster(db, {
+      tnntId: solo.tnntId!,
+      parentBankReferenceCode: '',
+      clientKey: randomUUID(),
+      actorId: 'actor-admin-1',
+      traceId: 'trace-bm-parent-2',
+    })
+    expect(clearRes.changedFields).toContain('parentTnntId')
+    rows = await listBankMasters(db)
+    expect(rows.find((r) => r.bankReferenceCode === 'VSC')!.parentTnntId).toBeNull()
+  })
+
+  it('a bank with children cannot itself become a child', async () => {
+    const parent = await createBankMaster(db, createArgs())
+    await createBankMaster(
+      db,
+      createArgs({ bankReferenceCode: 'VSC', displayName: 'VSC Bank', parentBankReferenceCode: 'BREF-ADMIN-1', clientKey: randomUUID() }),
+    )
+    const other = await createBankMaster(
+      db,
+      createArgs({ bankReferenceCode: 'OTHER', displayName: 'Other Bank', clientKey: randomUUID() }),
+    )
+    await expect(
+      editBankMaster(db, {
+        tnntId: parent.tnntId!,
+        parentBankReferenceCode: 'OTHER',
+        clientKey: randomUUID(),
+        actorId: 'actor-admin-1',
+        traceId: 'trace-bm-guard',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid', message: 'this bank has child banks and cannot itself become a child' })
+    void other
+  })
+
+  it('a parent with an ACTIVE child cannot be SUSPENDED', async () => {
+    const parent = await createBankMaster(db, createArgs())
+    await createBankMaster(
+      db,
+      createArgs({ bankReferenceCode: 'VSC', displayName: 'VSC Bank', parentBankReferenceCode: 'BREF-ADMIN-1', clientKey: randomUUID() }),
+    )
+    await expect(
+      editBankMaster(db, {
+        tnntId: parent.tnntId!,
+        status: 'SUSPENDED',
+        clientKey: randomUUID(),
+        actorId: 'actor-admin-1',
+        traceId: 'trace-bm-suspend',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid', message: 'suspend the child banks first' })
+  })
 })
 
 // The admin write path must PUBLISH what it changes, or TMS never learns the

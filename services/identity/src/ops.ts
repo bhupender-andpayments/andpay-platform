@@ -149,6 +149,9 @@ export interface EditBankMasterInput {
   mobile?: string
   email?: string
   status?: string
+  // '' detaches to top-level; absent means unchanged (three states, so it does not
+  // ride the COALESCE update).
+  parentBankReferenceCode?: string
   clientKey: string
   actorId: string
   traceId: string
@@ -425,6 +428,48 @@ export async function editBankMaster(
       }
       changedFields = Object.keys(provided).filter((k) => provided[k] !== (priorValue[k] ?? null))
 
+      // The parent is tri-state (set, clear, unchanged), so it cannot ride
+      // the COALESCE update below; it gets its own explicit UPDATE.
+      let parentChange: { uuid: string | null } | null = null
+      if (args.parentBankReferenceCode !== undefined) {
+        const ref = args.parentBankReferenceCode.trim()
+        if (ref === '') {
+          parentChange = { uuid: null }
+        } else {
+          if (ref === before.bank_reference_code) {
+            throw new OpsClientError('invalid', 'a bank cannot be its own parent')
+          }
+          const kids = await tx.$queryRaw<{ n: bigint }[]>`
+            SELECT count(*) AS n FROM tenant WHERE parent_tenant_id = ${tnntUuid}::uuid
+          `
+          if (Number(kids[0]!.n) > 0) {
+            throw new OpsClientError('invalid', 'this bank has child banks and cannot itself become a child')
+          }
+          const parents = await tx.$queryRaw<{ id: string; parent_tenant_id: string | null }[]>`
+            SELECT id::text AS id, parent_tenant_id::text AS parent_tenant_id
+            FROM tenant WHERE bank_reference_code = ${ref}
+          `
+          if (parents.length === 0) {
+            throw new OpsClientError('invalid', 'no bank master with this parent bank reference code')
+          }
+          if (parents[0]!.parent_tenant_id !== null) {
+            throw new OpsClientError('invalid', 'the parent bank is itself a child; only one level of hierarchy is allowed')
+          }
+          parentChange = { uuid: parents[0]!.id }
+        }
+        if (parentChange.uuid !== before.parent_tenant_id) changedFields.push('parentTnntId')
+      }
+
+      // Suspend guard: a parent with an ACTIVE child cannot go SUSPENDED.
+      if (provided.status === 'SUSPENDED') {
+        const activeKids = await tx.$queryRaw<{ n: bigint }[]>`
+          SELECT count(*) AS n FROM tenant WHERE parent_tenant_id = ${tnntUuid}::uuid AND status = 'ACTIVE'
+        `
+        if (Number(activeKids[0]!.n) > 0) {
+          throw new OpsClientError('invalid', 'suspend the child banks first')
+        }
+      }
+
       // COALESCE(new, old) partial update. bank_reference_code is deliberately
       // absent: it is never in the SET list, so the immutable resolver key can
       // never change through this path.
@@ -443,6 +488,12 @@ export async function editBankMaster(
           status       = COALESCE(${provided.status ?? null}, status)
         WHERE id = ${tnntUuid}::uuid
       `
+
+      if (parentChange !== null) {
+        await tx.$executeRaw`
+          UPDATE tenant SET parent_tenant_id = ${parentChange.uuid}::uuid WHERE id = ${tnntUuid}::uuid
+        `
+      }
 
       // The tenant fact, emitted ON CHANGE only (2026-08-17, the other half of
       // the create fix above). The fact carries displayName and status, so an
