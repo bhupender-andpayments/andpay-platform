@@ -4,7 +4,7 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { VendorRegistryPage } from './VendorRegistryPage.js'
 import { CourierMasterPage } from './CourierMasterPage.js'
 import { BankMasterCreateDialog } from './BankMasterCreateDialog.js'
-import { BankMasterEditDialog } from './BankMasterEditDialog.js'
+import { BankMasterDetailDialog } from './BankMasterDetailDialog.js'
 import { DamageReasonCreateDialog } from './DamageReasonCreateDialog.js'
 import { DamageReasonEditDialog } from './DamageReasonEditDialog.js'
 import { BatchingConfigDialog } from './BatchingConfigDialog.js'
@@ -358,13 +358,18 @@ function BankMastersView() {
         presetParent={addingChildOf ?? undefined}
       />
       {editing !== null && (
-        <BankMasterEditDialog
+        <BankMasterDetailDialog
           bank={editing}
+          allRows={rows ?? []}
           open
           onOpenChange={(next) => {
             if (!next) setEditing(null)
           }}
           onSaved={load}
+          onAddChild={(p) => {
+            setEditing(null)
+            setAddingChildOf(p)
+          }}
         />
       )}
     </div>

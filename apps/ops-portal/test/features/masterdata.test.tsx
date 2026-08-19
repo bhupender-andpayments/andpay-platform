@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, within, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -652,6 +652,105 @@ describe('master data create dialogs', () => {
     const optionLabels = Array.from(parentSelect.options).map((o) => o.textContent ?? '')
     expect(optionLabels.some((t) => t.includes('GSCB'))).toBe(true)
     expect(optionLabels.some((t) => t.includes('VSC Bank'))).toBe(false)
+  })
+
+  it('the detail dialog saves a parent change via parentBankReferenceCode', async () => {
+    const calls: Call[] = []
+    stubGroupedWrites(calls)
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Show child banks of GSCB' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit bank master VSC Bank' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Details')).toBeTruthy()
+    expect(within(dialog).getByText('Logo')).toBeTruthy()
+    // VSC Bank is a child, so no Children section.
+    expect(within(dialog).queryByText('Children')).toBeNull()
+
+    await userEvent.selectOptions(screen.getByLabelText(/parent bank/i), 'None (top-level bank)')
+
+    const save = screen.getByRole('button', { name: 'Save changes' })
+    await userEvent.click(save)
+
+    const body = await postedTo(calls, '/ops/bank-masters/tnnt_c1/edit')
+    expect(body).toEqual({ parentBankReferenceCode: '' })
+  })
+
+  it('the logo section uploads the pair as multipart', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit = { method: 'GET' }) => {
+        calls.push({ url, init })
+        const method = (init.method ?? 'GET').toUpperCase()
+        if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
+        if (url.includes('/logo/versions')) return jsonResponse([])
+        if (method === 'POST' && url.includes('/logo')) {
+          return jsonResponse({ deduped: false, id: 'log_1', masterVersion: '1', derivativeVersion: '1' })
+        }
+        if (url.includes('/ops/bank-masters')) return jsonResponse(GROUPED_BANK_MASTERS)
+        return jsonResponse([])
+      }),
+    )
+    // jsdom does not implement createObjectURL/revokeObjectURL.
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() }))
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit bank master GSCB' }))
+
+    expect(await screen.findByText('No logo uploaded yet.')).toBeTruthy()
+    expect(await screen.findByText('No versions yet.')).toBeTruthy()
+
+    const masterFile = new File(['x'], 'gscb.ai', { type: 'application/postscript' })
+    const derivativeFile = new File(['y'], 'gscb.png', { type: 'image/png' })
+    await userEvent.upload(screen.getByLabelText(/logo master/i), masterFile)
+    await userEvent.upload(screen.getByLabelText(/render derivative/i), derivativeFile)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Upload logo' }))
+
+    const hit = await vi.waitFor(() => {
+      const found = calls.find(
+        (c) => c.url.includes('/ops/bank-masters/tnnt_p1/logo') && (c.init.method ?? '').toUpperCase() === 'POST',
+      )
+      expect(found).toBeTruthy()
+      return found!
+    })
+    expect(hit.init.body).toBeInstanceOf(FormData)
+    const form = hit.init.body as FormData
+    expect(form.get('master')).toBeTruthy()
+    expect(form.get('derivative')).toBeTruthy()
+  })
+
+  it('the children section lists child banks and hides on a child bank', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
+        if (url.includes('/logo/versions')) return jsonResponse([])
+        if (url.includes('/ops/bank-masters')) return jsonResponse(GROUPED_BANK_MASTERS)
+        return jsonResponse([])
+      }),
+    )
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() }))
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit bank master GSCB' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Children')).toBeTruthy()
+    expect(within(dialog).getByText('VSC Bank', { exact: false })).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: 'Add child bank' })).toBeTruthy()
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Show child banks of GSCB' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit bank master VSC Bank' }))
+
+    const childDialog = await screen.findByRole('dialog')
+    expect(within(childDialog).getByText('Details')).toBeTruthy()
+    expect(within(childDialog).queryByText('Children')).toBeNull()
   })
 
   it('the damage reason dialog posts the code and label as separate fields', async () => {
