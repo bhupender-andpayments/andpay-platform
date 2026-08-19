@@ -503,7 +503,7 @@ describe('The batch page offers a Next step card driven by the batch stage', () 
     const journeyCallsBefore = calls.filter((c) => c.url.includes('/ops/reports/batch-journey/')).length
     const detailCallsBefore = calls.length - journeyCallsBefore
 
-    await userEvent.click(screen.getByRole('checkbox', { name: /select brilliant perfume/i }))
+    await userEvent.click(screen.getByRole('checkbox', { name: /select asgn_50000000008008000000000001/i }))
 
     const trigger = screen.getByRole('button', { name: /^mark 1 activated$/i })
     await userEvent.click(trigger)
@@ -535,6 +535,84 @@ describe('The batch page offers a Next step card driven by the batch stage', () 
       const detailCallsAfter = calls.length - journeyCallsAfter
       expect(detailCallsAfter).toBeGreaterThan(detailCallsBefore)
     })
+  })
+
+  // Regression: `selected` is state that outlives a render, and a row can
+  // leave the live CWD list out from under it (here, the OTHER row's own
+  // per-row activation triggers the journey refetch that drops it). Before
+  // the `selectedLive` reconciliation, the bulk button kept counting the now
+  // gone row and the bulk POST would still have carried its stale dispatchId
+  // alongside the one still on screen.
+  it('drops a selection whose row left the live CWD list before the next bulk POST, so only the remaining dispatchId is sent', async () => {
+    const FIRST_ID = 'asgn_50000000008008000000000001'
+    const SECOND_ID = 'asgn_50000000008008000000000002'
+    const SECOND_ROW = { dispatchId: SECOND_ID, merchantDisplay: 'SECOND MERCHANT', awb: null, deliveryDate: null, deviceCount: 1 }
+    const AWAITING = [
+      { dispatchId: FIRST_ID, merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null, deviceCount: 1 },
+      SECOND_ROW,
+    ]
+    const REMAINING = [SECOND_ROW]
+    let journeyCallCount = 0
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit = {}) => {
+        calls.push({ url, init })
+        if (url.includes('/ops/assignments/activate-bulk')) {
+          return jsonResponse({ results: [{ dispatchId: SECOND_ID, activated: true, reason: null }] })
+        }
+        if (url.includes('/ops/assignments/activate')) {
+          return jsonResponse({ activated: true })
+        }
+        if (url.includes('/ops/reports/batch-journey/')) {
+          journeyCallCount += 1
+          // The first read hands back both device-paired rows; every read
+          // after the per-row activation hands back only the survivor, the
+          // same way a real refetch would once the CWD confirms one device.
+          const awaiting = journeyCallCount === 1 ? AWAITING : REMAINING
+          return jsonResponse(
+            journeyView(
+              { total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 0 },
+              awaiting,
+            ),
+          )
+        }
+        return jsonResponse(DETAIL)
+      }),
+    )
+    renderPage()
+
+    await screen.findAllByText('BRILLIANT PERFUME')
+    await screen.findByText('SECOND MERCHANT')
+
+    // Select both device-paired rows.
+    await userEvent.click(screen.getByRole('checkbox', { name: new RegExp(`select ${FIRST_ID}`, 'i') }))
+    await userEvent.click(screen.getByRole('checkbox', { name: new RegExp(`select ${SECOND_ID}`, 'i') }))
+    expect(screen.getByRole('button', { name: /^mark 2 activated$/i })).toBeTruthy()
+
+    // Activate the first row alone through its own per-row action.
+    const [firstRowButton] = screen.getAllByRole('button', { name: /^mark activated$/i })
+    if (firstRowButton === undefined) throw new Error('expected a per-row Mark activated button')
+    await userEvent.click(firstRowButton)
+    const rowDialog = await screen.findByRole('dialog')
+    await userEvent.click(within(rowDialog).getByRole('button', { name: /^mark activated$/i }))
+
+    // The refetch this triggers drops the first row from the live list. Once
+    // that lands, the still-selected second row is all `selectedLive` counts.
+    const bulkTrigger = await screen.findByRole('button', { name: /^mark 1 activated$/i })
+    await userEvent.click(bulkTrigger)
+    // First click only opens the confirmation; nothing posted yet.
+    expect(calls.some((c) => c.url.includes('/activate-bulk'))).toBe(false)
+
+    const bulkDialog = await screen.findByRole('dialog')
+    await userEvent.click(within(bulkDialog).getByRole('button', { name: /^mark 1 activated$/i }))
+
+    const write = await vi.waitFor(() => {
+      const found = calls.find((c) => c.url.includes('/activate-bulk'))
+      expect(found).toBeTruthy()
+      return found!
+    })
+    expect(JSON.parse(write.init.body as string).dispatchIds).toEqual([SECOND_ID])
   })
 
   it('a per-row Mark activated posts { dispatchId } to /ops/assignments/activate', async () => {

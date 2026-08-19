@@ -154,6 +154,18 @@ export function NextStepCard({
   // SHIPPING. COMPLETE is the one stage excluded, because everything
   // activatable is already activated by then.
   const showCwd = cwdRows.length > 0 && stage !== 'COMPLETE'
+  // `selected` is reconciled against the CURRENT cwdRows on every render,
+  // never trusted on its own. A row leaves cwdRows the moment it activates
+  // (its own per-row action, a teammate's action the next journey refetch
+  // picks up, or simply falling out of the device-paired filter), and
+  // `selected` is state that outlives any one render, so an id it still
+  // holds can point at a row that is no longer offered at all. Reading
+  // `selected` directly anywhere below would check a stale box, count a row
+  // that is gone, and let a bulk click POST a dispatchId the list no longer
+  // shows. `selectedLive` is recomputed here so the checkbox states, the
+  // select-all comparison, the bulk button's count and disabled state, and
+  // the POST body all agree with what is on screen right now.
+  const selectedLive = new Set([...selected].filter((id) => cwdDispatchIds.includes(id)))
 
   async function handleDownload(): Promise<void> {
     setDownloading(true)
@@ -201,7 +213,7 @@ export function NextStepCard({
   }
 
   async function handleMarkSelectedActivated(): Promise<void> {
-    const ids = [...selected]
+    const ids = [...selectedLive]
     if (ids.length === 0) return
     setBulkError(null)
     setBulkBusy(true)
@@ -226,6 +238,15 @@ export function NextStepCard({
     try {
       await markActivated(client, row.dispatchId, newIdempotencyKey())
       setRowOutcome((prev) => new Map(prev).set(row.dispatchId, 'activated'))
+      // Drop it from `selected` immediately rather than waiting on the next
+      // journey refetch: `selectedLive`'s reconciliation only fires once
+      // cwdRows itself has moved on, and there is otherwise a window right
+      // after this success where the row is still ticked.
+      setSelected((prev) => {
+        const next = new Set(prev)
+        next.delete(row.dispatchId)
+        return next
+      })
       setConfirmingRow(null)
       onChanged()
     } catch (err) {
@@ -303,7 +324,7 @@ export function NextStepCard({
                     <TableHead className="w-10">
                       <Checkbox
                         aria-label="Select all"
-                        checked={cwdRows.length > 0 && selected.size === cwdRows.length}
+                        checked={cwdRows.length > 0 && selectedLive.size === cwdRows.length}
                         onCheckedChange={(checked) => {
                           setSelected(checked === true ? new Set(cwdDispatchIds) : new Set())
                         }}
@@ -324,8 +345,8 @@ export function NextStepCard({
                       <TableRow key={row.dispatchId}>
                         <TableCell>
                           <Checkbox
-                            aria-label={`Select ${row.merchantDisplay}`}
-                            checked={selected.has(row.dispatchId)}
+                            aria-label={`Select ${row.dispatchId}`}
+                            checked={selectedLive.has(row.dispatchId)}
                             onCheckedChange={() => toggleRow(row.dispatchId)}
                           />
                         </TableCell>
@@ -368,13 +389,13 @@ export function NextStepCard({
               <Button
                 type="button"
                 size="sm"
-                disabled={selected.size === 0 || bulkBusy}
+                disabled={selectedLive.size === 0 || bulkBusy}
                 onClick={() => {
                   setBulkError(null)
                   setConfirmingBulk(true)
                 }}
               >
-                {selected.size === 0 ? 'Mark selected activated' : `Mark ${String(selected.size)} activated`}
+                {selectedLive.size === 0 ? 'Mark selected activated' : `Mark ${String(selectedLive.size)} activated`}
               </Button>
             </div>
 
@@ -433,9 +454,9 @@ export function NextStepCard({
             setBulkError(null)
           }
         }}
-        title={`Mark ${String(selected.size)} ${selected.size === 1 ? 'record' : 'records'} activated?`}
+        title={`Mark ${String(selectedLive.size)} ${selectedLive.size === 1 ? 'record' : 'records'} activated?`}
         description="Records that the CWD confirmed each device and SIM. This cannot be undone from here; each record reports its own result in the list."
-        confirmLabel={selected.size === 0 ? 'Mark selected activated' : `Mark ${String(selected.size)} activated`}
+        confirmLabel={selectedLive.size === 0 ? 'Mark selected activated' : `Mark ${String(selectedLive.size)} activated`}
         busy={bulkBusy}
         error={bulkError}
         onConfirm={() => {
