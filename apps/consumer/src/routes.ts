@@ -13,6 +13,7 @@ import {
   onDemandAccrued,
   projectActivationToUnits,
   projectReplacementToUnits,
+  projectReplacementToPool,
   consumeBatchFact,
   type AssetStore,
   type PrismaClient as FulfillmentClient,
@@ -220,6 +221,10 @@ export function fulfillmentRoutes(db: FulfillmentClient, assetStore: AssetStore)
           return
         case 'fct.tms.assignment.replacement_raised.v1':
           await projectReplacementToUnits(db, envelope as Parameters<typeof projectReplacementToUnits>[1])
+          // The pool half of the same fact: badge the damaged parent's pool
+          // row. Separately idempotent (own dedup suffix), so a crash between
+          // the two projections replays cleanly.
+          await projectReplacementToPool(db, envelope as Parameters<typeof projectReplacementToPool>[1])
           return
         case 'fct.fulfillment.batch.v1':
           await consumeBatchFact(db, envelope as Parameters<typeof consumeBatchFact>[1], assetStore)

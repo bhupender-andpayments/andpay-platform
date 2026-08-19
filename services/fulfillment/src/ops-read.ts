@@ -459,6 +459,10 @@ export interface BatchEntryRow {
   // belongs to. NULL means a legacy, pre-split combined row (see
   // package.ts excelLinesFor for what that means for sheet membership).
   dispatchGroup: string | null
+  // Stamped by projectReplacementToPool off the replacement_raised fact: a
+  // damage case was opened on this dispatch and a replacement is on its way.
+  // Read-side badge only; the case itself lives in tms (D-24).
+  replacementRaised: boolean
 }
 
 interface BatchEntryDbRow {
@@ -475,6 +479,7 @@ interface BatchEntryDbRow {
   dispatch_state: string | null
   ship_to_superseded: boolean
   dispatch_group: string | null
+  replacement_raised: boolean
 }
 
 function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
@@ -492,6 +497,7 @@ function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
     dispatchState: r.dispatch_state,
     shipToSuperseded: r.ship_to_superseded,
     dispatchGroup: r.dispatch_group,
+    replacementRaised: r.replacement_raised,
   }
 }
 
@@ -559,7 +565,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
       SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             dispatch_group
+             dispatch_group, replacement_raised
       FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
       ORDER BY bank_reference_code, branch_code, merchant_display_name, dispatch_group, asgn_id
     `
@@ -665,7 +671,7 @@ function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
 const POOL_ENTRY_COLUMNS = `asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             dispatch_group,
+             dispatch_group, replacement_raised,
              batch::text AS batch, created_at,
              tenant_id::text AS tenant_id, program_id::text AS program_id,
              hold_reason`

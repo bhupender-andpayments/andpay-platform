@@ -3,8 +3,9 @@ import { toUuid } from '@andpay/ids'
 import type { Envelope } from '@andpay/envelope'
 import type { FulfillmentDb } from './db.js'
 import type { AssignmentFactView } from './events.js'
-import { CONSUMER, type Tx } from './internal.js'
-import { enterWriteScope } from './write-context.js'
+import type { ReplacementRaisedFactView } from './unit-lifecycle.js'
+import { CONSUMER, setProgramContext, type Tx } from './internal.js'
+import { enterWriteRole, enterWriteScope } from './write-context.js'
 
 export async function projectDemandFact(db: FulfillmentDb, env: Envelope<AssignmentFactView>): Promise<{ deduped: boolean }> {
   const p = env.payload
@@ -43,4 +44,44 @@ export async function projectDemandFact(db: FulfillmentDb, env: Envelope<Assignm
     })
   })
   return { deduped: !wrote }
+}
+
+/**
+ * fct.tms.assignment.replacement_raised.v1, the POOL half: stamp the PARENT's
+ * pending_pool_entry with replacement_raised so batch and pool reads can badge
+ * the damaged dispatch without a cross-context read (C4). The UNIT half of the
+ * same fact (the damaged device write-off) lives in unit-lifecycle.ts under
+ * its own dedup suffix; the two projections are independently idempotent, the
+ * same split damage-case.ts uses for the two case transitions.
+ *
+ * The fact carries no progId, so the program scope is re-pinned from the
+ * target row itself (M7/S16: resolved server-side from the aggregate, never a
+ * payload field), the exact pattern of tms damage-case.ts and the return
+ * sheet's per-row setProgramContext. A parent with no pool row (never
+ * projected, or a pre-pool legacy dispatch) is a no-op, not an error: the
+ * marker is a read-side convenience and the case itself lives in tms.
+ */
+export async function projectReplacementToPool(
+  db: FulfillmentDb,
+  env: Envelope<ReplacementRaisedFactView>,
+): Promise<{ advanced: number }> {
+  let advanced = 0
+  await db.$transaction(async (tx: Tx) => {
+    // Role FIRST, before onceWithin's inbox INSERT, so no statement here ever
+    // runs as the table owner (spec 10d).
+    await enterWriteRole(tx, 'fulfillment_write')
+    await onceWithin(tx, CONSUMER, `${env.dedupKey}|pool_replacement_raised`, async () => {
+      const parentUuid = toUuid(env.payload.replacedAsgnId)
+      const rows = await tx.$queryRaw<{ program_id: string }[]>`
+        SELECT program_id::text AS program_id FROM pending_pool_entry WHERE asgn_id = ${parentUuid}::uuid
+      `
+      if (rows.length === 0) return
+      await setProgramContext(tx, rows[0]!.program_id)
+      advanced = await tx.$executeRaw`
+        UPDATE pending_pool_entry SET replacement_raised = true, updated_at = now()
+        WHERE asgn_id = ${parentUuid}::uuid AND replacement_raised = false
+      `
+    })
+  })
+  return { advanced }
 }

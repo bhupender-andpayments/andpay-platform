@@ -272,6 +272,48 @@ describe('ops reports edge: GET /ops/reports/dispatch/:asgnId (D-16, T4.5)', () 
     expect(res.headers['x-analytics-watermark']).toBe(WATERMARK_ISO)
   })
 
+  it('carries the damage linkage both directions, so the portal can render the persistent pair', async () => {
+    const prog = randomUUID()
+    const parentId = fromUuid('asgn', randomUUID())
+    const childId = fromUuid('asgn', randomUUID())
+    // The PARENT names its replacement; the CHILD names its original. Both are
+    // columns project.ts already folds off the replacement_raised fact.
+    await analyticsDb.$executeRaw`
+      INSERT INTO dispatch_row
+        (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
+         batch_id, pipeline_state, billable_flag, received_at, dispatch_group,
+         is_replacement, replacement_dispatch_id, replacement_status, updated_at)
+      VALUES (${parentId}, ${prog}::uuid, 'HDFC', 'HDFC Bank', 'Acme', ARRAY[]::text[],
+              ${BATCH}, 'DELIVERED', true, now(), 'SOUNDBOX',
+              false, ${childId}, 'RAISED', now())`
+    await analyticsDb.$executeRaw`
+      INSERT INTO dispatch_row
+        (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
+         batch_id, pipeline_state, billable_flag, received_at, dispatch_group,
+         is_replacement, original_dispatch_id, damage_reason, updated_at)
+      VALUES (${childId}, ${prog}::uuid, 'HDFC', 'HDFC Bank', 'Acme', ARRAY[]::text[],
+              ${BATCH}, 'RECEIVED', false, now(), 'SOUNDBOX',
+              true, ${parentId}, 'physical_damage', now())`
+
+    const token = await mint()
+    const parent = await request(app.getHttpServer())
+      .get(`/ops/reports/dispatch/${parentId}`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(parent.status).toBe(200)
+    expect(parent.body.isReplacement).toBe(false)
+    expect(parent.body.replacementDispatchId).toBe(childId)
+    expect(parent.body.billableFlag).toBe(true)
+
+    const child = await request(app.getHttpServer())
+      .get(`/ops/reports/dispatch/${childId}`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(child.status).toBe(200)
+    expect(child.body.isReplacement).toBe(true)
+    expect(child.body.originalDispatchId).toBe(parentId)
+    expect(child.body.damageReason).toBe('physical_damage')
+    expect(child.body.billableFlag).toBe(false)
+  })
+
   it('a dispatch with no shipment yet gets an EMPTY delivery branch, not a failed read', async () => {
     const prog = randomUUID()
     const asgnId = fromUuid('asgn', randomUUID())

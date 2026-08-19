@@ -20,7 +20,7 @@ export {
   type ReturnSheetRowErrorCode,
   type ReturnSheetStructuralError,
 } from './return-sheet-adapter.js'
-export { projectDemandFact } from './pool.js'
+export { projectDemandFact, projectReplacementToPool } from './pool.js'
 export {
   UNIT_STATUS_ORDER,
   UNIT_TERMINAL_STATUSES,

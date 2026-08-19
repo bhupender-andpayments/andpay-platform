@@ -3,7 +3,7 @@ import { newEnvelope, type Envelope } from '@andpay/envelope'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { onceWithin } from '@andpay/outbox'
 import { PrismaClient } from '../generated/client/index.js'
-import { projectDemandFact } from '../src/pool.js'
+import { projectDemandFact, projectReplacementToPool } from '../src/pool.js'
 import { CONSUMER } from '../src/internal.js'
 import type { AssignmentFactView } from '../src/events.js'
 
@@ -261,5 +261,50 @@ describe('projectDemandFact (pending-pool projection from fct.tms.assignment.v1,
     const i1 = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM inbox`
     expect(Number(p1[0]!.n)).toBe(1)
     expect(Number(i1[0]!.n)).toBe(1)
+  })
+})
+
+// The POOL half of fct.tms.assignment.replacement_raised.v1: the parent's
+// pool row gains the replacement_raised badge (the UNIT half, the DAMAGED
+// write-off, is unit-lifecycle.test.ts's subject). Consumer view declared as
+// a literal envelope, the same T7 posture as the fixtures above.
+describe('projectReplacementToPool (parent badge off the replacement fact)', () => {
+  function replacementEnv(childWire: string, parentWire: string, dedupKey: string): never {
+    return {
+      payload: { asgnId: childWire, replacedAsgnId: parentWire, damageReason: 'physical_damage', bankRemarks: '' },
+      dedupKey,
+    } as never
+  }
+
+  async function badgeOf(asgnUuid: string): Promise<boolean> {
+    const r = await db.$queryRaw<{ replacement_raised: boolean }[]>`
+      SELECT replacement_raised FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
+    `
+    return r[0]!.replacement_raised
+  }
+
+  it('stamps the PARENT row, leaves the child row alone, and is idempotent on redelivery', async () => {
+    const parent = fixturePayload()
+    const child = fixturePayload({ progId: parent.progId, tnntId: parent.tnntId })
+    await projectDemandFact(db, demandEnv(parent, `${parent.asgnId}|demand`, 't-parent'))
+    await projectDemandFact(db, demandEnv(child, `${child.asgnId}|demand`, 't-child'))
+
+    const key = `${child.asgnId}|replace`
+    const first = await projectReplacementToPool(db, replacementEnv(child.asgnId, parent.asgnId, key))
+    expect(first.advanced).toBe(1)
+    expect(await badgeOf(toUuid(parent.asgnId))).toBe(true)
+    expect(await badgeOf(toUuid(child.asgnId))).toBe(false)
+
+    // E6: the same dedupKey a second time writes nothing.
+    const replay = await projectReplacementToPool(db, replacementEnv(child.asgnId, parent.asgnId, key))
+    expect(replay.advanced).toBe(0)
+    expect(await badgeOf(toUuid(parent.asgnId))).toBe(true)
+  })
+
+  it('a parent with no pool row is a no-op, not an error', async () => {
+    const orphanParent = newId('asgn')
+    const child = newId('asgn')
+    const res = await projectReplacementToPool(db, replacementEnv(child, orphanParent, `${child}|replace`))
+    expect(res.advanced).toBe(0)
   })
 })

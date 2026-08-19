@@ -38,6 +38,11 @@ const DETAIL = {
   deliveryDate: null,
   activationStatus: 'ACTIVATED',
   activationDate: '2026-08-12T12:00:00.000Z',
+  isReplacement: false,
+  originalDispatchId: null,
+  replacementDispatchId: null,
+  damageReason: null,
+  billableFlag: true,
   deliveryTrail: [
     { status: 'PICKED_UP', courierTimestamp: '2026-08-12T09:00:00.000Z', statusSource: 'courier-file', sourceRef: 'vndr_1|file_7', receivedAt: '2026-08-12T09:05:00.000Z', overrideReason: null },
     { status: 'IN_TRANSIT', courierTimestamp: '2026-08-12T15:00:00.000Z', statusSource: 'courier-file', sourceRef: 'vndr_1|file_8', receivedAt: '2026-08-12T15:04:00.000Z', overrideReason: null },
@@ -218,13 +223,19 @@ interface FlagCall {
   init: RequestInit
 }
 
-function stubFlag(detail: unknown, flagStatus = 201, flagBody: unknown = { childAsgnId: 'asgn_child1', caseStatus: 'Open' }): FlagCall[] {
+function stubFlag(
+  detail: unknown,
+  flagStatus = 201,
+  flagBody: unknown = { childAsgnId: 'asgn_child1', caseStatus: 'Open' },
+  devicesInStock: unknown[] = [],
+): FlagCall[] {
   const calls: FlagCall[] = []
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init: RequestInit) => {
       calls.push({ url, init })
       if (url.includes('/ops/damage-reasons')) return jsonResponse(REASONS)
+      if (url.includes('/ops/devices')) return jsonResponse(devicesInStock)
       if (url.includes('/flag-damage')) return jsonResponse(flagBody, flagStatus)
       return jsonResponse(detail)
     }),
@@ -345,5 +356,77 @@ describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
     expect(await screen.findByText(/a live damage case already exists for this dispatch/i)).toBeTruthy()
     // No child link is claimed for a refused flag.
     expect(screen.queryByRole('link', { name: /asgn_child1/ })).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------- //
+// damage-flow-edge-case: the PERSISTENT linkage pair and the stock line.
+// The post-flag note was session state, so a reload lost the dp1 -> dp2
+// pair; now both directions come off the analytics detail read and survive
+// any reload. The stock line answers "is there a device for this
+// replacement" at flag time instead of at the vendor-return step.
+// ---------------------------------------------------------------------- //
+
+describe('DispatchDetailPage: the persistent damage linkage', () => {
+  beforeEach(() => {
+    clearAccessToken()
+    setAccessToken('tok-1')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('a flagged dispatch shows "Replaced by" with a link to its replacement, on a fresh load', async () => {
+    stub({ ...DETAIL, replacementDispatchId: 'asgn_child_link1' })
+    renderPage()
+
+    expect(await screen.findByText(/damage was flagged on this dispatch/i)).toBeTruthy()
+    const link = screen.getByRole('link', { name: /asgn_child_link1/ })
+    expect(link.getAttribute('href')).toBe('/dispatches/asgn_child_link1')
+    // The flag control is still offered: a new flag is allowed once the case
+    // closes, and the server is the gate (DP-3), not this card.
+    expect(screen.getByRole('button', { name: /flag damage/i })).toBeTruthy()
+  })
+
+  it('a replacement shows what it replaces, with the reason, on a fresh load', async () => {
+    stub({ ...DETAIL, isReplacement: true, originalDispatchId: 'asgn_parent_link1', damageReason: 'physical_damage', billableFlag: false })
+    renderPage()
+
+    expect(await screen.findByText(/this dispatch is a replacement, raised off/i)).toBeTruthy()
+    const link = screen.getByRole('link', { name: /asgn_parent_link1/ })
+    expect(link.getAttribute('href')).toBe('/dispatches/asgn_parent_link1')
+    expect(screen.getByText(/for physical_damage/i)).toBeTruthy()
+  })
+})
+
+describe('DispatchDetailPage: stock awareness in the Flag damage dialog', () => {
+  beforeEach(() => {
+    clearAccessToken()
+    setAccessToken('tok-1')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('a soundbox flag says how many devices are IN_STOCK for the replacement', async () => {
+    stubFlag(DETAIL, 201, { childAsgnId: 'asgn_child1', caseStatus: 'Open' }, [{ unitId: 'unit_1' }, { unitId: 'unit_2' }])
+    renderPage()
+    await openFlagDialog()
+
+    expect(await screen.findByText(/2 devices in stock for the replacement to pair with/i)).toBeTruthy()
+  })
+
+  it('zero stock is a visible warning, and the flag is still allowed', async () => {
+    stubFlag(DETAIL, 201, { childAsgnId: 'asgn_child1', caseStatus: 'Open' }, [])
+    renderPage()
+    await openFlagDialog()
+
+    expect(await screen.findByText(/no soundbox devices are in stock/i)).toBeTruthy()
+    // Advisory only: the confirm is not disabled by stock.
+    await userEvent.selectOptions(screen.getByLabelText(/reason/i), 'battery_issue')
+    await userEvent.type(screen.getByLabelText(/remarks/i), 'no sound on delivery')
+    expect((screen.getByRole('button', { name: /open damage case/i }) as HTMLButtonElement).disabled).toBe(false)
   })
 })

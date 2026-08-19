@@ -209,6 +209,28 @@ export function DispatchDetailPage() {
   const [flagError, setFlagError] = useState<string | null>(null)
   const [flagged, setFlagged] = useState<{ childAsgnId: string } | null>(null)
 
+  // Stock awareness at flag time: a soundbox replacement needs a device from
+  // inventory at the vendor-return step, so the dialog says up front how many
+  // are IN_STOCK, and warns when none is. Read-side only: the flag is never
+  // blocked on stock (the replacement waits in the pipeline, which is the
+  // recorded behavior), the operator just is not surprised by it later.
+  const [stockCount, setStockCount] = useState<number | null>(null)
+  useEffect(() => {
+    if (!flagOpen || isCollateral || stockCount !== null) return
+    let cancelled = false
+    getDevices(client, 'IN_STOCK')
+      .then((rows) => {
+        if (!cancelled && Array.isArray(rows)) setStockCount(rows.length)
+      })
+      .catch(() => {
+        // The count is advisory; a failed read renders nothing rather than
+        // blocking the flag.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [flagOpen, isCollateral, stockCount, client])
+
   // The master is read when the dialog first opens, not on page mount: most
   // visits to this page never flag anything.
   useEffect(() => {
@@ -398,6 +420,27 @@ export function DispatchDetailPage() {
           <Card>
             <CardBody>
               <SectionHeading>Damage</SectionHeading>
+              {/* The persistent linkage, both directions, off the analytics
+                  detail read, so the pair survives a reload (the note below
+                  covers the projection lag right after a flag). */}
+              {detail.isReplacement && detail.originalDispatchId !== null && (
+                <InfoNote>
+                  This dispatch is a replacement, raised off{' '}
+                  <Link className="underline underline-offset-2" to={`/dispatches/${detail.originalDispatchId}`}>
+                    <CodeChip>{detail.originalDispatchId}</CodeChip>
+                  </Link>
+                  {detail.damageReason !== null ? ` for ${detail.damageReason}` : ''}. Non-billable.
+                </InfoNote>
+              )}
+              {detail.replacementDispatchId !== null && flagged === null && (
+                <InfoNote>
+                  Damage was flagged on this dispatch. Replaced by{' '}
+                  <Link className="underline underline-offset-2" to={`/dispatches/${detail.replacementDispatchId}`}>
+                    <CodeChip>{detail.replacementDispatchId}</CodeChip>
+                  </Link>
+                  , non-billable.
+                </InfoNote>
+              )}
               {flagged !== null ? (
                 <InfoNote>
                   Damage case opened. The replacement dispatch is{' '}
@@ -512,9 +555,22 @@ export function DispatchDetailPage() {
               </p>
             </>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              One replacement soundbox is raised, fixed per D-27. There is no quantity to enter.
-            </p>
+            <>
+              <p className="text-sm text-muted-foreground">
+                One replacement soundbox is raised, fixed per D-27. There is no quantity to enter.
+              </p>
+              {stockCount !== null &&
+                (stockCount === 0 ? (
+                  <p className="text-sm font-medium text-amber-600 dark:text-amber-500">
+                    No soundbox devices are in stock. The replacement will still be raised, but it waits at the
+                    vendor-return step until inventory arrives.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {stockCount} device{stockCount === 1 ? '' : 's'} in stock for the replacement to pair with.
+                  </p>
+                ))}
+            </>
           )}
         </div>
       </ConfirmDialog>

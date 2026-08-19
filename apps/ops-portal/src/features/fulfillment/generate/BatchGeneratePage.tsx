@@ -299,7 +299,20 @@ export function BatchGeneratePage() {
     {
       key: 'dispatchState',
       header: 'State',
-      cell: (e) => e.dispatchState ?? 'not dispatched',
+      // A flagged dispatch stays in the batch (the print run is history and
+      // the vendor sheet already left the building), so it is BADGED rather
+      // than removed: the operator sees at a glance that a damage case was
+      // raised and a replacement is travelling separately.
+      cell: (e) => (
+        <span className="flex items-center gap-2">
+          <span>{e.dispatchState ?? 'not dispatched'}</span>
+          {e.replacementRaised && (
+            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-400">
+              Damaged, replaced
+            </span>
+          )}
+        </span>
+      ),
       sortValue: (e) => e.dispatchState ?? '',
     },
     {

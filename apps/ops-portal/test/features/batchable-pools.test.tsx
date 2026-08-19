@@ -25,6 +25,7 @@ function entry(over: Partial<PoolEntryRow> = {}): PoolEntryRow {
   return {
     asgnId: 'asgn_50000000008008000000000001',
     dispatchGroup: null,
+    replacementRaised: false,
     merchantDisplayName: 'BRILLIANT PERFUME',
     merchantLegalName: 'BRILLIANT PERFUME',
     bankReferenceCode: '3',

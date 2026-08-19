@@ -25,6 +25,7 @@ function entry(over: Partial<BatchEntryRow> & { asgnId: string }): BatchEntryRow
     dispatchState: 'SENT_TO_VENDOR',
     shipToSuperseded: false,
     dispatchGroup: 'SOUNDBOX',
+    replacementRaised: false,
     ...over,
   }
 }

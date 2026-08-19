@@ -496,6 +496,9 @@ export interface BatchEntryRow {
   // combined row; 'SOUNDBOX' / 'COLLATERAL' otherwise. See
   // services/fulfillment/src/package.ts excelLinesFor for what this decides.
   dispatchGroup: string | null
+  // A damage case was opened on this dispatch and a replacement raised off it
+  // (stamped by the replacement_raised fact consumer). Badge material only.
+  replacementRaised: boolean
 }
 
 /** services/fulfillment/src/ops-read.ts PoolEntryRow. */
@@ -1795,6 +1798,14 @@ export interface DispatchDetailView {
   deliveryDate: string | null
   activationStatus: string | null
   activationDate: string | null
+  // The damage linkage, both directions (analytics readDispatchDetail): a
+  // replacement names what it replaces; a flagged dispatch names the
+  // replacement raised off it. Case status stays a tms read (D-24).
+  isReplacement: boolean
+  originalDispatchId: string | null
+  replacementDispatchId: string | null
+  damageReason: string | null
+  billableFlag: boolean
   deliveryTrail: DeliveryTrailEntry[]
   activationTrail: ActivationTrailEntry[]
   watermark: Watermark

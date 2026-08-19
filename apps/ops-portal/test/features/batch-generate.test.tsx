@@ -41,6 +41,7 @@ function entry(over: Partial<BatchEntryRow> = {}): BatchEntryRow {
     dispatchState: 'SENT_TO_VENDOR',
     shipToSuperseded: false,
     dispatchGroup: null,
+    replacementRaised: false,
     ...over,
   }
 }
@@ -101,6 +102,26 @@ describe('The batch page lists its dispatches', () => {
     }
     expect(screen.getByText('3')).toBeTruthy()
     expect(screen.getByText('4')).toBeTruthy()
+  })
+
+  it('badges a flagged dispatch "Damaged, replaced" instead of removing it from the batch', async () => {
+    // The batch is history (the print run and vendor sheet already exist), so
+    // a damage flag BADGES the row rather than deleting it; the replacement
+    // travels in its own batch.
+    stub({
+      batch: BATCH,
+      entries: [entry({ replacementRaised: true }), entry({ asgnId: 'asgn_ok1', merchantDisplayName: 'CLEAN ROW' })],
+      artifacts: [artifact()],
+      printLayout: 'ONE_PER_PAGE',
+    })
+    renderPage()
+
+    expect(await screen.findByText('Damaged, replaced')).toBeTruthy()
+    // Exactly one badge: the clean row carries none.
+    expect(screen.getAllByText('Damaged, replaced')).toHaveLength(1)
+    // Both rows are still listed.
+    expect(screen.getByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(screen.getByText('CLEAN ROW')).toBeTruthy()
   })
 
   it('lists a dispatch whose card has not composed, with its preview disabled rather than missing', async () => {

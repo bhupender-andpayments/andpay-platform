@@ -729,6 +729,16 @@ export interface DispatchDetailView {
   // The ACTIVATION branch, independent of everything above it.
   activationStatus: string | null
   activationDate: string | null
+  // The DAMAGE linkage, both directions, off the columns project.ts already
+  // folds from the replacement_raised fact. A replacement row names what it
+  // replaces (isReplacement + originalDispatchId); a flagged row names the
+  // replacement raised off it (replacementDispatchId). Read-side only: the
+  // case status itself stays in tms and is deliberately not here (D-24).
+  isReplacement: boolean
+  originalDispatchId: string | null
+  replacementDispatchId: string | null
+  damageReason: string | null
+  billableFlag: boolean
   watermark: Watermark
 }
 
@@ -758,6 +768,11 @@ export async function readDispatchDetail(
     deliveryDate: iso(r.delivery_date),
     activationStatus: r.activation_status,
     activationDate: iso(r.activation_date),
+    isReplacement: r.is_replacement,
+    originalDispatchId: r.original_dispatch_id,
+    replacementDispatchId: r.replacement_dispatch_id,
+    damageReason: r.damage_reason,
+    billableFlag: r.billable_flag,
     watermark,
   }
 }

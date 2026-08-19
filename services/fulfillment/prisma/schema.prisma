@@ -227,6 +227,12 @@ model PendingPoolEntry {
   // to find and D103d forbids birthing one; see migration
   // 20260810120000_collateral_shipment_link for the full reasoning.
   collateralShipment  String?  @map("collateral_shipment") @db.Uuid
+  // The parent-side marker that a damage replacement was raised off this
+  // dispatch, stamped by the fct.tms.assignment.replacement_raised.v1
+  // consumer (pool.ts projectReplacementToPool) so batch and pool reads can
+  // badge the damaged row without a cross-context read (C4). Never cleared:
+  // the raise is history, and the case's own status lives in tms (D-24).
+  replacementRaised   Boolean  @default(false) @map("replacement_raised")
 
   @@map("pending_pool_entry")
 }
