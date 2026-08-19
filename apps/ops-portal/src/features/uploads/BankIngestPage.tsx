@@ -200,7 +200,7 @@ export function BankIngestPage() {
           is possible next, and the rail restated it in a second visual system.
           Back to BATCHES, not Dispatches: a committed bank file lands in the
           pending pool, and the pool is what the operator goes to check next. */}
-      <BackLink to="/batches" label="Batches" />
+      <BackLink to="/pool" label="Pool" />
 
       <Card>
         <CardHeader>
@@ -473,9 +473,14 @@ export function BankIngestPage() {
                   >
                     Upload another file
                   </Button>
+                  {/* THE POOL, not the batches (18 Aug 2026, decision D14).
+                      Committing a bank file adds rows to the pool; it forms no
+                      batch. Sending an operator to /batches after a commit
+                      showed them a list their upload had not changed yet, and
+                      the rows they had just added were on a different page. */}
                   <Button asChild variant="outline">
-                    <Link to="/batches">
-                      Go to batches
+                    <Link to="/pool">
+                      Go to pool
                       <ArrowRight aria-hidden="true" />
                     </Link>
                   </Button>

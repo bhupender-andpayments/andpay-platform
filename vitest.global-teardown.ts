@@ -32,6 +32,7 @@
 import { existsSync, rmSync } from 'node:fs'
 import { DB_TESTS_RAN_MARKER } from './vitest.db-marker.js'
 import { nonLoopbackVars, loopbackViolationMessage } from './test/db-loopback.js'
+import { testDbUrl } from './vitest.db-target.js'
 
 // The four DOMAIN contexts. Deliberately a literal list, not "every schema".
 const DOMAIN_CONTEXTS = [
@@ -120,8 +121,14 @@ const DEMO_LOGIN_HANDLE = 'ops.admin'
 const AUTH_LEDGER = 'authz_audit'
 const AUTH_UNTOUCHED = [AUTH_LEDGER, 'outbox', '_prisma_migrations']
 
+// THE TEST DATABASE, never `andpay` (19 Aug 2026). This runs in vitest's MAIN
+// process, where the node project's `test.env` does not apply, so the target is
+// imported from the one module that defines it rather than re-spelled here: if
+// this and the suites ever disagreed, the gate would truncate one database
+// while the suites wrote to another, leaving real residue behind while
+// reporting a clean run.
 function defaultUrl(schema: string): string {
-  return `postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=${schema}`
+  return testDbUrl(schema)
 }
 
 interface RawClient {
@@ -143,8 +150,18 @@ async function connect(ctx: string, urlVar: string, schema: string): Promise<Raw
     console.error(`${TAG} no generated client for ${ctx}; its tables were NOT cleaned. Run: bash ./infra/db.sh`)
     return null
   }
-  const url = process.env[urlVar] ?? defaultUrl(schema)
-  return new mod.PrismaClient({ datasources: { db: { url } } })
+  // UNCONDITIONAL, and process.env is deliberately NOT consulted (19 Aug 2026).
+  // Reading `process.env[urlVar] ?? default` here was the last way the demo
+  // database could still be destroyed: the app's own urls point at `andpay`,
+  // and any shell that had exported them (the local restart script does exactly
+  // that) handed them to this teardown, which then truncated the live dataset
+  // no matter which database the suites had actually used. The gate has one
+  // legitimate target and it is not negotiable per shell.
+  //
+  // `urlVar` is kept in the signature because the caller's context table is
+  // keyed by it and the name appears in this file's log lines.
+  void urlVar
+  return new mod.PrismaClient({ datasources: { db: { url: defaultUrl(schema) } } })
 }
 
 async function countRows(db: RawClient, schema: string, table: string): Promise<number> {

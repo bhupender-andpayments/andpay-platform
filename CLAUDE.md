@@ -175,6 +175,8 @@ space or a `#` breaks both a shell `source` and a raw connection string.
 truncates the four domain schemas and deletes auth rows on every run, so it
 may only ever talk to localhost. The guard lives in `test/db-loopback.ts` and
 fires from both `test/db-tests-ran.setup.ts` and `vitest.global-teardown.ts`.
+That guard bounds WHICH HOST the gate may reach; `vitest.db-target.ts` bounds
+which local DATABASE it may destroy (`andpay_test`, never `andpay`). Both apply.
 
 The instance is developer-only and synthetic-data-only. It runs as the table
 owner and is therefore RLS-exempt, which is the same posture as local docker
@@ -183,6 +185,26 @@ E-3 first (S13).
 
 ## Testing contract
 
+- **The gate owns its own database, `andpay_test`, and never touches `andpay`**
+  (19 Aug 2026). Create it once with `bash infra/db-test-bootstrap.sh`, and
+  re-run that after pulling new migrations. `vitest.db-target.ts` is the single
+  definition of the target: `vitest.config.ts` injects it as the node project's
+  `test.env`, and `vitest.global-teardown.ts` imports it directly because
+  `globalSetup` runs in vitest's main process where that env does not apply.
+  Read that file's header before changing any of it; `test/db_test_isolation.test.ts`
+  asserts the three parts still agree.
+
+  WHY IT EXISTS. Every DB-backed suite resolves its connection as
+  `process.env.<CTX>_DATABASE_URL ?? '...localhost:5432/andpay?schema=<ctx>'`,
+  and `.env` defines the `ANDPAY_DB_*` parts rather than those six variables, so
+  in a normal shell every suite fell through to its hardcoded fallback and the
+  destructive gate ran against the database the local demo lives in. It wiped
+  the seeded dataset on every `pnpm test`, and on any `--project node` run
+  including a single file that opens no connection. The per-file marker in
+  `test/db-tests-ran.setup.ts` cannot detect that, so the separate database, not
+  the marker, is what protects demo data. The fallbacks in the suites are left
+  pointed at `andpay` on purpose: they are a loud last resort for a path that
+  does not load the vitest config.
 - Most suites are integration tests against the real local Postgres, so
   `fileParallelism` is false and every file runs serially. `pnpm db:up` first.
 - Three vitest projects: `node` (packages/services/apps plus root `test/`, node
@@ -190,7 +212,8 @@ E-3 first (S13).
   (jsdom plus the react transform, isolated so jsdom never leaks into the node
   suites).
 - `vitest.global-teardown.ts` runs ONCE after the whole gate and truncates the
-  four domain schemas. Read its header before touching it: `auth` is never
+  four domain schemas OF `andpay_test` (see above; it consults no environment
+  variable, so no shell can redirect it). Read its header before touching it: `auth` is never
   truncated (scoped DELETE preserving the `ops.admin` demo login), the
   hash-chained `authz_audit` and the auth `outbox` are never trimmed,
   `tms.damage_reason` and `fulfillment.bank_composition_config` are preserved

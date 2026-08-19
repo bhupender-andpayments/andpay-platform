@@ -10,6 +10,12 @@ import { advanceShipmentStatus, collateralAsgnIdsFor, type AdvanceOutcome } from
 import { canAdvanceUnitStatus, advanceUnitStatus, type AnyUnitStatus } from './unit-lifecycle.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
 import { holdEntryWithinTx, triggerBatchWithinTx } from './batching.js'
+import {
+  sendBatchToVendorWithinTx,
+  BatchNotFoundError,
+  PrintVendorNotResolvableError,
+} from './dispatch.js'
+import { readBatchSettlementWithinTx, type BatchSettlement } from './ops-read.js'
 import { DEFAULT_POOL_CFG } from './config/pool-config.js'
 import { ingestIntakeSheetWithinTx, isSheetStructurallyValid, type IntakeSheet, type IntakeResult } from './intake.js'
 import { createVendorWithinTx, updateVendorWithinTx } from './vendor.js'
@@ -70,7 +76,12 @@ export type TemplateMasterErrorCode = 'template_not_pdf' | 'template_trim_mismat
 
 export class OpsClientError extends Error {
   constructor(
-    public readonly kind: 'not-found' | 'invalid',
+    // 'conflict' (18 Aug 2026) maps to 409 in OpsErrorFilter, which already
+    // handled the kind because tms/src/ops.ts's sibling error has carried it
+    // for longer. It is the right answer for a lifecycle action refused by the
+    // state of its target rather than by its arguments: sending a batch that
+    // has already been sent, or closing one whose dispatches have not settled.
+    public readonly kind: 'not-found' | 'invalid' | 'conflict',
     message: string,
     // Optional and additive: every existing throw site is unchanged and keeps
     // returning a bare fixed body.
@@ -201,6 +212,76 @@ export async function correctStatus(
     })
   })
   return { deduped: !ran, outcome: ran ? outcome : null }
+}
+
+/**
+ * The batch-wide "mark all delivered" demo/ops shortcut. Every dispatch in a
+ * batch has its shipment corrected to DELIVERED, ONE call to `correctStatus`
+ * per shipment: no new C3 or audit logic here, this is pure orchestration
+ * over the already-audited single-shipment path.
+ *
+ * A batch's dispatches reach a shpt_ two different ways (D-24's SOUNDBOX/
+ * COLLATERAL split): a SOUNDBOX leg's shipment lives on the paired unit
+ * (`unit.shipment`, once a device has been paired by the return sheet); a
+ * COLLATERAL leg's shipment is `pending_pool_entry.collateral_shipment`
+ * directly. Both are read here (read-only, no scope needed for a SELECT
+ * against a permissive-RLS table), never the reverse (no shpt -> batch
+ * column exists, by design: `shpt` doesn't know what batch it came from).
+ *
+ * A leg with NO shipment yet (still short of a paired device / vendor
+ * return) is silently skipped, same as one already DELIVERED or RETURNED
+ * (correctStatus's own C3 guard would no-op it anyway; skipping here just
+ * avoids the wasted call). The per-shipment clientKey is derived from the
+ * caller's own key plus the shpt id, so a retry of the WHOLE bulk call
+ * cannot double-apply to any one shipment, while distinct shipments in the
+ * same call each get their own dedup identity.
+ */
+export async function bulkDeliverBatch(
+  db: FulfillmentDb,
+  args: { batchId: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ delivered: number; skipped: number; failed: number }> {
+  const batchUuid = toUuid(args.batchId)
+  const rows = await db.$queryRaw<{ shpt_id: string }[]>`
+    SELECT DISTINCT s.shpt_id::text AS shpt_id
+    FROM (
+      SELECT u.shipment AS shpt_id
+        FROM pending_pool_entry p
+        JOIN unit u ON u.asgn_id = p.asgn_id
+       WHERE p.batch = ${batchUuid}::uuid AND u.shipment IS NOT NULL
+      UNION
+      SELECT p.collateral_shipment AS shpt_id
+        FROM pending_pool_entry p
+       WHERE p.batch = ${batchUuid}::uuid AND p.collateral_shipment IS NOT NULL
+    ) s(shpt_id)
+    JOIN shpt ON shpt.id = s.shpt_id
+    WHERE shpt.status NOT IN ('DELIVERED', 'RETURNED')
+  `
+
+  let delivered = 0
+  let skipped = 0
+  let failed = 0
+  const now = new Date()
+  for (const r of rows) {
+    try {
+      const shptId = fromUuid('shpt', r.shpt_id)
+      const { deduped, outcome } = await correctStatus(db, {
+        shptId,
+        status: 'DELIVERED',
+        courierTimestamp: now,
+        // ':' not '|': clientKey is a LEAF segment in the 06.A key grammar and
+        // must never contain the DELIMITER (@andpay/keys assertLeaf), which is
+        // exactly what broke this the first time.
+        clientKey: `${args.clientKey}:${r.shpt_id}`,
+        actorId: args.actorId,
+        traceId: args.traceId,
+      })
+      if (!deduped && outcome === 'advanced') delivered++
+      else skipped++
+    } catch {
+      failed++
+    }
+  }
+  return { delivered, skipped, failed }
 }
 
 /**
@@ -802,6 +883,222 @@ export async function releaseRecord(
   })
 
   return { deduped: !ran, released }
+}
+
+/**
+ * Send a formed batch to its print vendor (decision D4, 18 Aug 2026).
+ *
+ * This used to happen by itself: consumeBatchFact ran the dispatch step in the
+ * same transaction that composed the QR artifacts, so a batch was at the vendor
+ * the instant it formed. Forming and sending are two decisions, and the second
+ * is the operator's, so the step became this action. The EFFECT is unchanged,
+ * literally: sendBatchToVendorWithinTx is the old step, extracted rather than
+ * reimplemented, and it emits the same fact with the same dedupKey, so
+ * analytics, the vendor pull surface, and the return-sheet flow need no changes.
+ *
+ * THE GUARDS RUN INSIDE THE CLIENT-KEY onceWithin, and the ordering matters in
+ * both directions:
+ *
+ *   A retry of a SUCCESSFUL send must not become an error. onceWithin sees the
+ *   key, skips the callback, and the caller gets {deduped: true, sent: false}.
+ *   With the guards outside, that same retry hit the already-sent guard and
+ *   answered 409, which tells an operator their completed action failed.
+ *
+ *   A refused send must not burn the key. A throw from inside the callback rolls
+ *   back the whole transaction, the dedup row included, so the operator can fix
+ *   the cause (activate one print vendor, wait for compose) and press the same
+ *   button again.
+ *
+ * What each refusal means:
+ *
+ *   compose unfinished  any entry still at NULL dispatch_state. Compose sets
+ *                       QR_GENERATED in the same transaction that inserts the
+ *                       artifacts, so "has a QR_GENERATED entry" is exactly
+ *                       "artifacts are committed" and needs no second probe.
+ *                       Sending now would advance zero rows and emit a fact
+ *                       with an empty asgnIds, which is worse than a refusal.
+ *   already sent        no entry at QR_GENERATED, i.e. they have all moved on.
+ *
+ * TWO onceWithin LAYERS, and both are load-bearing. The outer one is keyed on
+ * the operator's client key (spec 10c CC-1b), which makes the HTTP call
+ * idempotent. The inner one is keyed on the BUSINESS key `{btch}|dispatch`, the
+ * very key the consumer step used, which means a batch the old automatic path
+ * already dispatched stays inert forever, and two operators racing with
+ * different client keys cannot both emit the fact.
+ */
+export async function sendBatchToVendor(
+  db: FulfillmentDb,
+  args: { btchId: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean; sent: boolean }> {
+  const btchUuid = toUuid(args.btchId)
+  let sent = false
+
+  const ran = await db.$transaction(async (tx: Tx) => {
+    // The program comes from the target aggregate, never from the request (M7,
+    // S16, D99), exactly as holdRecord and releaseRecord resolve theirs.
+    const batchRows = await tx.$queryRaw<{ program_id: string }[]>`
+      SELECT program_id::text AS program_id FROM batch WHERE id = ${btchUuid}::uuid
+    `
+    if (batchRows.length === 0) throw new OpsClientError('not-found', 'batch not found')
+    const programUuid = batchRows[0]!.program_id
+    await enterWriteScope(tx, 'fulfillment_write', programUuid)
+
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:batch-send-to-vendor'), async () => {
+      const states = await tx.$queryRaw<{ dispatch_state: string | null }[]>`
+        SELECT DISTINCT dispatch_state FROM pending_pool_entry
+        WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
+      `
+      // EACH REFUSAL CARRIES A CODE, not only a message (19 Aug 2026). The
+      // message never crosses the HTTP boundary by design (S4/5c, OpsErrorFilter),
+      // so all four of these reached the operator as one generic sentence, "that
+      // conflicts with a change someone else made, reload and try again". Three of
+      // them are nothing of the kind: they are answerable conditions with
+      // different answers, and the one that actually bit was the print-vendor
+      // roster. The codes are a closed server-owned enum, exactly what
+      // OpsClientErrorReason is for, so the portal can say the right sentence in
+      // its own words (P1-1c) without any domain text riding the response.
+      if (states.length === 0) {
+        throw new OpsClientError('conflict', 'batch has no records to send', [{ code: 'batch-empty' }])
+      }
+      if (states.some((s) => s.dispatch_state === null)) {
+        throw new OpsClientError('conflict', 'QR generation has not finished for this batch', [
+          { code: 'qr-generation-incomplete' },
+        ])
+      }
+      if (!states.some((s) => s.dispatch_state === 'QR_GENERATED')) {
+        throw new OpsClientError('conflict', 'batch has already been sent to the print vendor', [
+          { code: 'batch-already-sent' },
+        ])
+      }
+
+      await onceWithin(tx, CONSUMER, `${args.btchId}|dispatch`, async () => {
+        try {
+          await sendBatchToVendorWithinTx(tx, {
+            btchId: args.btchId,
+            btchUuid,
+            programUuid,
+            traceId: args.traceId,
+          })
+        } catch (e) {
+          // As a background consumer step these were poison that rode the retry
+          // ladder into the DLQ. As an operator action they are answerable:
+          // activate exactly one PRINT vendor, then press the button again.
+          if (e instanceof PrintVendorNotResolvableError) {
+            throw new OpsClientError('conflict', 'expected exactly one active print vendor', [
+              { code: 'print-vendor-not-unique' },
+            ])
+          }
+          if (e instanceof BatchNotFoundError) throw new OpsClientError('not-found', 'batch not found')
+          throw e
+        }
+        await tx.$executeRaw`
+          UPDATE batch SET status = 'SENT_TO_PRINT_VENDOR', updated_at = now()
+          WHERE id = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
+        `
+        sent = true
+      })
+      // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the effect,
+      // unconditionally inside the client-key callback, the manualBatch
+      // precedent: the operator's privileged action is audited once per client
+      // key, never on a replay.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:batch-send-to-vendor',
+            principalId: args.actorId,
+            resourceIds: [args.btchId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return { deduped: !ran, sent }
+}
+
+/**
+ * Close a batch whose dispatches have all settled (decision D5, 18 Aug 2026).
+ *
+ * MANUAL, not automatic, and gated. Closing is the operator saying "this run is
+ * finished and I am done looking at it", which is a judgement, not an event; but
+ * it must not be possible to say it while parcels are still moving, or CLOSED
+ * would mean nothing. So the gate is objective: every dispatch has settled,
+ * meaning DELIVERED, RETURNED, or its device DAMAGED.
+ *
+ * THE GATE IS RE-CHECKED HERE, inside the transaction, even though the portal
+ * only offers the button when the read said it was allowed. That read is a
+ * separate round trip: a courier webhook or a damage flag can land in between,
+ * and more to the point a client is never the authority on whether a write is
+ * legal. The 409 carries the breakdown so the refusal is actionable rather than
+ * merely negative.
+ *
+ * Emits NO fact. A closed batch is a statement about work already reported
+ * through its dispatches, and nothing downstream folds it: analytics tracks the
+ * dispatch and device axes, not the batch's paperwork. Inventing a topic for it
+ * would add a schema and a consumer contract for zero readers. The ALLOW 6e is
+ * the durable record of who closed it.
+ */
+export async function closeBatch(
+  db: FulfillmentDb,
+  args: { btchId: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deduped: boolean; closed: boolean; settlement: BatchSettlement }> {
+  const btchUuid = toUuid(args.btchId)
+  let settlement: BatchSettlement = {
+    total: 0,
+    delivered: 0,
+    returned: 0,
+    pending: 0,
+    settled: false,
+    perDispatch: {},
+  }
+  let closed = false
+
+  const ran = await db.$transaction(async (tx: Tx) => {
+    const rows = await tx.$queryRaw<{ program_id: string; status: string }[]>`
+      SELECT program_id::text AS program_id, status FROM batch WHERE id = ${btchUuid}::uuid
+    `
+    if (rows.length === 0) throw new OpsClientError('not-found', 'batch not found')
+    const programUuid = rows[0]!.program_id
+    await enterWriteScope(tx, 'fulfillment_write', programUuid)
+
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:batch-close'), async () => {
+      // Read the status again under the write scope rather than trusting the
+      // pre-scope read above, which exists only to resolve the program.
+      const current = await tx.$queryRaw<{ status: string }[]>`
+        SELECT status FROM batch WHERE id = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
+      `
+      if (current[0]?.status === 'CLOSED') {
+        throw new OpsClientError('conflict', 'batch is already closed')
+      }
+      settlement = await readBatchSettlementWithinTx(tx, btchUuid)
+      if (!settlement.settled) {
+        throw new OpsClientError(
+          'conflict',
+          `batch has ${String(settlement.pending)} of ${String(settlement.total)} dispatches still in flight`,
+        )
+      }
+      await tx.$executeRaw`
+        UPDATE batch SET status = 'CLOSED', updated_at = now()
+        WHERE id = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
+      `
+      closed = true
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:batch-close',
+            principalId: args.actorId,
+            resourceIds: [args.btchId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return { deduped: !ran, closed, settlement }
 }
 
 /**

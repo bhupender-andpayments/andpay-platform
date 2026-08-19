@@ -1,9 +1,10 @@
-import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
+import { Navigate, Outlet, Route, Routes, useParams } from 'react-router-dom'
 import { useAuth } from './auth/AuthContext.js'
 import { LoginPage } from './auth/LoginPage.js'
 import { RequireAuth } from './components/RequireAuth.js'
 import { AppShell } from './ui/AppShell.js'
 import { TilesPage } from './features/dashboards/TilesPage.js'
+import { PlatformOverviewPage } from './features/overview/PlatformOverviewPage.js'
 import { ReportPage } from './features/dashboards/ReportPage.js'
 import { QueuesPage } from './features/queues/QueuesPage.js'
 import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
@@ -11,14 +12,17 @@ import { UploadsPage } from './features/uploads/UploadsPage.js'
 import { DispatchesPage } from './features/dispatches/DispatchesPage.js'
 import { DispatchDetailPage } from './features/dispatches/DispatchDetailPage.js'
 import { ShipmentDetailPage } from './features/dispatches/ShipmentDetailPage.js'
+import { ShipmentsPage } from './features/dispatches/ShipmentsPage.js'
 import { DamageCasesPage } from './features/damage/DamageCasesPage.js'
 import { InventoryPage } from './features/inventory/InventoryPage.js'
 import { DeviceDetailPage } from './features/inventory/DeviceDetailPage.js'
 import { DeviceInventoryUploadPage } from './features/uploads/DeviceInventoryUploadPage.js'
 import { ActivationPage } from './features/activation/ActivationPage.js'
+import { ActivationBatchDevicesPage } from './features/activation/ActivationBatchDevicesPage.js'
 import { MerchantsPage } from './features/merchants/MerchantsPage.js'
 import { MerchantDetailPage } from './features/merchants/MerchantDetailPage.js'
 import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
+import { PoolPage } from './features/fulfillment/PoolPage.js'
 import { BatchGeneratePage } from './features/fulfillment/generate/BatchGeneratePage.js'
 
 // Router-agnostic route tree (no <BrowserRouter> here) so tests can wrap it
@@ -69,6 +73,10 @@ export function AppRoutes() {
               its own list rather than an unrelated sibling. That is what fixed
               the breadcrumb reading "Ops Console" on a batch detail page. */}
           <Route path="/command-center" element={<TilesPage />} />
+          {/* The POOL, its own route since 18 Aug 2026 (decision D14): what is
+              waiting to be batched is a different job from working the batches
+              already formed, and one page could not honestly describe both. */}
+          <Route path="/pool" element={<PoolPage />} />
           <Route path="/batches" element={<FulfillmentPage />} />
           {/* ONE batch page (13 Aug 2026). The collateral generator IS the batch
               page: an operator opening a batch is there to see the cards, print
@@ -77,6 +85,9 @@ export function AppRoutes() {
               behind a second route. */}
           <Route path="/batches/:btchId" element={<BatchGeneratePage />} />
           <Route path="/activation" element={<ActivationPage />} />
+          {/* Batch-first drill-down (decision D8): a batch's devices, one click
+              from Activation, and one more click into the existing device page. */}
+          <Route path="/activation/batch/:btchId" element={<ActivationBatchDevicesPage />} />
           {/* Redesign step 7: the entity the object-first nav was missing. */}
           <Route path="/merchants" element={<MerchantsPage />} />
           <Route path="/merchants/:mrchId" element={<MerchantDetailPage />} />
@@ -89,16 +100,30 @@ export function AppRoutes() {
           {/* Section 4: Operations dissolved. Its two remaining verbs, status
               correction and terminal override, are now actions on the dispatch
               they act on, and recompose moved onto the batch. */}
+          {/* The flow, explained. Static: no reads, so it cannot go stale in the
+              way a dashboard can, and it cannot go blank when a service is down.
+              Beside Command Center under Overview, because it is the other
+              question a person arrives with. */}
+          <Route path="/overview" element={<PlatformOverviewPage />} />
           <Route path="/dispatches" element={<DispatchesPage />} />
           {/* D-16 (T4.5): one Dispatch ID's two branches. Nested under
               /dispatches because that list is where an operator arrives from,
               the same relationship /batches/:btchId has to /batches. */}
-          {/* The AWB's own page, registered BEFORE the :asgnId route so the
-              literal segment wins: a shipment id is not a dispatch id, and
-              /dispatches/shipment/... must never be read as a dispatch called
-              "shipment". */}
-          <Route path="/dispatches/shipment/:shptId" element={<ShipmentDetailPage />} />
           <Route path="/dispatches/:asgnId" element={<DispatchDetailPage />} />
+          {/* SHIPMENTS IS ITS OWN SECTION (19 Aug 2026), not a ?view= tab on the
+              dispatch list and not a /dispatches/shipment/:id detail hanging off
+              it. A parcel's page is somewhere an operator ARRIVES, holding an AWB
+              off a courier's website, so leaving it has to lead back to the
+              shipment list; under the tab there was no such route to lead back
+              to, and the back link dropped them on the other grain's table.
+              ShipmentsPage.tsx carries the full account.
+
+              The old paths still resolve, because links to them are in circulation
+              (pasted in chats, bookmarked during testing) and a dead URL is a worse
+              answer than a redirect. */}
+          <Route path="/shipments" element={<ShipmentsPage />} />
+          <Route path="/shipments/:shptId" element={<ShipmentDetailPage />} />
+          <Route path="/dispatches/shipment/:shptId" element={<LegacyShipmentRedirect />} />
           {/* The Inventory section the redesign deferred under option B for
               want of a read. GET /ops/devices exists now, so the condition
               that kept it out is gone. Owned end-to-end from here per the
@@ -142,4 +167,17 @@ export function AppRoutes() {
       </Route>
     </Routes>
   )
+}
+
+/**
+ * /dispatches/shipment/:shptId -> /shipments/:shptId.
+ *
+ * The parcel page moved on 19 Aug 2026 when Shipments became its own section.
+ * A plain <Navigate> cannot express this one because the target carries the id,
+ * so the param has to be read first. `replace` so Back does not bounce between
+ * the old path and the new one.
+ */
+function LegacyShipmentRedirect() {
+  const { shptId } = useParams<{ shptId: string }>()
+  return <Navigate to={shptId === undefined ? '/shipments' : `/shipments/${shptId}`} replace />
 }

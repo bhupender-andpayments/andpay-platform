@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Pencil } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { VendorRegistryPage } from './VendorRegistryPage.js'
 import { CourierMasterPage } from './CourierMasterPage.js'
 import { BankMasterCreateDialog } from './BankMasterCreateDialog.js'
+import { BankMasterEditDialog } from './BankMasterEditDialog.js'
 import { DamageReasonCreateDialog } from './DamageReasonCreateDialog.js'
+import { DamageReasonEditDialog } from './DamageReasonEditDialog.js'
 import { BatchingConfigDialog } from './BatchingConfigDialog.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import {
@@ -24,13 +27,15 @@ import { fmtWait } from '../fulfillment/BatchingRules.js'
 // type === COURIER, no separate route), bank masters, the damage-reason
 // master, and the batching-config view.
 //
-// CREATE IS NOW BUILT ON ALL FIVE (2026-08-17). These tabs shipped READ-ONLY
-// because L9 deferred the whole FR-11 admin console; that deferral was
-// REVERSED for create only, and the previous instruction here ("do not add a
-// write control to any tab") is retired with it. See PHASE7_DECISIONS.md L9.
+// CREATE landed 2026-08-17 (the L9 reversal). EDIT landed on all five tabs
+// 18 Aug 2026: four of the five routes already existed and had simply never
+// been called from the portal; damage-reason's did not exist and was added
+// (services/tms/src/damage-reason.ts updateDamageReasonWithinTx, on the
+// code/label columns that already existed, no schema change).
 //
-// STILL DEFERRED, and still absent by intent: edit, suspend, activate and
-// deactivate. Adding one is a new decision, not a natural extension of this.
+// STILL DEFERRED, and still absent by intent: suspend, activate and
+// deactivate. Those change a row's LIFECYCLE, not its values, and are a
+// separate decision from edit.
 //
 // Batching config is the odd tab out twice over: its write is an admin-tier
 // permission (a baseline `ops` operator gets a 403 the other four do not) and
@@ -73,26 +78,46 @@ export function MasterDataPage() {
 
 // -- Bank masters (GET /ops/bank-masters, identity.tenant list) ------- //
 
-const BANK_MASTER_COLUMNS: ReadonlyArray<DataTableColumn<BankMasterRow>> = [
-  { key: 'bankReferenceCode', header: 'Bank ref code', cell: (r) => <CodeChip>{r.bankReferenceCode}</CodeChip> },
-  {
-    key: 'displayName',
-    header: 'Display name',
-    cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
-  },
-  { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
-  { key: 'city', header: 'City', cell: (r) => r.city ?? <span className="text-muted-foreground">-</span> },
-  { key: 'country', header: 'Country', cell: (r) => r.country ?? <span className="text-muted-foreground">-</span> },
-  { key: 'mobile', header: 'Mobile', cell: (r) => r.mobile ?? <span className="text-muted-foreground">-</span> },
-  { key: 'email', header: 'Email', cell: (r) => r.email ?? <span className="text-muted-foreground">-</span> },
-  { key: 'tnntId', header: 'Tenant ID', cell: (r) => <CodeChip>{shortId(r.tnntId)}</CodeChip> },
-]
+function bankMasterColumns(onEdit: (row: BankMasterRow) => void): ReadonlyArray<DataTableColumn<BankMasterRow>> {
+  return [
+    { key: 'bankReferenceCode', header: 'Bank ref code', cell: (r) => <CodeChip>{r.bankReferenceCode}</CodeChip> },
+    {
+      key: 'displayName',
+      header: 'Display name',
+      cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
+    },
+    { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
+    { key: 'city', header: 'City', cell: (r) => r.city ?? <span className="text-muted-foreground">-</span> },
+    { key: 'country', header: 'Country', cell: (r) => r.country ?? <span className="text-muted-foreground">-</span> },
+    { key: 'mobile', header: 'Mobile', cell: (r) => r.mobile ?? <span className="text-muted-foreground">-</span> },
+    { key: 'email', header: 'Email', cell: (r) => r.email ?? <span className="text-muted-foreground">-</span> },
+    { key: 'tnntId', header: 'Tenant ID', cell: (r) => <CodeChip>{shortId(r.tnntId)}</CodeChip> },
+    {
+      key: 'actions',
+      header: '',
+      cell: (r) => (
+        <button
+          type="button"
+          aria-label={`Edit bank master ${r.displayName}`}
+          className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+          onClick={(e) => {
+            e.stopPropagation()
+            onEdit(r)
+          }}
+        >
+          <Pencil className="size-3.5" aria-hidden="true" />
+        </button>
+      ),
+    },
+  ]
+}
 
 function BankMastersView() {
   const { client } = useAuth()
   const [rows, setRows] = useState<BankMasterRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [editing, setEditing] = useState<BankMasterRow | null>(null)
 
   const load = useCallback((): void => {
     getBankMasters(client)
@@ -129,7 +154,7 @@ function BankMastersView() {
           <SkeletonRows rows={5} cols={8} />
         ) : (
           <DataTable
-            columns={BANK_MASTER_COLUMNS}
+            columns={bankMasterColumns(setEditing)}
             rows={rows}
             getRowKey={(r) => r.tnntId}
             emptyMessage="No bank masters."
@@ -137,25 +162,55 @@ function BankMastersView() {
         )}
       </Card>
       <BankMasterCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} />
+      {editing !== null && (
+        <BankMasterEditDialog
+          bank={editing}
+          open
+          onOpenChange={(next) => {
+            if (!next) setEditing(null)
+          }}
+          onSaved={load}
+        />
+      )}
     </div>
   )
 }
 
 // -- Damage-reason master (GET /ops/damage-reasons) -------------------- //
 
-const DAMAGE_REASON_COLUMNS: ReadonlyArray<DataTableColumn<DamageReasonRow>> = [
-  { key: 'code', header: 'Code', cell: (r) => <CodeChip>{r.code}</CodeChip> },
-  { key: 'label', header: 'Label', cell: (r) => <span className="font-medium text-foreground">{r.label}</span> },
-  { key: 'active', header: 'Status', cell: (r) => <StatusPill value={r.active ? 'ACTIVE' : 'INACTIVE'} /> },
-  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
-  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
-]
+function damageReasonColumns(onEdit: (row: DamageReasonRow) => void): ReadonlyArray<DataTableColumn<DamageReasonRow>> {
+  return [
+    { key: 'code', header: 'Code', cell: (r) => <CodeChip>{r.code}</CodeChip> },
+    { key: 'label', header: 'Label', cell: (r) => <span className="font-medium text-foreground">{r.label}</span> },
+    { key: 'active', header: 'Status', cell: (r) => <StatusPill value={r.active ? 'ACTIVE' : 'INACTIVE'} /> },
+    { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
+    { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
+    {
+      key: 'actions',
+      header: '',
+      cell: (r) => (
+        <button
+          type="button"
+          aria-label={`Edit damage reason ${r.label}`}
+          className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+          onClick={(e) => {
+            e.stopPropagation()
+            onEdit(r)
+          }}
+        >
+          <Pencil className="size-3.5" aria-hidden="true" />
+        </button>
+      ),
+    },
+  ]
+}
 
 function DamageReasonsView() {
   const { client } = useAuth()
   const [rows, setRows] = useState<DamageReasonRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [editing, setEditing] = useState<DamageReasonRow | null>(null)
 
   const load = useCallback((): void => {
     getDamageReasons(client)
@@ -192,7 +247,7 @@ function DamageReasonsView() {
           <SkeletonRows rows={5} cols={5} />
         ) : (
           <DataTable
-            columns={DAMAGE_REASON_COLUMNS}
+            columns={damageReasonColumns(setEditing)}
             rows={rows}
             getRowKey={(r) => r.id}
             emptyMessage="No damage reasons."
@@ -200,6 +255,16 @@ function DamageReasonsView() {
         )}
       </Card>
       <DamageReasonCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} />
+      {editing !== null && (
+        <DamageReasonEditDialog
+          reason={editing}
+          open
+          onOpenChange={(next) => {
+            if (!next) setEditing(null)
+          }}
+          onSaved={load}
+        />
+      )}
     </div>
   )
 }
@@ -208,7 +273,10 @@ function DamageReasonsView() {
 // route, #24 in B_edge_contracts, is admin/super_admin-only and landed here
 // 2026-08-17 with the L9 reversal) ------------------------------------- //
 
-const BATCHING_CONFIG_COLUMNS: ReadonlyArray<DataTableColumn<BatchingConfigRow>> = [
+function batchingConfigColumns(
+  onEdit: (row: BatchingConfigRow) => void,
+): ReadonlyArray<DataTableColumn<BatchingConfigRow>> {
+  return [
   { key: 'scope', header: 'Scope', cell: (r) => <CodeChip>{r.scope}</CodeChip> },
   {
     key: 'tenantWire',
@@ -245,13 +313,32 @@ const BATCHING_CONFIG_COLUMNS: ReadonlyArray<DataTableColumn<BatchingConfigRow>>
   },
   { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
   { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
-]
+  {
+    key: 'actions',
+    header: '',
+    cell: (r) => (
+      <button
+        type="button"
+        aria-label={`Edit batching tier ${r.scope}`}
+        className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+        onClick={(e) => {
+          e.stopPropagation()
+          onEdit(r)
+        }}
+      >
+        <Pencil className="size-3.5" aria-hidden="true" />
+      </button>
+    ),
+  },
+  ]
+}
 
 function BatchingConfigView() {
   const { client } = useAuth()
   const [rows, setRows] = useState<BatchingConfigRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [editing, setEditing] = useState<BatchingConfigRow | null>(null)
 
   const load = useCallback((): void => {
     getBatchingConfig(client)
@@ -290,7 +377,7 @@ function BatchingConfigView() {
           <SkeletonRows rows={4} cols={7} />
         ) : (
           <DataTable
-            columns={BATCHING_CONFIG_COLUMNS}
+            columns={batchingConfigColumns(setEditing)}
             rows={rows}
             getRowKey={(r) => r.id}
             emptyMessage="No batching config."
@@ -298,6 +385,16 @@ function BatchingConfigView() {
         )}
       </Card>
       <BatchingConfigDialog open={adding} onOpenChange={setAdding} onCreated={load} />
+      {editing !== null && (
+        <BatchingConfigDialog
+          existing={editing}
+          open
+          onOpenChange={(next) => {
+            if (!next) setEditing(null)
+          }}
+          onCreated={load}
+        />
+      )}
     </div>
   )
 }

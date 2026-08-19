@@ -47,7 +47,12 @@ export function LifecycleRail({ stages }: { stages: readonly RailStage[] }) {
     // pt-1.5 is load-bearing: overflow-x-auto also clips VERTICAL overflow,
     // and the reached-stage check badge sits at -top-1 above the icon, so
     // without headroom inside the scroll container its top edge is cut off.
-    <ol className="flex min-w-0 items-start overflow-x-auto px-1 pb-1 pt-1.5">
+    // aria-label names the rail for a screen reader, which also gives a test a
+    // way to ask about the RAIL's own rungs rather than any text that happens to
+    // match elsewhere on the page. The pages render the same status twice on
+    // purpose (the rail highlights it, the header pill repeats it), so an
+    // unscoped query cannot tell which one it found.
+    <ol aria-label="Lifecycle rail" className="flex min-w-0 items-start overflow-x-auto px-1 pb-1 pt-1.5">
       {stages.map((stage, i) => {
         const done = stage.state === 'reached' || stage.state === 'current'
         const isTerminal = stage.terminal === true && stage.state !== 'future'

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Pencil } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import { getVendors, type VendorRow } from '../../api/endpoints.js'
 import { Button, Card, CardHeader, ErrorNote, StatusPill, CodeChip, SkeletonRows } from '../../ui/primitives.js'
 import { fmtDate } from '../../ui/format.js'
 import { VendorCreateDialog } from './VendorCreateDialog.js'
+import { VendorEditDialog } from './VendorEditDialog.js'
 
 // The courier master (Phase 7 Task 8, spec 13 check 6). Per the grounded
 // confirmation there is NO separate /ops/couriers route: the courier master
@@ -16,27 +18,47 @@ import { VendorCreateDialog } from './VendorCreateDialog.js'
 // vendor row. That pinning is also what keeps this list honest: a create from
 // this tab can never produce a row the tab then filters out of view.
 
-const COURIER_COLUMNS: ReadonlyArray<DataTableColumn<VendorRow>> = [
-  {
-    key: 'courierCode',
-    header: 'Courier code',
-    cell: (r) => (r.courierCode ? <CodeChip>{r.courierCode}</CodeChip> : <span className="text-muted-foreground">-</span>),
-  },
-  {
-    key: 'displayName',
-    header: 'Display name',
-    cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
-  },
-  { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
-  { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
-  { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
-]
+function courierColumns(onEdit: (row: VendorRow) => void): ReadonlyArray<DataTableColumn<VendorRow>> {
+  return [
+    {
+      key: 'courierCode',
+      header: 'Courier code',
+      cell: (r) => (r.courierCode ? <CodeChip>{r.courierCode}</CodeChip> : <span className="text-muted-foreground">-</span>),
+    },
+    {
+      key: 'displayName',
+      header: 'Display name',
+      cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
+    },
+    { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
+    { key: 'createdAt', header: 'Created', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.createdAt)}</span> },
+    { key: 'updatedAt', header: 'Updated', cell: (r) => <span className="num text-muted-foreground">{fmtDate(r.updatedAt)}</span> },
+    {
+      key: 'actions',
+      header: '',
+      cell: (r) => (
+        <button
+          type="button"
+          aria-label={`Edit courier ${r.displayName}`}
+          className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+          onClick={(e) => {
+            e.stopPropagation()
+            onEdit(r)
+          }}
+        >
+          <Pencil className="size-3.5" aria-hidden="true" />
+        </button>
+      ),
+    },
+  ]
+}
 
 export function CourierMasterPage() {
   const { client } = useAuth()
   const [rows, setRows] = useState<VendorRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [editing, setEditing] = useState<VendorRow | null>(null)
 
   // Extracted from the effect so a successful create can re-read the list.
   const load = useCallback((): void => {
@@ -79,10 +101,20 @@ export function CourierMasterPage() {
         {rows === null ? (
           <SkeletonRows rows={4} cols={5} />
         ) : (
-          <DataTable columns={COURIER_COLUMNS} rows={rows} getRowKey={(r) => r.id} emptyMessage="No couriers." />
+          <DataTable columns={courierColumns(setEditing)} rows={rows} getRowKey={(r) => r.id} emptyMessage="No couriers." />
         )}
       </Card>
       <VendorCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} fixedType="COURIER" />
+      {editing !== null && (
+        <VendorEditDialog
+          vendor={editing}
+          open
+          onOpenChange={(next) => {
+            if (!next) setEditing(null)
+          }}
+          onSaved={load}
+        />
+      )}
     </div>
   )
 }

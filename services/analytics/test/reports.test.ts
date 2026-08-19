@@ -72,6 +72,86 @@ async function insertRow(r: Row): Promise<void> {
 }
 
 describe('Task 6: the five dispatch_row-backed FR-10 reports', () => {
+  // THE ALL-DISPATCHES REPORT (decision D12, 18 Aug 2026). soundbox-delivery
+  // below is a DELIVERY report: its predicate is dispatched_at != null, so
+  // nothing before the courier can appear in it. The Dispatches page was reading
+  // it, which is why that page could not show a pooled or batched dispatch, could
+  // not label a collateral leg, and carried an "Awaiting vendor" tile that was
+  // structurally always zero. This report has no lifecycle predicate at all.
+  it('dispatches: returns EVERY leg, whatever stage it has reached', async () => {
+    const p1 = toUuid(newId('prog'))
+    const now = new Date()
+    const pooled = newId('asgn')
+    const shipped = newId('asgn')
+    await insertRow({ dispatchId: pooled, programId: p1, pipelineState: 'RECEIVED', receivedAt: now })
+    await insertRow({
+      dispatchId: shipped,
+      programId: p1,
+      pipelineState: 'DELIVERED',
+      receivedAt: now,
+      awb: 'AWB1',
+      dispatchDate: now,
+      dispatchedAt: now,
+      courierStatus: 'DELIVERED',
+      deliveryDate: now,
+    })
+
+    const scope: ReadScope = { kind: 'own', programIds: [p1] }
+    const { rows } = await readReport(db, scope, 'dispatches', {})
+
+    // Both, where soundbox-delivery would return exactly one.
+    expect(rows).toHaveLength(2)
+    const byId = new Map(rows.map((r) => [r.dispatchId, r]))
+    expect(byId.has(pooled)).toBe(true)
+    expect(byId.has(shipped)).toBe(true)
+  })
+
+  it('dispatches: carries the three fields no other report projected', async () => {
+    // pipelineState, dispatchGroup and batchId were all selected by
+    // scopedDispatchRead and dropped by every projector, which is why the page
+    // could not say where a dispatch had reached, what kind it was, or which
+    // batch it belonged to.
+    const p1 = toUuid(newId('prog'))
+    const now = new Date()
+    const id = newId('asgn')
+    const btch = newId('btch')
+    await insertRow({
+      dispatchId: id,
+      programId: p1,
+      pipelineState: 'SENT_TO_VENDOR',
+      receivedAt: now,
+      batchId: btch,
+      sentToVendorAt: now,
+    })
+    await db.$executeRaw`UPDATE dispatch_row SET dispatch_group = 'SOUNDBOX' WHERE dispatch_id = ${id}`
+
+    const scope: ReadScope = { kind: 'own', programIds: [p1] }
+    const { rows } = await readReport(db, scope, 'dispatches', {})
+    expect(rows[0]!.pipelineState).toBe('SENT_TO_VENDOR')
+    expect(rows[0]!.dispatchGroup).toBe('SOUNDBOX')
+    expect(rows[0]!.batchId).toBe(btch)
+    // deviceIds too, because the edge merges the SIM against it and the ICCID
+    // never enters this store (S7).
+    expect(rows[0]!.deviceIds).toEqual(['DEV1'])
+  })
+
+  it('dispatches: windows on received_at, so an unshipped dispatch is not silently dropped', async () => {
+    // Anchoring the window on dispatch_date would exclude every row that has not
+    // shipped, which is exactly the population this report exists to surface.
+    const p1 = toUuid(newId('prog'))
+    const now = new Date()
+    const old = new Date(now.getTime() - 40 * DAY_MS)
+    const recent = newId('asgn')
+    await insertRow({ dispatchId: recent, programId: p1, pipelineState: 'RECEIVED', receivedAt: now })
+    await insertRow({ dispatchId: newId('asgn'), programId: p1, pipelineState: 'RECEIVED', receivedAt: old })
+
+    const scope: ReadScope = { kind: 'own', programIds: [p1] }
+    const from = new Date(now.getTime() - 7 * DAY_MS).toISOString().slice(0, 10)
+    const { rows } = await readReport(db, scope, 'dispatches', { from })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.dispatchId).toBe(recent)
+  })
+
   it('soundbox-delivery: all dispatched rows carry the courier fields, scoped to P1', async () => {
     const p1 = toUuid(newId('prog'))
     const p2 = toUuid(newId('prog'))

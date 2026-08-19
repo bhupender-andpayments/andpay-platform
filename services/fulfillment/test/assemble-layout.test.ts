@@ -489,6 +489,34 @@ describe('buildDispatchGroupXlsx: the sheet is worded for the bound press (D-11 
     expect(differing).toEqual(['Standee Count (already imposed)', 'Sticker Count (already imposed)'])
   })
 
+  // D17: the Batch ID column exists so a vendor holding several batches' files
+  // at once can tell them apart from the sheet rather than from a filename that
+  // a forward or a rename destroys. Pinned at THIS door, not only against the
+  // pure builder, because this is where the id has to be threaded out of the
+  // caller's argument and into the rows: a door that dropped it would still
+  // produce a valid workbook with a column of blanks.
+  it('names the batch it belongs to, in every row of both group sheets', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, null)
+    // Soundbox AND collateral demand, so the one batch has member rows on both
+    // group sheets and neither assertion runs against an empty sheet.
+    await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', soundbox: true, standeeCount: 1 })
+    await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B2', soundbox: true, stickerCount: 2 })
+
+    for (const group of ['SOUNDBOX', 'COLLATERAL'] as const) {
+      const wb = new ExcelJS.Workbook()
+      const buf = await buildDispatchGroupXlsx(db, btchWire, group, 'ship')
+      await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
+      const ws = wb.worksheets[0]!
+      const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
+      expect(headers[0]).toBe('Batch ID')
+      expect(ws.rowCount).toBe(3)
+      for (let r = 2; r <= ws.rowCount; r++) {
+        expect(ws.getRow(r).getCell(headers.indexOf('Batch ID') + 1).text).toBe(btchWire)
+      }
+    }
+  })
+
   it('carries the ship-view recipient block through, so the shared builder did not narrow the entitlement', async () => {
     const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
     await seedBatchRow(tenantUuid, programUuid, btchUuid, null)

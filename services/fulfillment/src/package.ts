@@ -203,6 +203,16 @@ const COUNT_HEADERS: Record<PrintLayout, { standee: string; sticker: string }> =
 }
 
 const dispatchColumns = (layout: PrintLayout): { header: string; key: string }[] => [
+  // D17 (Phase 4): the batch the sheet belongs to, named ON the sheet. A print
+  // vendor holds several batches' files at once and the filename was the only
+  // thing that said which was which, so a renamed or forwarded attachment lost
+  // the only link back to a batch. It is FIRST because it is the coarsest key
+  // on the row: bank, branch and dispatch id all live inside one batch.
+  //
+  // Same value in every row of a file by construction (one file is one batch),
+  // which is the point: any row a human or a spreadsheet filter lifts out of
+  // the sheet still carries its batch.
+  { header: 'Batch ID', key: 'btchId' },
   { header: 'Bank', key: 'bank' },
   { header: 'Branch', key: 'branch' },
   // Ruled 2026-08-10 (spec section 2): the column the BRD, the walkthrough,
@@ -281,6 +291,14 @@ const GROUP_SHEET_NAMES: Record<CollateralGroup, string> = {
 // collateralXlsx; it is one group-keyed builder because the HTTP routes are
 // group-keyed, and one builder cannot drift into two column sets.
 //
+// `btchId` is the WIRE form (`btch_...`) of the batch these lines came from. It
+// is a parameter and not a PackageLine field because it is a property of the
+// FILE, not of a row: one call is one batch, so a per-line field would only make
+// it possible to build a sheet whose rows disagree about which batch they are.
+// It is REQUIRED, and it sits before `layout` for that reason: an optional batch
+// id is a door that can ship a sheet with a blank Batch ID column (D17), which
+// is the very failure the column exists to prevent.
+//
 // `layout` is the bound print vendor's press (readBatchPrintLayout), and it
 // changes ONLY the wording of the two count headers, never the column set, the
 // order, or any cell. It defaults to ONE_PER_PAGE so this stays a pure function
@@ -289,12 +307,13 @@ const GROUP_SHEET_NAMES: Record<CollateralGroup, string> = {
 export async function dispatchGroupXlsx(
   lines: PackageLine[],
   group: CollateralGroup,
+  btchId: string,
   layout: PrintLayout = 'ONE_PER_PAGE',
 ): Promise<Buffer> {
   const wb = new ExcelJS.Workbook()
   const ws = wb.addWorksheet(GROUP_SHEET_NAMES[group])
   ws.columns = dispatchColumns(layout)
-  writeRows(ws, excelLinesFor(lines, group))
+  writeRows(ws, excelLinesFor(lines, group), btchId)
   const arrayBuf = await wb.xlsx.writeBuffer()
   return Buffer.from(arrayBuf)
 }
@@ -319,16 +338,20 @@ export async function buildDispatchGroupXlsx(
   fn: AdapterFunction,
 ): Promise<Buffer> {
   const lines = await buildDispatchPackage(db, btchId, fn)
-  return await dispatchGroupXlsx(lines, group, await readBatchPrintLayout(db, btchId))
+  return await dispatchGroupXlsx(lines, group, btchId, await readBatchPrintLayout(db, btchId))
 }
 
 // Phase 4 (P4-D5): serialize the (already bank+branch-sorted) package lines.
 // Shared by the vendor pull and the ops download so both surfaces produce the
 // SAME sorted sheets. artifactRefs are joined into one cell; image BYTES are
 // delivered as the per-type PDFs, not embedded here.
-function writeRows(ws: ExcelJS.Worksheet, lines: PackageLine[]): void {
+function writeRows(ws: ExcelJS.Worksheet, lines: PackageLine[], btchId: string): void {
   for (const l of lines) {
     ws.addRow({
+      // The one batch id, repeated per row: a spreadsheet has no file-level
+      // field a filter or a copied selection carries with it, so the only place
+      // this survives being lifted out of the sheet is the row itself (D17).
+      btchId,
       bank: l.bankReferenceCode,
       branch: l.branchCode ?? '',
       asgnId: l.asgnId,

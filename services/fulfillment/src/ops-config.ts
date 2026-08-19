@@ -35,6 +35,15 @@ const OPS_PERMISSIONS = [
   'ops:record-hold',
   'ops:record-release',
   'ops:manual-batch-trigger',
+  // Hand a formed batch to the print vendor (D4). Shared bundle, not admin
+  // tier and not step-up: it is the designed forward step of the batch
+  // lifecycle, and manual-batch-trigger, a strictly bigger lever over the same
+  // pipeline, carries neither.
+  'ops:batch-send-to-vendor',
+  // Close a batch whose dispatches have all settled (D5). Shared bundle: the
+  // action is gated by the settlement check in the domain, not by who is asking,
+  // and it retires paperwork rather than moving goods.
+  'ops:batch-close',
   'ops:vendor-create',
   'ops:vendor-suspend',
   'ops:vendor-edit',
@@ -47,6 +56,7 @@ const OPS_PERMISSIONS = [
   'ops:resolve-intake-exception',
   'ops:resolve-status-exception',
   'ops:damage-reason-create',
+  'ops:damage-reason-edit',
   'ops:damage-reason-activate',
   'ops:damage-reason-deactivate',
   // FR08-2 (BRD 5.8): transition a replacement's damage case_status

@@ -388,7 +388,16 @@ describe('ops-edge actions: the per-action step-up gate (check 1)', () => {
     expect(rows[0]!.operation).toBe('ops:terminal-override')
   })
 
-  it('POST release with a stale auth_time -> 403 + step-up-required 6e DENY (ops:record-release)', async () => {
+  // RELEASE IS NO LONGER STEP-UP GATED (19 Aug 2026, at the product owner's
+  // direction; packages/authz/src/stepup.ts records the reasoning and flags it
+  // for architecture review). This test asserted the opposite and is inverted
+  // rather than deleted, because "a stale auth_time does NOT block a release"
+  // is now the contract and is worth pinning: re-adding the gate by accident,
+  // or leaving the route passing a catalog key that no longer has an entry,
+  // would both fail here. The latter matters most, since the gate FAILS CLOSED
+  // on a missing entry and would deny every release with
+  // reasonCode 'step-up-misconfigured'.
+  it('POST release with a stale auth_time is NOT blocked: no step-up, and no step-up DENY', async () => {
     const now = Math.floor(Date.now() / 1000)
     const token = await mint({ auth_time: now - 1000 })
     const res = await request(app.getHttpServer())
@@ -396,11 +405,15 @@ describe('ops-edge actions: the per-action step-up gate (check 1)', () => {
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
       .send({})
-    expect(res.status).toBe(403)
+    // Not 403. The asgn id is a random one that does not exist, so the request
+    // gets past authz and fails in the domain instead, which is the point:
+    // whatever it answers, it is not a step-up refusal.
+    expect(res.status).not.toBe(403)
     const rows = await auditRows()
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.reasonCode).toBe('step-up-required')
-    expect(rows[0]!.operation).toBe('ops:record-release')
+    for (const row of rows) {
+      expect(row.reasonCode).not.toBe('step-up-required')
+      expect(row.reasonCode).not.toBe('step-up-misconfigured')
+    }
   })
 
   it('POST vendor suspend with a stale auth_time -> 403 + step-up-required 6e DENY (ops:vendor-suspend)', async () => {

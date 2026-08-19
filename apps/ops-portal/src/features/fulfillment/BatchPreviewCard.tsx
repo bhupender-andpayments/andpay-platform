@@ -20,7 +20,20 @@ import { IconCheck } from '../../ui/icons.js'
 // there is one.
 
 export interface PoolSummary {
-  records: number
+  /**
+   * MERCHANT REQUESTS, which is the unit the minimum-lot threshold counts.
+   *
+   * This used to be rows.length, and that was a real defect rather than a
+   * simplification: since the dispatch-group split, one bank row mints up to two
+   * pool entries, while the server's gate counts DISTINCT source_event_id. So a
+   * pool of 20 combined requests reported 40 against a threshold of 20, and a
+   * pool of 20 entries from 10 combined requests reported "20 of 20, ready"
+   * while the server counted 10 and refused to fire. The screen and the server
+   * now count the same thing.
+   */
+  requests: number
+  /** Dispatches, the shipping grain. Kept because it is what actually travels. */
+  dispatches: number
   merchants: number
   banks: number
   soundboxes: number
@@ -30,7 +43,11 @@ export interface PoolSummary {
 
 export function summarisePool(rows: readonly PoolEntryRow[]): PoolSummary {
   return {
-    records: rows.length,
+    // Older servers may not project sourceEventId. Falling back to the dispatch
+    // id keeps each row its own request, which is the pre-split meaning and the
+    // safe direction to be wrong in: it never reports a lot as readier than it is.
+    requests: new Set(rows.map((r) => r.sourceEventId ?? r.asgnId)).size,
+    dispatches: rows.length,
     merchants: new Set(rows.map((r) => r.merchantDisplayName)).size,
     // Counted on the AGGREGATOR CODE, never the display name. D7 leaves
     // bank_display_name as the partner ("GSCB") on every row, so counting names
@@ -62,14 +79,14 @@ export function BatchPreviewCard({
   minLotSize: number | null
 }) {
   const s = summarisePool(rows)
-  const meets = minLotSize !== null && s.records >= minLotSize
+  const meets = minLotSize !== null && s.requests >= minLotSize
   // Clamped at both ends: a pool past its lot size must not overflow the track,
   // and a pool with a single record must not round down to an empty bar and
   // read as nothing pooled.
   const pct =
     minLotSize === null || minLotSize === 0
       ? 0
-      : Math.min(100, Math.max(s.records > 0 ? 4 : 0, (s.records / minLotSize) * 100))
+      : Math.min(100, Math.max(s.requests > 0 ? 4 : 0, (s.requests / minLotSize) * 100))
 
   return (
     // gap-0 because the shadcn Card is a flex column with a 24px gap between
@@ -81,7 +98,8 @@ export function BatchPreviewCard({
       <p className="mt-0.5 text-[12px] text-muted-foreground">What the next batch would contain.</p>
 
       <div className="mt-2.5 divide-y divide-border/60">
-        <Line label="Records" value={fmtNumber(s.records)} />
+        <Line label="Requests" value={fmtNumber(s.requests)} />
+        <Line label="Dispatches" value={fmtNumber(s.dispatches)} />
         <Line label="Merchants" value={fmtNumber(s.merchants)} />
         <Line label={s.banks === 1 ? 'Bank' : 'Banks'} value={fmtNumber(s.banks)} />
         <Line label="Soundboxes" value={fmtNumber(s.soundboxes)} />
@@ -106,7 +124,7 @@ export function BatchPreviewCard({
             <span>
               {meets
                 ? `Meets minimum lot size (${fmtNumber(minLotSize)})`
-                : `${fmtNumber(s.records)} of ${fmtNumber(minLotSize)} toward the minimum lot`}
+                : `${fmtNumber(s.requests)} of ${fmtNumber(minLotSize)} toward the minimum lot`}
             </span>
             {meets && <IconCheck width={15} height={15} aria-hidden="true" />}
           </div>

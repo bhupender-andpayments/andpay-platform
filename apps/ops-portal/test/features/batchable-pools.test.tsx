@@ -75,7 +75,7 @@ function stub(entries: PoolEntryRow[], triggerResult: unknown = { btchId: 'btch_
 }
 
 // TRIGGERING IS TWO STEPS NOW. Forming a batch cannot be undone, so the row's
-// "Trigger batch" opens a confirmation, and the confirmation is where the reason
+// "Create trigger" opens a confirmation, and the confirmation is where the reason
 // the edge requires (BRD 5.3.4 force dispatch) is typed and where "Create batch"
 // actually posts. Every test that means to trigger goes through both.
 //
@@ -87,7 +87,8 @@ const A_REASON = 'bank collection cut-off is today'
 
 /** Open the confirmation for a pool (the first one unless told otherwise). */
 async function openTrigger(which = 0): Promise<void> {
-  const buttons = await screen.findAllByRole('button', { name: /trigger batch/i })
+  // Renamed from "Trigger batch" on 18 Aug 2026 (the operator's own word for it).
+  const buttons = await screen.findAllByRole('button', { name: /create trigger/i })
   await userEvent.click(buttons[which]!)
 }
 
@@ -122,14 +123,14 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     expect(await screen.findAllByRole('button', { name: /trigger/i })).toHaveLength(1)
   })
 
-  it('counts the records waiting as two big stats against the two thresholds', async () => {
+  it('counts the requests waiting as two big stats against the two thresholds', async () => {
     stub([entry({ asgnId: 'asgn_a' }), entry({ asgnId: 'asgn_b' })])
     render(
       withProviders(<BatchablePools lotSizeFor={() => 50} maxWaitSeconds={7 * 86_400} />),
     )
-    // The pdf-generation design: "2/50 records pooled" and "0/7 days queued",
+    // The pdf-generation design: "2/50 requests pooled" and "0/7 days queued",
     // two sub-cards, not one dense sentence to parse.
-    expect(await screen.findByText('records pooled')).toBeTruthy()
+    expect(await screen.findByText('requests pooled')).toBeTruthy()
     expect(screen.getByText('/50')).toBeTruthy()
     expect(screen.getByText('days queued')).toBeTruthy()
     expect(screen.getByText('/7')).toBeTruthy()
@@ -140,7 +141,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     render(withProviders(<BatchablePools />))
     // A caller that holds no config shows the live numbers alone rather than
     // denominators this component invented.
-    expect(await screen.findByText('records pooled')).toBeTruthy()
+    expect(await screen.findByText('requests pooled')).toBeTruthy()
     expect(screen.queryByText(/^\//)).toBeNull()
   })
 
@@ -280,7 +281,7 @@ describe('BatchablePools: telling the rest of the page that the pool changed', (
     stub([entry()])
     render(withProviders(<BatchablePools />))
     // The stat label goes singular where the count is one.
-    expect(await screen.findByText('record pooled')).toBeTruthy()
+    expect(await screen.findByText('request pooled')).toBeTruthy()
   })
 })
 

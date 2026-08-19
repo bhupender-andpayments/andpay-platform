@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Check } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
@@ -57,7 +57,10 @@ const CARD_RHYTHM = 'flex h-full flex-col gap-3 [--card-spacing:--spacing(5)]'
 interface BatchablePool {
   tenantId: string
   programId: string
+  /** Merchant requests, the unit the minimum-lot gate counts. */
   records: number
+  /** Dispatches, the shipping grain, shown as secondary context. */
+  dispatches: number
   banks: number
   bankNames: string[]
   oldestCreatedAt: string
@@ -76,7 +79,12 @@ export function groupBatchablePools(entries: readonly PoolEntryRow[]): Batchable
     return {
       tenantId: rows[0]!.tenantId,
       programId: rows[0]!.programId,
-      records: rows.length,
+      // REQUESTS, the unit the server's minimum-lot gate counts (it counts
+      // DISTINCT source_event_id). This was rows.length, which counts dispatches:
+      // since one bank row can mint a soundbox parcel and a collateral parcel,
+      // the panel and the server could disagree about whether the lot was met.
+      records: new Set(rows.map((r) => r.sourceEventId ?? r.asgnId)).size,
+      dispatches: rows.length,
       // Counted on the AGGREGATOR code, not the display name: D7 leaves
       // bank_display_name as the partner ("GSCB") on every row, so counting
       // names would report 1 bank for a pool spanning 19 aggregators.
@@ -104,7 +112,7 @@ function ageInDays(iso: string): number {
  * The parent already owns a `load` for that table and already hands it to
  * PoolEntryActions as `onChanged`. This is the same wire, for the other write.
  */
-export function BatchablePools({
+export function BatchablePools<Row>({
   onTriggered,
   reloadKey,
   lotSizeFor,
@@ -113,6 +121,10 @@ export function BatchablePools({
   poolRows,
   poolColumns,
   poolLoading = false,
+  poolRowKey,
+  onPoolRowClick,
+  poolSearchPlaceholder,
+  poolTabs,
 }: {
   onTriggered?: () => void
   /**
@@ -165,9 +177,22 @@ export function BatchablePools({
    * reads GET /ops/pool for them, and PoolEntryActions writes back through its
    * `load`), so they are passed in rather than fetched a second time here.
    */
-  poolRows?: readonly PoolEntryRow[]
-  poolColumns?: GridColumn<PoolEntryRow>[]
+  /**
+   * The rows to render inline, in WHATEVER grain the caller works in. Generic
+   * since 18 Aug 2026: the pool page now shows one row per merchant REQUEST
+   * (decision D1) while this card's own trigger strip counts requests too, and
+   * the workflow workspace still mounts the card with no table at all.
+   */
+  poolRows?: readonly Row[]
+  poolColumns?: GridColumn<Row>[]
   poolLoading?: boolean
+  /** Row identity, since a generic row has no known id field. */
+  poolRowKey?: (row: Row) => string
+  /** Opening a row, for a grain whose detail lives behind a dialog. */
+  onPoolRowClick?: (row: Row) => void
+  poolSearchPlaceholder?: string
+  /** A control the caller renders in the card header, such as a Pooled/Held toggle. */
+  poolTabs?: ReactNode
 }) {
   const { client } = useAuth()
   const navigate = useNavigate()
@@ -311,6 +336,7 @@ export function BatchablePools({
       <CardHeader
         title="Build batch"
         subtitle="Everything pooled and waiting. One pool per tenant and program, never per bank."
+        {...(poolTabs === undefined ? {} : { actions: poolTabs })}
       />
 
       {/* THE POOL, on the page rather than behind a dialog. It leads the card
@@ -331,8 +357,9 @@ export function BatchablePools({
               columns={poolColumns}
               rows={poolRows}
               loading={poolLoading}
-              getRowKey={(r) => r.asgnId}
-              searchPlaceholder="Search merchant, dispatch id or bank…"
+              getRowKey={poolRowKey ?? ((r) => JSON.stringify(r))}
+              {...(onPoolRowClick === undefined ? {} : { onRowClick: onPoolRowClick })}
+              searchPlaceholder={poolSearchPlaceholder ?? 'Search merchant, dispatch id or bank...'}
               emptyTitle="Nothing pooled yet"
               emptyMessage="Committed bank rows land here and wait for a batch."
               pageSize={10}
@@ -377,7 +404,7 @@ export function BatchablePools({
             const days = ageInDays(pool.oldestCreatedAt)
             const lot = lotSizeFor?.(pool.tenantId, pool.programId) ?? null
             const maxWaitDays = maxWaitSeconds !== undefined ? Math.round(maxWaitSeconds / 86_400) : null
-            const shortfall = inStock !== null && pool.records > inStock
+            const shortfall = inStock !== null && pool.dispatches > inStock
             return (
               // Each pool is its own PANEL: a subtle primary top accent
               // borrows the "layout selector" pattern from the batch generate
@@ -419,7 +446,7 @@ export function BatchablePools({
                         )}
                       </span>
                       <span className="text-[12.5px] font-medium text-foreground">
-                        {pool.records === 1 ? 'record' : 'records'} pooled
+                        {pool.records === 1 ? 'request' : 'requests'} pooled
                       </span>
                     </span>
                     <span className="flex items-baseline gap-1.5">
@@ -446,7 +473,7 @@ export function BatchablePools({
                       setConfirming(pool)
                     }}
                   >
-                    Trigger batch
+                    Create trigger
                   </Button>
                   {/* basis-full so the advisory takes its own line UNDER the
                       row rather than squeezing the numbers and the button when
@@ -455,7 +482,7 @@ export function BatchablePools({
                     <span className="basis-full rounded-md bg-amber-500/10 px-2 py-1 text-[12px] font-medium text-amber-700 dark:text-amber-400">
                       {inStock === 0
                         ? 'No devices in stock. The batch can still form; nothing prints against it yet.'
-                        : `Only ${inStock} of ${pool.records} devices in stock. The shortfall will stall at the print vendor.`}
+                        : `Only ${inStock} of ${pool.dispatches} dispatches have a device in stock. The shortfall will stall at the print vendor.`}
                     </span>
                   )}
                 </div>
@@ -471,7 +498,7 @@ export function BatchablePools({
           condition to read rather than a confirmation to glance at. */}
       {outcome === null && (
         <div className="px-5">
-          <InfoNote>Nothing to batch. The pool had no eligible records.</InfoNote>
+          <InfoNote>Nothing to batch. The pool had no eligible requests.</InfoNote>
         </div>
       )}
 
@@ -555,8 +582,12 @@ export function BatchablePools({
               overlay by then. */}
           <dl className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/20 p-3 text-sm">
             <div>
-              <dt className="text-[11.5px] text-muted-foreground">Records</dt>
+              <dt className="text-[11.5px] text-muted-foreground">Requests</dt>
               <dd className="num font-semibold">{fmtNumber(confirming.records)}</dd>
+            </div>
+            <div>
+              <dt className="text-[11.5px] text-muted-foreground">Dispatches</dt>
+              <dd className="num font-semibold">{fmtNumber(confirming.dispatches)}</dd>
             </div>
             <div>
               <dt className="text-[11.5px] text-muted-foreground">

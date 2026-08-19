@@ -6,7 +6,6 @@ import {
   Building2,
   Calendar,
   Check,
-  ClipboardCheck,
   Copy,
   Factory,
   MapPin,
@@ -74,7 +73,6 @@ import { UNIT_SPINE, STAGE_COPY, legalNextStatuses, isTerminalStatus, statusLabe
 
 const STAGE_ICON: Record<string, RailStage['icon']> = {
   IN_STOCK: Warehouse,
-  ALLOCATED: ClipboardCheck,
   PRINTED: Printer,
   DISPATCHED: Truck,
   DELIVERED: PackageCheck,
@@ -106,20 +104,27 @@ function buildRail(row: UnitInventoryRow): RailStage[] {
     at: terminal === null && i === currentIdx ? row.updatedAt : null,
   }))
 
-  // ACTIVATED is the ladder's real end for a device, and it is NOT a status:
-  // it reads the activation AXIS (unit.activated_at, D-16), which is why a
-  // device can show Dispatched as current with Activated already reached -
-  // the CWD got there before the courier's update did, and that pairing is
-  // exactly what an operator opens this page to see. The Change status dialog
-  // still offers only real statuses; nothing here widens what can be written.
-  stages.push({
-    key: 'ACTIVATED',
-    label: 'Activated',
-    icon: Zap,
-    state: row.activatedAt !== null ? 'reached' : 'future',
-    at: row.activatedAt,
-  })
-
+  // NO ACTIVATED RUNG, as of 19 Aug 2026.
+  //
+  // One was pushed on here, and the reasoning given for it was the argument
+  // AGAINST it: activation is a separate axis (unit.activated_at, D-16), so a
+  // device can be activated while its delivery is still outstanding. Put that on
+  // one ordered rail and the rail stops being ordered. It rendered, on real demo
+  // data, as
+  //
+  //     ... Dispatched (done) -> Delivered (NOT reached) -> Activated (done)
+  //         -> Returned (terminal)
+  //
+  // which is not a sequence at all, and it contradicted this page's own Change
+  // status dialog, which correctly refuses to offer ACTIVATED because the server
+  // does not accept it as a status.
+  //
+  // The fact is not lost, it moved to where it belongs: a PILL in the page
+  // header beside the status pill, which is exactly how the inventory table
+  // already models it (an Activation column and a Status column, two axes, two
+  // cells). The exact instant stays on the Activity card. So the rail is the
+  // delivery spine alone, and the two axes read the same way in the list and on
+  // the page.
   if (terminal !== null) {
     stages.push({
       key: terminal,
@@ -269,7 +274,14 @@ export function DeviceDetailPage() {
           </h1>
           <p className="text-sm text-muted-foreground">{row.productType.toLowerCase()} device</p>
         </div>
-        <div className="ml-auto">
+        {/* TWO AXES, TWO PILLS, in the same order the inventory table's columns
+            use them (Activation, then Status). Activation was a rung on the rail
+            below until 19 Aug 2026; buildRail records why it could never be one.
+            A device that has not been activated says so rather than going quiet,
+            because on a delivered device that absence is the thing an operator
+            came to check. */}
+        <div className="ml-auto flex items-center gap-2">
+          <StatusPill value={row.activatedAt !== null ? 'ACTIVATED' : 'NOT_ACTIVATED'} />
           <StatusPill value={row.status} />
         </div>
       </div>

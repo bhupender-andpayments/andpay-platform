@@ -16,8 +16,8 @@
 // file usually fails are both visible before committing: the wrong workbook
 // (structural errors), and rows the vendor left half-filled (per-row errors).
 
-import { useCallback, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowRight, Download, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -32,14 +32,13 @@ import {
   uploadFileRejection,
   previewReturnUpload,
   commitReturnUpload,
-  getBatches,
   getBatchDetail,
   getDevices,
   getVendors,
   type ReturnPreviewResult,
   type ReturnCommitResult,
 } from '../../api/endpoints.js'
-import { buildSampleReturnSheet, selectSampleReturnBatch } from './sampleReturnSheet.js'
+import { buildSampleReturnSheet } from './sampleReturnSheet.js'
 import { saveBlob } from '../../lib/saveBlob.js'
 import { kindBySlug, type StepKey } from './uploadKinds.js'
 import { BackLink } from '../../ui/DetailFacts.js'
@@ -61,11 +60,50 @@ const REJECTION_COPY: Record<NonNullable<ReturnCommitResult['rejected']>, string
     'This sheet spans batches handed to DIFFERENT print vendors, so there is no single vendor it can be attributed to. Split it into one file per batch and upload them separately.',
   batch_has_no_vendor:
     'The batch these dispatches belong to has no print vendor bound yet, so nothing has been handed over and a return is premature. Check the batch on Batches.',
+  // The server-side half of the batch-scope promise this page makes in its own
+  // subtitle. It fires when a row names a dispatch from another batch, or one
+  // that belongs to no batch at all: on a batch-scoped upload the operator has
+  // said which batch the sheet is about, so an unresolvable row is a wrong sheet
+  // rather than a row to park in Queues.
+  foreign_dispatch:
+    'This sheet holds at least one Dispatch ID that does not belong to this batch, so nothing was written. Upload it from the batch it belongs to, or from Uploads if it spans several. Check the Dispatch ID column was not edited or pasted from another run.',
 }
 
 export function ReturnUploadPage() {
   const { client } = useAuth()
   const { toast } = useToast()
+  const [searchParams] = useSearchParams()
+
+  // SCOPED TO ONE BATCH, since 18 Aug 2026 (the user's explicit correction: a
+  // return sheet upload reachable with no batch in hand can be matched against
+  // nothing, so it is no longer offered that way). The only door in is now the
+  // batch's own detail page, which carries its id here. An operator who still
+  // reaches this URL directly (no `batch` param) keeps the old general
+  // behaviour, so nothing that already worked breaks.
+  const targetBatchId = searchParams.get('batch')
+  const [targetAsgnIds, setTargetAsgnIds] = useState<ReadonlySet<string> | null>(null)
+  const [targetLoadError, setTargetLoadError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (targetBatchId === null) return
+    let cancelled = false
+    void getBatchDetail(client, targetBatchId)
+      .then((detail) => {
+        if (cancelled) return
+        if (detail === null) {
+          setTargetLoadError(`Batch ${targetBatchId} was not found.`)
+          return
+        }
+        setTargetAsgnIds(new Set(detail.entries.map((e) => e.asgnId)))
+      })
+      .catch(() => {
+        if (!cancelled) setTargetLoadError('Could not load this batch to check the file against.')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client, targetBatchId])
+
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<ReturnPreviewResult | null>(null)
   const [result, setResult] = useState<ReturnCommitResult | null>(null)
@@ -107,7 +145,10 @@ export function ReturnUploadPage() {
     setError(null)
     setBusy('committing')
     try {
-      const r = await commitReturnUpload(client, file, newIdempotencyKey())
+      // The batch travels WITH the commit (19 Aug 2026). The preview check below
+      // still runs and still blocks the button with row-level detail, but it is
+      // now the convenience: the server is the guarantee.
+      const r = await commitReturnUpload(client, file, newIdempotencyKey(), targetBatchId ?? undefined)
       setResult(r)
       if (r.rejected === undefined && !r.deduped && r.pairedUnitIds.length > 0) {
         toast(`${r.pairedUnitIds.length} device(s) paired, ${r.shptIds.length} shipment(s) created`)
@@ -117,7 +158,10 @@ export function ReturnUploadPage() {
     } finally {
       setBusy(null)
     }
-  }, [client, file, toast])
+    // targetBatchId IS a dependency: it decides whether the server enforces the
+    // batch scope at all, so a stale closure here would silently commit an
+    // unscoped upload from a scoped page.
+  }, [client, file, toast, targetBatchId])
 
   // TESTING AID (see ./sampleReturnSheet.ts). Unlike the inventory and bank
   // samples this one cannot be conjured: a return sheet names dispatches that
@@ -137,16 +181,23 @@ export function ReturnUploadPage() {
     setError(null)
     setSampling(true)
     try {
-      const batches = await getBatches(client)
-      const batch = selectSampleReturnBatch(batches)
-      if (batch === null) {
-        setError(
-          'No batch has a print vendor bound yet, so a return sheet has nothing to reference. Trigger a batch first, then try again.',
-        )
+      // A BATCH MUST BE IN HAND. It always is when this page is reached from a
+      // batch's own detail page (`?batch=`), which is the only place the
+      // control is offered from as of 18 Aug 2026.
+      //
+      // It used to fall back to selectSampleReturnBatch, which picked the
+      // NEWEST batch with a bound vendor when none was named. That is what read
+      // as "it downloads a random batch": an operator on the generic Uploads
+      // entry point got a file for whichever batch happened to be newest, not
+      // the one they had in mind, and nothing on screen said which. Guessing
+      // silently is worse than not offering the shortcut.
+      const batchId = targetBatchId
+      if (batchId === null) {
+        setError('Open this from a batch to build its return sheet, so the file is scoped to the batch you mean.')
         return
       }
       const [detail, devices, vendors] = await Promise.all([
-        getBatchDetail(client, batch.id),
+        getBatchDetail(client, batchId),
         getDevices(client, 'IN_STOCK'),
         getVendors(client),
       ])
@@ -154,7 +205,7 @@ export function ReturnUploadPage() {
         (v) => v.type === 'COURIER' && v.status === 'ACTIVE' && v.courierCode !== null,
       )
       const outcome = buildSampleReturnSheet({
-        batchId: batch.id,
+        batchId,
         entries: detail.entries,
         freeSerials: devices
           .filter((d) => d.asgnId === null && d.deviceSerial !== null)
@@ -165,16 +216,30 @@ export function ReturnUploadPage() {
         setError(outcome.problem)
         return
       }
-      saveBlob(outcome.file.filename, new Blob([outcome.file.csv], { type: 'text/csv;charset=utf-8' }))
-      toast(
-        `Sample sheet downloaded: ${outcome.file.soundboxRows} soundbox, ${outcome.file.collateralRows} collateral.`,
-      )
+      // TWO downloads, one per delivery group (18 Aug 2026): a real return
+      // sheet arrives from the vendor as two files, and either one can be
+      // absent (a batch with nothing left to ship in that group).
+      const { soundbox, collateral } = outcome.file
+      if (soundbox !== null) saveBlob(soundbox.filename, new Blob([soundbox.csv], { type: 'text/csv;charset=utf-8' }))
+      if (collateral !== null) {
+        saveBlob(collateral.filename, new Blob([collateral.csv], { type: 'text/csv;charset=utf-8' }))
+      }
+      const parts = [
+        soundbox !== null ? `${soundbox.rows} soundbox` : null,
+        collateral !== null ? `${collateral.rows} collateral` : null,
+      ].filter((p): p is string => p !== null)
+      toast(`Sample sheets downloaded: ${parts.join(', ')}.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to build a sample return sheet.')
     } finally {
       setSampling(false)
     }
-  }, [client, toast])
+    // targetBatchId IS a dependency (19 Aug 2026). It was missing, so the
+    // callback captured whatever the FIRST render read from the query string:
+    // navigating from the bare /uploads/return to /uploads/return?batch=... on a
+    // mounted page left this closure holding null, and the shortcut answered
+    // "open this from a batch" while the batch id was plainly in the URL.
+  }, [client, toast, targetBatchId])
 
   const columns = useMemo<ReadonlyArray<GridColumn<PreviewRow>>>(
     () => [
@@ -210,6 +275,15 @@ export function ReturnUploadPage() {
   )
 
   const previewOk = preview !== null && structural.length === 0
+
+  // THE MATCH CHECK. A Dispatch ID belongs to exactly one batch, so checking
+  // every previewed row's asgn id against THIS batch's own entries is exactly
+  // as strict as checking a Batch ID column would be, and it cannot be fooled
+  // by a column the vendor edited or dropped: the id itself is the fact.
+  const foreignRows =
+    targetAsgnIds === null ? [] : validRows.filter((r) => !targetAsgnIds.has(r.asgnId))
+  const batchMismatch = targetBatchId !== null && targetAsgnIds !== null && foreignRows.length > 0
+
   const step: StepKey = result !== null ? 'commit' : previewOk ? 'review' : 'upload'
 
   return (
@@ -217,14 +291,20 @@ export function ReturnUploadPage() {
       {/* The step rail is gone (2026-08-14 ruling): the page itself shows what
           is possible next, and the rail restated it in a second visual system.
           The back link goes to the section whose data this upload feeds. */}
-      <BackLink to="/batches" label="Batches" />
+      <BackLink to={targetBatchId === null ? '/batches' : `/batches/${targetBatchId}`} label="Batches" />
 
       <Card>
         <CardHeader>
           <CardTitle>Print vendor return</CardTitle>
           <CardDescription>
-            The dispatch sheet we generated, back from the vendor with Device ID and AWB filled in. The vendor is
-            resolved from the batch, so there is nothing to pick here.
+            {targetBatchId === null ? (
+              'The dispatch sheet we generated, back from the vendor with Device ID and AWB filled in. The vendor is resolved from the batch, so there is nothing to pick here.'
+            ) : (
+              <>
+                For <CodeChip>{targetBatchId}</CodeChip> only. Every Dispatch ID in the file must belong to this
+                batch; a row from any other batch refuses the whole sheet.
+              </>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -232,22 +312,27 @@ export function ReturnUploadPage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <Label htmlFor="return-sheet-file">Return sheet</Label>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={sampling || busy !== null}
-                  onClick={() => {
-                    void downloadSample()
-                  }}
-                >
-                  {sampling ? (
-                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Download className="size-4" aria-hidden="true" />
-                  )}{' '}
-                  Sample file
-                </Button>
+                {/* Only with a batch in scope: without one this could only
+                    guess which batch to build for. See downloadSample. */}
+                {targetBatchId !== null && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={sampling || busy !== null}
+                    title="Downloads this batch's own dispatches still awaiting return, paired with real in-stock device serials and fresh AWBs, ready to upload as-is."
+                    onClick={() => {
+                      void downloadSample()
+                    }}
+                  >
+                    {sampling ? (
+                      <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Download className="size-4" aria-hidden="true" />
+                    )}{' '}
+                    Auto-fill with real devices
+                  </Button>
+                )}
               </div>
               <FileDropZone
                 id="return-sheet-file"
@@ -286,6 +371,19 @@ export function ReturnUploadPage() {
                 </Link>
                 .
               </p>
+            </ErrorNote>
+          )}
+
+          {targetLoadError !== null && <ErrorNote>{targetLoadError}</ErrorNote>}
+
+          {previewOk && result === null && batchMismatch && (
+            <ErrorNote>
+              <strong>
+                {foreignRows.length} row{foreignRows.length === 1 ? '' : 's'} do{foreignRows.length === 1 ? 'es' : ''}{' '}
+                not belong to {targetBatchId}.
+              </strong>{' '}
+              Nothing was written. This upload is scoped to this one batch, so a sheet naming any other batch's
+              dispatches is refused whole rather than accepted in part.
             </ErrorNote>
           )}
 
@@ -341,7 +439,7 @@ export function ReturnUploadPage() {
                 onClick={() => {
                   void commit()
                 }}
-                disabled={busy !== null || validRows.length === 0 || invalidRows.length > 0}
+                disabled={busy !== null || validRows.length === 0 || invalidRows.length > 0 || batchMismatch}
               >
                 {busy === 'committing' && <Loader2 className="animate-spin" aria-hidden="true" />}
                 Upload {validRows.length} row{validRows.length === 1 ? '' : 's'}
@@ -407,7 +505,22 @@ export function ReturnUploadPage() {
                 </>
               )}
 
-              <div className="flex items-center gap-2 pt-1">
+              {/* WHERE THE OPERATOR CAME FROM DECIDES WHERE THEY GO (19 Aug
+                  2026). Arriving from a batch (`?batch=`) means the work in hand
+                  is THAT batch: its rows have just been paired and it is the
+                  thing they were looking at, so it is the primary action and the
+                  dispatch list is the secondary one. Arriving from the Uploads
+                  index means there is no batch in hand, so the list is all we can
+                  honestly offer. Same rule the BackLink at the top follows. */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {targetBatchId !== null && (
+                  <Button asChild>
+                    <Link to={`/batches/${targetBatchId}`}>
+                      Back to this batch
+                      <ArrowRight aria-hidden="true" />
+                    </Link>
+                  </Button>
+                )}
                 <Button asChild variant="outline">
                   <Link to="/dispatches">
                     View dispatches

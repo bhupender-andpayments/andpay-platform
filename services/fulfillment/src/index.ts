@@ -62,6 +62,7 @@ export {
   ingestIntakeSheetWithinTx,
   isSheetStructurallyValid,
 } from './intake.js'
+export { BATCH_STATUSES, type BatchStatus } from './batch-status.js'
 export { consumeBatchFact, TemplateTrimMismatchError } from './dispatch.js'
 export {
   type AdapterFunction,
@@ -147,11 +148,14 @@ export { type WorkQueueRow, readVendorWorkQueue, type HistoryRow, readVendorHist
 export { type PullXlsxResult, type PullPdfResult, pullDispatchPackageXlsx, pullTypePdf, PullDeniedError } from './vendor-pull.js'
 export {
   correctStatus,
+  bulkDeliverBatch,
   overrideTerminal,
   correctUnitStatus,
   recomposeArtifact,
   holdRecord,
   releaseRecord,
+  sendBatchToVendor,
+  closeBatch,
   manualBatch,
   suspendVendor,
   createVendorOps,
@@ -221,6 +225,7 @@ export {
   type BatchRow,
   readBatchDetail,
   type BatchDetailView,
+  type BatchSettlement,
   type BatchEntryRow,
   type BatchArtifactRow,
   listPoolEntries,

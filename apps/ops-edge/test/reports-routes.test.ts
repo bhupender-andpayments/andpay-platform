@@ -420,9 +420,11 @@ describe('ops reports edge: GET /ops/reports/activation/batch/:btchId/xlsx (the 
     expect(res.headers['content-type']).toContain(
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )
-    // The filename names the batch, so an operator who downloads several cannot
-    // mix them up in a downloads folder.
-    expect(res.headers['content-disposition']).toBe(`attachment; filename="activation-${btchWire}.xlsx"`)
+    // The filename LEADS with the batch, so several downloads sort together by
+    // batch in a downloads folder rather than all bunching under "activation-"
+    // (18 Aug 2026, the same correction applied to the vendor Excel and
+    // collateral downloads).
+    expect(res.headers['content-disposition']).toBe(`attachment; filename="${btchWire}-activation.xlsx"`)
     // xlsx is a PK zip container.
     expect((res.body as Buffer).subarray(0, 2).toString('latin1')).toBe('PK')
 

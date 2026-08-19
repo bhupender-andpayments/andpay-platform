@@ -1,18 +1,20 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ComponentType, ReactNode, SVGProps } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.js'
 import {
-  IconDashboard,
-  IconReports,
-  IconQueues,
-  IconMasterData,
-  IconUploads,
-  IconOperations,
-  IconFulfillment,
   IconCheck,
+  IconDashboard,
+  IconFulfillment,
+  IconGuide,
   IconLogout,
+  IconMasterData,
   IconMerchants,
+  IconOperations,
+  IconQueues,
+  IconReports,
+  IconTruck,
+  IconUploads,
 } from './icons.js'
 import { shortId } from './format.js'
 
@@ -73,14 +75,20 @@ const SECTIONS: readonly Section[] = [
   { to: '/command-center', label: 'Command Center', icon: IconDashboard },
   { to: '/merchants', label: 'Merchants', icon: IconMerchants },
   { to: '/inventory', label: 'Inventory', icon: IconMasterData },
+  { to: '/pool', label: 'Pool', icon: IconQueues },
   { to: '/batches', label: 'Batches', icon: IconFulfillment },
   { to: '/activation', label: 'Activation', icon: IconCheck },
   { to: '/uploads', label: 'Uploads', icon: IconUploads },
   { to: '/dispatches', label: 'Dispatches', icon: IconOperations },
+  { to: '/shipments', label: 'Shipments', icon: IconTruck },
   { to: '/queues', label: 'Queues', icon: IconQueues },
   { to: '/damage-cases', label: 'Damage cases', icon: IconQueues },
   { to: '/reports', label: 'Reports', icon: IconReports },
   { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
+  // Last on purpose (user ruling, 19 Aug 2026): a first-read explainer belongs
+  // at the bottom, out of the way of the sections an operator uses every day,
+  // not competing with Command Center for the top slot.
+  { to: '/overview', label: 'Platform overview', icon: IconGuide },
 ]
 
 // The five groups are the operator's own division of the work: what needs me,
@@ -96,14 +104,18 @@ const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = 
   // Array position here IS render order in the sidebar, and this order is the
   // order the work happens in: merchants ask, stock is held, a batch forms,
   // parcels move, devices go live.
-  { title: 'Pipeline', routes: ['/merchants', '/inventory', '/batches', '/dispatches', '/activation'] },
+  { title: 'Pipeline', routes: ['/merchants', '/inventory', '/pool', '/batches', '/dispatches', '/shipments', '/activation'] },
   // Uploads FIRST in Operations: it is the front door and the landing route, so
   // the eye should find it without reading the group. Damage cases sit beside
   // Queues because both are work an operator picks up and moves along, as
   // opposed to an object they look at.
   { title: 'Operations', routes: ['/uploads', '/queues', '/damage-cases'] },
   { title: 'Insights', routes: ['/reports'] },
+  // Platform overview trails Master Data (user ruling, 19 Aug 2026): it reads
+  // as reference material, not configuration, so it gets its own last slot
+  // rather than pretending to be Setup.
   { title: 'Setup', routes: ['/masterdata'] },
+  { title: 'Reference', routes: ['/overview'] },
 ]
 
 const GROUPED_NAV: ReadonlyArray<{ title: string; items: readonly Section[] }> = NAV_GROUPS.map((g) => ({
@@ -425,6 +437,32 @@ export function AppShell({ children }: { children: ReactNode }) {
     setNavOpen(false)
   }, [pathname])
 
+  // EVERY ROUTE OPENS AT THE TOP. A client-side navigation does not reload the
+  // document, so the scroll position simply survives it: scrolling to the
+  // bottom of Inventory and clicking Batches used to land halfway down the new
+  // page, at whatever offset the previous one happened to be at.
+  //
+  // It has to be THIS ELEMENT, not the window. The shell is `h-screen
+  // overflow-hidden` and <main> is the only thing that scrolls, so
+  // window.scrollTo (and react-router's own ScrollRestoration, which drives
+  // the window) would both run and do nothing at all here.
+  //
+  // Keyed on PATHNAME ALONE, never on the search string. Filters, pagination
+  // and status chips all live in the query string across this portal, so
+  // including it would yank the page to the top every time an operator ticked
+  // a filter under a table they were reading.
+  // `scrollTop = 0` rather than scrollTo({top: 0}): the property is universally
+  // available and cannot be missing, whereas Element.scrollTo is absent in some
+  // environments (jsdom among them) and `?.` guards only the null ref, not an
+  // undefined method, so the fancier call threw on every navigation there.
+  useEffect(() => {
+    const main = mainRef.current
+    if (main !== null) main.scrollTop = 0
+  }, [pathname])
+
+  // The one scrolling element in the shell, held so a route change can reset it.
+  const mainRef = useRef<HTMLElement>(null)
+
   const toggleCollapsed = () => {
     setCollapsed((c) => {
       const next = !c
@@ -451,7 +489,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar onOpenNav={() => setNavOpen(true)} />
-        <main className="flex-1 overflow-y-auto px-4 py-6 lg:px-6">
+        <main ref={mainRef} className="flex-1 overflow-y-auto px-4 py-6 lg:px-6">
           <div className="mx-auto max-w-[1200px]">{children}</div>
         </main>
       </div>

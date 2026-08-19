@@ -19,11 +19,14 @@ import { createHash } from 'node:crypto'
 import { authorize, requireStepUp, OPS_STEP_UP_CATALOG } from '@andpay/authz'
 import {
   correctStatus,
+  bulkDeliverBatch,
   overrideTerminal,
   recomposeArtifact,
   holdRecord,
   releaseRecord,
   manualBatch,
+  sendBatchToVendor,
+  closeBatch,
   suspendVendor,
   createVendorOps,
   editVendorOps,
@@ -64,6 +67,7 @@ import {
   resolveQuarantineRow,
   closeQuarantineRow,
   createDamageReasonOps,
+  editDamageReasonOps,
   activateDamageReasonOps,
   deactivateDamageReasonOps,
   updateDamageCaseStatusOps,
@@ -206,6 +210,10 @@ interface VendorEditBody {
 interface DamageReasonCreateBody {
   code: string
   label: string
+}
+interface DamageReasonEditBody {
+  code?: string
+  label?: string
 }
 // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
 // upsert body. bankCode/branchCode/tenantWire ARE legitimate request inputs
@@ -731,6 +739,16 @@ export class OpsController {
     @Req() req: EdgeRequest,
     @UploadedFile() file: UploadedSheet | undefined,
     @Headers('idempotency-key') idem: string | undefined,
+    // The multipart TEXT fields. multer puts them on the body alongside the
+    // file, so this is the same request, not a second one.
+    //
+    // `batchId` is OPTIONAL and is an INTENT ASSERTION, not a scope: the caller
+    // states which batch the sheet is for and the domain refuses the whole file
+    // if any row's dispatch belongs elsewhere. Program scope still comes from the
+    // principal and from the target aggregate, never from here (M7/S16, D99).
+    // Added 19 Aug 2026 because the batch-scoped return page enforced its own
+    // promise only in the browser.
+    @Body() body: { batchId?: unknown } | undefined,
   ): Promise<OpsReturnResult & { invalidRows: ReturnSheetParseResult['invalidRows'] }> {
     const g = await this.gate(req, 'ops:upload-return-file', idem, [])
     if (!file) throw new BadRequestException('missing file')
@@ -741,11 +759,23 @@ export class OpsController {
     if (parsed.structuralErrors.length > 0) {
       throw new BadRequestException(parsed.structuralErrors.map((e) => e.message).join(' '))
     }
+    // A non-string batchId is a caller error, not something to coerce: coercing
+    // would let a wrong shape silently become an unmatched id and read as
+    // 'foreign_dispatch', blaming the sheet for a bad request.
+    const rawBatchId: unknown = body?.batchId
+    if (rawBatchId !== undefined && typeof rawBatchId !== 'string') {
+      throw new BadRequestException('batchId must be a string')
+    }
+    const batchId = rawBatchId === undefined || rawBatchId === '' ? undefined : rawBatchId
     // The file identity is the bytes, so an ops upload and the vendor's own
     // upload of the same attachment dedup against each other rather than pairing
     // every device twice.
     const fileId = createHash('sha256').update(file.buffer).digest('hex')
-    const result = await ingestReturnSheetOps(this.deps.fulfillmentDb, { fileId, rows: parsed.validRows })
+    const result = await ingestReturnSheetOps(this.deps.fulfillmentDb, {
+      fileId,
+      rows: parsed.validRows,
+      ...(batchId !== undefined ? { batchId } : {}),
+    })
     void g
     return { ...result, invalidRows: parsed.invalidRows }
   }
@@ -771,6 +801,27 @@ export class OpsController {
       traceId: g.traceId,
     })
     return result
+  }
+
+  // The batch-wide "mark all delivered" shortcut (19 Aug 2026, demo need):
+  // one call to correctStatus per shipment in the batch, so it rides the same
+  // `ops:status-correction` permission and step-up posture as a single
+  // correction, rather than a new permission for what is, underneath, the
+  // same write repeated.
+  @Post('batches/:id/deliver-all')
+  @HttpCode(200)
+  async bulkDeliver(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ delivered: number; skipped: number; failed: number }> {
+    const g = await this.gate(req, 'ops:status-correction', idem, [id])
+    return bulkDeliverBatch(this.deps.fulfillmentDb, {
+      batchId: id,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
   }
 
   // Manual unit-status correction (2026-08-13 ruling): the device page's edit
@@ -883,7 +934,24 @@ export class OpsController {
     @Param('asgnId') asgnId: string,
     @Headers('idempotency-key') idem: string | undefined,
   ): Promise<{ deduped: boolean; released: boolean }> {
-    const g = await this.gate(req, 'ops:record-release', idem, [asgnId], 'hold-release')
+    // NO STEP-UP (19 Aug 2026, at the product owner's direction). This route
+    // used to pass 'hold-release', which required AAL2 within 300s of
+    // auth_time, so an operator who had been logged in for more than five
+    // minutes was re-challenged for a TOTP to release a hold they had just
+    // placed. The ruling is that authentication belongs at login, not
+    // mid-session, for an action this reversible: releasing a hold puts a
+    // parcel back into the pool it came from and holding it again is one
+    // click. It stays permissioned (ops:record-release) and still writes its
+    // co-committed 6e ALLOW, so who did it is on the record either way.
+    //
+    // The gate below FAILS CLOSED on a catalog key with no entry, so the
+    // argument is removed here rather than only the entry in
+    // packages/authz/src/stepup.ts: leaving it would deny every release with
+    // reasonCode 'step-up-misconfigured'.
+    //
+    // terminal-override and vendor-suspend KEEP their step-up. Both are
+    // genuinely hard to undo, which is the distinction S15/6b was drawing.
+    const g = await this.gate(req, 'ops:record-release', idem, [asgnId])
     const result = await releaseRecord(this.deps.fulfillmentDb, {
       asgnId,
       clientKey: g.clientKey,
@@ -1236,6 +1304,58 @@ export class OpsController {
     return result
   }
 
+  /**
+   * Hand a formed batch to its print vendor (D4, 18 Aug 2026).
+   *
+   * NO BODY, and no reason field. The reason-required routes (manual trigger,
+   * hold) are OVERRIDES: they bypass the pool economics or keep a real order
+   * out of every batch, so the operator owes an explanation. This is the
+   * designed forward step of the batch lifecycle, and its audit story is
+   * already complete without prose: the ALLOW 6e names the actor and the batch,
+   * the saga_step records the transition, and the dispatch fact carries it
+   * downstream. Same posture as the release route.
+   */
+  @Post('batches/:btchId/send-to-vendor')
+  @HttpCode(200)
+  async batchSendToVendor(
+    @Req() req: EdgeRequest,
+    @Param('btchId') btchId: string,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; sent: boolean }> {
+    const g = await this.gate(req, 'ops:batch-send-to-vendor', idem, [btchId])
+    return await sendBatchToVendor(this.deps.fulfillmentDb, {
+      btchId,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  /**
+   * Close a batch whose dispatches have all settled (D5).
+   *
+   * No body: the operator supplies no facts, the domain checks them. A refusal
+   * comes back as a 409 whose message carries the settlement breakdown, so the
+   * portal can say what the batch is still waiting for rather than only that it
+   * cannot close.
+   */
+  @Post('batches/:btchId/close')
+  @HttpCode(200)
+  async batchClose(
+    @Req() req: EdgeRequest,
+    @Param('btchId') btchId: string,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; closed: boolean }> {
+    const g = await this.gate(req, 'ops:batch-close', idem, [btchId])
+    const result = await closeBatch(this.deps.fulfillmentDb, {
+      btchId,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+    return { deduped: result.deduped, closed: result.closed }
+  }
+
   @Post('vendors')
   @HttpCode(200)
   async createVendor(
@@ -1318,6 +1438,25 @@ export class OpsController {
       traceId: g.traceId,
     })
     return result
+  }
+
+  @Post('damage-reasons/:id/edit')
+  @HttpCode(200)
+  async editDamageReasonRoute(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @Body() body: DamageReasonEditBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; damageReason: DamageReasonRow | null }> {
+    const g = await this.gate(req, 'ops:damage-reason-edit', idem, [id])
+    return await editDamageReasonOps(this.deps.tmsDb, {
+      id,
+      ...(body.code !== undefined ? { code: body.code } : {}),
+      ...(body.label !== undefined ? { label: body.label } : {}),
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
   }
 
   @Post('damage-reasons/:id/activate')

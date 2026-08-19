@@ -165,12 +165,13 @@ describe('InventoryPage', () => {
     expect(screen.getByText('9990000001002')).toBeTruthy()
   })
 
-  // ALLOCATED is reachable by nothing today. It is still offered because the
-  // rung exists in unit-lifecycle.ts, and a filter that silently disagreed with
-  // the domain would be its own small lie. ACTIVATED, by contrast, is GONE from
-  // this list on purpose (D-16, T4.4): it stopped being a value `status` can
-  // take, and leaving it would return an empty list forever while implying the
-  // platform had lost every activated device.
+  // ALLOCATED IS GONE TOO, as of 19 Aug 2026. This comment used to defend
+  // offering it: nothing wrote it, but the rung existed in unit-lifecycle.ts, and
+  // a filter disagreeing with the domain would be its own small lie. The rung has
+  // now been removed from the domain instead, which is the honest version of that
+  // same argument. ACTIVATED was never here (D-16, T4.4): it is not a value
+  // `status` can take at all, and offering it would return an empty list forever
+  // while implying the platform had lost every activated device.
   it('offers every delivery status, in lifecycle order, and no longer offers ACTIVATED', async () => {
     stub()
     renderPage()
@@ -184,7 +185,7 @@ describe('InventoryPage', () => {
     // against the real control rather than the <select> an earlier version of
     // this screen had.
     expect(options.map((o) => o.textContent?.replace(/\d+$/, '').trim())).toEqual([
-      'In stock', 'Allocated', 'At print vendor', 'Dispatched', 'Delivered', 'Damaged', 'Returned',
+      'In stock', 'At print vendor', 'Dispatched', 'Delivered', 'Damaged', 'Returned',
     ])
   })
 

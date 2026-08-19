@@ -384,6 +384,12 @@ export async function listBatchingConfigs(db: FulfillmentDb): Promise<BatchingCo
 
 export interface BatchRow {
   id: string
+  // The stored batch lifecycle (BATCH_STATUSES in batch-status.ts): BATCHED,
+  // SENT_TO_PRINT_VENDOR, CLOSED. Stored on the batch rather than derived from
+  // its entries because it drives filtering on the batches list, the tiles and
+  // the activation worklist, none of which should have to read child rows to
+  // answer a question about the parent.
+  status: string
   triggerReason: string
   unitCount: number
   printVndr: string | null
@@ -402,6 +408,7 @@ export interface BatchRow {
 
 interface BatchDbRow {
   id: string
+  status: string
   trigger_reason: string
   unit_count: number
   print_vndr: string | null
@@ -414,6 +421,7 @@ interface BatchDbRow {
 function toBatchDto(r: BatchDbRow): BatchRow {
   return {
     id: fromUuid('btch', r.id),
+    status: r.status,
     triggerReason: r.trigger_reason,
     unitCount: Number(r.unit_count),
     printVndr: r.print_vndr === null ? null : fromUuid('vndr', r.print_vndr),
@@ -430,7 +438,7 @@ export async function listBatches(db: FulfillmentDb): Promise<BatchRow[]> {
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     return tx.$queryRaw<BatchDbRow[]>`
-      SELECT id::text AS id, trigger_reason, unit_count, print_vndr::text AS print_vndr,
+      SELECT id::text AS id, status, trigger_reason, unit_count, print_vndr::text AS print_vndr,
              triggered_by_actor::text AS triggered_by_actor, trigger_note, created_at, updated_at
       FROM batch
       ORDER BY created_at DESC
@@ -459,6 +467,24 @@ export interface BatchEntryRow {
   // belongs to. NULL means a legacy, pre-split combined row (see
   // package.ts excelLinesFor for what that means for sheet membership).
   dispatchGroup: string | null
+  // The merchant REQUEST this dispatch came from: {file_id}|{row_no}, the bank
+  // file row. Both dispatch groups minted from one bank row share it, which is
+  // what lets a reader recognise two dispatches as the same request. The
+  // minimum-lot gate already counts DISTINCT source_event_id (batching.ts), so
+  // projecting it lets the portal count the same unit the server decides on
+  // rather than counting dispatches and disagreeing.
+  //
+  // Not recipient PII: an opaque ingest coordinate, no name, address or number
+  // in it. So the D104 default-exclude posture above is not breached.
+  sourceEventId: string
+  // 19 Aug 2026 (demo need): the courier's own axis, not the dispatch's.
+  // dispatch_state above never reaches DELIVERED by design (it stops at
+  // DISPATCHED_BY_VENDOR, courier progress lives on shpt.status), so a batch
+  // whose shipments were corrected straight to DELIVERED (the "Mark all
+  // delivered" shortcut, or any normal courier update) showed no change at
+  // all in this list. Null until a shipment exists for the leg (soundbox via
+  // unit.shipment, collateral via pending_pool_entry.collateral_shipment).
+  courierStatus?: string | null
 }
 
 interface BatchEntryDbRow {
@@ -475,6 +501,8 @@ interface BatchEntryDbRow {
   dispatch_state: string | null
   ship_to_superseded: boolean
   dispatch_group: string | null
+  source_event_id: string
+  courier_status: string | null
 }
 
 function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
@@ -492,6 +520,8 @@ function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
     dispatchState: r.dispatch_state,
     shipToSuperseded: r.ship_to_superseded,
     dispatchGroup: r.dispatch_group,
+    sourceEventId: r.source_event_id,
+    courierStatus: r.courier_status,
   }
 }
 
@@ -520,10 +550,147 @@ interface BatchArtifactDbRow {
   label_display_name: string
 }
 
+/**
+ * How far a batch's dispatches have SETTLED, which is what decides whether an
+ * operator may close it (decision D5, 18 Aug 2026).
+ *
+ * A dispatch is settled when its PARCEL has finished travelling: DELIVERED or
+ * RETURNED. Anything else is pending, a dispatch still at the vendor or with a
+ * courier included.
+ *
+ * DEVICE DAMAGE IS NOT A SETTLEMENT (19 Aug 2026, at the product owner's
+ * direction). A third rung counted a dispatch as settled when its unit's status
+ * was DAMAGED, and that read the wrong axis: `unit.status` is the DEVICE's, while
+ * this whole breakdown is about DISPATCHES, and the batch page's own State column
+ * renders `pending_pool_entry.dispatch_state`, which has no damaged value and
+ * never will. So the close dialog reported "1 damaged" over a table of five
+ * identical Dispatched by vendor rows, and the count could not be located in the
+ * list it was describing.
+ *
+ * Damage is also not a travel outcome. Flagging it raises a REPLACEMENT dispatch
+ * and leaves the original parcel in the courier network, where it still delivers
+ * or comes back RTO; that terminal event is what settles the row. A parcel that
+ * genuinely stops moving without one is what the shipment override exists for.
+ *
+ * The breakdown travels with the verdict on purpose. "You cannot close this
+ * batch" is not an answer an operator can act on; "12 delivered, 3 returned, 5
+ * still pending" tells them what they are waiting for.
+ */
+export interface BatchSettlement {
+  total: number
+  delivered: number
+  returned: number
+  pending: number
+  /** Every dispatch settled, so the batch may be closed. False on an empty batch. */
+  settled: boolean
+  /**
+   * The SAME verdict per dispatch, keyed by wire asgn id (18 Aug 2026).
+   *
+   * The totals above say a batch is waiting on five dispatches without saying
+   * WHICH five, which left an operator to work it out by opening rows one at a
+   * time. This is the identical loop's own per-row answer, published rather
+   * than discarded, so the batch's dispatch table can mark each row and the
+   * counts can never disagree with the marks: they are computed once.
+   */
+  perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'PENDING'>
+}
+
+// Terminal courier states: a shipment that reached either has stopped moving.
+// Mirrors UNIT_TERMINAL_STATUSES' role on the device axis, and matches the
+// courier ladder's own off-ladder pair in courier-status.ts.
+const TERMINAL_SHIPMENT_STATUSES = new Set(['DELIVERED', 'RETURNED'])
+
+/**
+ * Settlement for one batch, from three row-level reads folded in TypeScript.
+ *
+ * Row-level and folded in code rather than aggregated in SQL because this module
+ * is under the no-aggregate guard (test/architecture.test.ts): the ops read API
+ * is curated rows only. Three plain SELECTs also read more honestly than one
+ * query with an OR-join across two different shipment links.
+ *
+ * The caller owns the transaction AND the role, so the same logic can serve the
+ * read path (fulfillment_ops_read) and the close action's own re-check
+ * (fulfillment_write) without either one trusting the other's answer.
+ */
+export async function readBatchSettlementWithinTx(tx: Tx, btchUuid: string): Promise<BatchSettlement> {
+  const entries = await tx.$queryRaw<{ asgn_id: string; collateral_shipment: string | null }[]>`
+    SELECT asgn_id::text AS asgn_id, collateral_shipment::text AS collateral_shipment
+    FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
+  `
+  if (entries.length === 0) {
+    return { total: 0, delivered: 0, returned: 0, pending: 0, settled: false, perDispatch: {} }
+  }
+
+  const asgnUuids = entries.map((e) => e.asgn_id)
+  // The kit shipment hangs off the DEVICE (unit.shipment), which is the only
+  // thing wanted from `unit` here. It used to read `status` too, for a damage
+  // rung that has been removed: see the note on BatchSettlement.
+  const units = await tx.$queryRaw<{ asgn_id: string; shipment: string | null }[]>`
+    SELECT asgn_id::text AS asgn_id, shipment::text AS shipment
+    FROM unit WHERE asgn_id = ANY(${asgnUuids}::uuid[])
+  `
+
+  const shipmentIds = new Set<string>()
+  for (const e of entries) if (e.collateral_shipment !== null) shipmentIds.add(e.collateral_shipment)
+  for (const u of units) if (u.shipment !== null) shipmentIds.add(u.shipment)
+
+  const shipments =
+    shipmentIds.size === 0
+      ? []
+      : await tx.$queryRaw<{ id: string; status: string }[]>`
+          SELECT id::text AS id, status FROM shpt WHERE id = ANY(${[...shipmentIds]}::uuid[])
+        `
+  const statusOf = new Map(shipments.map((s) => [s.id, s.status]))
+
+  const shipmentsByAsgn = new Map<string, string[]>()
+  for (const e of entries) {
+    const ids: string[] = []
+    if (e.collateral_shipment !== null) ids.push(e.collateral_shipment)
+    shipmentsByAsgn.set(e.asgn_id, ids)
+  }
+  for (const u of units) {
+    if (u.shipment === null) continue
+    shipmentsByAsgn.get(u.asgn_id)?.push(u.shipment)
+  }
+
+  let delivered = 0
+  let returned = 0
+  let pending = 0
+  const perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'PENDING'> = {}
+  for (const e of entries) {
+    const states = (shipmentsByAsgn.get(e.asgn_id) ?? []).map((id) => statusOf.get(id) ?? null)
+    // No shipment yet means the vendor has not returned this row, so it cannot
+    // have settled however long ago the batch formed.
+    if (states.length === 0 || states.some((s) => s === null || !TERMINAL_SHIPMENT_STATUSES.has(s))) {
+      pending += 1
+      perDispatch[fromUuid('asgn', e.asgn_id)] = 'PENDING'
+    } else if (states.some((s) => s === 'RETURNED')) {
+      // A dispatch whose parcels did not all arrive reads as returned, not
+      // delivered: the optimistic label would hide a real failure.
+      returned += 1
+      perDispatch[fromUuid('asgn', e.asgn_id)] = 'RETURNED'
+    } else {
+      delivered += 1
+      perDispatch[fromUuid('asgn', e.asgn_id)] = 'DELIVERED'
+    }
+  }
+
+  return {
+    total: entries.length,
+    delivered,
+    returned,
+    pending,
+    settled: pending === 0,
+    perDispatch,
+  }
+}
+
 export interface BatchDetailView {
   batch: BatchRow
   entries: BatchEntryRow[]
   artifacts: BatchArtifactRow[]
+  /** Whether this batch can be closed, and what it is still waiting for (D5). */
+  settlement: BatchSettlement
   // W-6 (Task 14, 2026-08-11 dispatch-group split): the BOUND print vendor's
   // press layout, ONE_PER_PAGE or GRID_3X2, resolved the same way
   // assembleGroupPdf resolves it at download time (package.ts): a LEFT JOIN
@@ -547,7 +714,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
     // NULL) must still return its header, with the ONE_PER_PAGE default the
     // COALESCE below supplies, exactly as assembleGroupPdf's own fallback does.
     const header = await tx.$queryRaw<(BatchDbRow & { print_layout: string })[]>`
-      SELECT b.id::text AS id, b.trigger_reason, b.unit_count, b.print_vndr::text AS print_vndr,
+      SELECT b.id::text AS id, b.status, b.trigger_reason, b.unit_count, b.print_vndr::text AS print_vndr,
              b.triggered_by_actor::text AS triggered_by_actor, b.trigger_note, b.created_at, b.updated_at,
              COALESCE(v.print_layout, 'ONE_PER_PAGE') AS print_layout
       FROM batch b
@@ -559,7 +726,11 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
       SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             dispatch_group
+             dispatch_group, source_event_id,
+             COALESCE(
+               (SELECT s.status FROM unit u JOIN shpt s ON s.id = u.shipment WHERE u.asgn_id = pending_pool_entry.asgn_id),
+               (SELECT s.status FROM shpt s WHERE s.id = pending_pool_entry.collateral_shipment)
+             ) AS courier_status
       FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
       ORDER BY bank_reference_code, branch_code, merchant_display_name, dispatch_group, asgn_id
     `
@@ -598,6 +769,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
       WHERE ca.btch_id = ${btchUuid}::uuid
       ORDER BY ppe.bank_reference_code, ppe.branch_code, ca.asgn_id, ca.artifact_type
     `
+    const settlement = await readBatchSettlementWithinTx(tx, btchUuid)
     return {
       batch: toBatchDto(header[0]!),
       entries: entries.map(toBatchEntryDto),
@@ -610,6 +782,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
         labelDisplayName: a.label_display_name,
       })),
       printLayout: header[0]!.print_layout,
+      settlement,
     }
   })
 }
@@ -665,7 +838,11 @@ function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
 const POOL_ENTRY_COLUMNS = `asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             dispatch_group,
+             dispatch_group, source_event_id,
+             COALESCE(
+               (SELECT s.status FROM unit u JOIN shpt s ON s.id = u.shipment WHERE u.asgn_id = pending_pool_entry.asgn_id),
+               (SELECT s.status FROM shpt s WHERE s.id = pending_pool_entry.collateral_shipment)
+             ) AS courier_status,
              batch::text AS batch, created_at,
              tenant_id::text AS tenant_id, program_id::text AS program_id,
              hold_reason`

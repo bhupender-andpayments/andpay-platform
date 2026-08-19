@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
-import { AlertTriangle, Boxes, Calendar, PackageCheck, Radio, Route, Store, Truck, Undo2 } from 'lucide-react'
+import { AlertTriangle, Bike, Boxes, Calendar, PackageCheck, PackageOpen, Radio, Route, Truck, Undo2 } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import {
   getDispatchDetail,
@@ -10,6 +10,7 @@ import {
   reportRowShptId,
   type DispatchDetailView,
   type DispatchRow,
+  type ReportRow,
   type VendorRow,
 } from '../../api/endpoints.js'
 import { Button, Card, CardBody, ErrorNote, EmptyState, SkeletonRows, StatusPill, CodeChip } from '../../ui/primitives.js'
@@ -18,6 +19,7 @@ import { LifecycleTimeline, type TimelineStage, type TimelineTerminal } from '..
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
 import { BackLink, FactRow, NoValue, SectionHeading } from '../../ui/DetailFacts.js'
 import { fmtDateTime, statusMeta } from '../../ui/format.js'
+import { SHIPMENT_RUNG, isOffLadder } from './dispatchStatus.js'
 
 // ONE PARCEL, by its AWB. The carrier axis has the best history in the platform:
 // the courier trail is genuinely append-only, keeps the courier's reported instant
@@ -76,6 +78,17 @@ export function ShipmentDetailPage() {
   // pending: it read as a broken join and was mis-filed as one on 18 Aug 2026.
   // So the absence is only claimed once the reads have SETTLED.
   const [joinSettled, setJoinSettled] = useState(false)
+  // EVERY dispatch on this AWB, not just one (18 Aug 2026, at the user's
+  // correction). One shpt row carries no foreign key back to a dispatch at
+  // all (services/fulfillment/prisma/schema.prisma's Shpt model); the link is
+  // owned from the OTHER side, by however many units/collateral legs point
+  // AT it (`unit.shipment`, `pending_pool_entry.collateral_shipment`), so one
+  // AWB genuinely can carry several dispatches, a consolidated pickup being
+  // the ordinary case, not an edge case. The lookup below used to keep only
+  // the FIRST report row matching this shpt id and silently dropped the rest,
+  // which is exactly what made a multi-dispatch AWB look like it held one
+  // parcel.
+  const [owners, setOwners] = useState<readonly ReportRow[]>([])
   const [vendors, setVendors] = useState<readonly VendorRow[]>([])
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
@@ -112,6 +125,7 @@ export function ShipmentDetailPage() {
   // below, so the event the operator just wrote appears in the history.
   const refresh = useCallback(() => {
     setDispatch(null)
+    setOwners([])
     setJoinSettled(false)
     void load()
   }, [load])
@@ -131,8 +145,15 @@ export function ShipmentDetailPage() {
     getReport(client, 'soundbox-delivery', {})
       .then((result) => {
         if (cancelled || !Array.isArray(result.rows)) return
-        const owner = result.rows.find((r) => reportRowShptId(r) === shptId)
-        const dispatchId = typeof owner?.dispatchId === 'string' ? owner.dispatchId : null
+        // ALL of them, not the first: several dispatches can legitimately
+        // travel under one AWB (a consolidated pickup), and dropping the rest
+        // is what made a multi-dispatch shipment look like a single parcel.
+        const matches = result.rows.filter((r) => reportRowShptId(r) === shptId)
+        setOwners(matches)
+        // The courier trail itself is the SAME regardless of which owner
+        // answers it: status lives on the shpt row, not per dispatch, so any
+        // one of them resolves the identical shipment detail.
+        const dispatchId = typeof matches[0]?.dispatchId === 'string' ? matches[0].dispatchId : null
         if (dispatchId === null) return
         return getDispatchDetail(client, dispatchId).then((d) => {
           if (!cancelled) setDispatch(d)
@@ -191,7 +212,7 @@ export function ShipmentDetailPage() {
   if (notFound || shipment === null) {
     return (
       <div className="space-y-4">
-        <BackLink to="/dispatches" label="Dispatches" fromSearch={fromSearch} />
+        <BackLink to="/shipments" label="Shipments" fromSearch={fromSearch} />
         <EmptyState title="No such shipment" message="The id in the address does not name a shipment." />
       </div>
     )
@@ -211,7 +232,7 @@ export function ShipmentDetailPage() {
 
   return (
     <div className="space-y-4">
-      <BackLink to="/dispatches" label="Dispatches" fromSearch={fromSearch} />
+      <BackLink to="/shipments" label="Shipments" fromSearch={fromSearch} />
 
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0">
@@ -237,7 +258,11 @@ export function ShipmentDetailPage() {
         </CardBody>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-[384px_minmax(0,1fr)] lg:items-start">
+      {/* items-stretch, not items-start (18 Aug 2026, at the user's
+          correction): the carrier-history card is usually the shorter of the
+          two, and a half-height card beside a full one read as unfinished
+          rather than as an empty answer. */}
+      <div className="grid gap-4 lg:grid-cols-[384px_minmax(0,1fr)] lg:items-stretch">
         <Card>
           <CardBody>
             <SectionHeading>Parcel</SectionHeading>
@@ -258,30 +283,55 @@ export function ShipmentDetailPage() {
             </FactRow>
 
             <SectionHeading>What is inside</SectionHeading>
-            {dispatch === null && !joinSettled ? (
-              <p className="py-1.5 text-sm text-muted-foreground">Looking up the dispatch on this AWB…</p>
-            ) : dispatch === null ? (
+            {owners.length === 0 && !joinSettled ? (
+              <p className="py-1.5 text-sm text-muted-foreground">Looking up the dispatches on this AWB…</p>
+            ) : owners.length === 0 ? (
               <p className="py-1.5 text-sm text-muted-foreground">
                 No dispatch is joined to this AWB in the reporting rail. A collateral-only parcel is tracked here but
                 carries no soundbox dispatch to open.
               </p>
             ) : (
-              <>
-                <FactRow icon={Store} label="Merchant">
-                  {dispatch.merchantDisplay}
-                </FactRow>
-                <FactRow icon={Boxes} label="Dispatch">
-                  <Link className="underline underline-offset-2" to={`/dispatches/${dispatch.dispatchId}`}>
-                    <CodeChip>{dispatch.dispatchId}</CodeChip>
-                  </Link>
-                </FactRow>
-              </>
+              // A TABLE, not a single fact row (18 Aug 2026, at the user's
+              // correction): one AWB can carry several dispatches, a
+              // consolidated pickup being the ordinary case, and a single
+              // "Merchant" / "Dispatch" pair silently named only the first one
+              // and hid the rest.
+              <div className="-mx-1 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-[11px] text-muted-foreground">
+                      <th className="px-1 pb-1.5 font-normal">Dispatch</th>
+                      <th className="px-1 pb-1.5 font-normal">Merchant</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {owners.map((row) => {
+                      const dispatchId = typeof row.dispatchId === 'string' ? row.dispatchId : null
+                      const merchant = typeof row.merchantDisplay === 'string' ? row.merchantDisplay : null
+                      if (dispatchId === null) return null
+                      return (
+                        <tr key={dispatchId} className="border-t">
+                          <td className="px-1 py-1.5">
+                            <Link className="underline underline-offset-2" to={`/dispatches/${dispatchId}`}>
+                              <CodeChip>{dispatchId}</CodeChip>
+                            </Link>
+                          </td>
+                          <td className="px-1 py-1.5">{merchant ?? <NoValue>not recorded</NoValue>}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </CardBody>
         </Card>
 
         <Card className="max-w-2xl">
-          <CardBody>
+          {/* flex-col so the timeline below can grow into the card's full
+              height, which is what makes the centered empty state sit in the
+              middle rather than hugging the description. */}
+          <CardBody className="flex h-full flex-col">
             <div className="flex flex-wrap items-start justify-between gap-3 pb-2">
               <h2 className="text-base font-medium">Carrier history</h2>
               <div className="flex items-center gap-2">
@@ -302,11 +352,22 @@ export function ShipmentDetailPage() {
               Every courier update for this parcel, oldest first, with when the courier reported it and when we
               recorded it.
             </p>
-            <LifecycleTimeline
-              stages={stages.stages}
-              terminal={stages.terminal}
-              emptyMessage={joinSettled ? 'No courier updates for this AWB yet.' : 'Loading the courier history…'}
-            />
+            <div className="flex grow flex-col justify-center">
+              <LifecycleTimeline
+                stages={stages.stages}
+                terminal={stages.terminal}
+                // The centered empty state only once the reads have SETTLED. A
+                // pending join is not an absent trail, so mid-load stays a
+                // plain sentence (no emptyTitle) rather than a confident
+                // "nothing here" panel.
+                {...(joinSettled ? { emptyTitle: 'No courier updates yet' } : {})}
+                emptyMessage={
+                  joinSettled
+                    ? 'The courier has not reported on this AWB. Record one with the button above once they do.'
+                    : 'Loading the courier history…'
+                }
+              />
+            </div>
           </CardBody>
         </Card>
       </div>
@@ -332,11 +393,30 @@ export function ShipmentDetailPage() {
 /** The courier ladder (FR-06). Order IS the journey. */
 const SHIPMENT_LADDER = [
   { key: 'DISPATCHED_BY_VENDOR', label: 'Dispatched by vendor', icon: Truck },
+  { key: 'PICKED_UP', label: 'Picked up', icon: PackageOpen },
   { key: 'IN_TRANSIT', label: 'In transit', icon: Route },
+  { key: 'OUT_FOR_DELIVERY', label: 'Out for delivery', icon: Bike },
   { key: 'DELIVERED', label: 'Delivered', icon: PackageCheck },
 ] as const
 
-const LADDER_POS: Record<string, number> = { DISPATCHED_BY_VENDOR: 0, IN_TRANSIT: 1, DELIVERED: 2 }
+/**
+ * Where each courier status sits on the five rungs above: the shared
+ * SHIPMENT_RUNG, which mirrors the service's own LADDER_RANK.
+ *
+ * THIS PAGE SHOWS ALL FIVE, and that is the point (19 Aug 2026). It listed only
+ * three rung names by hand, and everything absent from the map was treated as
+ * off-ladder and drawn as a red terminal stop, so PICKED_UP and
+ * OUT_FOR_DELIVERY - both offered by this page's OWN correction dialog - turned a
+ * live parcel into a failure. The first fix folded them onto their neighbours,
+ * which stopped the red stop but produced a subtler lie: pick OUT_FOR_DELIVERY
+ * and the rail lights up "In transit".
+ *
+ * So the rule is now explicit. The DISPATCH page compresses the courier axis onto
+ * the BRD's three courier rungs, because it is summarising a seven-rung ladder.
+ * THIS page owns the courier axis and shows it whole, because a detail view that
+ * hides two of its subject's own states is not a detail view.
+ */
+const LADDER_POS: Record<string, number> = SHIPMENT_RUNG
 
 /**
  * RETURNED closes the rail in red. FAILED renders as a red stop too, but
@@ -345,7 +425,7 @@ const LADDER_POS: Record<string, number> = { DISPATCHED_BY_VENDOR: 0, IN_TRANSIT
  */
 function buildShipmentRail(shipment: DispatchRow, dispatch: DispatchDetailView | null): RailStage[] {
   const trail = dispatch?.deliveryTrail ?? []
-  const offLadder = !(shipment.status in LADDER_POS)
+  const offLadder = isOffLadder(shipment.status)
   // Off the ladder, the parcel's proven progress is the furthest ordinary rung
   // any trail event reached; a shipment row alone proves only the dispatch.
   const currentIdx = offLadder

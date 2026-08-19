@@ -842,7 +842,14 @@ async function ingestReturnSheetBody(db: FulfillmentDb, sheet: ReturnSheet): Pro
 // The file idempotency key stays {vndrId}|{fileId} inside the body, which is
 // deliberate: it means an ops upload and the vendor's own later upload of the
 // SAME bytes dedup against each other instead of pairing everything twice.
-export type OpsReturnRejection = 'schema_invalid' | 'no_resolvable_dispatch' | 'mixed_vendors' | 'batch_has_no_vendor'
+export type OpsReturnRejection =
+  | 'schema_invalid'
+  | 'no_resolvable_dispatch'
+  | 'mixed_vendors'
+  | 'batch_has_no_vendor'
+  // 19 Aug 2026: the sheet was uploaded FOR a named batch and holds a row that
+  // does not belong to it. See the batch-scope block in ingestReturnSheetOps.
+  | 'foreign_dispatch'
 
 export interface OpsReturnResult extends Omit<ReturnResult, 'rejected'> {
   rejected?: OpsReturnRejection
@@ -854,13 +861,36 @@ function emptyOpsResult(rejected: OpsReturnRejection): OpsReturnResult {
   return { rejected, pairedUnitIds: [], quarantined: 0, shptIds: [], collateralLinked: 0, deduped: false }
 }
 
-interface PrintVendorRow {
+interface ResolvedDispatchRow {
+  asgn_id: string
+  batch_id: string
   print_vndr: string | null
 }
 
 export async function ingestReturnSheetOps(
   db: FulfillmentDb,
-  args: { fileId: string; rows: ReturnRow[] },
+  args: {
+    fileId: string
+    rows: ReturnRow[]
+    /**
+     * The batch this upload claims to be for, when the operator uploaded from a
+     * batch's own return page. OPTIONAL: absent from the generic Uploads entry,
+     * where there is no batch in hand and per-row resolution is the only truth.
+     *
+     * WHY IT EXISTS (19 Aug 2026). The batch-scoped page promised "a row from
+     * any other batch refuses the whole sheet", and that promise lived only in
+     * a client-side check that disabled the Commit button. The server's sole
+     * cross-batch defence was mixed_vendors, and under single-partner scope
+     * (D-9a: exactly one ACTIVE PRINT vendor) every batch resolves to the same
+     * vendor, so it could never fire. A sheet naming another batch's dispatches
+     * would have silently advanced that other batch behind a success screen.
+     *
+     * This is NOT an authorization scope (those come from the principal,
+     * M7/S16, never a request field); it is an intent assertion the server
+     * verifies against rows it already reads for vendor resolution.
+     */
+    batchId?: string
+  },
 ): Promise<OpsReturnResult> {
   // Same whole-file schema gate the vendor channel applies, run here too so a
   // malformed sheet is refused before we go looking for a vendor to blame it on.
@@ -888,15 +918,48 @@ export async function ingestReturnSheetOps(
   }
   if (asgnUuids.length === 0) return emptyOpsResult('no_resolvable_dispatch')
 
-  const vendors = await db.$queryRaw<PrintVendorRow[]>`
-    SELECT DISTINCT b.print_vndr::text AS print_vndr
+  // One round trip answers both questions: which vendor, and which batch each
+  // dispatch belongs to. It used to SELECT DISTINCT the vendor alone; the
+  // batch-scope check below needs the per-row batch, and asking twice would
+  // read the same join twice.
+  const resolved = await db.$queryRaw<ResolvedDispatchRow[]>`
+    SELECT p.asgn_id::text AS asgn_id, b.id::text AS batch_id, b.print_vndr::text AS print_vndr
     FROM pending_pool_entry p
     JOIN batch b ON b.id = p.batch
     WHERE p.asgn_id = ANY(${asgnUuids}::uuid[])
   `
-  if (vendors.length === 0) return emptyOpsResult('no_resolvable_dispatch')
+  if (resolved.length === 0) return emptyOpsResult('no_resolvable_dispatch')
+
+  // THE BATCH-SCOPE GATE, whole-file and BEFORE the inbox insert, so a refused
+  // file's hash is not burned: the corrected sheet, or even the same bytes
+  // re-sent without a batchId from the generic entry, still ingest.
+  //
+  // Strict on purpose, in both directions: a row resolving to a DIFFERENT batch
+  // is foreign, and a well-formed dispatch id resolving to NO batch at all is
+  // foreign too rather than left to per-row quarantine. On a batch-scoped
+  // upload the operator has named which batch this sheet is about, so a row
+  // that is not provably in that batch is a wrong sheet, not a row to park in
+  // Queues. A malformed target batch id takes the same answer: it cannot match
+  // anything, so nothing in the sheet can belong to it.
+  if (args.batchId !== undefined) {
+    let batchUuid: string | null = null
+    try {
+      batchUuid = toUuid(args.batchId)
+    } catch (err) {
+      if (!(err instanceof InvalidIdError)) throw err
+    }
+    if (
+      batchUuid === null ||
+      resolved.length < asgnUuids.length ||
+      resolved.some((r) => r.batch_id !== batchUuid)
+    ) {
+      return emptyOpsResult('foreign_dispatch')
+    }
+  }
+
+  const vendors = [...new Set(resolved.map((r) => r.print_vndr))]
   if (vendors.length > 1) return emptyOpsResult('mixed_vendors')
-  const printVndr = vendors[0]!.print_vndr
+  const printVndr = vendors[0]!
   if (printVndr === null) return emptyOpsResult('batch_has_no_vendor')
 
   const vndrId = fromUuid('vndr', printVndr)

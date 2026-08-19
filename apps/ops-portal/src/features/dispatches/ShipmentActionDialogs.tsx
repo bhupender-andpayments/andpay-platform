@@ -6,6 +6,7 @@ import { Button, ErrorNote, Field, Input, InfoNote } from '../../ui/primitives.j
 import { IconShield } from '../../ui/icons.js'
 import { SearchSelect } from '../../components/Picker.js'
 import { useToast } from '../../ui/Toast.js'
+import { COURIER_STATUSES } from '../dashboards/courierStatuses.js'
 import {
   Dialog,
   DialogContent,
@@ -37,16 +38,6 @@ import {
 // The timestamp is a datetime-local input rather than the raw text box the old
 // forms had ("2026-08-01T10:00" by hand): the browser's picker produces exactly
 // the format the edge accepts, and an operator cannot mistype a month.
-
-const KNOWN_STATUSES = [
-  'DISPATCHED_BY_VENDOR',
-  'PICKED_UP',
-  'IN_TRANSIT',
-  'OUT_FOR_DELIVERY',
-  'DELIVERED',
-  'FAILED',
-  'RETURNED',
-] as const
 
 interface ShipmentActionProps {
   shptId: string
@@ -108,7 +99,7 @@ export function CorrectStatusDialog({ shptId, awb, open, onOpenChange, onSaved }
               placeholder="Pick one…"
               value={status}
               onChange={setStatus}
-              options={KNOWN_STATUSES.map((s) => ({ value: s, label: s }))}
+              options={COURIER_STATUSES.map((s) => ({ value: s, label: s }))}
             />
           </Field>
         </div>
@@ -194,7 +185,7 @@ export function OverrideStatusDialog({ shptId, awb, open, onOpenChange, onSaved 
               placeholder="Pick one…"
               value={status}
               onChange={setStatus}
-              options={KNOWN_STATUSES.map((s) => ({ value: s, label: s }))}
+              options={COURIER_STATUSES.map((s) => ({ value: s, label: s }))}
             />
           </Field>
           <Field label="Override reason" htmlFor="override-reason" hint="Why the ladder is being bypassed.">

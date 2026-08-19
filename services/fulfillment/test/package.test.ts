@@ -163,9 +163,14 @@ describe('excelLinesFor (E1 membership, spec 2.1)', () => {
   })
 })
 
+// The batch every hand-made sheet in this describe belongs to. A real wire id,
+// because the Batch ID column ships the wire form the operator and the vendor
+// both quote back (D17), and a placeholder would not prove that.
+const SHEET_BTCH = newId('btch')
+
 describe('dispatchGroupXlsx (E1: two files, one sheet each, Dispatch ID column)', () => {
   it('produces one worksheet named for the group with the Dispatch ID header', async () => {
-    const buf = await dispatchGroupXlsx([line({ asgnId: 'asgn_x', soundbox: true })], 'SOUNDBOX')
+    const buf = await dispatchGroupXlsx([line({ asgnId: 'asgn_x', soundbox: true })], 'SOUNDBOX', SHEET_BTCH)
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
     expect(wb.worksheets.map((w) => w.name)).toEqual(['Soundbox'])
@@ -177,14 +182,41 @@ describe('dispatchGroupXlsx (E1: two files, one sheet each, Dispatch ID column)'
   it('both groups carry the IDENTICAL column set, as the vendor working file does', async () => {
     const l = line({ asgnId: 'asgn_x', soundbox: true, standeeCount: 1 })
     const a = new ExcelJS.Workbook()
-    await a.xlsx.load((await dispatchGroupXlsx([l], 'SOUNDBOX')) as unknown as Parameters<typeof a.xlsx.load>[0])
+    await a.xlsx.load((await dispatchGroupXlsx([l], 'SOUNDBOX', SHEET_BTCH)) as unknown as Parameters<typeof a.xlsx.load>[0])
     const b = new ExcelJS.Workbook()
-    await b.xlsx.load((await dispatchGroupXlsx([l], 'COLLATERAL')) as unknown as Parameters<typeof b.xlsx.load>[0])
+    await b.xlsx.load((await dispatchGroupXlsx([l], 'COLLATERAL', SHEET_BTCH)) as unknown as Parameters<typeof b.xlsx.load>[0])
     expect(a.worksheets[0]!.getRow(1).values).toEqual(b.worksheets[0]!.getRow(1).values)
   })
 
+  // D17: the vendor's sheet must name the batch it belongs to, on BOTH group
+  // files, because a print vendor holds several batches' files at once and the
+  // filename was the only thing that distinguished them. Asserting the header
+  // alone would pass on a column of blanks, so this pins the VALUE in every
+  // data row, which is what a lifted-out row has to carry.
+  it('both groups carry a Batch ID column holding the batch wire id in every row', async () => {
+    const lines = [
+      line({ asgnId: 'asgn_p', soundbox: true, standeeCount: 1 }),
+      line({ asgnId: 'asgn_q', soundbox: true, stickerCount: 2 }),
+    ]
+    for (const group of ['SOUNDBOX', 'COLLATERAL'] as const) {
+      const wb = new ExcelJS.Workbook()
+      await wb.xlsx.load(
+        (await dispatchGroupXlsx(lines, group, SHEET_BTCH)) as unknown as Parameters<typeof wb.xlsx.load>[0],
+      )
+      const ws = wb.worksheets[0]!
+      const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
+      // FIRST column: it is the coarsest key on the row, ahead of bank, branch
+      // and dispatch id, all of which live inside one batch.
+      expect(headers[0]).toBe('Batch ID')
+      expect(ws.rowCount).toBe(lines.length + 1)
+      for (let r = 2; r <= ws.rowCount; r++) {
+        expect(ws.getRow(r).getCell(headers.indexOf('Batch ID') + 1).text).toBe(SHEET_BTCH)
+      }
+    }
+  })
+
   it('a group with no member lines still yields a valid header-only workbook', async () => {
-    const buf = await dispatchGroupXlsx([line({ asgnId: 'a', soundbox: true })], 'COLLATERAL')
+    const buf = await dispatchGroupXlsx([line({ asgnId: 'a', soundbox: true })], 'COLLATERAL', SHEET_BTCH)
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
     expect(wb.worksheets[0]!.rowCount).toBe(1)
@@ -598,7 +630,7 @@ describe('assembleGroupPdf (two merged PDFs per batch, not three)', () => {
     expect(lines.map((l) => l.asgnId)).toEqual([a1.asgnWire, a2.asgnWire, z.asgnWire])
 
     const wb = new ExcelJS.Workbook()
-    await wb.xlsx.load((await dispatchGroupXlsx(lines, 'SOUNDBOX')) as unknown as Parameters<typeof wb.xlsx.load>[0])
+    await wb.xlsx.load((await dispatchGroupXlsx(lines, 'SOUNDBOX', btchWire)) as unknown as Parameters<typeof wb.xlsx.load>[0])
     const ws = wb.getWorksheet('Soundbox')!
     const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
     const col = (h: string): number => headers.indexOf(h) + 1

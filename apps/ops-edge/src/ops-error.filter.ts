@@ -106,7 +106,25 @@ export class OpsErrorFilter extends BaseExceptionFilter {
       return
     }
     if (exception.kind === 'conflict') {
-      res.status(HttpStatus.CONFLICT).json({ code: 'conflict', message: 'conflicting resource state' })
+      // The SAME reasons opt-in the 400 branch below uses, extended to 409 on
+      // 19 Aug 2026. A conflict is the one status where the operator's next move
+      // depends entirely on WHICH rule refused: send-to-vendor alone refuses for
+      // four different reasons with four different answers, and all four reached
+      // the screen as one generic "someone else changed it, reload" sentence,
+      // which was wrong for three of them and unactionable for the fourth.
+      //
+      // The disclosure rule is UNCHANGED and is why this is safe: the thrown
+      // `message` still never rides the response, and `safeReasons` rebuilds each
+      // entry field by field from a closed server-owned code enum. Read the note
+      // above OpsClientErrorReason before adding a field to it.
+      const conflictReasons = safeReasons(exception.reasons)
+      res
+        .status(HttpStatus.CONFLICT)
+        .json(
+          conflictReasons === undefined
+            ? { code: 'conflict', message: 'conflicting resource state' }
+            : { code: 'conflict', message: 'conflicting resource state', reasons: conflictReasons },
+        )
       return
     }
     const reasons = safeReasons(exception.reasons)

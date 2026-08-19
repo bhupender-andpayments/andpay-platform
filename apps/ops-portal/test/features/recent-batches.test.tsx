@@ -21,7 +21,8 @@ function batch(id: string, createdAt: string, over: Record<string, unknown> = {}
   // must answer what the server answers.
   return {
     id,
-    triggerReason: 'LOT_SIZE',
+    status: 'BATCHED',
+  triggerReason: 'LOT_SIZE',
     unitCount: 3,
     printVndr: null,
     triggeredByActor: null,

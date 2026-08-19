@@ -296,7 +296,11 @@ export class OpsReadController {
     // precisely so neither can resolve the press differently, or forget to.
     const xlsx = await buildDispatchGroupXlsx(this.deps.fulfillmentDb, btchId, group, 'ship')
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition', `attachment; filename="dispatch-${group}-${btchId}.xlsx"`)
+    // Batch id FIRST (18 Aug 2026, at the user's correction): several of these
+    // pile up in one Downloads folder across different batches, sorted
+    // alphabetically, and a btch_... id buried in the middle of the name is
+    // what read as "random" when trying to tell which files belong together.
+    res.setHeader('Content-Disposition', `attachment; filename="${btchId}-dispatch-${group.toLowerCase()}.xlsx"`)
     res.status(200).send(xlsx)
   }
 
@@ -322,7 +326,8 @@ export class OpsReadController {
       return
     }
     res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `attachment; filename="${collateralKey}-${btchId}.pdf"`)
+    // Batch id first, same reasoning as the Excel route above.
+    res.setHeader('Content-Disposition', `attachment; filename="${btchId}-${collateralKey.toLowerCase()}.pdf"`)
     res.status(200).send(Buffer.from(pdf))
   }
 }

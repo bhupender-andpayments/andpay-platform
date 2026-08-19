@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import ExcelJS from 'exceljs'
+import { newId } from '@andpay/ids'
 import { dispatchGroupXlsx } from '../src/package.js'
 import type { PackageLine } from '../src/package.js'
 import { parseReturnWorkbook } from '../src/return-sheet-adapter.js'
@@ -10,6 +11,11 @@ import { parseReturnWorkbook } from '../src/return-sheet-adapter.js'
 // IS the file that comes back (W-5). The adapter also learns the
 // untouched-row rule (a template row nobody filled is a skip, never an
 // error) and a Shipment Number synonym for AWB.
+
+// D17: the sheet names its own batch, so every builder call here needs one. It
+// is a real wire id rather than a placeholder string because the Batch ID cell
+// is what an operator pastes back into ops search.
+const BTCH = newId('btch')
 
 function line(overrides: Partial<PackageLine> = {}): PackageLine {
   return {
@@ -40,7 +46,7 @@ async function loadHeaders(buf: Buffer): Promise<{ ws: ExcelJS.Worksheet; header
 describe('dispatch Excel is its own return template (Task 7)', () => {
   it('dispatchGroupXlsx ends the header row with Device ID, AWB, Courier, empty in every data row', async () => {
     const lines = [line({ asgnId: 'asgn_1' }), line({ asgnId: 'asgn_2' })]
-    const buf = await dispatchGroupXlsx(lines, 'SOUNDBOX')
+    const buf = await dispatchGroupXlsx(lines, 'SOUNDBOX', BTCH)
     const { ws, headers, col } = await loadHeaders(buf)
     expect(headers.slice(-4)).toEqual(['Artifact Refs', 'Device ID', 'AWB', 'Courier'])
     for (let r = 2; r <= ws.rowCount; r++) {
@@ -52,7 +58,7 @@ describe('dispatch Excel is its own return template (Task 7)', () => {
 
   it('the Collateral sheet carries the same three blank columns', async () => {
     const lines = [line({ asgnId: 'asgn_1', soundbox: false, standeeCount: 1 })]
-    const buf = await dispatchGroupXlsx(lines, 'COLLATERAL')
+    const buf = await dispatchGroupXlsx(lines, 'COLLATERAL', BTCH)
     const { headers } = await loadHeaders(buf)
     expect(headers.slice(-4)).toEqual(['Artifact Refs', 'Device ID', 'AWB', 'Courier'])
   })
@@ -64,7 +70,7 @@ describe('dispatch Excel is its own return template (Task 7)', () => {
   // than trusting it.
   it('the grid wording of the count columns still round-trips through the return parser', async () => {
     const lines = [line({ asgnId: 'asgn_1', soundbox: false, standeeCount: 2, stickerCount: 1 })]
-    const buf = await dispatchGroupXlsx(lines, 'COLLATERAL', 'GRID_3X2')
+    const buf = await dispatchGroupXlsx(lines, 'COLLATERAL', BTCH, 'GRID_3X2')
     const { headers } = await loadHeaders(buf)
     expect(headers).toContain('Standee Count (already imposed)')
     expect(headers).toContain('Sticker Count (already imposed)')
@@ -75,7 +81,7 @@ describe('dispatch Excel is its own return template (Task 7)', () => {
   })
 
   it('leaves the count columns BARE under ONE_PER_PAGE, where the vendor really does own the count', async () => {
-    const buf = await dispatchGroupXlsx([line({ asgnId: 'asgn_1', soundbox: false, standeeCount: 2 })], 'COLLATERAL')
+    const buf = await dispatchGroupXlsx([line({ asgnId: 'asgn_1', soundbox: false, standeeCount: 2 })], 'COLLATERAL', BTCH)
     const { headers } = await loadHeaders(buf)
     expect(headers).toContain('Standee Count')
     expect(headers).toContain('Sticker Count')
@@ -142,7 +148,7 @@ describe('dispatch Excel is its own return template (Task 7)', () => {
       line({ asgnId: 'asgn_2', bankReferenceCode: 'B' }),
       line({ asgnId: 'asgn_3', bankReferenceCode: 'C' }),
     ]
-    const buf = await dispatchGroupXlsx(lines, 'SOUNDBOX')
+    const buf = await dispatchGroupXlsx(lines, 'SOUNDBOX', BTCH)
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
     const ws = wb.worksheets[0]!
@@ -173,7 +179,7 @@ describe('dispatch Excel is its own return template (Task 7)', () => {
       line({ asgnId: 'asgn_g1', bankReferenceCode: 'A', soundbox: false, standeeCount: 2, stickerCount: 1 }),
       line({ asgnId: 'asgn_g2', bankReferenceCode: 'B', soundbox: false, standeeCount: 1, stickerCount: 0 }),
     ]
-    const buf = await dispatchGroupXlsx(lines, 'COLLATERAL', 'GRID_3X2')
+    const buf = await dispatchGroupXlsx(lines, 'COLLATERAL', BTCH, 'GRID_3X2')
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
     const ws = wb.worksheets[0]!

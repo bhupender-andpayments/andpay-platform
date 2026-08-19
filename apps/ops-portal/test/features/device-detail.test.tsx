@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -110,11 +110,24 @@ describe('DeviceDetailPage', () => {
     expect(screen.getByText(/only moves forward/i)).toBeTruthy()
     // The whole spine renders, reached and future alike, so the operator sees
     // what is left as well as what is done. PRINTED displays as a place, not a
-    // thing that happened to paper. Activated is the ladder's end for a
-    // device: a rail rung read off the activation axis, not a status.
-    for (const label of ['In stock', 'Allocated', 'At print vendor', 'Delivered', 'Activated']) {
+    // thing that happened to paper.
+    for (const label of ['In stock', 'At print vendor', 'Delivered']) {
       expect(screen.getByText(label)).toBeTruthy()
     }
+    // AND NO ALLOCATED RUNG (19 Aug 2026). Nothing ever wrote that status, so a
+    // rail that draws every earlier rung as reached was putting a green tick on a
+    // stage this device had skipped. It is out of the domain spine now, not just
+    // out of this rail.
+    expect(screen.queryByText('Allocated')).toBeNull()
+    // AND NOT AN ACTIVATED RUNG (19 Aug 2026). It was one until a demo showed
+    // what that costs: an activated device whose delivery was still outstanding
+    // drew "Delivered (not reached) -> Activated (done)", which is not a
+    // sequence, and it contradicted the Change status dialog on this same page,
+    // which correctly refuses to offer ACTIVATED at all. The axis is a header
+    // pill now, asserted below.
+    const rail = within(screen.getByRole('list', { name: /lifecycle rail/i }))
+    expect(rail.queryByText('Activated')).toBeNull()
+    expect(rail.queryByText(/not activated/i)).toBeNull()
     // "Dispatched" is deliberately on screen more than once: the header pill,
     // the current rung, and the Activity card's current-status fact.
     expect(screen.getAllByText('Dispatched').length).toBeGreaterThanOrEqual(2)
@@ -128,8 +141,34 @@ describe('DeviceDetailPage', () => {
     expect(screen.getByText('Assignment')).toBeTruthy()
     expect(screen.getByText('Activity')).toBeTruthy()
     // Activation is its own axis, reported here rather than as a rung.
-    expect(screen.getByText(/not activated/i)).toBeTruthy()
+    expect(screen.getAllByText(/not activated/i).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: /mark damaged/i })).toBeNull()
+  })
+
+  // THE ACTIVATION AXIS, AS A HEADER PILL beside the status pill, matching the
+  // inventory table's two columns (19 Aug 2026). Two pills, because the two
+  // facts are independent: a device can be activated and not yet delivered, or
+  // delivered and not yet activated, and one of those is a real worklist.
+  it('reports activation as its own pill next to the status pill', async () => {
+    stub()
+    renderAt('unit_1', { row: ROW })
+    await screen.findAllByText('9990000001001')
+
+    // ROW is DISPATCHED with activatedAt null, so the pair reads exactly that.
+    const pills = screen.getAllByText(/not activated|dispatched/i).filter((el) => el.className.includes('pill'))
+    expect(pills.map((p) => p.textContent)).toEqual(['Not activated', 'Dispatched'])
+  })
+
+  it('an activated device shows the positive pill, whatever its delivery status is', async () => {
+    stub()
+    renderAt('unit_1', { row: { ...ROW, activatedAt: '2026-08-19T01:39:00.000Z' } })
+    await screen.findAllByText('9990000001001')
+
+    const pill = screen.getAllByText('Activated').find((el) => el.className.includes('pill'))
+    expect(pill).toBeTruthy()
+    // Still DISPATCHED on the delivery axis: activating moved nothing there.
+    expect(within(screen.getByRole('list', { name: /lifecycle rail/i })).queryByText('Activated')).toBeNull()
+    expect(screen.getAllByText('Dispatched').length).toBeGreaterThanOrEqual(2)
   })
 
   it('a DAMAGED device shows the terminal stop, in plain words and with no release jargon', async () => {
@@ -156,14 +195,18 @@ describe('DeviceDetailPage', () => {
     // sits, but only the forward moves are choosable: the stages already
     // behind it (through DISPATCHED, its current one) are present and
     // disabled, because a device never moves back.
+    // Three disabled (In stock, At print vendor, and Dispatched as the current
+    // one), three choosable. It was four and three until ALLOCATED was removed
+    // from the spine on 19 Aug 2026: nothing ever wrote it, and the rail was
+    // ticking it green on devices that had skipped straight to the print vendor.
     expect(options.map((o) => o.getAttribute('aria-disabled') === 'true')).toEqual([
-      true, true, true, true, false, false, false,
+      true, true, true, false, false, false,
     ])
     expect(options.filter((o) => o.getAttribute('aria-disabled') !== 'true').map((o) => o.textContent)).toEqual([
       'Delivered', 'Damaged', 'Returned',
     ])
     // The current rung says so rather than merely being greyed.
-    expect(options[3]!.textContent).toContain('current')
+    expect(options[2]!.textContent).toContain('current')
   })
 
   it('a terminal device (DAMAGED) has no edit control at all', async () => {

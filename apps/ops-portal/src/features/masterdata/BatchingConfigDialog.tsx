@@ -3,6 +3,7 @@ import {
   getBankMasters,
   setBatchingConfig,
   type BankMasterRow,
+  type BatchingConfigRow,
   type BatchingConfigSetBody,
 } from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
@@ -83,18 +84,50 @@ export function hoursToSeconds(value: string): number | null {
   return seconds
 }
 
+/**
+ * The inverse of hoursToSeconds, for seeding the hours field from a stored
+ * row's seconds. Formats to at most 2 decimal places and trims a trailing
+ * ".00"/".50"-style zero run, so 1800 seeds "0.5" rather than "0.5000...".
+ */
+function secondsToHours(seconds: number): string {
+  return String(Math.round((seconds / 3600) * 100) / 100)
+}
+
 export function BatchingConfigDialog({
   open,
   onOpenChange,
   onCreated,
+  existing,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: () => void
+  /**
+   * Edit mode (18 Aug 2026), seeded from a clicked row. Needs no new backend
+   * work: the create route is already an upsert on (tenantWire, programWire,
+   * bankReferenceCode), so an edit is just a re-post of that same scope's key
+   * with new values. The scope itself is LOCKED while editing (the Scope
+   * select below is disabled): changing which fields are present would target
+   * a DIFFERENT upsert key and silently create a second row rather than
+   * updating this one.
+   */
+  existing?: BatchingConfigRow
 }) {
   const { client } = useAuth()
   const { toast } = useToast()
-  const { f, set, setValue, saving, error, save } = useCreateDialog(open)
+  const { f, set, setValue, saving, error, save } = useCreateDialog(
+    open,
+    existing === undefined
+      ? undefined
+      : () => ({
+          tier: existing.scope,
+          tenantWire: existing.tenantWire ?? '',
+          programWire: existing.programWire ?? '',
+          bankReferenceCode: existing.bankReferenceCode ?? '',
+          minLotSize: String(existing.minLotSize),
+          maxWaitHours: existing.maxWaitSeconds === null ? '' : secondsToHours(existing.maxWaitSeconds),
+        }),
+  )
   const [banks, setBanks] = useState<readonly BankMasterRow[]>([])
 
   // The tenant list is the bank-master list: a tenant IS a bank partner here.
@@ -143,17 +176,25 @@ export function BatchingConfigDialog({
       const result = await setBatchingConfig(client, body, newIdempotencyKey())
       onOpenChange(false)
       onCreated()
-      toast(result.deduped ? 'That batching tier was already set' : 'Batching tier set')
-    }, 'Failed to set the batching tier.')
+      toast(
+        result.deduped
+          ? 'That batching tier was already set'
+          : existing === undefined
+            ? 'Batching tier set'
+            : 'Batching tier updated',
+      )
+    }, existing === undefined ? 'Failed to set the batching tier.' : 'Failed to save this batching tier.')
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Set batching tier</DialogTitle>
+          <DialogTitle>{existing === undefined ? 'Set batching tier' : 'Edit batching tier'}</DialogTitle>
           <DialogDescription>
-            Minimum lot size and maximum wait, per scope. Setting a scope that already has a row replaces its values.
+            {existing === undefined
+              ? 'Minimum lot size and maximum wait, per scope. Setting a scope that already has a row replaces its values.'
+              : 'The scope is fixed to what it already is; only its values change.'}
           </DialogDescription>
         </DialogHeader>
         {error !== null && <ErrorNote>{error}</ErrorNote>}
@@ -163,6 +204,7 @@ export function BatchingConfigDialog({
             <Select
               id="bc-tier"
               value={tier}
+              disabled={existing !== undefined}
               onChange={(e) => {
                 setValue('tier', e.target.value)
               }}
@@ -180,6 +222,7 @@ export function BatchingConfigDialog({
               <Select
                 id="bc-tenant"
                 value={f('tenantWire')}
+                disabled={existing !== undefined}
                 onChange={(e) => {
                   setValue('tenantWire', e.target.value)
                 }}
@@ -200,7 +243,7 @@ export function BatchingConfigDialog({
               htmlFor="bc-program"
               hint="The prog_ id. There is no program master to pick from yet."
             >
-              <Input id="bc-program" value={f('programWire')} onChange={set('programWire')} placeholder="prog_..." />
+              <Input id="bc-program" value={f('programWire')} onChange={set('programWire')} placeholder="prog_..." disabled={existing !== undefined} />
             </Field>
           )}
 
@@ -210,7 +253,7 @@ export function BatchingConfigDialog({
               htmlFor="bc-bank"
               hint="The aggregator code as it appears on the partner's request file rows."
             >
-              <Input id="bc-bank" value={f('bankReferenceCode')} onChange={set('bankReferenceCode')} />
+              <Input id="bc-bank" value={f('bankReferenceCode')} onChange={set('bankReferenceCode')} disabled={existing !== undefined} />
             </Field>
           )}
 

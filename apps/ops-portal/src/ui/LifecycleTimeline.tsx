@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { fmtDateTime } from './format.js'
+import { EmptyState } from './primitives.js'
 
 // THE ONE LIFECYCLE TIMELINE, shared by the device, the dispatch and the
 // shipment. Extracted from DeviceDetailPage, where it was inline, because three
@@ -98,6 +99,7 @@ export function LifecycleTimeline({
   stages,
   terminal = null,
   emptyMessage = 'No events recorded yet.',
+  emptyTitle,
 }: {
   stages: readonly TimelineStage[]
   terminal?: TimelineTerminal | null
@@ -106,8 +108,16 @@ export function LifecycleTimeline({
    * sentence rather than as a blank panel.
    */
   emptyMessage?: string
+  /**
+   * Renders the shared CENTERED EmptyState instead of a left-aligned sentence
+   * (18 Aug 2026, at the user's correction: an empty card next to a full one
+   * read as unfinished rather than as an answer). Omit it and the plain
+   * sentence is kept, which is what a mid-load "Loading…" line wants.
+   */
+  emptyTitle?: string
 }) {
   if (stages.length === 0 && terminal === null) {
+    if (emptyTitle !== undefined) return <EmptyState title={emptyTitle} message={emptyMessage} />
     return <p className="text-[13px] text-muted-foreground">{emptyMessage}</p>
   }
 

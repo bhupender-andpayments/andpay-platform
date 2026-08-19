@@ -40,6 +40,20 @@ export const IconUploads = (p: P) => (
 export const IconOperations = (p: P) => (
   <svg {...base(p)}><circle cx="12" cy="12" r="3" /><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M19 5l-2 2M7 17l-2 2" /></svg>
 )
+// The Platform overview section (19 Aug 2026). An open book: the page is the one
+// thing in the console that explains rather than reports, so it should not reuse
+// a glyph that means "a list of records".
+export const IconGuide = (p: P) => (
+  <svg {...base(p)}><path d="M12 6.5S10 5 7 5H4v13h3c3 0 5 1.5 5 1.5s2-1.5 5-1.5h3V5h-3c-3 0-5 1.5-5 1.5Z" /><path d="M12 6.5v13" /></svg>
+)
+// The Shipments section (19 Aug 2026, when the carrier view stopped being a tab
+// on Dispatches and became a route). A delivery van: the section answers "where
+// is this parcel", and the courier is the actor in every one of its rows. Kept
+// visually distinct from IconFulfillment's parcel, which is the THING moving,
+// and from IconOperations, which the dispatch list already owns.
+export const IconTruck = (p: P) => (
+  <svg {...base(p)}><path d="M3 7h11v9H3z" /><path d="M14 10h4l3 3v3h-7" /><circle cx="7" cy="18" r="1.6" /><circle cx="17" cy="18" r="1.6" /></svg>
+)
 // P2-2: the Fulfillment section (pool -> batch -> shipment). A parcel reads as
 // the physical thing those three states describe.
 export const IconFulfillment = (p: P) => (

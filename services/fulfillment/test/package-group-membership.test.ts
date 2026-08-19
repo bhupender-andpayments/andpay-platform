@@ -174,7 +174,7 @@ describe('A both-products COLLATERAL line composes BOTH artifacts (T7.3 guard)',
       ],
     })
     const wb = new ExcelJS.Workbook()
-    const buf = await dispatchGroupXlsx([both], 'COLLATERAL')
+    const buf = await dispatchGroupXlsx([both], 'COLLATERAL', newId('btch'))
     await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
     const ws = wb.worksheets[0]!
     const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)

@@ -1,41 +1,47 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Package, Timer, Upload } from 'lucide-react'
-import { fmtWait } from './BatchingRules.js'
+import { Boxes, CheckCircle2, Package, RefreshCw, Send, Upload } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
-import { BatchablePools } from './BatchablePools.js'
-import { BatchPreviewCard } from './BatchPreviewCard.js'
-import { resolveGlobalRule } from './BatchingRules.js'
-import { PoolEntryActions } from './PoolEntryActions.js'
-import { DispatchGroupBadge } from './DispatchGroupBadge.js'
 import {
   getBatches,
-  getBatchingConfig,
-  getPoolEntries,
   getVendors,
-  type BatchingConfigRow,
+  sendBatchToVendor,
   type BatchRow,
-  type PoolEntryRow,
   type VendorRow,
 } from '../../api/endpoints.js'
-import { PageHeader, Card, CardHeader, Button, ErrorNote, CodeChip } from '../../ui/primitives.js'
-import { fmtDateTime, fmtNumber } from '../../ui/format.js'
-import { usePagePoll } from '../../lib/usePagePoll.js'
+import { newIdempotencyKey } from '../../api/idempotency.js'
+import { sendToVendorErrorMessage } from './sendToVendorError.js'
+import {
+  PageHeader,
+  Card,
+  CardHeader,
+  Button,
+  ErrorNote,
+  CodeChip,
+  Field,
+  Input,
+  StatusPill,
+  Toolbar,
+} from '../../ui/primitives.js'
+import { SearchSelect } from '../../components/Picker.js'
+import { StatTiles, type StatTileDef } from '../../ui/StatTiles.js'
+import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import { BATCH_STATUSES } from './batchStatuses.js'
+import { fmtDateTime, fmtNumber, statusMeta } from '../../ui/format.js'
 
-// The Batches section: what is waiting to be batched, the rules that decide when
-// it batches itself, and the batches already formed. A batch's own contents are
-// NOT here; they are on /batches/:btchId, which is where the collateral and the
-// vendor Excel are generated from.
+// The Batches section: the batches already formed, and what an operator does to
+// them. What is WAITING to be batched lives at /pool since 18 Aug 2026 (decision
+// D14). A batch's own contents are on /batches/:btchId, which is where the
+// collateral and the vendor Excel are generated from.
 //
-// WHAT THIS PAGE DELIBERATELY DOES NOT SHOW.
-//
-// No batch status column. `batch.status` was dropped from the schema on purpose
-// (migration 20260810040000_drop_batch_status) because it only ever held one
-// value, and the state a batch really passes through belongs to its records:
-// dispatch_state advances to SENT_TO_VENDOR automatically as soon as the batch
-// fact is consumed and the package composes. A column repeating that on every
-// row teaches an operator to ignore a field.
+// THE STATUS COLUMN IS BACK, and it is worth saying why, because this file used
+// to argue the opposite. batch.status was dropped in August because it was
+// write-once and read-never: every batch held the same word, so a pill showing it
+// on every row taught an operator to ignore a field. As of 18 Aug 2026 a batch
+// has a real three-state lifecycle with three named writers (the trigger, the
+// send action, the close action), so the pill now distinguishes rows from each
+// other and is what the filters and tiles above the table act on.
 //
 // No dispatch IDs. A batch row is a batch; its Dispatch IDs are what you open it
 // to see. Listing them here made the batch list unreadable at any real volume.
@@ -45,52 +51,63 @@ import { usePagePoll } from '../../lib/usePagePoll.js'
 // available to render. An operator who needs the ship view downloads the
 // dispatch Excel from inside the batch.
 
-// How often the page re-reads itself while it is open. Slow enough to be
-// invisible, fast enough that a bank file committed seconds ago shows up
-// without anyone reaching for the browser reload. See the poll effect below
-// for why a page that fetches on mount still needs this.
-const POLL_INTERVAL_MS = 8_000
-
-function kit(row: { soundbox: boolean; standeeCount: number; stickerCount: number }): string {
-  const parts: string[] = []
-  if (row.soundbox) parts.push('Soundbox')
-  if (row.standeeCount > 0) parts.push(`${row.standeeCount} standee`)
-  if (row.stickerCount > 0) parts.push(`${row.stickerCount} sticker`)
-  return parts.length > 0 ? parts.join(', ') : '-'
-}
-
-/**
- * The lot size that governs one specific pool, at the service's own precedence:
- * (tenant, program), then tenant, then global, then the platform default.
- *
- * It falls back to the same default `BatchingRules` displays rather than
- * reporting "not configured". The two sit inches apart on this page and an
- * operator reading "minimum lot 50" beside "no lot size configured" has been
- * told two different things about one rule.
- */
-function makeLotSizeFor(configs: readonly BatchingConfigRow[] | null) {
-  const globalRule = resolveGlobalRule(configs)
-  return (tenantId: string, programId: string): number =>
-    configs?.find((c) => c.scope === 'TENANT_PROGRAM' && c.tenantWire === tenantId && c.programWire === programId)
-      ?.minLotSize ??
-    configs?.find((c) => c.scope === 'TENANT' && c.tenantWire === tenantId)?.minLotSize ??
-    globalRule.minLotSize
-}
+// A batch still in flight: formed and not yet closed. The Batches page opens on
+// these, because they are the ones with something left to do.
+const ACTIVE_BATCH_STATUSES: readonly string[] = ['BATCHED', 'SENT_TO_PRINT_VENDOR']
 
 export function FulfillmentPage() {
   const { client } = useAuth()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
 
-  // The pool dialog lives here so the page can open on the summary and the
-  // batches list, and the pool is one click away.
-  const [pool, setPool] = useState<PoolEntryRow[]>([])
   const [batches, setBatches] = useState<BatchRow[]>([])
-  const [configs, setConfigs] = useState<BatchingConfigRow[] | null>(null)
   const [vendors, setVendors] = useState<readonly VendorRow[]>([])
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+
+  // The batch an operator has asked to send, held until they confirm. One at a
+  // time by construction: a single slot cannot hold two open dialogs.
+  const [sending, setSending] = useState<BatchRow | null>(null)
+  const [sendBusy, setSendBusy] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+
+  // Filters live in the URL, the idiom DispatchesPage and InventoryPage already
+  // use: a filtered batches list is a thing operators send each other.
+  //
+  // THE DEFAULT IS THE LIVE WORK: batched plus sent to print vendor, which is
+  // every batch still in flight. Closed batches are history and are one click
+  // away. Opening on BATCHED alone was tried and hid the runs already with the
+  // vendor, which are the ones an operator chases.
+  //
+  // Three shapes share one param, and the empty string cannot be one of them:
+  // an absent param means the default pair, so writing '' to mean "everything"
+  // would immediately read back as the default and the All batches tile could
+  // never be selected. Hence the explicit 'all' sentinel.
+  //
+  //   absent            the default pair (batched and sent)
+  //   'all'             no status filter at all
+  //   'BATCHED', ...    exactly those, comma separated
+  const statusParam = searchParams.get('status') ?? ''
+  const selectedStatuses: readonly string[] =
+    statusParam === ''
+      ? ACTIVE_BATCH_STATUSES
+      : statusParam === 'all'
+        ? []
+        : statusParam.split(',').filter((s) => s !== '')
+  const q = searchParams.get('q') ?? ''
+  const from = searchParams.get('from') ?? ''
+  const to = searchParams.get('to') ?? ''
+
+  const setParam = useCallback(
+    (key: string, value: string): void => {
+      const next = new URLSearchParams(searchParams)
+      if (value === '') next.delete(key)
+      else next.set(key, value)
+      setSearchParams(next, { replace: true })
+    },
+    [searchParams, setSearchParams],
+  )
 
 
   // `quiet` is a BACKGROUND re-read: same fetch, but it leaves `loading` alone
@@ -107,16 +124,9 @@ export function FulfillmentPage() {
     try {
       // All four are on screen, so all four are fetched, in parallel: they are
       // independent reads and serialising them would make the page four times as
-      // slow for no reason.
-      // POOLED, not the whole table (16 Aug 2026 UAT). The empty filter returned
-      // every entry ever committed, so once a batch claimed its records they
-      // stayed in "View pool" complete with the batch id they had just been
-      // claimed into. A pool is what is STILL WAITING; a row that has been
-      // batched has left it, and its home is the Batches grid below.
-      // HELD rows are worked in Queues, which is where accepting one puts it
-      // back into this pool.
-      const [poolRows, batchRows] = await Promise.all([getPoolEntries(client, 'POOLED'), getBatches(client)])
-      setPool(poolRows)
+      // ONE read now: the pool moved to its own page, so this page wants the
+      // batches and nothing else.
+      const batchRows = await getBatches(client)
       setBatches(batchRows)
     } catch (err) {
       if (!quiet) setLoadError(err instanceof Error ? err.message : 'Failed to load.')
@@ -129,35 +139,19 @@ export function FulfillmentPage() {
     void load()
   }, [load])
 
-  // THE POOL ARRIVES AFTER THE UPLOAD RESPONSE DOES, so one fetch on mount is
-  // not enough and never was. pending_pool_entry is written in exactly one
-  // place, projectDemandFact (services/fulfillment/src/pool.ts), which runs in
-  // the fulfillment CONSUMER when it takes the assignment fact off Kafka:
+  // ONE FETCH ON MOUNT, no background poll (18 Aug 2026, at the user's
+  // explicit correction: a page must not keep re-hitting its endpoint on its
+  // own). A batch forming or being sent is always something THIS operator just
+  // did in THIS tab, and every action that changes the list already calls
+  // `load()` itself; there is no case here, unlike Pool's cross-tab bank
+  // upload, where data can land from outside this session while the page sits
+  // open. The explicit Refresh button in the header covers the rest.
   //
-  //   ops-edge commit -> TMS rows + outbox (one tx) -> relay poll (2s default,
-  //   DEFAULT_TICK_SECONDS) -> Kafka -> consumer -> INSERT
-  //
-  // That is a few seconds behind the commit an operator just watched succeed.
-  // Walk straight here from the bank upload and the mount fetch runs BEFORE the
-  // consumer has projected anything, so the page truthfully reports an empty
-  // pool and stays that way until a manual browser reload, which was the whole
-  // reported bug. Reading once more on mount would not have helped; the page
-  // has to notice records that land while it is already open. The hook's
-  // settle burst matters here specifically: its ~2s/4s re-reads track the
-  // relay's own 2s tick, so the rows appear while the operator is still
-  // looking at the empty state, not eight seconds after they gave up on it.
-  usePagePoll(() => void load(true), POLL_INTERVAL_MS)
-
-  // The rules and the vendor roster are loaded separately and deliberately
-  // silently: neither is the thing this page is for, and a config read that
-  // fails must cost the rules panel, not the pool an operator came to act on.
+  // The vendor roster loads separately and deliberately silently: it only turns
+  // a vendor id into a name, so a read that fails must cost the Print vendor
+  // column its niceness, never the batches an operator came to act on.
   useEffect(() => {
     let cancelled = false
-    getBatchingConfig(client)
-      .then((rows) => {
-        if (!cancelled && Array.isArray(rows)) setConfigs(rows)
-      })
-      .catch(() => {})
     getVendors(client)
       .then((rows) => {
         if (!cancelled && Array.isArray(rows)) setVendors(rows)
@@ -168,26 +162,108 @@ export function FulfillmentPage() {
     }
   }, [client])
 
-  const rule = resolveGlobalRule(configs)
-  const lotSizeFor = makeLotSizeFor(configs)
 
-  // BatchablePools owns a SECOND, independent read of the same endpoint for its
-  // trigger strip. Without this the poll above would refresh the table while
-  // the count beside it stayed on the pool from before, and one card would
-  // contradict itself. `reloadKey` is the seam the component already documents
-  // for exactly this, and it is a prop rather than a React `key` so a
-  // half-typed trigger reason survives the refresh.
+  // TILES ARE BACK (18 Aug 2026, decision D9), reversing the 2026-08-15 ruling
+  // that removed them. That ruling was right about the page it judged: every
+  // number a tile showed was already on screen once, so the band was
+  // redundant. What changed is that batches now have a LIFECYCLE, so the
+  // counts are no longer restatements of one pool countdown, they are the
+  // shape of a worklist: how many batches are waiting to be sent, how many are
+  // with the vendor, how many are done. And per StatTiles' own design intent,
+  // the tiles ARE the filter: clicking one is how an operator narrows the grid.
   //
-  // A fingerprint, not the tick count: the strip re-reads when the pool has
-  // actually CHANGED, not every eight seconds regardless.
-  const poolFingerprint = `${String(pool.length)}:${pool.at(-1)?.asgnId ?? ''}`
+  // Derived in the browser from the rows already fetched, never a second read.
+  const dateFiltered = useMemo(() => {
+    return batches.filter((b) => {
+      const day = b.createdAt.slice(0, 10)
+      if (from !== '' && day < from) return false
+      if (to !== '' && day > to) return false
+      return true
+    })
+  }, [batches, from, to])
 
-  // NO STAT TILES ON THIS PAGE (2026-08-15 ruling). The Inventory-style summary
-  // row was tried and removed: everything it said was already on screen once -
-  // "waiting" is the pool card's own 12/50, "batches formed" heads the grid one
-  // scroll below, and the held/batched slices are rows in View pool. A summary
-  // band earns its space on a page that aggregates MANY things; this page runs
-  // one pipeline and shows each stage exactly once.
+  const countByStatus = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const b of dateFiltered) counts.set(b.status, (counts.get(b.status) ?? 0) + 1)
+    return counts
+  }, [dateFiltered])
+
+  const tiles: StatTileDef[] = [
+    {
+      key: 'all',
+      label: 'All batches',
+      hint: 'formed in this window',
+      icon: Boxes,
+      tone: 'text-muted-foreground',
+      chip: 'bg-muted',
+      value: dateFiltered.length,
+    },
+    {
+      key: 'BATCHED',
+      label: 'Batched',
+      hint: 'waiting to be sent',
+      icon: Package,
+      tone: 'text-amber-600',
+      chip: 'bg-amber-500/10',
+      value: countByStatus.get('BATCHED') ?? 0,
+    },
+    {
+      key: 'SENT_TO_PRINT_VENDOR',
+      label: 'Sent to print vendor',
+      hint: 'with the vendor now',
+      icon: Send,
+      tone: 'text-sky-600',
+      chip: 'bg-sky-500/10',
+      value: countByStatus.get('SENT_TO_PRINT_VENDOR') ?? 0,
+    },
+    {
+      key: 'CLOSED',
+      label: 'Closed',
+      hint: 'every dispatch settled',
+      icon: CheckCircle2,
+      tone: 'text-emerald-600',
+      chip: 'bg-emerald-500/10',
+      value: countByStatus.get('CLOSED') ?? 0,
+    },
+  ]
+
+  // The grid's own rows: the date window, then the status, then the text. Text
+  // stays client-side here (the whole list is already in memory) and covers the
+  // three things an operator has in hand: a batch id, a vendor name, a trigger.
+  const visibleBatches = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    return dateFiltered.filter((b) => {
+      if (selectedStatuses.length > 0 && !selectedStatuses.includes(b.status)) return false
+      if (needle === '') return true
+      return (
+        b.id.toLowerCase().includes(needle) ||
+        b.triggerReason.toLowerCase().includes(needle) ||
+        vendorName(b.printVndr).toLowerCase().includes(needle)
+      )
+    })
+    // `vendors` is in the list because the search matches on vendor NAME through
+    // vendorName, so a roster that arrives after the first render has to
+    // re-filter. Without it a batch stays unfindable by its vendor's name until
+    // some unrelated re-render happens to fix it.
+  }, [dateFiltered, statusParam, q, vendors])
+
+  async function confirmSend(): Promise<void> {
+    const batch = sending
+    if (batch === null) return
+    setSendBusy(true)
+    setSendError(null)
+    try {
+      await sendBatchToVendor(client, batch.id, newIdempotencyKey())
+      setSending(null)
+      await load()
+    } catch (err) {
+      // Same wording as the batch detail page's own send action: one refusal, one
+      // explanation, wherever the operator pressed the button.
+      setSendError(sendToVendorErrorMessage(err, 'Could not send this batch.'))
+    } finally {
+      setSendBusy(false)
+    }
+  }
 
   // A vendor id is not an answer to "who is printing this". The roster is
   // already fetched, so the row shows the name and keeps the id out of sight.
@@ -196,42 +272,6 @@ export function FulfillmentPage() {
     return vendors.find((v) => v.id === id)?.displayName ?? id
   }
 
-  const poolColumns: GridColumn<PoolEntryRow>[] = [
-    {
-      key: 'asgnId',
-      header: 'Dispatch ID',
-      cell: (r) => (
-        <span className="flex items-center gap-2">
-          <CodeChip>{r.asgnId}</CodeChip>
-          <DispatchGroupBadge group={r.dispatchGroup} />
-        </span>
-      ),
-      sortValue: (r) => r.asgnId,
-    },
-    { key: 'merchant', header: 'Merchant', cell: (r) => r.merchantDisplayName, sortValue: (r) => r.merchantDisplayName },
-    {
-      key: 'bank',
-      header: 'Bank',
-      cell: (r) => `${r.bankDisplayName} (${r.bankReferenceCode})`,
-      sortValue: (r) => r.bankReferenceCode,
-    },
-    { key: 'branch', header: 'Branch', cell: (r) => r.branchCode ?? '-', sortValue: (r) => r.branchCode ?? '' },
-    { key: 'kit', header: 'Kit', cell: (r) => kit(r) },
-    // NO Pool Status, Dispatch State or Batch column (16 Aug 2026 UAT). Every
-    // row here is POOLED by construction now, so a Pool Status column repeated
-    // one word down the whole table, and Dispatch State said nothing a row can
-    // have reached before it is batched. Batch was the worst of the three: it
-    // could only ever read "not batched", and while this list still carried
-    // claimed rows it printed the id of a batch that did not exist when the row
-    // was pooled, which reads as a batch id existing before its batch.
-    {
-      // The action sits on the row it acts on.
-      key: 'actions',
-      header: '',
-      cell: (r) => <PoolEntryActions row={r} onChanged={() => void load()} />,
-    },
-    { key: 'createdAt', header: 'Pooled At', cell: (r) => fmtDateTime(r.createdAt), sortValue: (r) => r.createdAt },
-  ]
 
   const batchColumns: GridColumn<BatchRow>[] = [
     {
@@ -247,11 +287,45 @@ export function FulfillmentPage() {
       ),
       sortValue: (r) => r.id,
     },
+    // The stored batch lifecycle. Sorted by its LADDER position, not
+    // alphabetically, so sorting walks Batched, Sent, Closed.
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (r) => <StatusPill value={r.status} />,
+      sortValue: (r) => {
+        const at = BATCH_STATUSES.indexOf(r.status as (typeof BATCH_STATUSES)[number])
+        return at === -1 ? BATCH_STATUSES.length : at
+      },
+    },
     // The STORED batch.unit_count the batching PM maintains, never recomputed.
     { key: 'unitCount', header: 'Records', cell: (r) => fmtNumber(r.unitCount), sortValue: (r) => r.unitCount },
     { key: 'printVndr', header: 'Print vendor', cell: (r) => vendorName(r.printVndr), sortValue: (r) => vendorName(r.printVndr) },
     { key: 'triggerReason', header: 'Trigger', cell: (r) => r.triggerReason, sortValue: (r) => r.triggerReason },
     { key: 'createdAt', header: 'Formed', cell: (r) => fmtDateTime(r.createdAt), sortValue: (r) => r.createdAt },
+    {
+      // Offered only while the batch is BATCHED, because that is the only state
+      // the action is legal in. The server refuses the rest with a 409 anyway;
+      // this keeps the operator from having to learn that by being told no.
+      key: 'actions',
+      header: '',
+      cell: (r) =>
+        r.status === 'BATCHED' ? (
+          <Button
+            variant="secondary"
+            aria-label={`Send batch ${r.id} to the print vendor`}
+            onClick={(e) => {
+              // The row itself navigates into the batch, so an action inside it
+              // must not also fire that.
+              e.stopPropagation()
+              setSendError(null)
+              setSending(r)
+            }}
+          >
+            <Send className="size-4" aria-hidden="true" /> Send to print vendor
+          </Button>
+        ) : null,
+    },
   ]
 
   return (
@@ -260,56 +334,34 @@ export function FulfillmentPage() {
         title="Batches"
         description="Committed bank rows gather here, become a batch, and the batch is what print collateral is generated from."
         actions={
-          // The batch section owns BOTH its doors. The bank file is the
-          // PRIMARY one: it is the only thing that fills the pool this page's
-          // main card counts down, and a page saying "12/50 waiting" with no
-          // way to add more is a dead end. The print vendor's return sheet,
-          // which closes batches rather than feeding them, rides secondary.
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={() => navigate('/uploads/return')}>
-              <Upload className="size-4" aria-hidden="true" /> Upload return sheet
+          // Upload return sheet MOVED off this page (18 Aug 2026, at the
+          // user's explicit correction). Offered here with no batch in hand,
+          // it uploaded blind: nothing tied the file to the one batch it
+          // actually belongs to. It now lives on the batch's own detail page,
+          // shown only once that batch is with the vendor, so there is always
+          // exactly one batch in scope and the upload can be checked against
+          // it. The bank file stays here: it feeds the pool, not one batch.
+          <>
+            {/* Explicit, because the page no longer re-reads itself on a timer
+                past its first few seconds. */}
+            <Button variant="secondary" onClick={() => void load()} loading={loading}>
+              <RefreshCw className="size-4" aria-hidden="true" /> Refresh
             </Button>
             <Button onClick={() => navigate('/uploads/bank')}>
               <Upload className="size-4" aria-hidden="true" /> Upload bank file
             </Button>
-          </div>
+          </>
         }
       />
 
       {loadError !== null ? <ErrorNote>{loadError}</ErrorNote> : null}
 
-      {/* Two-column layout, borrowed from the batch PDF generate page: the
-          action sits left and wide, the reference rules sit right in a
-          compact side card. Same visual grammar as that page uses for its
-          layout selector: subtle primary accent, one card per decision. */}
-      {/* No items-start: the row's two cards STRETCH to a shared height. With
-          items-start the left card shrank to its content, so an empty pool left
-          a tall gap beside the rules card and the row read as broken. */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <BatchablePools
-          onTriggered={() => void load()}
-          reloadKey={poolFingerprint}
-          lotSizeFor={lotSizeFor}
-          // The same resolved rule the AutoTriggerCard beside it displays, so
-          // the "N/7 days" here and the "7 days" there can never disagree.
-          maxWaitSeconds={rule.maxWaitSeconds}
-          // The pool itself, inline. Owned here because this page already reads
-          // it and PoolEntryActions already writes back through this `load`.
-          poolRows={pool}
-          poolColumns={poolColumns}
-          poolLoading={loading}
-        />
-        {/* The right column stacks: what the next batch WOULD contain, above
-            the rules that would form it without anyone here. */}
-        <div className="flex flex-col gap-4">
-          <BatchPreviewCard rows={pool} minLotSize={rule.minLotSize} />
-          <AutoTriggerCard
-            minLotSize={rule.minLotSize}
-            maxWaitSeconds={rule.maxWaitSeconds}
-            isDefault={rule.isDefault}
-          />
-        </div>
-      </div>
+      {/* THE POOL IS NOT HERE ANY MORE (18 Aug 2026, decision D14). Deciding what
+          to batch and working the batches already formed are two jobs, and this
+          page was doing both: an operator arriving to chase a run had to scroll
+          past a queue they were not there for. The pool, its preview and its
+          auto-trigger thresholds all live at /pool now, and this page is the
+          batches and nothing else. */}
 
       {/* Batches is the default second card: it is what the operator wants to
           see after triggering, not another table of pending rows. */}
@@ -319,80 +371,109 @@ export function FulfillmentPage() {
             title="Batches"
             subtitle="Newest first. Open a batch for its dispatches, the QR card previews, the print PDFs and the vendor Excel."
           />
+          <div className="px-5 pt-1">
+            <StatTiles
+              tiles={tiles}
+              // All batches lights up only on the explicit 'all'; a status tile
+              // only when it is the ONE status selected, so neither reads as
+              // active while the default pair is showing.
+              isActive={(t) =>
+                t.key === 'all'
+                  ? statusParam === 'all'
+                  : selectedStatuses.length === 1 && selectedStatuses[0] === t.key
+              }
+              onSelect={(t) => {
+                if (t.key === 'all') {
+                  setParam('status', statusParam === 'all' ? '' : 'all')
+                  return
+                }
+                // Clicking the already-selected status returns to the default
+                // pair rather than to nothing, which is the view worth landing on.
+                const only = selectedStatuses.length === 1 && selectedStatuses[0] === t.key
+                setParam('status', only ? '' : t.key)
+              }}
+            />
+          </div>
+          <Toolbar className="px-5 pb-1">
+            <Field label="Search" htmlFor="batchSearch" className="w-full sm:w-56">
+              <Input
+                id="batchSearch"
+                value={q}
+                placeholder="Batch id, vendor or trigger"
+                onChange={(e) => setParam('q', e.target.value)}
+              />
+            </Field>
+            <Field label="Status" htmlFor="batchStatus">
+              <SearchSelect
+                value={statusParam}
+                placeholder="Batched and sent"
+                onChange={(v) => setParam('status', v)}
+                options={[
+                  { value: '', label: 'Batched and sent', note: 'everything still in flight' },
+                  { value: 'all', label: 'All statuses', count: dateFiltered.length },
+                  ...BATCH_STATUSES.map((s) => ({
+                    value: s,
+                    label: statusMeta(s).label,
+                    count: countByStatus.get(s) ?? 0,
+                  })),
+                ]}
+              />
+            </Field>
+            <Field label="Formed from" htmlFor="batchFrom">
+              <Input id="batchFrom" type="date" value={from} onChange={(e) => setParam('from', e.target.value)} />
+            </Field>
+            <Field label="To" htmlFor="batchTo">
+              <Input id="batchTo" type="date" value={to} onChange={(e) => setParam('to', e.target.value)} />
+            </Field>
+            {(q !== '' || from !== '' || to !== '' || statusParam !== '') && (
+              <Button variant="ghost" onClick={() => setSearchParams(new URLSearchParams(), { replace: true })}>
+                Clear filters
+              </Button>
+            )}
+          </Toolbar>
           <DataGrid
             columns={batchColumns}
-            rows={batches}
+            rows={visibleBatches}
             loading={loading}
             getRowKey={(r) => r.id}
             onRowClick={(r) => navigate(`/batches/${r.id}`, { state: { fromSearch: searchParams.toString() } })}
-            searchPlaceholder="Search batch id, vendor or trigger…"
-            emptyTitle="No batches have formed yet"
-            emptyMessage="Trigger one from Build batch above once records are waiting."
+            // The toolbar above owns searching, so the grid's own box would be a
+            // second, disagreeing filter over the same rows.
+            searchable={false}
+            emptyTitle={batches.length === 0 ? 'No batches have formed yet' : 'No batches match these filters'}
+            emptyMessage={
+              batches.length === 0
+                ? 'Trigger one from Build batch above once records are waiting.'
+                : 'Widen the date window or clear the status filter.'
+            }
             pageSize={20}
             pageSizeOptions={[20, 50, 100]}
           />
         </Card>
       </div>
 
+      {/* Sending is not destructive, but it IS outward-facing and one-way: the
+          print vendor can pull the run the moment this lands, and there is no
+          unsend. So it asks first, and says what will change. */}
+      <ConfirmDialog
+        open={sending !== null}
+        title="Send this batch to the print vendor"
+        description={
+          sending === null
+            ? ''
+            : `${fmtNumber(sending.unitCount)} dispatches in ${sending.id} move to sent to print vendor, the batch is bound to the active print vendor, and the vendor can pull the run. The return sheet can only be uploaded after this.`
+        }
+        confirmLabel="Send to print vendor"
+        busy={sendBusy}
+        error={sendError}
+        onConfirm={() => void confirmSend()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSending(null)
+            setSendError(null)
+          }
+        }}
+      />
     </div>
-  )
-}
-
-// The compact side card that names the two rules that decide when a pool
-// batches ITSELF, without an operator here (BRD FR-033). Same visual grammar
-// as the pool card beside it: subtle primary accent bar on top, matching
-// border radius, one thing per row so the eye lands cleanly on each number.
-function AutoTriggerCard({
-  minLotSize,
-  maxWaitSeconds,
-  isDefault,
-}: {
-  minLotSize: number
-  maxWaitSeconds: number
-  isDefault: boolean
-}) {
-  return (
-    // pt-0 because the accent bar is this card's FIRST child and the Card's own
-    // py-(--card-spacing) was putting a band of white above it, so an edge
-    // accent rendered as a line floating inside the card. The spacing token
-    // matches the Build batch card beside it so the two share one rhythm.
-    <Card className="gap-3 overflow-hidden pt-0 [--card-spacing:--spacing(5)]">
-      <div className="h-1 w-full bg-primary/40" aria-hidden="true" />
-      <div className="flex items-baseline justify-between gap-3 px-5 pt-1">
-        <div>
-          <h2 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
-            Auto-trigger
-          </h2>
-          <p className="text-[12px] text-muted-foreground">A pool batches itself at either threshold.</p>
-        </div>
-        {isDefault && (
-          <span className="rounded-full bg-muted px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">
-            default
-          </span>
-        )}
-      </div>
-      <dl className="grid grid-cols-1 gap-2.5 px-5">
-        <div className="flex items-center gap-2.5 rounded-xl border border-border/70 bg-primary/[0.04] p-2.5">
-          <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Package className="size-4" aria-hidden="true" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <dt className="text-[11.5px] text-muted-foreground">Minimum lot</dt>
-            <dd className="num text-lg font-semibold leading-tight">
-              {fmtNumber(minLotSize)} <span className="text-[12px] font-normal text-muted-foreground">requests</span>
-            </dd>
-          </div>
-        </div>
-        <div className="flex items-center gap-2.5 rounded-xl border border-border/70 bg-primary/[0.04] p-2.5">
-          <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Timer className="size-4" aria-hidden="true" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <dt className="text-[11.5px] text-muted-foreground">Maximum wait</dt>
-            <dd className="num text-lg font-semibold leading-tight">{fmtWait(maxWaitSeconds)}</dd>
-          </div>
-        </div>
-      </dl>
-    </Card>
   )
 }

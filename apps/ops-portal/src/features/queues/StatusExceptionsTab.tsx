@@ -16,6 +16,7 @@ import {
   type VendorRow,
 } from '../../api/endpoints.js'
 import { emptyStatusExceptionForm, type StatusExceptionForm } from './resolve.js'
+import { COURIER_STATUSES } from '../dashboards/courierStatuses.js'
 
 // Courier status exceptions (C-2, split out of QueuesPage).
 //
@@ -38,16 +39,6 @@ import { emptyStatusExceptionForm, type StatusExceptionForm } from './resolve.js
 // (@andpay/authz/stepup-operations OPS_STEP_UP_GATED_OPERATIONS), so no step-up
 // key is passed. Whether the signed-in actor's scope actually covers the resolve
 // is re-checked at the edge on every submit (S24/T14), never decided here.
-
-const KNOWN_STATUSES = [
-  'DISPATCHED_BY_VENDOR',
-  'PICKED_UP',
-  'IN_TRANSIT',
-  'OUT_FOR_DELIVERY',
-  'DELIVERED',
-  'FAILED',
-  'RETURNED',
-] as const
 
 // A row has no matching shipment to correct (unknown_awb, and any
 // webhook-channel unknown_status whose AWB was never looked up): resolving is
@@ -99,7 +90,7 @@ export function StatusExceptionsTab() {
   function startResolve(row: CourierStatusExceptionView): void {
     if (row.shptId === null) return
     setResolvingRow(row)
-    setForm(emptyStatusExceptionForm(KNOWN_STATUSES[0]))
+    setForm(emptyStatusExceptionForm(COURIER_STATUSES[0]))
     setFormError(null)
   }
 
@@ -264,7 +255,7 @@ export function StatusExceptionsTab() {
                 <SearchSelect
                   id="se-form-status"
                   placeholder="Pick a status…"
-                  options={KNOWN_STATUSES.map((s) => ({ value: s, label: statusMeta(s).label }))}
+                  options={COURIER_STATUSES.map((s) => ({ value: s, label: statusMeta(s).label }))}
                   value={form.status}
                   onChange={(value) => setForm((prev) => (prev === null ? prev : { ...prev, status: value }))}
                 />

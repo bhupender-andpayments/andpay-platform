@@ -139,11 +139,19 @@ function renderPage(ui: ReactElement) {
 // primitive's own switch buttons never match this, so it is safe to check
 // against every button on the page.
 //
-// "activate" would also match "deactivate", which is intended: both are
-// deferred. It does NOT match any of the five create controls, whose names are
-// "Add vendor", "Add courier", "Add bank master", "Add damage reason" and
-// "Set tier".
-const DEFERRED_CONTROL_PATTERN = /\b(edit|delete|remove|suspend|activate|deactivate)\b/i
+// EDIT CAME OUT OF THIS PATTERN on 18 Aug 2026: it shipped on all five tabs,
+// so a regex that still forbade it would fail this suite the moment edit
+// landed, telling a future reader the wrong thing (that edit had regressed,
+// when it had simply arrived). Its own coverage lives in the tests below this
+// describe block, which assert the edit dialogs by name and check their exact
+// POST bodies, the same discipline this file already holds create to.
+//
+// "activate" would also match "deactivate", which is intended: both are still
+// deferred. It does NOT match any of the five create controls ("Add vendor",
+// "Add courier", "Add bank master", "Add damage reason", "Set tier") or an
+// Edit control's accessible name ("Edit vendor Acme Devices", etc: the word
+// "edit" itself, not any of the still-deferred lifecycle words).
+const DEFERRED_CONTROL_PATTERN = /\b(delete|remove|suspend|activate|deactivate)\b/i
 
 // The create control each tab is expected to carry, by accessible name.
 const CREATE_CONTROL_BY_TAB: ReadonlyArray<{ tab: string; control: string }> = [
@@ -316,7 +324,7 @@ describe('master data views', () => {
     expect(screen.getByText(/could not display these rows/i)).toBeTruthy()
   })
 
-  it('carries exactly one create control per tab, and none of the still-deferred actions', async () => {
+  it('carries exactly one create control and one Edit button per row on every tab, and none of the still-deferred actions', async () => {
     const calls: Call[] = []
     stubAllReads(calls)
 
@@ -330,12 +338,18 @@ describe('master data views', () => {
       // tab's buttons and pass for the wrong reason.
       await screen.findByRole('button', { name: control })
 
-      const names = screen.getAllByRole('button').map((b) => b.textContent ?? '')
-      // Every button is either a tab switch or this tab's ONE create control.
+      // The Edit buttons are icon-only (a bare Pencil glyph), so their name is
+      // their aria-label, not their textContent, which is empty for an
+      // icon-only button. Falling back to textContent still covers the tab
+      // switches and the labelled create control exactly as before.
+      const names = screen.getAllByRole('button').map((b) => b.getAttribute('aria-label') ?? b.textContent ?? '')
+      // Every button is a tab switch, this tab's ONE create control, or a
+      // per-row Edit button (one per row, accessible name starting "Edit ").
       for (const name of names) {
-        expect([...tabLabels, control]).toContain(name)
+        expect([...tabLabels, control].includes(name) || /^Edit /.test(name)).toBe(true)
       }
-      // Edit, suspend, activate and deactivate stay deferred under L9.
+      // Suspend, activate and deactivate stay deferred under L9; edit does not
+      // (see the describe block below).
       for (const name of names) {
         expect(name).not.toMatch(DEFERRED_CONTROL_PATTERN)
       }

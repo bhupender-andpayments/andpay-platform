@@ -73,18 +73,15 @@ describe('activationSheetXlsx', () => {
     expect(Buffer.isBuffer(buf)).toBe(true)
   })
 
-  it('writes exactly the seven product-approved headers, in order', async () => {
+  // THREE headers as of 18 Aug 2026, cut down from seven at the user's
+  // direction. Batch ID went because the file's own name now carries it
+  // (`<btchId>-activation.xlsx`); Bank, Merchant and Delivered went as a
+  // deliberate product decision, so the CWD identifies a row by its device,
+  // its SIM and its dispatch and nothing else.
+  it('writes exactly the three product-approved headers, in order', async () => {
     const ws = await sheetOf([row()])
     const headers = (ws.getRow(1).values as unknown[]).slice(1).map(String)
-    expect(headers).toEqual([
-      'Batch ID',
-      'Dispatch ID',
-      'Bank',
-      'Merchant',
-      'Device ID',
-      'SIM No',
-      'Delivered',
-    ])
+    expect(headers).toEqual(['Device ID', 'SIM No', 'Dispatch ID'])
   })
 
   // The grain the CWD actually activates is a device plus its SIM, so a
@@ -157,53 +154,15 @@ describe('activationSheetXlsx', () => {
     ).toEqual(['asgn_a', 'asgn_c'])
   })
 
-  // Wording approved by the product owner; an empty cell would read as a data
-  // gap rather than as the real state of the dispatch.
-  it('renders the literal "not yet delivered" when deliveryDate is null', async () => {
-    const ws = await sheetOf([row({ deliveryDate: null })])
-    const col = headerIndex(ws)
-    expect(String(ws.getRow(2).getCell(col('Delivered')).value)).toBe('not yet delivered')
-  })
-
-  // The worklist screen deliberately stopped showing the wire timestamp; a
-  // sheet emailed outside the platform must not put it back.
-  it('renders a present deliveryDate as a plain YYYY-MM-DD calendar date, not the ISO timestamp', async () => {
-    const ws = await sheetOf([row({ deliveryDate: '2026-08-14T09:30:00.000Z' })])
-    const col = headerIndex(ws)
-    const cell = String(ws.getRow(2).getCell(col('Delivered')).value)
-    expect(cell).toBe('2026-08-14')
-    expect(cell).not.toContain('T')
-  })
-
-  it('prefers bankDisplay and falls back to bankCode when it is absent or empty', async () => {
-    const withDisplay = row({ dispatchId: 'asgn_a', bankDisplay: 'HDFC Bank', bankCode: 'HDFC' })
-    const emptyDisplay = row({ dispatchId: 'asgn_b', bankDisplay: '', bankCode: 'ICICI' })
-    const nullDisplay = row({ dispatchId: 'asgn_c', bankDisplay: null, bankCode: 'AXIS' })
-    const ws = await sheetOf([withDisplay, emptyDisplay, nullDisplay])
-    const col = headerIndex(ws)
-    expect(
-      [2, 3, 4].map((r) => String(ws.getRow(r).getCell(col('Bank')).value)),
-    ).toEqual(['HDFC Bank', 'ICICI', 'AXIS'])
-  })
-
-  it('carries the Batch ID through and writes a null batchId as a blank cell', async () => {
-    const ws = await sheetOf([
-      row({ dispatchId: 'asgn_a', batchId: 'btch_abc' }),
-      row({ dispatchId: 'asgn_b', batchId: null }),
-    ])
-    const col = headerIndex(ws)
-    expect(String(ws.getRow(2).getCell(col('Batch ID')).value)).toBe('btch_abc')
-    expect(String(ws.getRow(3).getCell(col('Batch ID')).value ?? '')).toBe('')
-  })
-
-  it('writes a missing merchantDisplay as a blank cell, never null', async () => {
-    const base = row()
-    delete base['merchantDisplay']
-    const ws = await sheetOf([base])
-    const col = headerIndex(ws)
-    expect(String(ws.getRow(2).getCell(col('Merchant')).value ?? '')).toBe('')
-  })
-
+  // FIVE TESTS REMOVED HERE 18 Aug 2026, with the four columns they covered.
+  // They pinned the Delivered cell's "not yet delivered" wording and its
+  // YYYY-MM-DD formatting, the Bank cell's bankDisplay-then-bankCode fallback,
+  // the Batch ID passthrough, and the Merchant cell's blank-not-null rule.
+  // All four columns were cut from the sheet at the user's direction, so there
+  // is nothing left for those assertions to describe. The rules they protected
+  // are not silently lost: the same blank-not-null contract still guards the
+  // SIM and Dispatch ID cells below and above.
+  //
   // The caller decides whether an empty batch is a 404. The serializer's job is
   // to produce a valid file either way.
   it('an EMPTY input yields a header-only workbook, not an error', async () => {

@@ -1,15 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Upload } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { CheckCircle2, Download, Upload } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import {
   downloadActivationSheet,
-  getBankMasters,
   getReport,
-  markActivated,
   markActivatedBulk,
-  requestActivation,
-  type BankMasterRow,
   type ReportCell,
   type ReportRow,
 } from '../../api/endpoints.js'
@@ -17,13 +13,11 @@ import { newIdempotencyKey } from '../../api/idempotency.js'
 import { saveBlob } from '../../lib/saveBlob.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
-import { Checkbox } from '@/components/ui/checkbox'
-import { MultiSelect } from '../../components/Picker.js'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import {
   PageHeader,
   Card,
   CardHeader,
-  CardBody,
   Field,
   Input,
   Button,
@@ -32,7 +26,6 @@ import {
   InfoNote,
   CodeChip,
 } from '../../ui/primitives.js'
-import { fmtDateTime } from '../../ui/format.js'
 
 // FR-07 Phase-1 MANUAL activation SUCCESS mark (Phase 7 Task 11, D-H.1). CWD
 // activates the device+SIM out of band; this page is where ops marks it,
@@ -56,46 +49,51 @@ import { fmtDateTime } from '../../ui/format.js'
 // table at all. The edge stays the authority either way (S24/T14: no
 // client-side authz or business-rule shortcut).
 //
-// EVERY WRITE HERE PASSES THROUGH A CONFIRMATION (2026-08-15). Marking a
-// record activated is a fact the platform acts on and there is no un-activate,
-// so both the row button and the bulk button open the shared ConfirmDialog
-// first. There is deliberately NO remark box in those dialogs: neither
-// activate route accepts a remark on the wire, and a box whose text the
-// server silently drops would be a lie. If operations ever needs a remark
-// recorded, that is a backend ask, not a frontend field.
+// EVERY WRITE HERE PASSES THROUGH A CONFIRMATION. Marking devices activated is
+// a fact the platform acts on and there is no un-activate, so the batch-grain
+// Activate button opens the shared ConfirmDialog first. There is deliberately
+// NO remark box: the activate route accepts no remark on the wire, and a box
+// whose text the server silently drops would be a lie. If operations ever
+// needs a remark recorded, that is a backend ask, not a frontend field.
 //
 // C3 FENCE (hard constraint): SUCCESS path only. No failure-mark button, no
 // failure-reason input, no distinct SIM-activation control anywhere on this
-// page. `simActivationStatus` mirrors `activationStatus` in v1 (a single CWD
-// confirmation activates device+SIM together) and is rendered as read-only
-// text (`StatusPill`) exactly like `activationStatus`, never an editable
-// control. `activationFailureReason` is always null in live v1 data (no
-// failure write path exists) and is rendered like any other faithfully-null
-// cell, never synthesized or exposed as an input.
+// page. A single CWD confirmation activates device+SIM together in v1, so
+// there is nothing here to expose as a separate control.
 //
-// THE BATCHES CARD (D-16, T4.1b). Above the worklist sits "Batches ready to
-// send to CWD", which answers the question the worklist could not: the CWD is
-// sent ONE SHEET PER BATCH, and until this card existed an operator had a
-// dispatch-grain table and no way to see, or act on, the batch grain the send
-// actually happens at. Two things it deliberately does not do:
+// REDESIGNED 18 Aug 2026, at the user's correction, from a two-card page (a
+// batches summary above a per-dispatch worklist below, with per-row AND
+// per-batch action buttons) to ONE table, batch-grain only:
 //
-//   It does not FETCH the batches. It groups the very rows the table below is
-//   showing, so a count on the card can never claim something the worklist does
-//   not have. This is the same reasoning already recorded at `visibleRows`, one
-//   level up: derive, never re-read, or the two disagree in front of the
-//   operator and neither is obviously wrong.
+//   ONE TABLE, batch-grain. The per-dispatch worklist and its checkboxes,
+//   its own "Mark activated" button and its own bulk "Mark N activated" are
+//   gone. An operator does not activate a dispatch here; they activate a
+//   BATCH's devices, and a table with one row per batch says that plainly. A
+//   dispatch can still be corrected one at a time from its own page
+//   (D-16: activation is a request-activation/mark-activated route keyed on
+//   asgn id, unchanged there) or from a device's own Inventory page, reached
+//   by drilling into a batch row.
 //
-//   It does not ACTIVATE anything. `Mark sent to CWD` posts to
-//   /ops/assignments/request-activation, which records REQUEST_SENT_TO_CWD: an
-//   activation-REQUEST record, not an activation. Those rows are still awaiting
-//   the CWD's confirmation, so they stay on the worklist and stay actionable,
-//   and the card says the request went out rather than removing the batch.
-//   Conflating the two would make rows vanish before anyone had activated a
-//   single device, which is the one failure this card must not introduce.
+//   TWO ACTIONS PER ROW: Download CWD file (the existing per-batch xlsx,
+//   renamed and trimmed to three columns, ACTIVATION_COLUMNS in
+//   services/analytics/src/export.ts) and Activate. "Mark sent to CWD" is
+//   gone: it recorded REQUEST_SENT_TO_CWD, a request-in-flight marker with no
+//   observable effect on this page, which is exactly why it read as doing
+//   nothing. Nothing here replaces it; sending the file IS sending it.
 //
-// The confirmation is the shared ConfirmDialog for the same reason the two
-// activate paths use it, and for the same reason it carries NO REMARK BOX: the
-// request-activation route accepts no remark on the wire either.
+//   ACTIVATE IS INDEPENDENT OF DELIVERY, BY DESIGN (D-16). It calls
+//   markActivatedBulk with the batch's own dispatch ids and does not touch
+//   dispatch delivery state or courier status at all: a soundbox can sit at
+//   any point on the delivery ladder and be activated in parallel, because
+//   the CWD routinely confirms activation before a courier's file reaches us.
+//   A collateral leg in the same batch is rejected server-side per row
+//   (not-activatable) without failing the rest.
+//
+//   THE BATCH LEAVES THE LIST once its Activate call returns, held in
+//   `locallyActivatedBatches` the same eventually-consistent way the old page
+//   held `locallyActivated`: the analytics projection this page reads is fed
+//   asynchronously, so an immediate re-read would show the same row with the
+//   same button. It self-heals once the projection catches up.
 
 function stringField(row: ReportRow, key: string): string | null {
   const value: ReportCell | undefined = row[key]
@@ -107,45 +105,41 @@ function arrayField(row: ReportRow, key: string): readonly string[] {
   return Array.isArray(value) ? value : []
 }
 
-// Operator-facing wording for a bulk outcome. The server sends a CODE, and the
-// wording lives here, the same split the upload pages use: the edge's vocabulary
-// is a contract, and an operator should not have to read one.
-function outcomeLabel(code: string): string {
-  switch (code) {
-    case 'activated':
-      return 'Activated'
-    case 'already-activated':
-      return 'Already activated'
-    case 'not-activatable':
-      return 'Collateral does not activate'
-    case 'unknown-dispatch':
-      return 'Not found'
-    default:
-      return code
-  }
-}
-
-function isDelivered(row: ReportRow): boolean {
-  return stringField(row, 'deliveryDate') !== null
-}
-
-// One batch's slice of the worklist, for the card above the table.
+// One batch's slice of the worklist, for the table.
 //
 // `batchId` is `string | null` because the report row's is: a dispatch that has
 // not been batched yet genuinely has no batch, and the null group is rendered as
 // itself rather than given a placeholder id or dropped.
 //
-// `dispatchIds` and `deviceCount` are BOTH carried because they are different
-// numbers and both matter. The send is per dispatch (request-activation takes
-// dispatch ids) while the SHEET has one row per device, which is the number the
-// CWD will see, so a card showing only one of them would leave the operator
-// guessing at the other.
+// `dispatchIds` and `deviceCount` are BOTH carried even though only the device
+// count is now a COLUMN: the activate call still needs the dispatch ids, and
+// the confirm dialog still names both numbers.
 interface BatchGroup {
   batchId: string | null
-  /** Distinct, in first-seen order, so a multi-bank batch can be reported as one. */
-  bankCodes: string[]
+  /**
+   * The bank NAMES, distinct and in first-seen order (18 Aug 2026, at the
+   * user's correction: the table showed a raw code like "3"). Taken from the
+   * report row's own `bankDisplay` rather than resolved against the bank-master
+   * list, because the report already carries the name and the master lookup
+   * keys on `bankReferenceCode`, which is not the same value as the report's
+   * `bankCode` for every tenant. Falls back to the code when a row's display
+   * name never landed, so a bank is always named somehow.
+   */
+  bankNames: string[]
   dispatchIds: string[]
   deviceCount: number
+  /**
+   * How many of the group's dispatches the vendor has actually shipped.
+   *
+   * READINESS IS DISPATCHED_BY_VENDOR, not delivery (decision D15, 18 Aug 2026).
+   * At that moment the device id, the dispatch id and the AWB all exist, which is
+   * everything the CWD file carries, so waiting for a courier to knock on a door
+   * would hold up an activation for no information gained. Waiting for NOTHING,
+   * which is what the page did before, is the other extreme: it offered a send
+   * for a batch whose devices were not paired yet, and the sheet came out with
+   * blank device columns.
+   */
+  readyDispatches: number
 }
 
 // The grouping key that stands in for "no batch". A wire batch id is always
@@ -176,12 +170,14 @@ export function ActivationPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [rows, setRows] = useState<ReportRow[]>([])
-  const [banks, setBanks] = useState<readonly BankMasterRow[]>([])
 
-  // Filters live in the URL, the Inventory idiom: a filtered worklist survives
-  // a reload and can be pasted to a teammate.
-  const q = searchParams.get('q') ?? ''
-  const bankSel = useMemo(() => searchParams.get('bank')?.split(',').filter(Boolean) ?? [], [searchParams])
+  // ONE FILTER, on the BATCH ID (18 Aug 2026, at the user's correction). The
+  // page is batch-grain now, so a dispatch/merchant/device search box and a
+  // bank multi-select were both filtering by things the table does not show,
+  // and the search placeholder actively named columns that no longer exist.
+  // Lives in the URL, the Inventory idiom: a filtered list survives a reload
+  // and can be pasted to a teammate.
+  const batchQ = searchParams.get('batch') ?? ''
 
   const setParam = useCallback(
     (key: string, value: string) => {
@@ -197,78 +193,50 @@ export function ActivationPage() {
     },
     [setSearchParams],
   )
-  const anyFilter = q !== '' || bankSel.length > 0
+  const anyFilter = batchQ !== ''
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [busyId, setBusyId] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [actionNote, setActionNote] = useState<string | null>(null)
-  // Dispatches this operator has just activated, which the WORKLIST may still
-  // be showing.
-  //
-  // This is not a missing refetch. handleActivate already re-reads, and it
-  // still came back with the row: the write lands in TMS, and this worklist
-  // reads the ANALYTICS projection, which is fed asynchronously by the fact
-  // rail. An immediate re-read is a read of a projection that has not caught up
-  // yet, so the operator saw a confirmation and the row they had just actioned
-  // sitting there, still offering the button.
-  //
-  // Holding the ids we accepted and hiding those rows is a read-your-own-write
-  // shim over an eventually consistent view. It self-heals: once the projection
-  // catches up the row is no longer in the response at all, and the id in this
-  // set simply stops matching anything.
-  const [locallyActivated, setLocallyActivated] = useState<ReadonlySet<string>>(new Set())
-  // D-19 (T5.4): the rows the operator has ticked. Held as ids, not indices, so
-  // a refetch that reorders or shortens the list cannot silently re-point a
-  // selection at a different merchant.
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
-  // The per-row outcome of the last bulk action, keyed by dispatch id. This is
-  // the answer to the objection that got Mark-all refused: a loop that fails
-  // halfway must not leave an operator unable to tell which records went
-  // through, so the result is shown per row rather than as one verdict.
-  const [bulkOutcome, setBulkOutcome] = useState<ReadonlyMap<string, string>>(new Map())
-  const [bulkBusy, setBulkBusy] = useState(false)
-  // The row awaiting its are-you-sure, and the bulk equivalent. Activation has
-  // no undo, so nothing on this page writes on the first click.
-  const [confirmingRow, setConfirmingRow] = useState<ReportRow | null>(null)
-  const [confirmingBulk, setConfirmingBulk] = useState(false)
 
-  // --- The batches card's own state, all of it keyed BY BATCH ---------------
+  // --- The batch table's own state, all of it keyed BY BATCH (or NO_BATCH_KEY
+  // for the batchless group) ------------------------------------------------
   //
-  // Per batch, not per page, because one batch is one send and one download: a
-  // single `busy` or a single error line would freeze or accuse every other
-  // batch on the card for something only one of them did.
-  //
-  // Three separate note maps rather than one, because they are three different
-  // statements that must be able to coexist on the same row. A download that
-  // came back 404 must not erase the record that this batch's request was
-  // already sent, and a genuine download failure must not be dressed up as the
-  // 404's calm sentence.
+  // Per batch, not per page, because one batch is one download and one
+  // activate: a single `busy` or a single error line would freeze or accuse
+  // every other batch on the table for something only one of them did.
   /** The batch whose sheet is downloading right now. */
   const [downloadingBatch, setDownloadingBatch] = useState<string | null>(null)
-  /** The batch whose activation request is being posted right now. */
-  const [sendingBatch, setSendingBatch] = useState<string | null>(null)
+  /** The batch whose devices are being activated right now. */
+  const [activatingBatch, setActivatingBatch] = useState<string | null>(null)
   /** The 404 answer: this batch has nothing awaiting activation. Not an error. */
   const [noSheetNote, setNoSheetNote] = useState<ReadonlyMap<string, string>>(new Map())
   /** A genuine download failure, pinned to the batch whose button caused it. */
   const [downloadError, setDownloadError] = useState<ReadonlyMap<string, string>>(new Map())
-  /**
-   * What the send ACTUALLY recorded, per batch, kept for the session. This is
-   * the batch's "request sent" marker and it deliberately does not remove the
-   * batch: see the header note. It survives a later download message because it
-   * lives in its own map.
-   */
-  const [sentNote, setSentNote] = useState<ReadonlyMap<string, string>>(new Map())
-  /** The batch awaiting its are-you-sure. Its id is non-null by construction:
-   *  the button that sets it only exists on a batch that has one. */
-  const [confirmingBatch, setConfirmingBatch] = useState<{
-    batchId: string
+  /** Pinned to the batch whose Activate call failed, same reasoning as above. */
+  const [activateError, setActivateError] = useState<ReadonlyMap<string, string>>(new Map())
+  // Batches this operator has just activated, which the table may still be
+  // showing.
+  //
+  // Not a missing refetch: the write lands in TMS and this table reads the
+  // ANALYTICS projection, fed asynchronously by the fact rail. An immediate
+  // re-read is a read of a projection that has not caught up yet, so the
+  // operator would see a success dialog and the batch they just actioned
+  // sitting there, still offering the same button. Holding the key we
+  // accepted and hiding that row is a read-your-own-write shim over an
+  // eventually consistent view; it self-heals once the projection catches up
+  // and the batch's dispatches no longer report as awaiting activation at all.
+  const [locallyActivatedBatches, setLocallyActivatedBatches] = useState<ReadonlySet<string>>(new Set())
+  /** The batch awaiting its are-you-sure, and what the success dialog reports
+   *  once it lands. Activation has no undo, so nothing here writes on the
+   *  first click. */
+  const [confirmingActivate, setConfirmingActivate] = useState<{
+    key: string
+    batchId: string | null
     dispatchIds: string[]
     deviceCount: number
   } | null>(null)
-  /** Kept apart from `actionError` so the worklist's own error line, and the
-   *  condition that hides it while a dialog is open, are untouched. */
-  const [sendError, setSendError] = useState<string | null>(null)
+  /** Set once handleActivateBatch's write returns; renders the success dialog
+   *  with what actually happened, never what was asked for. */
+  const [activatedResult, setActivatedResult] = useState<{ batchId: string | null; activated: number } | null>(null)
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -287,97 +255,12 @@ export function ActivationPage() {
     void load()
   }, [load])
 
-  // Names for bank codes, silent on failure: a lookup that does not arrive
-  // costs the filter its names, not the worklist its rows.
-  useEffect(() => {
-    let cancelled = false
-    getBankMasters(client)
-      .then((list) => {
-        if (!cancelled && Array.isArray(list)) setBanks(list)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [client])
-
-  const bankName = useCallback(
-    (code: string | null): string => {
-      if (code === null) return '-'
-      return banks.find((b) => b.bankReferenceCode === code)?.displayName ?? code
-    },
-    [banks],
-  )
-
-  function toggle(dispatchId: string): void {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(dispatchId)) next.delete(dispatchId)
-      else next.add(dispatchId)
-      return next
-    })
-  }
-
-  async function handleActivateSelected(): Promise<void> {
-    const ids = [...selected]
-    if (ids.length === 0) return
-    setActionError(null)
-    setActionNote(null)
-    setBulkOutcome(new Map())
-    setBulkBusy(true)
-    try {
-      const { results } = await markActivatedBulk(client, ids, newIdempotencyKey())
-      const outcome = new Map<string, string>()
-      const activated: string[] = []
-      for (const r of results) {
-        outcome.set(r.dispatchId, r.activated ? 'activated' : (r.reason ?? 'not activated'))
-        if (r.activated) activated.push(r.dispatchId)
-      }
-      setBulkOutcome(outcome)
-      setLocallyActivated((prev) => new Set([...prev, ...activated]))
-      // Count what ACTUALLY happened, never what was asked for. Saying "12
-      // marked" after 9 succeeded is the exact failure the refusal named.
-      setActionNote(
-        activated.length === results.length
-          ? `${activated.length} of ${results.length} marked activated.`
-          : `${activated.length} of ${results.length} marked activated. The rest are listed below with their reason.`,
-      )
-      setSelected(new Set())
-      // Only now, once the write has returned, does the confirmation close.
-      setConfirmingBulk(false)
-      await load()
-    } catch (err) {
-      // Stays inside the open dialog, pinned to the button that caused it.
-      setActionError(err instanceof Error ? err.message : 'Failed to mark the selected records activated.')
-    } finally {
-      setBulkBusy(false)
-    }
-  }
-
-  async function handleActivate(row: ReportRow): Promise<void> {
-    const dispatchId = stringField(row, 'dispatchId')
-    // D-16 (T4.2): no delivery check. The only thing that stops a click here is
-    // a row with no dispatch id, which is not a row.
-    if (dispatchId === null) return
-    setActionError(null)
-    setActionNote(null)
-    setBusyId(dispatchId)
-    try {
-      await markActivated(client, dispatchId, newIdempotencyKey())
-      setLocallyActivated((prev) => new Set(prev).add(dispatchId))
-      // Name the merchant, not the wire id. The operator picked a row that said
-      // "Flow Alpha Store" and telling them "asgn_01kz... marked activated"
-      // makes them go back and match an opaque string to be sure it was theirs.
-      setActionNote(`${stringField(row, 'merchantDisplay') ?? dispatchId} marked activated.`)
-      setConfirmingRow(null)
-      await load()
-    } catch (err) {
-      // Stays inside the open dialog, pinned to the button that caused it.
-      setActionError(err instanceof Error ? err.message : 'Failed to mark activated.')
-    } finally {
-      setBusyId(null)
-    }
-  }
+  // NO BANK-MASTER FETCH any more (18 Aug 2026). The bank name is on the
+  // report row itself (`bankDisplay`), so resolving codes against the
+  // bank-master list was a second read that could only disagree with the
+  // first: the master keys on `bankReferenceCode`, which is not the same
+  // value as the report's `bankCode` for every tenant, which is why the table
+  // showed a bare "3" instead of a bank.
 
   // The batch sheet. A BINARY download, so it goes out through
   // downloadActivationSheet's raw fetch rather than the typed client; see that
@@ -415,241 +298,66 @@ export function ActivationPage() {
     }
   }
 
-  // Record that the activation request for this batch has gone out to the CWD.
-  // This is a WRITE and only ever fires from the confirmation, like every other
-  // write on this page.
-  async function handleMarkSent(target: { batchId: string; dispatchIds: string[] }): Promise<void> {
-    setSendError(null)
-    setSendingBatch(target.batchId)
+  // Activate every device behind this batch's dispatches. A WRITE, and only
+  // ever fires from the confirmation, like every other write on this page.
+  //
+  // INDEPENDENT OF DELIVERY AND OF THE DISPATCH ITSELF (D-16, at the user's
+  // explicit correction): this does not touch dispatch delivery state or
+  // courier status at all. markActivatedBulk loops per dispatch id server-side
+  // and reports each one's own reason (a collateral leg in the same batch
+  // comes back not-activatable without failing the rest), the same shape the
+  // old per-row worklist already relied on.
+  async function handleActivateBatch(target: {
+    key: string
+    batchId: string | null
+    dispatchIds: string[]
+  }): Promise<void> {
+    setActivateError((prev) => withoutKey(prev, target.key))
+    setActivatingBatch(target.key)
     try {
-      const { recorded, unknown } = await requestActivation(client, target.dispatchIds, newIdempotencyKey())
-      // Count what the SERVER said, never the number asked for. This is the same
-      // rule the bulk activate above states, and it has the same teeth: reading
-      // back the length of the list we sent would report a success the edge
-      // never claimed.
-      //
-      // `deduped` is not reported separately on purpose. A deduplicated reply
-      // replays the FIRST call's recorded/unknown lists, so these two counts are
-      // true either way, and a second sentence about replay would only invite
-      // the operator to doubt them.
-      setSentNote((prev) =>
-        new Map(prev).set(
-          target.batchId,
-          unknown.length === 0
-            ? `Activation request sent to the CWD: ${String(recorded.length)} recorded.`
-            : `Activation request sent to the CWD: ${String(recorded.length)} recorded, ${String(unknown.length)} not found.`,
-        ),
-      )
+      const { results } = await markActivatedBulk(client, target.dispatchIds, newIdempotencyKey())
+      const activated = results.filter((r) => r.activated).length
+      // Count what ACTUALLY happened, never what was asked for: some of a
+      // batch's dispatchIds are collateral legs that never activate.
+      setActivatedResult({ batchId: target.batchId, activated })
+      setLocallyActivatedBatches((prev) => new Set(prev).add(target.key))
       // Only now, once the write has returned, does the confirmation close.
-      setConfirmingBatch(null)
-      // NO REFETCH, and no hiding of the batch or its rows. The send records
-      // REQUEST_SENT_TO_CWD in TMS, which is not an activation and which the
-      // analytics projection this worklist reads never learns about (there is no
-      // activation-request fact on the rail; the report's own filter is
-      // activation_status IS NULL, and that stays true). So the rows are still
-      // awaiting activation, still belong on the table below, and still need
-      // their button. A re-read could only redraw the same list, and removing
-      // the batch here would hide work nobody has done yet.
+      setConfirmingActivate(null)
     } catch (err) {
       // Stays inside the open dialog, pinned to the button that caused it.
-      setSendError(err instanceof Error ? err.message : 'Failed to record the activation request for this batch.')
+      setActivateError((prev) =>
+        new Map(prev).set(target.key, err instanceof Error ? err.message : 'Failed to activate this batch.'),
+      )
     } finally {
-      setSendingBatch(null)
+      setActivatingBatch(null)
     }
   }
 
-  const columns: GridColumn<ReportRow>[] = [
-    {
-      key: 'select',
-      header: 'Select',
-      cell: (row) => {
-        const dispatchId = stringField(row, 'dispatchId')
-        if (dispatchId === null) return null
-        return (
-          <Checkbox
-            aria-label={`Select ${stringField(row, 'merchantDisplay') ?? dispatchId}`}
-            checked={selected.has(dispatchId)}
-            onCheckedChange={() => toggle(dispatchId)}
-            onClick={(e) => e.stopPropagation()}
-            disabled={bulkBusy}
-          />
-        )
-      },
-    },
-    {
-      key: 'dispatchId',
-      header: 'Dispatch ID',
-      sortValue: (row) => stringField(row, 'dispatchId') ?? '',
-      // A real link, the interlinking rule of the whole portal: the worklist
-      // names a dispatch, so it opens that dispatch.
-      cell: (row) => {
-        const id = stringField(row, 'dispatchId')
-        if (id === null) return <span className="text-muted-foreground">-</span>
-        return (
-          <Link
-            to={`/dispatches/${id}`}
-            className="underline underline-offset-2"
-            onClick={(e) => e.stopPropagation()}
-            state={{ fromSearch: searchParams.toString() }}
-          >
-            <CodeChip>{id}</CodeChip>
-          </Link>
-        )
-      },
-    },
-    {
-      key: 'bankCode',
-      header: 'Bank',
-      sortValue: (row) => bankName(stringField(row, 'bankCode')),
-      cell: (row) => bankName(stringField(row, 'bankCode')),
-    },
-    {
-      key: 'merchantDisplay',
-      header: 'Merchant',
-      sortValue: (row) => stringField(row, 'merchantDisplay') ?? '',
-      cell: (row) => <span className="font-medium text-foreground">{stringField(row, 'merchantDisplay') ?? '-'}</span>,
-    },
-    {
-      key: 'deviceIds',
-      header: 'Device IDs',
-      cell: (row) => {
-        const ids = arrayField(row, 'deviceIds')
-        if (ids.length === 0) return <span className="text-muted-foreground">-</span>
-        // Each serial jumps to the Inventory list already filtered to it: the
-        // report carries serials, not unit ids, and the search box is the one
-        // door that accepts a serial.
-        return (
-          <span className="flex flex-wrap gap-1">
-            {ids.map((id) => (
-              <Link
-                key={id}
-                to={`/inventory?q=${encodeURIComponent(id)}`}
-                className="underline underline-offset-2"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <CodeChip>{id}</CodeChip>
-              </Link>
-            ))}
-          </span>
-        )
-      },
-    },
-    {
-      key: 'deliveryDate',
-      header: 'Delivered',
-      sortValue: (row) => stringField(row, 'deliveryDate') ?? '',
-      // Was the raw ISO string, so this column read "2026-08-09T06:30:00.000Z".
-      // fmtDateTime already existed and is what every other table on the portal
-      // uses; there was no reason for this one to show the wire format.
-      //
-      // D-16 (T4.2): this column is now INFORMATION rather than a precondition.
-      // An undelivered row is activatable and says so plainly, because a blank
-      // cell next to an enabled button would read as missing data.
-      cell: (row) =>
-        isDelivered(row) ? (
-          fmtDateTime(stringField(row, 'deliveryDate'))
-        ) : (
-          <span className="text-muted-foreground">not yet delivered</span>
-        ),
-    },
-    // NO SIM Status and NO Activation Status column (16 Aug 2026 UAT), for two
-    // different reasons that end the same way.
-    //
-    // SIM: Phase 1 activates the device and its SIM on the one CWD
-    // confirmation, so simActivationStatus is SET FROM THE SAME FACT as
-    // activationStatus and can never read differently (project.ts's ACTIVATED
-    // case sets both in the same two lines). It returns the day the backend
-    // gives SIM its own signal, the deferred Phase-2 contract mediation.ts
-    // already documents.
-    //
-    // Activation Status: this WORKLIST is server-filtered to
-    // activation_status IS NULL (mediation.ts, case 'activation'), so every
-    // row that can appear here has a null status BY CONSTRUCTION and the
-    // column read "-" on every row forever. A row that gains a status leaves
-    // the list in the same event. The row's outcome after an action is the
-    // Last result column's job; the durable record is the activation report.
-    {
-      key: 'outcome',
-      header: 'Last result',
-      // Blank until a bulk action has said something about this row. An empty
-      // cell here means "not part of the last action", which is true and is
-      // different from "it failed".
-      cell: (row) => {
-        const dispatchId = stringField(row, 'dispatchId')
-        const outcome = dispatchId === null ? undefined : bulkOutcome.get(dispatchId)
-        return outcome === undefined ? (
-          <span className="text-muted-foreground">-</span>
-        ) : (
-          <span className={outcome === 'activated' ? 'text-foreground' : 'text-muted-foreground'}>
-            {outcomeLabel(outcome)}
-          </span>
-        )
-      },
-    },
-    {
-      key: 'actions',
-      header: 'Actions',
-      cell: (row) => {
-        const dispatchId = stringField(row, 'dispatchId')
-        const busy = dispatchId !== null && busyId === dispatchId
-        // D-16 (T4.2): no delivery precondition. The control used to be disabled
-        // on an undelivered row and explained itself with "activation is gated
-        // on delivery", which is the rule that has gone away: the CWD routinely
-        // confirms before the courier's file arrives, and the operator could do
-        // nothing about it but wait.
-        return (
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={dispatchId === null || busy}
-            loading={busy}
-            onClick={(e) => {
-              // The row itself navigates to the dispatch; acting here must not
-              // also do that. The write fires from the confirmation, never here.
-              e.stopPropagation()
-              setActionError(null)
-              setActionNote(null)
-              setConfirmingRow(row)
-            }}
-          >
-            Mark activated
-          </Button>
-        )
-      },
-    },
-  ]
-
-  // What the operator should actually see: the worklist minus anything they
-  // have already actioned in this session, then the URL filters. The count is
-  // derived from the SAME list, so the header can never claim a number the
-  // table does not show.
+  // What feeds the batch table below: the underlying worklist rows, filtered
+  // by the URL params. Kept even though nothing here renders a per-dispatch
+  // row any more, because `batchGroups` (next) is derived from exactly this
+  // list, and grouping a separately fetched set of batches would let the
+  // table and its filters disagree, in front of the operator, with no way to
+  // tell which one was stale.
   //
   // NO DEVICE, NO ROW (16 Aug 2026 UAT). Activation is of a device+SIM; the
   // CWD confirms a physical serial. A soundbox dispatch that has not been
   // through the print-vendor return yet has NO device paired, so there is
-  // nothing the CWD could possibly have activated, and offering Mark activated
-  // on it invites recording an activation for hardware that does not exist
-  // yet. This narrows the D-16/T4.2 worklist wording ("every soundbox awaiting
-  // activation") by one notch: every soundbox awaiting activation THAT HAS A
-  // DEVICE. The delivery gate stays gone; a paired-but-undelivered dispatch is
-  // still activatable and still listed.
+  // nothing the CWD could possibly have activated. The delivery gate stays
+  // gone; a paired-but-undelivered dispatch is still activatable and still
+  // counted into its batch.
   const visibleRows = useMemo(() => {
-    const needle = q.toLowerCase()
+    const needle = batchQ.trim().toLowerCase()
     return rows.filter((row) => {
       if (arrayField(row, 'deviceIds').length === 0) return false
-      const id = stringField(row, 'dispatchId')
-      if (id !== null && locallyActivated.has(id)) return false
-      if (bankSel.length > 0 && !bankSel.includes(stringField(row, 'bankCode') ?? '')) return false
       if (needle === '') return true
-      return [
-        id,
-        stringField(row, 'merchantDisplay'),
-        ...arrayField(row, 'deviceIds'),
-      ].some((v) => v !== null && v.toLowerCase().includes(needle))
+      // Substring and case-insensitive, because a btch_ id is long enough that
+      // a partial paste is the normal case.
+      return (stringField(row, 'batchId') ?? '').toLowerCase().includes(needle)
     })
-  }, [rows, locallyActivated, q, bankSel])
+  }, [rows, batchQ])
 
-  // The batches card's rows, derived from `visibleRows` and from nothing else.
+  // The batch table's rows, derived from `visibleRows` and from nothing else.
   //
   // THIS IS DELIBERATE, and it is the same reasoning as the count on the
   // worklist header one block up: the card is built from the exact list the
@@ -669,13 +377,18 @@ export function ActivationPage() {
       const key = batchId ?? NO_BATCH_KEY
       let group = byBatch.get(key)
       if (group === undefined) {
-        group = { batchId, bankCodes: [], dispatchIds: [], deviceCount: 0 }
+        group = { batchId, bankNames: [], dispatchIds: [], deviceCount: 0, readyDispatches: 0 }
         byBatch.set(key, group)
       }
+      // DISPATCHED is the analytics rail's token for dispatched by vendor;
+      // DELIVERED is further along and therefore also ready.
+      const stage = stringField(row, 'pipelineState')
+      if (stage === 'DISPATCHED' || stage === 'DELIVERED') group.readyDispatches += 1
       const dispatchId = stringField(row, 'dispatchId')
       if (dispatchId !== null) group.dispatchIds.push(dispatchId)
-      const bankCode = stringField(row, 'bankCode')
-      if (bankCode !== null && !group.bankCodes.includes(bankCode)) group.bankCodes.push(bankCode)
+      // The NAME, with the code as the fallback: the report row carries both.
+      const bankName = stringField(row, 'bankDisplay') ?? stringField(row, 'bankCode')
+      if (bankName !== null && bankName !== '' && !group.bankNames.includes(bankName)) group.bankNames.push(bankName)
       // The SHEET is one row per device, so devices are summed across the
       // group's dispatches rather than counted per dispatch.
       group.deviceCount += arrayField(row, 'deviceIds').length
@@ -683,21 +396,133 @@ export function ActivationPage() {
     return [...byBatch.values()]
   }, [visibleRows])
 
+  // READY TO SEND, and NOT YET (decision D15). A batch's dispatches ship one at
+  // a time as return sheets come in, so a batch can sit here for a while with
+  // some rows shipped and others not. Splitting the two rather than gating the
+  // whole worklist on "all ready" means an operator can still see and act on the
+  // devices that HAVE arrived without waiting on a straggler dispatch.
+  const readyGroups = useMemo(
+    () =>
+      batchGroups.filter(
+        (g) =>
+          (g.batchId === null || g.readyDispatches === g.dispatchIds.length) &&
+          !locallyActivatedBatches.has(g.batchId ?? NO_BATCH_KEY),
+      ),
+    [batchGroups, locallyActivatedBatches],
+  )
+  const pendingGroups = useMemo(
+    () => batchGroups.filter((g) => g.batchId !== null && g.readyDispatches < g.dispatchIds.length),
+    [batchGroups],
+  )
+
   // A batch normally belongs to one bank. If a group somehow spans more, the
   // count of banks is reported rather than the first one: naming one bank for a
   // mixed batch would be a false claim about what the CWD is being sent, and it
   // is the kind of claim an operator has no way to check from this screen.
-  function bankLabel(bankCodes: readonly string[]): string {
-    if (bankCodes.length === 0) return '-'
-    if (bankCodes.length === 1) return bankName(bankCodes[0] ?? null)
-    return countLabel(bankCodes.length, 'bank', 'banks')
+  function bankLabel(bankNames: readonly string[]): string {
+    if (bankNames.length === 0) return '-'
+    if (bankNames.length === 1) return bankNames[0]!
+    return countLabel(bankNames.length, 'bank', 'banks')
   }
+
+  // ONE TABLE, batch-grain (18 Aug 2026, at the user's correction). Every list
+  // on this portal is a DataGrid; the hand-rolled <ul> this replaced was the
+  // one exception.
+  const batchColumns: GridColumn<BatchGroup>[] = [
+    {
+      key: 'batchId',
+      header: 'Batch',
+      cell: (g) =>
+        g.batchId === null ? (
+          // A legacy pre-batch group: no placeholder id is invented, because an
+          // id the platform does not hold is not an id.
+          <span className="text-[13px] font-medium text-foreground">No batch</span>
+        ) : (
+          <CodeChip>{g.batchId}</CodeChip>
+        ),
+      sortValue: (g) => g.batchId ?? '',
+    },
+    { key: 'bank', header: 'Bank', cell: (g) => bankLabel(g.bankNames), sortValue: (g) => bankLabel(g.bankNames) },
+    {
+      // SOUNDBOXES, not dispatches (18 Aug 2026, at the user's correction).
+      // The dispatch count was the wrong number to lead with here: a batch's
+      // collateral legs inflate it without adding anything the CWD activates,
+      // and the sheet is one row per DEVICE. One count, and it is the one that
+      // matches the file.
+      key: 'devices',
+      header: 'Soundboxes',
+      cell: (g) => g.deviceCount,
+      sortValue: (g) => g.deviceCount,
+      align: 'right',
+    },
+    {
+      key: 'actions',
+      header: '',
+      cell: (g) => {
+        const batchId = g.batchId
+        const key = batchId ?? NO_BATCH_KEY
+        const downloading = batchId !== null && downloadingBatch === batchId
+        const activating = activatingBatch === key
+        const noSheet = batchId !== null ? noSheetNote.get(key) : undefined
+        const dlFailed = batchId !== null ? downloadError.get(key) : undefined
+        const actFailed = activateError.get(key)
+        return (
+          <div className="flex flex-col items-end gap-1.5 py-1">
+            <div className="flex flex-wrap justify-end gap-2">
+              {/* No batch, no name for the sheet: this group still shows on
+                  the table (it is still awaiting activation) but has nothing
+                  to download. */}
+              {batchId !== null && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  aria-label={`Download CWD file for ${batchId}`}
+                  disabled={downloading}
+                  loading={downloading}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void handleDownloadSheet(batchId)
+                  }}
+                >
+                  <Download className="size-3.5" aria-hidden="true" /> Download CWD file
+                </Button>
+              )}
+              <Button
+                size="sm"
+                aria-label={`Activate the devices in ${batchId ?? 'this group'}`}
+                disabled={activating}
+                loading={activating}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setActivateError((prev) => withoutKey(prev, key))
+                  setConfirmingActivate({ key, batchId, dispatchIds: g.dispatchIds, deviceCount: g.deviceCount })
+                }}
+              >
+                Activate
+              </Button>
+            </div>
+            {noSheet !== undefined && <p className="text-[12px] text-muted-foreground">{noSheet}</p>}
+            {dlFailed !== undefined && (
+              <p role="alert" className="text-[12px] text-destructive">
+                {dlFailed}
+              </p>
+            )}
+            {actFailed !== undefined && (
+              <p role="alert" className="text-[12px] text-destructive">
+                {actFailed}
+              </p>
+            )}
+          </div>
+        )
+      },
+    },
+  ]
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Activation"
-        description="Soundboxes awaiting activation. Mark a device+SIM activated once the CWD confirms it out of band."
+        description="Soundboxes awaiting activation, one row per batch. Activate a batch once its CWD file is out."
         actions={
           // The activation section owns its own inbound file: the CWD's
           // confirmation sheet. Same ruling as Inventory owning its upload.
@@ -708,160 +533,33 @@ export function ActivationPage() {
       />
 
       {loadError !== null && <ErrorNote>{loadError}</ErrorNote>}
-      {/* An error from an OPEN confirmation renders inside it, next to the
-          button that caused it; this line only carries one left behind after
-          a dialog was dismissed. */}
-      {actionError !== null && confirmingRow === null && !confirmingBulk && <ErrorNote>{actionError}</ErrorNote>}
-      {actionNote !== null && <InfoNote>{actionNote}</InfoNote>}
 
-      {/* NOTHING AT ALL WHEN THERE ARE NO GROUPS. An empty worklist already
-          says so through the grid's own empty state, and a second card beside it
+      {/* NOTHING AT ALL WHEN THERE ARE NO GROUPS. An empty table already says
+          so through the grid's own empty state, and a second note beside it
           announcing zero batches would be a different way of saying the same
           nothing, in a heavier frame. */}
-      {batchGroups.length > 0 && (
-        <Card>
-          <CardHeader
-            title="Batches ready to send to CWD"
-            subtitle={`${countLabel(batchGroups.length, 'batch', 'batches')} in the worklist below`}
-          />
-          <CardBody className="pt-0">
-            <ul className="divide-y">
-              {batchGroups.map((group) => {
-                // Narrowed once, here, rather than asserted at each use: the two
-                // action buttons exist only on the branch where this is a string,
-                // which is exactly the rule the batchless group encodes.
-                const batchId = group.batchId
-                const key = batchId ?? NO_BATCH_KEY
-                const downloading = batchId !== null && downloadingBatch === batchId
-                const sending = batchId !== null && sendingBatch === batchId
-                const sent = sentNote.get(key)
-                const noSheet = noSheetNote.get(key)
-                const failed = downloadError.get(key)
-                return (
-                  <li key={key} className="flex flex-wrap items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {batchId === null ? (
-                          // A legacy pre-batch row. Labelled for what it is: no
-                          // placeholder id is invented, because an id the
-                          // platform does not hold is not an id, and the rows are
-                          // not hidden either, because they are still awaiting
-                          // activation and still on the worklist below.
-                          <span className="text-[13px] font-medium text-foreground">No batch</span>
-                        ) : (
-                          <Link to={`/batches/${batchId}`} className="underline underline-offset-2">
-                            <CodeChip>{batchId}</CodeChip>
-                          </Link>
-                        )}
-                        <span className="text-[13px] text-muted-foreground">{bankLabel(group.bankCodes)}</span>
-                      </div>
-                      <p className="flex flex-wrap items-center gap-x-2 text-[13px] text-muted-foreground">
-                        <span className="tabular-nums">
-                          {countLabel(group.dispatchIds.length, 'dispatch', 'dispatches')}
-                        </span>
-                        <span aria-hidden="true">&middot;</span>
-                        {/* Devices, because the sheet carries one row per device
-                            and that is the number the CWD will see. */}
-                        <span className="tabular-nums">{countLabel(group.deviceCount, 'device', 'devices')}</span>
-                      </p>
-                      {sent !== undefined && <p className="text-[13px] text-foreground">{sent}</p>}
-                      {noSheet !== undefined && <p className="text-[13px] text-muted-foreground">{noSheet}</p>}
-                      {failed !== undefined && (
-                        <p role="alert" className="text-[13px] text-destructive">
-                          {failed}
-                        </p>
-                      )}
-                    </div>
-                    {batchId === null ? (
-                      <p className="max-w-sm text-[13px] text-muted-foreground">
-                        A download needs a batch to name, so there is no sheet and no send here. These rows are still on
-                        the worklist below and can still be marked activated one at a time.
-                      </p>
-                    ) : (
-                      <div className="flex shrink-0 flex-wrap gap-2">
-                        {/* Only what is genuinely busy is disabled. One batch
-                            downloading must not make the whole card look frozen,
-                            which is what a page-wide busy flag would do. */}
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          aria-label={`Download Excel for ${batchId}`}
-                          disabled={downloading}
-                          loading={downloading}
-                          onClick={() => {
-                            void handleDownloadSheet(batchId)
-                          }}
-                        >
-                          Download Excel
-                        </Button>
-                        <Button
-                          size="sm"
-                          aria-label={`Mark ${batchId} sent to CWD`}
-                          disabled={sending}
-                          loading={sending}
-                          onClick={() => {
-                            // Opens the confirmation only. The write fires from
-                            // the dialog, never from here.
-                            setSendError(null)
-                            setConfirmingBatch({
-                              batchId,
-                              dispatchIds: group.dispatchIds,
-                              deviceCount: group.deviceCount,
-                            })
-                          }}
-                        >
-                          Mark sent to CWD
-                        </Button>
-                      </div>
-                    )}
-                  </li>
-                )
-              })}
-            </ul>
-          </CardBody>
-        </Card>
+      {pendingGroups.length > 0 && (
+        <InfoNote>
+          {countLabel(pendingGroups.length, 'batch', 'batches')} still with the print vendor, not yet dispatched:{' '}
+          {pendingGroups
+            .map((g) => `${g.batchId ?? ''} (${String(g.readyDispatches)} of ${String(g.dispatchIds.length)} shipped)`)
+            .join(', ')}
+          . A batch becomes activatable once every one of its soundbox dispatches has shipped.
+        </InfoNote>
       )}
 
       <Card>
         <CardHeader
-          title="Awaiting activation"
-          subtitle={`${visibleRows.length} ${visibleRows.length === 1 ? 'row' : 'rows'}`}
-          actions={
-            <Button
-              size="sm"
-              disabled={selected.size === 0 || bulkBusy}
-              onClick={() => {
-                setActionError(null)
-                setActionNote(null)
-                setConfirmingBulk(true)
-              }}
-            >
-              {selected.size === 0 ? 'Mark selected activated' : `Mark ${selected.size} activated`}
-            </Button>
-          }
+          title="Batches ready for activation"
+          subtitle={`${countLabel(readyGroups.length, 'batch', 'batches')}, dispatched by vendor`}
         />
         <Toolbar className="px-5 pb-1">
-          <Field label="Search" htmlFor="actSearch" className="w-full sm:w-52">
+          <Field label="Batch ID" htmlFor="actBatch" className="w-full sm:w-64">
             <Input
-              id="actSearch"
-              placeholder="Dispatch, merchant or device…"
-              value={q}
-              onChange={(e) => setParam('q', e.target.value)}
-            />
-          </Field>
-          <Field label="Bank" htmlFor="actBank" className="w-full sm:w-48">
-            <MultiSelect
-              id="actBank"
-              placeholder="All banks"
-              options={[...new Set(rows.map((r) => stringField(r, 'bankCode') ?? ''))]
-                .filter(Boolean)
-                .map((code) => ({
-                  value: code,
-                  label: bankName(code),
-                  count: rows.filter((r) => stringField(r, 'bankCode') === code).length,
-                }))}
-              selected={bankSel}
-              onChange={(next) => setParam('bank', next.join(','))}
+              id="actBatch"
+              placeholder="Any batch"
+              value={batchQ}
+              onChange={(e) => setParam('batch', e.target.value)}
             />
           </Field>
           {anyFilter && (
@@ -871,109 +569,102 @@ export function ActivationPage() {
           )}
         </Toolbar>
         <DataGrid
-          columns={columns}
-          rows={visibleRows}
+          columns={batchColumns}
+          rows={readyGroups}
           loading={loading}
-          getRowKey={(row, index) => stringField(row, 'dispatchId') ?? String(index)}
+          getRowKey={(g) => g.batchId ?? NO_BATCH_KEY}
           searchable={false}
           pageSize={20}
           pageSizeOptions={[20, 50, 100]}
-          stickyFirstColumn
-          onRowClick={(row) => {
-            const id = stringField(row, 'dispatchId')
-            if (id !== null) navigate(`/dispatches/${id}`, { state: { fromSearch: searchParams.toString() } })
+          // A batchless group has nowhere to drill into: there is no
+          // /activation/batch/ page for a batch id that does not exist.
+          onRowClick={(g) => {
+            if (g.batchId !== null) navigate(`/activation/batch/${g.batchId}`)
           }}
-          emptyTitle={anyFilter ? 'No rows match these filters' : 'Nothing is awaiting activation'}
+          emptyTitle={anyFilter ? 'No batches match these filters' : 'Nothing is awaiting activation'}
           emptyMessage={
             anyFilter
               ? 'Loosen or clear the filters above to see the rest of the worklist.'
-              : 'Rows appear once a dispatched soundbox is waiting on the CWD confirmation.'
+              : 'Batches appear once a dispatched soundbox is waiting on the CWD confirmation.'
           }
         />
       </Card>
 
-      {confirmingRow !== null && (
+      {/* The activate confirm. Activation has no undo, so nothing on this
+          page writes on the first click. NO REMARK BOX: neither activate
+          route accepts a remark on the wire, and a field the server silently
+          drops would be a lie. */}
+      {confirmingActivate !== null && (
         <ConfirmDialog
           open
           onOpenChange={(next) => {
-            if (!next) {
-              setConfirmingRow(null)
-              setActionError(null)
-            }
+            if (!next) setConfirmingActivate(null)
           }}
-          // The thing being activated is the DEVICE and its SIM, so the title
-          // names the device serial(s); the merchant is context in the line
-          // below. A row with no serial paired yet falls back to the merchant.
-          title={`Mark ${
-            arrayField(confirmingRow, 'deviceIds').length > 0
-              ? arrayField(confirmingRow, 'deviceIds').join(', ')
-              : (stringField(confirmingRow, 'merchantDisplay') ?? 'this record')
-          } activated?`}
-          description={`Records that the CWD confirmed this device and its SIM for ${
-            stringField(confirmingRow, 'merchantDisplay') ?? 'this merchant'
-          }. This cannot be undone from here.`}
-          confirmLabel="Mark activated"
-          busy={busyId !== null}
-          error={actionError}
-          onConfirm={() => {
-            void handleActivate(confirmingRow)
-          }}
-        />
-      )}
-
-      {/* The batch send's are-you-sure. Same shared dialog, same shape, same
-          two buttons in the same order as the two activate paths, and for the
-          same reason: nothing on this page writes on the first click. NO REMARK
-          BOX, because /ops/assignments/request-activation accepts no remark on
-          the wire, and a field the server drops is a lie. */}
-      {confirmingBatch !== null && (
-        <ConfirmDialog
-          open
-          onOpenChange={(next) => {
-            if (!next) {
-              setConfirmingBatch(null)
-              setSendError(null)
-            }
-          }}
-          title={`Send the activation request for ${confirmingBatch.batchId} to the CWD?`}
-          // Says what this DOES and, just as importantly, what it does not do.
-          // An operator who read "sent to CWD" as "activated" would expect these
-          // rows to leave the worklist, and they do not.
-          description={`Records that the activation request for ${countLabel(
-            confirmingBatch.dispatchIds.length,
-            'dispatch',
-            'dispatches',
-          )} and ${countLabel(
-            confirmingBatch.deviceCount,
+          title={
+            confirmingActivate.batchId === null
+              ? 'Activate these devices?'
+              : `Activate the devices in ${confirmingActivate.batchId}?`
+          }
+          description={`Records that the CWD confirmed ${countLabel(
+            confirmingActivate.deviceCount,
             'device',
             'devices',
-          )} has gone out. It does not activate anything: these rows stay on the worklist until the CWD confirms each device.`}
-          confirmLabel="Mark sent to CWD"
-          busy={sendingBatch !== null}
-          error={sendError}
+          )} across ${countLabel(
+            confirmingActivate.dispatchIds.length,
+            'dispatch',
+            'dispatches',
+          )}. This does not touch delivery or courier status, and cannot be undone from here.`}
+          confirmLabel="Activate"
+          busy={activatingBatch !== null}
+          error={activateError.get(confirmingActivate.key) ?? null}
           onConfirm={() => {
-            void handleMarkSent(confirmingBatch)
+            void handleActivateBatch(confirmingActivate)
           }}
         />
       )}
 
-      <ConfirmDialog
-        open={confirmingBulk}
+      {/* The success dialog (18 Aug 2026, at the user's correction): centered,
+          reports what actually activated, and its primary action is where an
+          operator goes next to see it, the same shape a bank/inventory commit
+          already uses inline on their own pages. */}
+      <Dialog
+        open={activatedResult !== null}
         onOpenChange={(next) => {
-          if (!next) {
-            setConfirmingBulk(false)
-            setActionError(null)
-          }
+          if (!next) setActivatedResult(null)
         }}
-        title={`Mark ${String(selected.size)} ${selected.size === 1 ? 'record' : 'records'} activated?`}
-        description="Records that the CWD confirmed each device and SIM. This cannot be undone from here; each record reports its own result in the list."
-        confirmLabel="Mark activated"
-        busy={bulkBusy}
-        error={actionError}
-        onConfirm={() => {
-          void handleActivateSelected()
-        }}
-      />
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader className="items-center text-center">
+            <span className="flex size-12 items-center justify-center rounded-full bg-emerald-500/10">
+              <CheckCircle2 className="size-6 text-emerald-600" aria-hidden="true" />
+            </span>
+            <DialogTitle>
+              {activatedResult === null
+                ? ''
+                : countLabel(activatedResult.activated, 'device activated', 'devices activated')}
+            </DialogTitle>
+            <DialogDescription>
+              {activatedResult?.batchId === null || activatedResult === null
+                ? 'The CWD confirmation is recorded.'
+                : `The CWD confirmation for ${activatedResult.batchId} is recorded.`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-center">
+            <Button
+              type="button"
+              onClick={() => {
+                setActivatedResult(null)
+                navigate('/inventory')
+              }}
+            >
+              View inventory
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => setActivatedResult(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
