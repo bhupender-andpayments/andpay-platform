@@ -82,6 +82,48 @@ const BANK_MASTERS = [
     pin: null,
     mobile: '9900011122',
     email: 'ops@fnb.example',
+    parentTnntId: null,
+    hasLogo: false,
+  },
+]
+
+// A parent (GSCB, tnnt_p1) and its child (VSC Bank, tnnt_c1) for the grouped
+// list and parent-picker tests below. Kept separate from BANK_MASTERS so the
+// pre-existing tests above stay pinned to a single flat bank.
+const GROUPED_BANK_MASTERS = [
+  {
+    tnntId: 'tnnt_p1',
+    displayName: 'GSCB',
+    bankReferenceCode: 'GSCB',
+    status: 'ACTIVE',
+    address1: null,
+    address2: null,
+    address3: null,
+    city: 'Ahmedabad',
+    district: null,
+    country: 'IN',
+    pin: null,
+    mobile: '9000000001',
+    email: 'ops@gscb.example',
+    parentTnntId: null,
+    hasLogo: false,
+  },
+  {
+    tnntId: 'tnnt_c1',
+    displayName: 'VSC Bank',
+    bankReferenceCode: 'VSC',
+    status: 'ACTIVE',
+    address1: null,
+    address2: null,
+    address3: null,
+    city: 'Vadodara',
+    district: null,
+    country: 'IN',
+    pin: null,
+    mobile: '9000000002',
+    email: 'ops@vsc.example',
+    parentTnntId: 'tnnt_p1',
+    hasLogo: false,
   },
 ]
 
@@ -219,6 +261,31 @@ describe('master data views', () => {
     expect(calls.some((c) => c.url.includes('/ops/bank-masters'))).toBe(true)
   })
 
+  it('groups child banks under their parent with an expander', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(GROUPED_BANK_MASTERS)
+        return jsonResponse([])
+      }),
+    )
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+
+    // GSCB is both the display name and the bank ref code in this fixture, so
+    // "GSCB" alone matches two elements (the CodeChip and the name cell); the
+    // expander button carries the unambiguous accessible name instead.
+    expect(await screen.findByRole('button', { name: 'Show child banks of GSCB' })).toBeTruthy()
+    expect(screen.queryByText('VSC Bank')).toBeNull()
+    expect(screen.getByText('1 child')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show child banks of GSCB' }))
+
+    expect(await screen.findByText('VSC Bank')).toBeTruthy()
+    expect(screen.getByText('child')).toBeTruthy()
+  })
+
   it('Damage Reasons tab renders rows and distinguishes active/inactive without a fabricated status', async () => {
     const calls: Call[] = []
     stubAllReads(calls)
@@ -343,10 +410,13 @@ describe('master data views', () => {
       // icon-only button. Falling back to textContent still covers the tab
       // switches and the labelled create control exactly as before.
       const names = screen.getAllByRole('button').map((b) => b.getAttribute('aria-label') ?? b.textContent ?? '')
-      // Every button is a tab switch, this tab's ONE create control, or a
-      // per-row Edit button (one per row, accessible name starting "Edit ").
+      // Every button is a tab switch, this tab's ONE create control, a
+      // per-row Edit button (one per row, accessible name starting "Edit "),
+      // or (Bank Masters only, Task 7) a per-row "Add child" button. That last
+      // one is a NEW legitimate control landing with this task, not one of
+      // the still-deferred lifecycle actions the pattern below still guards.
       for (const name of names) {
-        expect([...tabLabels, control].includes(name) || /^Edit /.test(name)).toBe(true)
+        expect([...tabLabels, control].includes(name) || /^Edit /.test(name) || name === 'Add child').toBe(true)
       }
       // Suspend, activate and deactivate stay deferred under L9; edit does not
       // (see the describe block below).
@@ -492,6 +562,59 @@ describe('master data create dialogs', () => {
       mobile: '9000000001',
       email: 'ops@gscb.example',
     })
+  })
+
+  function stubGroupedWrites(calls: Call[]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit = { method: 'GET' }) => {
+        calls.push({ url, init })
+        if ((init.method ?? 'GET').toUpperCase() === 'POST') {
+          return jsonResponse({ deduped: false, tnntId: 'tnnt_c2' })
+        }
+        if (url.includes('/ops/bank-masters')) return jsonResponse(GROUPED_BANK_MASTERS)
+        return jsonResponse([])
+      }),
+    )
+  }
+
+  it('the Add dialog posts parentBankReferenceCode when a parent is picked', async () => {
+    const calls: Call[] = []
+    stubGroupedWrites(calls)
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Add bank master' }))
+
+    await type(/bank reference code/i, 'NEWB')
+    await type(/display name/i, 'New Bank')
+    await type(/address 1/i, '2 MG Road')
+    await type(/city/i, 'Surat')
+    await type(/district/i, 'Surat')
+    await type(/country/i, 'India')
+    await type(/pin/i, '395001')
+    await type(/mobile/i, '9000000009')
+    await type(/email/i, 'ops@newb.example')
+
+    await userEvent.selectOptions(screen.getByLabelText(/parent bank/i), 'GSCB')
+
+    const save = screen.getAllByRole('button', { name: 'Add bank master' }).at(-1) as HTMLButtonElement
+    await userEvent.click(save)
+
+    const body = await postedTo(calls, '/ops/bank-masters')
+    expect(body.parentBankReferenceCode).toBe('GSCB')
+  })
+
+  it('the Add dialog parent dropdown lists only top-level banks', async () => {
+    const calls: Call[] = []
+    stubGroupedWrites(calls)
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Add bank master' }))
+
+    const parentSelect = screen.getByLabelText(/parent bank/i) as HTMLSelectElement
+    const optionLabels = Array.from(parentSelect.options).map((o) => o.textContent ?? '')
+    expect(optionLabels.some((t) => t.includes('GSCB'))).toBe(true)
+    expect(optionLabels.some((t) => t.includes('VSC Bank'))).toBe(false)
   })
 
   it('the damage reason dialog posts the code and label as separate fields', async () => {

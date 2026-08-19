@@ -1,8 +1,8 @@
-import { createBankMaster, type BankMasterCreateBody } from '../../api/endpoints.js'
+import { createBankMaster, type BankMasterCreateBody, type BankMasterRow } from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { useAuth } from '../../auth/AuthContext.js'
 import { useToast } from '../../ui/Toast.js'
-import { Button, ErrorNote, Field, Input } from '../../ui/primitives.js'
+import { Button, ErrorNote, Field, Input, Select } from '../../ui/primitives.js'
 import {
   Dialog,
   DialogContent,
@@ -35,14 +35,22 @@ export function BankMasterCreateDialog({
   open,
   onOpenChange,
   onCreated,
+  parents,
+  presetParent,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: () => void
+  /** Top-level banks only (a child cannot itself be a parent). */
+  parents: BankMasterRow[]
+  /** Seeds the parent picker; the Add-child shortcut on a parent row. */
+  presetParent?: BankMasterRow
 }) {
   const { client } = useAuth()
   const { toast } = useToast()
-  const { f, set, filled, saving, error, save } = useCreateDialog(open)
+  const { f, set, setValue, filled, saving, error, save } = useCreateDialog(open, () =>
+    presetParent ? { parentBankReferenceCode: presetParent.bankReferenceCode } : ({} as Record<string, string>),
+  )
 
   const emailOk = /^\S+@\S+$/.test(f('email').trim())
   const mobileOk = /^\d{10}$/.test(f('mobile').trim())
@@ -66,6 +74,7 @@ export function BankMasterCreateDialog({
         pin: f('pin').trim(),
         mobile: f('mobile').trim(),
         email: f('email').trim(),
+        ...(f('parentBankReferenceCode').trim() !== '' ? { parentBankReferenceCode: f('parentBankReferenceCode').trim() } : {}),
       }
       const result = await createBankMaster(client, body, newIdempotencyKey())
       onOpenChange(false)
@@ -97,6 +106,20 @@ export function BankMasterCreateDialog({
             </Field>
             <Field label="Display name" htmlFor="bm-name">
               <Input id="bm-name" value={f('displayName')} onChange={set('displayName')} />
+            </Field>
+            <Field label="Parent bank (optional)" htmlFor="bm-parent" hint="Leave empty for a standalone or aggregator bank.">
+              <Select
+                id="bm-parent"
+                value={f('parentBankReferenceCode')}
+                onChange={(e) => setValue('parentBankReferenceCode', e.target.value)}
+              >
+                <option value="">None (top-level bank)</option>
+                {parents.map((p) => (
+                  <option key={p.tnntId} value={p.bankReferenceCode}>
+                    {p.displayName} ({p.bankReferenceCode})
+                  </option>
+                ))}
+              </Select>
             </Field>
           </div>
 

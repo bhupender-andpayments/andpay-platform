@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Pencil } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { VendorRegistryPage } from './VendorRegistryPage.js'
@@ -17,7 +17,8 @@ import {
   type DamageReasonRow,
   type BatchingConfigRow,
 } from '../../api/endpoints.js'
-import { PageHeader, Button, Card, CardHeader, Tabs, ErrorNote, StatusPill, CodeChip, SkeletonRows } from '../../ui/primitives.js'
+import { PageHeader, Button, Card, CardHeader, Tabs, ErrorNote, StatusPill, CodeChip, SkeletonRows, Input } from '../../ui/primitives.js'
+import { IconChevron, IconSearch } from '../../ui/icons.js'
 import { fmtDate, fmtNumber, shortId } from '../../ui/format.js'
 import { fmtWait } from '../fulfillment/BatchingRules.js'
 
@@ -77,14 +78,80 @@ export function MasterDataPage() {
 }
 
 // -- Bank masters (GET /ops/bank-masters, identity.tenant list) ------- //
+//
+// GROUPED HIERARCHY (Task 7, 2026-08-19): a bank master can carry a
+// parentTnntId (Task 6's identity write, spec 13). The view renders each
+// top-level bank followed by its children, collapsed by default behind an
+// expander, rather than the old flat list. "Parent" here means any row not
+// classified as a child below, which INCLUDES a row whose parentTnntId points
+// at nothing in the current list (never expected in practice, but falling
+// back to top-level beats a row silently vanishing from the table).
 
-function bankMasterColumns(onEdit: (row: BankMasterRow) => void): ReadonlyArray<DataTableColumn<BankMasterRow>> {
+function isChildRow(r: BankMasterRow, rows: readonly BankMasterRow[]): boolean {
+  return r.parentTnntId !== null && rows.some((p) => p.tnntId === r.parentTnntId)
+}
+
+function childrenOf(p: BankMasterRow, rows: readonly BankMasterRow[]): BankMasterRow[] {
+  return rows.filter((r) => r.parentTnntId === p.tnntId)
+}
+
+function bankMasterColumns(
+  onEdit: (row: BankMasterRow) => void,
+  onAddChild: (row: BankMasterRow) => void,
+  rows: readonly BankMasterRow[],
+  expanded: Set<string>,
+  toggle: (tnntId: string) => void,
+): ReadonlyArray<DataTableColumn<BankMasterRow>> {
   return [
-    { key: 'bankReferenceCode', header: 'Bank ref code', cell: (r) => <CodeChip>{r.bankReferenceCode}</CodeChip> },
+    {
+      key: 'bankReferenceCode',
+      header: 'Bank ref code',
+      cell: (r) => {
+        if (isChildRow(r, rows)) {
+          return (
+            <span className="flex items-center gap-2 pl-6">
+              <CodeChip>{r.bankReferenceCode}</CodeChip>
+              <CodeChip>child</CodeChip>
+            </span>
+          )
+        }
+        const kids = childrenOf(r, rows)
+        if (kids.length === 0) return <CodeChip>{r.bankReferenceCode}</CodeChip>
+        const isOpen = expanded.has(r.tnntId)
+        return (
+          <span className="flex items-center gap-2">
+            <button
+              type="button"
+              aria-label={`${isOpen ? 'Hide' : 'Show'} child banks of ${r.displayName}`}
+              className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+              onClick={(e) => {
+                e.stopPropagation()
+                toggle(r.tnntId)
+              }}
+            >
+              <IconChevron width={14} height={14} className={isOpen ? 'rotate-90' : ''} aria-hidden="true" />
+            </button>
+            <CodeChip>{r.bankReferenceCode}</CodeChip>
+          </span>
+        )
+      },
+    },
     {
       key: 'displayName',
       header: 'Display name',
-      cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
+      cell: (r) => {
+        const kids = childrenOf(r, rows)
+        return (
+          <span className="flex items-center gap-2">
+            <span className="font-medium text-foreground">{r.displayName}</span>
+            {kids.length > 0 && (
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                {kids.length} child{kids.length === 1 ? '' : 'ren'}
+              </span>
+            )}
+          </span>
+        )
+      },
     },
     { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
     { key: 'city', header: 'City', cell: (r) => r.city ?? <span className="text-muted-foreground">-</span> },
@@ -93,20 +160,39 @@ function bankMasterColumns(onEdit: (row: BankMasterRow) => void): ReadonlyArray<
     { key: 'email', header: 'Email', cell: (r) => r.email ?? <span className="text-muted-foreground">-</span> },
     { key: 'tnntId', header: 'Tenant ID', cell: (r) => <CodeChip>{shortId(r.tnntId)}</CodeChip> },
     {
+      key: 'logo',
+      header: 'Logo',
+      cell: (r) => (r.hasLogo ? <StatusPill value="SET" /> : <span className="text-muted-foreground">none</span>),
+    },
+    {
       key: 'actions',
       header: '',
       cell: (r) => (
-        <button
-          type="button"
-          aria-label={`Edit bank master ${r.displayName}`}
-          className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-          onClick={(e) => {
-            e.stopPropagation()
-            onEdit(r)
-          }}
-        >
-          <Pencil className="size-3.5" aria-hidden="true" />
-        </button>
+        <span className="flex items-center justify-end gap-2">
+          {!isChildRow(r, rows) && (
+            <button
+              type="button"
+              className="whitespace-nowrap rounded px-1 text-xs font-medium text-primary transition-colors hover:underline"
+              onClick={(e) => {
+                e.stopPropagation()
+                onAddChild(r)
+              }}
+            >
+              Add child
+            </button>
+          )}
+          <button
+            type="button"
+            aria-label={`Edit bank master ${r.displayName}`}
+            className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation()
+              onEdit(r)
+            }}
+          >
+            <Pencil className="size-3.5" aria-hidden="true" />
+          </button>
+        </span>
       ),
     },
   ]
@@ -118,6 +204,18 @@ function BankMastersView() {
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<BankMasterRow | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [addingChildOf, setAddingChildOf] = useState<BankMasterRow | null>(null)
+  const [query, setQuery] = useState('')
+
+  const toggle = useCallback((tnntId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(tnntId)) next.delete(tnntId)
+      else next.add(tnntId)
+      return next
+    })
+  }, [])
 
   const load = useCallback((): void => {
     getBankMasters(client)
@@ -137,6 +235,36 @@ function BankMastersView() {
     load()
   }, [load])
 
+  // `rows` is TYPED BankMasterRow[], but a failed read arrives here as an
+  // error envelope, not a list (see the comment in `load` above), so every
+  // grouping helper below must guard against a non-array before touching it.
+  const safeRows = Array.isArray(rows) ? rows : []
+
+  // Grouped display order: each top-level bank, then (when expanded, or when
+  // a search matches a child) its children directly beneath it. A child whose
+  // parent id points at a row not in the list (never expected) falls back to
+  // top-level rather than vanishing; see isChildRow above. When the read
+  // failed, `rows` itself (the error envelope) is what DataTable must see, so
+  // this returns it unchanged rather than the always-empty `safeRows`.
+  const displayRows = useMemo(() => {
+    if (!Array.isArray(rows)) return rows
+    const q = query.trim().toLowerCase()
+    const matches = (r: BankMasterRow) =>
+      q === '' || r.displayName.toLowerCase().includes(q) || r.bankReferenceCode.toLowerCase().includes(q)
+    const parents = rows.filter((r) => !isChildRow(r, rows))
+    const out: BankMasterRow[] = []
+    for (const p of parents) {
+      const kids = childrenOf(p, rows)
+      const kidMatch = kids.some(matches)
+      if (!matches(p) && !kidMatch) continue
+      out.push(p)
+      if (expanded.has(p.tnntId) || (q !== '' && kidMatch)) out.push(...kids.filter((k) => q === '' || matches(k)))
+    }
+    return out
+  }, [rows, expanded, query])
+
+  const parents = useMemo(() => safeRows.filter((r) => r.parentTnntId === null), [safeRows])
+
   return (
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
@@ -151,17 +279,45 @@ function BankMastersView() {
           }
         />
         {rows === null ? (
-          <SkeletonRows rows={5} cols={8} />
+          <SkeletonRows rows={5} cols={9} />
         ) : (
-          <DataTable
-            columns={bankMasterColumns(setEditing)}
-            rows={rows}
-            getRowKey={(r) => r.tnntId}
-            emptyMessage="No bank masters."
-          />
+          <>
+            <div className="px-4 pt-3">
+              <div className="relative w-full max-w-xs">
+                <IconSearch
+                  width={16}
+                  height={16}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <Input
+                  aria-label="Search bank masters"
+                  placeholder="Search…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  className="h-9 pl-9"
+                />
+              </div>
+            </div>
+            <DataTable
+              columns={bankMasterColumns(setEditing, setAddingChildOf, safeRows, expanded, toggle)}
+              rows={displayRows ?? []}
+              getRowKey={(r) => r.tnntId}
+              emptyMessage="No bank masters."
+            />
+          </>
         )}
       </Card>
-      <BankMasterCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} />
+      <BankMasterCreateDialog
+        open={adding || addingChildOf !== null}
+        onOpenChange={(next) => {
+          setAdding(next)
+          if (!next) setAddingChildOf(null)
+        }}
+        onCreated={load}
+        parents={parents}
+        presetParent={addingChildOf ?? undefined}
+      />
       {editing !== null && (
         <BankMasterEditDialog
           bank={editing}
