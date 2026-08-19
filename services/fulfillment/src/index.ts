@@ -148,6 +148,7 @@ export { type WorkQueueRow, readVendorWorkQueue, type HistoryRow, readVendorHist
 export { type PullXlsxResult, type PullPdfResult, pullDispatchPackageXlsx, pullTypePdf, PullDeniedError } from './vendor-pull.js'
 export {
   correctStatus,
+  bulkDeliverBatch,
   overrideTerminal,
   correctUnitStatus,
   recomposeArtifact,

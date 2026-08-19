@@ -477,6 +477,14 @@ export interface BatchEntryRow {
   // Not recipient PII: an opaque ingest coordinate, no name, address or number
   // in it. So the D104 default-exclude posture above is not breached.
   sourceEventId: string
+  // 19 Aug 2026 (demo need): the courier's own axis, not the dispatch's.
+  // dispatch_state above never reaches DELIVERED by design (it stops at
+  // DISPATCHED_BY_VENDOR, courier progress lives on shpt.status), so a batch
+  // whose shipments were corrected straight to DELIVERED (the "Mark all
+  // delivered" shortcut, or any normal courier update) showed no change at
+  // all in this list. Null until a shipment exists for the leg (soundbox via
+  // unit.shipment, collateral via pending_pool_entry.collateral_shipment).
+  courierStatus?: string | null
 }
 
 interface BatchEntryDbRow {
@@ -494,6 +502,7 @@ interface BatchEntryDbRow {
   ship_to_superseded: boolean
   dispatch_group: string | null
   source_event_id: string
+  courier_status: string | null
 }
 
 function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
@@ -512,6 +521,7 @@ function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
     shipToSuperseded: r.ship_to_superseded,
     dispatchGroup: r.dispatch_group,
     sourceEventId: r.source_event_id,
+    courierStatus: r.courier_status,
   }
 }
 
@@ -716,7 +726,11 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
       SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             dispatch_group, source_event_id
+             dispatch_group, source_event_id,
+             COALESCE(
+               (SELECT s.status FROM unit u JOIN shpt s ON s.id = u.shipment WHERE u.asgn_id = pending_pool_entry.asgn_id),
+               (SELECT s.status FROM shpt s WHERE s.id = pending_pool_entry.collateral_shipment)
+             ) AS courier_status
       FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
       ORDER BY bank_reference_code, branch_code, merchant_display_name, dispatch_group, asgn_id
     `
@@ -825,6 +839,10 @@ const POOL_ENTRY_COLUMNS = `asgn_id::text AS asgn_id, merchant_display_name, mer
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
              dispatch_group, source_event_id,
+             COALESCE(
+               (SELECT s.status FROM unit u JOIN shpt s ON s.id = u.shipment WHERE u.asgn_id = pending_pool_entry.asgn_id),
+               (SELECT s.status FROM shpt s WHERE s.id = pending_pool_entry.collateral_shipment)
+             ) AS courier_status,
              batch::text AS batch, created_at,
              tenant_id::text AS tenant_id, program_id::text AS program_id,
              hold_reason`

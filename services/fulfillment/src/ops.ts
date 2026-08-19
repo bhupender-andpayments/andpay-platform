@@ -215,6 +215,76 @@ export async function correctStatus(
 }
 
 /**
+ * The batch-wide "mark all delivered" demo/ops shortcut. Every dispatch in a
+ * batch has its shipment corrected to DELIVERED, ONE call to `correctStatus`
+ * per shipment: no new C3 or audit logic here, this is pure orchestration
+ * over the already-audited single-shipment path.
+ *
+ * A batch's dispatches reach a shpt_ two different ways (D-24's SOUNDBOX/
+ * COLLATERAL split): a SOUNDBOX leg's shipment lives on the paired unit
+ * (`unit.shipment`, once a device has been paired by the return sheet); a
+ * COLLATERAL leg's shipment is `pending_pool_entry.collateral_shipment`
+ * directly. Both are read here (read-only, no scope needed for a SELECT
+ * against a permissive-RLS table), never the reverse (no shpt -> batch
+ * column exists, by design: `shpt` doesn't know what batch it came from).
+ *
+ * A leg with NO shipment yet (still short of a paired device / vendor
+ * return) is silently skipped, same as one already DELIVERED or RETURNED
+ * (correctStatus's own C3 guard would no-op it anyway; skipping here just
+ * avoids the wasted call). The per-shipment clientKey is derived from the
+ * caller's own key plus the shpt id, so a retry of the WHOLE bulk call
+ * cannot double-apply to any one shipment, while distinct shipments in the
+ * same call each get their own dedup identity.
+ */
+export async function bulkDeliverBatch(
+  db: FulfillmentDb,
+  args: { batchId: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ delivered: number; skipped: number; failed: number }> {
+  const batchUuid = toUuid(args.batchId)
+  const rows = await db.$queryRaw<{ shpt_id: string }[]>`
+    SELECT DISTINCT s.shpt_id::text AS shpt_id
+    FROM (
+      SELECT u.shipment AS shpt_id
+        FROM pending_pool_entry p
+        JOIN unit u ON u.asgn_id = p.asgn_id
+       WHERE p.batch = ${batchUuid}::uuid AND u.shipment IS NOT NULL
+      UNION
+      SELECT p.collateral_shipment AS shpt_id
+        FROM pending_pool_entry p
+       WHERE p.batch = ${batchUuid}::uuid AND p.collateral_shipment IS NOT NULL
+    ) s(shpt_id)
+    JOIN shpt ON shpt.id = s.shpt_id
+    WHERE shpt.status NOT IN ('DELIVERED', 'RETURNED')
+  `
+
+  let delivered = 0
+  let skipped = 0
+  let failed = 0
+  const now = new Date()
+  for (const r of rows) {
+    try {
+      const shptId = fromUuid('shpt', r.shpt_id)
+      const { deduped, outcome } = await correctStatus(db, {
+        shptId,
+        status: 'DELIVERED',
+        courierTimestamp: now,
+        // ':' not '|': clientKey is a LEAF segment in the 06.A key grammar and
+        // must never contain the DELIMITER (@andpay/keys assertLeaf), which is
+        // exactly what broke this the first time.
+        clientKey: `${args.clientKey}:${r.shpt_id}`,
+        actorId: args.actorId,
+        traceId: args.traceId,
+      })
+      if (!deduped && outcome === 'advanced') delivered++
+      else skipped++
+    } catch {
+      failed++
+    }
+  }
+  return { delivered, skipped, failed }
+}
+
+/**
  * The privileged terminal override: the ONLY sanctioned C3 bypass (it can
  * reopen a locked terminal state, DELIVERED or RETURNED). A mandatory,
  * non-empty overrideReason is enforced here as defense-in-depth (the edge,

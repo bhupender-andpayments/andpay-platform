@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto'
 import { authorize, requireStepUp, OPS_STEP_UP_CATALOG } from '@andpay/authz'
 import {
   correctStatus,
+  bulkDeliverBatch,
   overrideTerminal,
   recomposeArtifact,
   holdRecord,
@@ -800,6 +801,27 @@ export class OpsController {
       traceId: g.traceId,
     })
     return result
+  }
+
+  // The batch-wide "mark all delivered" shortcut (19 Aug 2026, demo need):
+  // one call to correctStatus per shipment in the batch, so it rides the same
+  // `ops:status-correction` permission and step-up posture as a single
+  // correction, rather than a new permission for what is, underneath, the
+  // same write repeated.
+  @Post('batches/:id/deliver-all')
+  @HttpCode(200)
+  async bulkDeliver(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ delivered: number; skipped: number; failed: number }> {
+    const g = await this.gate(req, 'ops:status-correction', idem, [id])
+    return bulkDeliverBatch(this.deps.fulfillmentDb, {
+      batchId: id,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
   }
 
   // Manual unit-status correction (2026-08-13 ruling): the device page's edit

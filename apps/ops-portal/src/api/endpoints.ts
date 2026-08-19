@@ -501,6 +501,12 @@ export interface BatchEntryRow {
   stickerCount: number
   poolStatus: string
   dispatchState: string | null
+  // 19 Aug 2026: the courier's own axis. dispatchState never reaches
+  // DELIVERED (it stops at DISPATCHED_BY_VENDOR by design); this is what
+  // moves past that once a shipment exists and the courier (or an ops
+  // correction, e.g. "Mark all delivered") advances it. Null until a
+  // shipment exists for the leg.
+  courierStatus?: string | null
   shipToSuperseded: boolean
   // Task 6 (2026-08-11 dispatch-group split): NULL is a legacy, pre-split
   // combined row; 'SOUNDBOX' / 'COLLATERAL' otherwise. See
@@ -1647,6 +1653,17 @@ export function correctStatus(c: Client, id: string, body: StatusCorrectionBody,
     method: 'POST',
     path: `/ops/shipments/${id}/correct`,
     body,
+    idempotencyKey,
+  })
+}
+
+// The batch-wide "mark all delivered" shortcut (19 Aug 2026, demo need). One
+// call, POST /ops/batches/:id/deliver-all, corrects every shipment in the
+// batch to DELIVERED; the summary names how many actually moved.
+export function bulkDeliverBatch(c: Client, batchId: string, idempotencyKey: string) {
+  return c.request<{ delivered: number; skipped: number; failed: number }>({
+    method: 'POST',
+    path: `/ops/batches/${batchId}/deliver-all`,
     idempotencyKey,
   })
 }

@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { Boxes, Check, CheckCircle2, Copy, Download, Eye, ExternalLink, FileSpreadsheet, Loader2, Send, Upload } from 'lucide-react'
+import { Boxes, Check, CheckCircle2, Copy, Download, Eye, ExternalLink, FileSpreadsheet, Loader2, PackageCheck, Send, Upload } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CodeChip, ErrorNote, InfoNote, EmptyState, Spinner, StatusPill } from '../../../ui/primitives.js'
@@ -34,6 +34,7 @@ import { COLLATERAL_GROUP_LABELS, excelGroupsFor } from '../../../lib/dispatchGr
 import { useAuth } from '../../../auth/AuthContext.js'
 import {
   closeBatch,
+  bulkDeliverBatch,
   downloadDispatchExcel,
   getBatchDetail,
   sendBatchToVendor,
@@ -106,6 +107,13 @@ export function BatchGeneratePage() {
   const [closeBusy, setCloseBusy] = useState(false)
   const [closeError, setCloseError] = useState<string | null>(null)
 
+  const [deliverOpen, setDeliverOpen] = useState(false)
+  const [deliverBusy, setDeliverBusy] = useState(false)
+  const [deliverError, setDeliverError] = useState<string | null>(null)
+  const [deliverResult, setDeliverResult] = useState<{ delivered: number; skipped: number; failed: number } | null>(
+    null,
+  )
+
   /**
    * Re-read the batch. Separate from the mount effect because compose lands
    * asynchronously: a batch opened the instant it formed has entries but no
@@ -159,6 +167,35 @@ export function BatchGeneratePage() {
       setSendError(sendToVendorErrorMessage(err, 'Could not send this batch.'))
     } finally {
       setSendBusy(false)
+    }
+  }, [client, btchId, reload])
+
+  // 19 Aug 2026 (demo need): bulk-correct every shipment in this batch to
+  // DELIVERED in one click. Pure orchestration on the server (bulkDeliverBatch
+  // calls the same audited correctStatus once per shipment); this handler is
+  // the same shape as confirmSend/confirmClose above, kept open for a beat
+  // after success so the summary counts are readable before the dialog closes.
+  const confirmDeliverAll = useCallback(async (): Promise<void> => {
+    if (btchId === undefined) return
+    setDeliverBusy(true)
+    setDeliverError(null)
+    try {
+      const result = await bulkDeliverBatch(client, btchId, newIdempotencyKey())
+      setDeliverResult(result)
+      // A per-shipment failure is swallowed by the server into the count (it
+      // keeps going rather than aborting the rest), so the only place it is
+      // visible at all is here: surfaced as a real error, not folded quietly
+      // into the neutral description text beside the other two counts.
+      if (result.failed > 0) {
+        setDeliverError(
+          `${String(result.failed)} of ${String(result.delivered + result.skipped + result.failed)} shipments could not be marked delivered. ${String(result.delivered)} others in this batch went through. Try again, it only retries the ones still not delivered.`,
+        )
+      }
+      await reload()
+    } catch (err) {
+      setDeliverError(err instanceof Error ? err.message : 'Could not mark this batch delivered.')
+    } finally {
+      setDeliverBusy(false)
     }
   }, [client, btchId, reload])
 
@@ -321,6 +358,12 @@ export function BatchGeneratePage() {
     detail === null || detail.batch.status === 'BATCHED'
       ? null
       : detail.entries.filter((e) => e.dispatchState === 'DISPATCHED_BY_VENDOR').length
+  // Gates "Mark all delivered" (19 Aug 2026, at the user's direction): every
+  // dispatch in the batch must have reached the vendor first, not just some
+  // of them. dispatchState only ever reaches DISPATCHED_BY_VENDOR (courier
+  // progress past that lives on shpt.status, not here), so this is the same
+  // count the "N of M dispatched" pill above already renders from.
+  const allDispatchedByVendor = dispatchedCount !== null && detail !== null && dispatchedCount === detail.entries.length
   const settlement = detail.settlement
   // An ABSENT settlement read is not permission to close. It means this server
   // predates the read (the field is optional for exactly that reason), so the
@@ -402,13 +445,22 @@ export function BatchGeneratePage() {
       // A StatusPill, like every other status cell on the portal (18 Aug 2026,
       // at the user's correction): this column was the one rendering a raw
       // uppercase token as plain text.
-      cell: (e) =>
-        e.dispatchState === null ? (
+      //
+      // courierStatus WINS once it exists (19 Aug 2026): dispatchState never
+      // reaches DELIVERED by design, it stops at DISPATCHED_BY_VENDOR, so a
+      // shipment corrected past that (a courier update, or "Mark all
+      // delivered") showed no change at all in this column. courierStatus is
+      // null until a shipment exists for the leg, so dispatchState is still
+      // the right word for everything before the vendor has shipped it.
+      cell: (e) => {
+        const shown = e.courierStatus ?? e.dispatchState
+        return shown === null ? (
           <span className="text-muted-foreground">not dispatched</span>
         ) : (
-          <StatusPill value={e.dispatchState} />
-        ),
-      sortValue: (e) => e.dispatchState ?? '',
+          <StatusPill value={shown} />
+        )
+      },
+      sortValue: (e) => e.courierStatus ?? e.dispatchState ?? '',
     },
     // A separate "Settled" column was tried here and cut on sight (18 Aug 2026,
     // at the user's correction): State above already answers "what is this
@@ -528,6 +580,34 @@ export function BatchGeneratePage() {
               }}
             >
               <CheckCircle2 className="size-4" aria-hidden="true" /> Close batch
+            </Button>
+          )}
+          {/* 19 Aug 2026, demo shortcut: bulk-correct every shipment in this
+              batch straight to DELIVERED, one click instead of one dispatch at
+              a time.
+
+              GATED on every dispatch having reached the vendor (19 Aug 2026,
+              at the user's direction): disabled, not hidden, while any
+              dispatch is still short of DISPATCHED_BY_VENDOR, with the same
+              N-of-M count the pill above already shows, so the reason is on
+              screen rather than a silently missing button. */}
+          {detail.batch.status === 'SENT_TO_PRINT_VENDOR' && (
+            <Button
+              variant="secondary"
+              disabled={!allDispatchedByVendor}
+              title={
+                allDispatchedByVendor
+                  ? undefined
+                  : `Only ${String(dispatchedCount)} of ${String(detail.entries.length)} dispatches have reached the vendor so far. Every dispatch must be dispatched by vendor before the batch can be marked delivered.`
+              }
+              aria-label={`Mark every dispatch in batch ${detail.batch.id} delivered`}
+              onClick={() => {
+                setDeliverError(null)
+                setDeliverResult(null)
+                setDeliverOpen(true)
+              }}
+            >
+              <PackageCheck className="size-4" aria-hidden="true" /> Mark all delivered
             </Button>
           )}
         </div>
@@ -942,6 +1022,33 @@ export function BatchGeneratePage() {
           </div>
         )}
       </ConfirmDialog>
+
+      <ConfirmDialog
+        open={deliverOpen}
+        title="Mark every dispatch in this batch delivered"
+        description={
+          deliverResult !== null
+            ? `${String(deliverResult.delivered)} shipment(s) moved to delivered, ${String(deliverResult.skipped)} already settled or not yet paired, ${String(deliverResult.failed)} failed.`
+            : `Every shipment in ${detail.batch.id} still short of delivered is corrected to DELIVERED. A dispatch with no device paired yet has no shipment and is skipped, not failed.`
+        }
+        confirmLabel={deliverResult !== null ? 'Done' : 'Mark all delivered'}
+        busy={deliverBusy}
+        error={deliverError}
+        onConfirm={() => {
+          if (deliverResult !== null) {
+            setDeliverOpen(false)
+            return
+          }
+          void confirmDeliverAll()
+        }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeliverOpen(false)
+            setDeliverError(null)
+            setDeliverResult(null)
+          }
+        }}
+      />
 
       <ConfirmDialog
         open={sendOpen}
