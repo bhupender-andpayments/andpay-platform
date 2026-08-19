@@ -140,6 +140,59 @@ describe('createBankMaster (BRD Annexure D)', () => {
     expect(await db.tenant.count()).toBe(1)
     expect(await auditRowsFor('ops:bank-master-create')).toHaveLength(1)
   })
+
+  it('creates a child bank under a parent resolved by bank reference code', async () => {
+    const parent = await createBankMaster(db, createArgs())
+    const child = await createBankMaster(
+      db,
+      createArgs({
+        bankReferenceCode: 'VSC',
+        displayName: 'VSC Bank',
+        parentBankReferenceCode: 'BREF-ADMIN-1',
+        clientKey: randomUUID(),
+      }),
+    )
+    expect(child.tnntId?.startsWith('tnnt_')).toBe(true)
+    const rows = await listBankMasters(db)
+    const childRow = rows.find((r) => r.bankReferenceCode === 'VSC')!
+    expect(childRow.parentTnntId).toBe(parent.tnntId)
+    const parentRow = rows.find((r) => r.bankReferenceCode === 'BREF-ADMIN-1')!
+    expect(parentRow.parentTnntId).toBeNull()
+  })
+
+  it('rejects an unknown parent bank reference code', async () => {
+    await expect(
+      createBankMaster(db, createArgs({ parentBankReferenceCode: 'NOPE', clientKey: randomUUID() })),
+    ).rejects.toMatchObject({ kind: 'invalid', message: 'no bank master with this parent bank reference code' })
+  })
+
+  it('rejects a parent that is itself a child (one level only)', async () => {
+    await createBankMaster(db, createArgs())
+    await createBankMaster(
+      db,
+      createArgs({
+        bankReferenceCode: 'VSC',
+        displayName: 'VSC Bank',
+        parentBankReferenceCode: 'BREF-ADMIN-1',
+        clientKey: randomUUID(),
+      }),
+    )
+    await expect(
+      createBankMaster(
+        db,
+        createArgs({ bankReferenceCode: 'DEEP', displayName: 'Too Deep', parentBankReferenceCode: 'VSC', clientKey: randomUUID() }),
+      ),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+  })
+
+  it('rejects a bank naming itself as parent', async () => {
+    await expect(
+      createBankMaster(
+        db,
+        createArgs({ parentBankReferenceCode: 'BREF-ADMIN-1', clientKey: randomUUID() }),
+      ),
+    ).rejects.toMatchObject({ kind: 'invalid', message: 'a bank cannot be its own parent' })
+  })
 })
 
 describe('editBankMaster (BRD Annexure D.4)', () => {

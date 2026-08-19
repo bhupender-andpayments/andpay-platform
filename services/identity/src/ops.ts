@@ -121,6 +121,11 @@ export interface CreateBankMasterInput extends BankMasterAddressContact {
   // existing (that would silently hand the admin an existing bank's row).
   bankReferenceCode: string
   displayName: string
+  // Optional: the bank reference code of the PARENT (aggregator) bank. The
+  // operator supplies a code, never an id; it is resolved server-side inside
+  // the same transaction. One level only: a code that belongs to a child is
+  // rejected. Absent = top-level bank.
+  parentBankReferenceCode?: string
   clientKey: string
   actorId: string
   traceId: string
@@ -163,6 +168,7 @@ export interface BankMasterRow {
   pin: string | null
   mobile: string | null
   email: string | null
+  parentTnntId: string | null
 }
 
 interface BankMasterDbRow {
@@ -179,6 +185,7 @@ interface BankMasterDbRow {
   pin: string | null
   mobile: string | null
   email: string | null
+  parent_tenant_id: string | null
 }
 
 function toBankMasterRow(r: BankMasterDbRow): BankMasterRow {
@@ -196,6 +203,7 @@ function toBankMasterRow(r: BankMasterDbRow): BankMasterRow {
     pin: r.pin,
     mobile: r.mobile,
     email: r.email,
+    parentTnntId: r.parent_tenant_id === null ? null : fromUuid('tnnt', r.parent_tenant_id),
   }
 }
 
@@ -243,6 +251,11 @@ export async function createBankMaster(
   const address2 = args.address2?.trim() ?? null
   const address3 = args.address3?.trim() ?? null
 
+  const parentRef = args.parentBankReferenceCode?.trim() || null
+  if (parentRef !== null && parentRef === bankReferenceCode) {
+    throw new OpsClientError('invalid', 'a bank cannot be its own parent')
+  }
+
   const candidate = toUuid(newId('tnnt'))
   const tnntId = fromUuid('tnnt', candidate)
 
@@ -251,15 +264,31 @@ export async function createBankMaster(
     ran = await db.$transaction(async (tx: Tx) => {
       await enterWriteRole(tx, 'identity_write')
       return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:bank-master-create'), async () => {
+        // Resolve the optional parent (spec 2026-08-19). One level only.
+        let parentUuid: string | null = null
+        if (parentRef !== null) {
+          const parents = await tx.$queryRaw<{ id: string; parent_tenant_id: string | null }[]>`
+            SELECT id::text AS id, parent_tenant_id::text AS parent_tenant_id
+            FROM tenant WHERE bank_reference_code = ${parentRef}
+          `
+          if (parents.length === 0) {
+            throw new OpsClientError('invalid', 'no bank master with this parent bank reference code')
+          }
+          if (parents[0]!.parent_tenant_id !== null) {
+            throw new OpsClientError('invalid', 'the parent bank is itself a child; only one level of hierarchy is allowed')
+          }
+          parentUuid = parents[0]!.id
+        }
+
         // PLAIN INSERT (no ON CONFLICT): a duplicate bank_reference_code raises
         // 23505, caught below and mapped to a 4xx. status defaults ACTIVE, the
         // same default resolveTenant's auto-mint uses.
         await tx.$executeRaw`
           INSERT INTO tenant
-            (id, display_name, bank_reference_code, status,
+            (id, display_name, bank_reference_code, status, parent_tenant_id,
              address1, address2, address3, city, district, country, pin, mobile, email)
           VALUES
-            (${candidate}::uuid, ${displayName}, ${bankReferenceCode}, 'ACTIVE',
+            (${candidate}::uuid, ${displayName}, ${bankReferenceCode}, 'ACTIVE', ${parentUuid}::uuid,
              ${address1}, ${address2}, ${address3}, ${city}, ${district}, ${country}, ${pin}, ${mobile}, ${email})
         `
         // The tenant fact, in the SAME transaction as the INSERT (E1). Added
@@ -372,7 +401,7 @@ export async function editBankMaster(
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:bank-master-edit'), async () => {
       const prior = await tx.$queryRaw<BankMasterDbRow[]>`
         SELECT id::text AS id, display_name, bank_reference_code, status,
-               address1, address2, address3, city, district, country, pin, mobile, email
+               address1, address2, address3, city, district, country, pin, mobile, email, parent_tenant_id::text AS parent_tenant_id
         FROM tenant WHERE id = ${tnntUuid}::uuid
       `
       if (prior.length === 0) throw new OpsClientError('not-found', 'bank master not found')
@@ -736,7 +765,7 @@ export async function createMerchant(
 export async function listBankMasters(db: IdentityDb): Promise<BankMasterRow[]> {
   const rows = await db.$queryRaw<BankMasterDbRow[]>`
     SELECT id::text AS id, display_name, bank_reference_code, status,
-           address1, address2, address3, city, district, country, pin, mobile, email
+           address1, address2, address3, city, district, country, pin, mobile, email, parent_tenant_id::text AS parent_tenant_id
     FROM tenant
     ORDER BY created_at
   `
