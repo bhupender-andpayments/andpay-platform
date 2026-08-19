@@ -121,6 +121,7 @@ interface BankConfigRow {
   branding_params: unknown
   image_templates: unknown
   logo_master_ref: string | null
+  logo_derivative_ref: string | null
   soundbox_template_ref: string | null
   collateral_template_ref: string | null
 }
@@ -178,7 +179,7 @@ async function preRenderArtifacts(
     `
     const cfgs = await tx.$queryRaw<BankConfigRow[]>`
       SELECT id::text AS id, bank_code, branch_code, branding_params, image_templates, logo_master_ref,
-             soundbox_template_ref, collateral_template_ref
+             logo_derivative_ref, soundbox_template_ref, collateral_template_ref
       FROM bank_composition_config
     `
     return { entries: rows, configs: cfgs }
@@ -284,7 +285,10 @@ async function preRenderArtifacts(
 
   for (const e of entries) {
     const cfg = cfgFor(e.bank_reference_code, e.branch_code)
-    const logo = await assetFor(cfg?.logo_master_ref ?? null)
+    // Prefer the rasterised derivative: the master may be a .ai vector the
+    // PDF embedder cannot consume (BRD D.2). Falls back to the master for
+    // rows uploaded before the pair flow existed.
+    const logo = await assetFor(cfg?.logo_derivative_ref ?? cfg?.logo_master_ref ?? null)
     for (const artifactType of artifactTypesFor(e)) {
       const master = await assetFor(templateRefFor(cfg, artifactType))
       const pdfBytes = await renderCollateralPdf({

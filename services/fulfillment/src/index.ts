@@ -167,6 +167,8 @@ export {
   type UpsertBankCompositionConfigInput,
   setBankLogo,
   type SetBankLogoInput,
+  setBankLogoPair,
+  type SetBankLogoPairInput,
   setBankTemplateMaster,
   type SetBankTemplateMasterInput,
   upsertBatchingConfig,

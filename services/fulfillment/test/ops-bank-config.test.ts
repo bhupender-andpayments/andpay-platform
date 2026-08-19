@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { upsertBankCompositionConfig, setBankLogo, OpsClientError } from '../src/ops.js'
+import { upsertBankCompositionConfig, setBankLogo, setBankLogoPair, OpsClientError } from '../src/ops.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 
 // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
@@ -349,6 +349,59 @@ describe('setBankLogo (Phase 3 Task 5b, BRD Annexure D.4, T3 AssetStore port)', 
     expect(await store.listVersions('HDFC/BR-012')).toHaveLength(1)
     const rows = await auditRowsFor('ops:bank-logo-set')
     expect(rows).toHaveLength(1)
+  })
+})
+
+describe('setBankLogoPair (Task 4, bank master hierarchy: master plus rasterised derivative)', () => {
+  it('setBankLogoPair stores both assets and sets both refs on the config row', async () => {
+    const store = new InMemoryAssetStore()
+    const tenantWire = newId('tnnt')
+    const res = await setBankLogoPair(db, store, {
+      tenantWire,
+      bankCode: 'VSC',
+      master: { bytes: new TextEncoder().encode('%AI'), contentType: 'application/postscript', filename: 'vsc.ai' },
+      derivative: { bytes: new TextEncoder().encode('PNG'), contentType: 'image/png', filename: 'vsc.png' },
+      clientKey: randomUUID(),
+      actorId: 'actor-1',
+      traceId: 'trace-logo-pair',
+    })
+    expect(res.deduped).toBe(false)
+    expect(res.masterVersion).not.toBeNull()
+    expect(res.derivativeVersion).not.toBeNull()
+
+    const row = await readConfigRow(res.id!)
+    expect(row.logo_master_ref).not.toBeNull()
+    expect(row.logo_derivative_ref).not.toBeNull()
+
+    const master = await store.getCurrent('VSC')
+    const derivative = await store.getCurrent('VSC:derivative')
+    expect(master?.meta.filename).toBe('vsc.ai')
+    expect(derivative?.meta.contentType).toBe('image/png')
+
+    const rows = await auditRowsFor('ops:bank-logo-set')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.decision).toBe('ALLOW')
+    expect(rows[0]!.principalId).toBe('actor-1')
+    expect(rows[0]!.resourceIds).toEqual([res.id, `logo-version:${res.masterVersion}`])
+  })
+
+  it('setBankLogoPair replays deduped on the same clientKey without a second version', async () => {
+    const store = new InMemoryAssetStore()
+    const tenantWire = newId('tnnt')
+    const clientKey = randomUUID()
+    const args = {
+      tenantWire,
+      bankCode: 'VSC',
+      master: { bytes: new TextEncoder().encode('%AI'), contentType: 'application/postscript', filename: 'vsc.ai' },
+      derivative: { bytes: new TextEncoder().encode('PNG'), contentType: 'image/png', filename: 'vsc.png' },
+      clientKey,
+      actorId: 'actor-1',
+      traceId: 'trace-logo-replay',
+    }
+    await setBankLogoPair(db, store, args)
+    const replay = await setBankLogoPair(db, store, args)
+    expect(replay.deduped).toBe(true)
+    expect((await store.listVersions('VSC')).length).toBe(1)
   })
 })
 
