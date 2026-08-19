@@ -7,14 +7,16 @@ import {
   Headers,
   HttpCode,
   Inject,
+  NotFoundException,
   Param,
   Post,
   Req,
   UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common'
-import { FileInterceptor } from '@nestjs/platform-express'
+import { FileInterceptor, FileFieldsInterceptor } from '@nestjs/platform-express'
 import { createHash } from 'node:crypto'
 import { authorize, requireStepUp, OPS_STEP_UP_CATALOG } from '@andpay/authz'
 import {
@@ -35,6 +37,7 @@ import {
   isKnownStatus,
   upsertBankCompositionConfig,
   setBankLogo,
+  setBankLogoPair,
   setBankTemplateMaster,
   upsertBatchingConfig,
   setVendorPrintLayout,
@@ -81,7 +84,7 @@ import {
   type DuplicateVpaOriginal,
 } from '@andpay/tms-service'
 import { readDispatchActivationStatus } from '@andpay/analytics-service'
-import { createBankMaster, createMerchant, editBankMaster } from '@andpay/identity-service'
+import { createBankMaster, createMerchant, editBankMaster, listBankMasters } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAuthzAudit } from './audit.js'
@@ -292,11 +295,13 @@ interface BankMasterCreateBody {
   pin: string
   mobile: string
   email: string
+  parentBankReferenceCode?: string
 }
 // The Bank Master edit body. bankReferenceCode is DELIBERATELY ABSENT: it is
 // the immutable ingest resolver key and can neither be accepted nor mutated by
 // the edit path. Every content field is optional (a partial edit); the target
-// tnnt is the route param, never here.
+// tnnt is the route param, never here. parentBankReferenceCode is likewise
+// optional; an empty string detaches the child from its parent.
 interface BankMasterEditBody {
   displayName?: string
   address1?: string
@@ -309,6 +314,7 @@ interface BankMasterEditBody {
   mobile?: string
   email?: string
   status?: string
+  parentBankReferenceCode?: string
 }
 // The minimal multer file shape the upload routes read (mirrors vendor-edge's
 // UploadedJson, extended with originalname): the raw bytes plus the client
@@ -1754,6 +1760,7 @@ export class OpsController {
       pin: body.pin,
       mobile: body.mobile,
       email: body.email,
+      ...(body.parentBankReferenceCode !== undefined ? { parentBankReferenceCode: body.parentBankReferenceCode } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
@@ -1824,6 +1831,64 @@ export class OpsController {
       ...(body.mobile !== undefined ? { mobile: body.mobile } : {}),
       ...(body.email !== undefined ? { email: body.email } : {}),
       ...(body.status !== undefined ? { status: body.status } : {}),
+      ...(body.parentBankReferenceCode !== undefined ? { parentBankReferenceCode: body.parentBankReferenceCode } : {}),
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // Resolve which (tenantWire, bankCode) the composition-config row for this
+  // bank master keys on. A CHILD bank's collateral rows carry the PARENT
+  // tenant (ingest resolves the partner tenant; the per-row code is the
+  // child's), so the child's logo must land under the parent's tenant id
+  // with the child's own bank code, or the renderer's lookup never finds it.
+  private async resolveLogoTarget(tnntId: string): Promise<{ tenantWire: string; bankCode: string }> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const row = rows.find((r) => r.tnntId === tnntId)
+    if (row === undefined) throw new NotFoundException('bank master not found')
+    return { tenantWire: row.parentTnntId ?? row.tnntId, bankCode: row.bankReferenceCode }
+  }
+
+  // The bank-master logo pair (spec 2026-08-19): the .ai MASTER (BRD D.2
+  // source of truth, versioned) plus the PNG/SVG DERIVATIVE the renderer
+  // embeds. Both validated here at the edge, a 400 before the domain call.
+  @Post('bank-masters/:id/logo')
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'master', maxCount: 1 },
+        { name: 'derivative', maxCount: 1 },
+      ],
+      { limits: { fileSize: MAX_UPLOAD_BYTES } },
+    ),
+  )
+  @HttpCode(200)
+  async setBankMasterLogoRoute(
+    @Req() req: EdgeRequest,
+    @Param('id') id: string,
+    @UploadedFiles() files: { master?: UploadedLogoFile[]; derivative?: UploadedLogoFile[] },
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; id: string | null; masterVersion: string | null; derivativeVersion: string | null }> {
+    const g = await this.gate(req, 'ops:bank-logo-set', idem, [id])
+    const master = files.master?.[0]
+    const derivative = files.derivative?.[0]
+    if (!master || !derivative) throw new BadRequestException('both master and derivative files are required')
+    const masterOk =
+      master.mimetype === 'application/postscript' ||
+      master.mimetype === 'application/pdf' ||
+      master.mimetype === 'application/illustrator' ||
+      master.originalname.toLowerCase().endsWith('.ai')
+    if (!masterOk) throw new BadRequestException('master must be an Adobe Illustrator (.ai) file')
+    if (derivative.mimetype !== 'image/png' && derivative.mimetype !== 'image/svg+xml') {
+      throw new BadRequestException('derivative must be a PNG or SVG image')
+    }
+    const target = await this.resolveLogoTarget(id)
+    return setBankLogoPair(this.deps.fulfillmentDb, this.deps.assetStore, {
+      tenantWire: target.tenantWire,
+      bankCode: target.bankCode,
+      master: { bytes: master.buffer, contentType: master.mimetype, filename: master.originalname },
+      derivative: { bytes: derivative.buffer, contentType: derivative.mimetype, filename: derivative.originalname },
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

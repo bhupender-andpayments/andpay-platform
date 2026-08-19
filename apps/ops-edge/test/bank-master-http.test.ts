@@ -145,7 +145,7 @@ beforeEach(async () => {
   await identityDb.$executeRawUnsafe(
     'TRUNCATE sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
   )
-  await fulfillmentDb.$executeRawUnsafe('TRUNCATE outbox, inbox CASCADE')
+  await fulfillmentDb.$executeRawUnsafe('TRUNCATE outbox, inbox, bank_composition_config CASCADE')
 })
 
 describe('POST /ops/bank-masters (Phase 3 Task 7)', () => {
@@ -279,5 +279,102 @@ describe('GET /ops/bank-masters (guard-only read)', () => {
   it('an unauthenticated request -> 401', async () => {
     const res = await request(app.getHttpServer()).get('/ops/bank-masters')
     expect(res.status).toBe(401)
+  })
+})
+
+describe('bank master hierarchy over HTTP', () => {
+  it('creates a child via parentBankReferenceCode and lists parentTnntId + hasLogo', async () => {
+    const tok = await mint()
+    const parent = await request(app.getHttpServer())
+      .post('/ops/bank-masters')
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send(body({ bankReferenceCode: 'GSCB-T5' }))
+      .expect(200)
+    await request(app.getHttpServer())
+      .post('/ops/bank-masters')
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send(body({ bankReferenceCode: 'VSC-T5', displayName: 'VSC Bank', parentBankReferenceCode: 'GSCB-T5' }))
+      .expect(200)
+    const list = await request(app.getHttpServer())
+      .get('/ops/bank-masters')
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    const child = (list.body as { bankReferenceCode: string; parentTnntId: string | null; hasLogo: boolean }[]).find(
+      (r) => r.bankReferenceCode === 'VSC-T5',
+    )!
+    expect(child.parentTnntId).toBe(parent.body.tnntId)
+    expect(child.hasLogo).toBe(false)
+  })
+
+  it('rejects a parent that is itself a child with a 400', async () => {
+    const tok = await mint()
+    await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'GSCB-T5B' })).expect(200)
+    await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send(body({ bankReferenceCode: 'VSC-T5B', parentBankReferenceCode: 'GSCB-T5B' })).expect(200)
+    await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send(body({ bankReferenceCode: 'DEEP-T5B', parentBankReferenceCode: 'VSC-T5B' })).expect(400)
+  })
+})
+
+describe('bank master logo over HTTP', () => {
+  it('uploads the master+derivative pair, then lists versions and streams the derivative', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T5' })).expect(200)
+    const tnntId = created.body.tnntId as string
+
+    const upload = await request(app.getHttpServer())
+      .post(`/ops/bank-masters/${tnntId}/logo`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('master', Buffer.from('%!PS-Adobe ai bytes'), { filename: 'logo.ai', contentType: 'application/postscript' })
+      .attach('derivative', Buffer.from('png bytes'), { filename: 'logo.png', contentType: 'image/png' })
+      .expect(200)
+    expect(upload.body.masterVersion).not.toBeNull()
+
+    const versions = await request(app.getHttpServer())
+      .get(`/ops/bank-masters/${tnntId}/logo/versions`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(versions.body).toHaveLength(1)
+    expect(versions.body[0].filename).toBe('logo.ai')
+
+    const derivative = await request(app.getHttpServer())
+      .get(`/ops/bank-masters/${tnntId}/logo/derivative`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(derivative.headers['content-type']).toContain('image/png')
+
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    expect(list.body.find((r: { bankReferenceCode: string }) => r.bankReferenceCode === 'LOGO-T5').hasLogo).toBe(true)
+  })
+
+  it('rejects a wrong-type derivative with a 400 and a missing file with a 400', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T5B' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    await request(app.getHttpServer())
+      .post(`/ops/bank-masters/${tnntId}/logo`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('master', Buffer.from('ai'), { filename: 'logo.ai', contentType: 'application/postscript' })
+      .attach('derivative', Buffer.from('exe'), { filename: 'logo.exe', contentType: 'application/octet-stream' })
+      .expect(400)
+    await request(app.getHttpServer())
+      .post(`/ops/bank-masters/${tnntId}/logo`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('master', Buffer.from('ai'), { filename: 'logo.ai', contentType: 'application/postscript' })
+      .expect(400)
+    await request(app.getHttpServer())
+      .get(`/ops/bank-masters/${tnntId}/logo/derivative`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(404)
   })
 })

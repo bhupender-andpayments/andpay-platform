@@ -173,10 +173,52 @@ export class OpsReadController {
   // identity's own listBankMasters with deps.identityDb (no cross-context DB
   // read, C4). Returns every Bank Master (admin-created rows carry the full
   // address/contact; ingest auto-minted rows carry nulls) for the admin UI.
+  //
+  // Task 5 (2026-08-19): composes in `hasLogo`, a PRESENCE boolean only, from
+  // fulfillment's bank_composition_config (a parent-tenant row with an EMPTY
+  // branchCode is the bank-level composition row a logo lands on). No config
+  // DETAIL crosses the boundary, only the boolean; both reads are in-process
+  // domain calls (no cross-schema SQL, C4).
   @Get('bank-masters')
   @HttpCode(200)
-  async bankMasters(): Promise<BankMasterRow[]> {
-    return listBankMasters(this.deps.identityDb)
+  async bankMasters(): Promise<(BankMasterRow & { hasLogo: boolean })[]> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const configs = await listBankCompositionConfigs(this.deps.fulfillmentDb)
+    const withLogo = new Set(
+      configs.filter((c) => c.branchCode === '' && c.logoMasterRef !== null).map((c) => c.bankCode),
+    )
+    return rows.map((r) => ({ ...r, hasLogo: withLogo.has(r.bankReferenceCode) }))
+  }
+
+  // ROUTE ORDER: both bank-masters/:id/logo/* reads below MUST be registered
+  // before any future bank-masters/:id catch-all (none exists today), or a
+  // generic :id route would swallow the /logo/versions and /logo/derivative
+  // segments as a param match.
+  //
+  // Guard-only exactly like bank-masters above (no requireUnrestrictedRead): a
+  // logo is print collateral input, not config detail, matching the list's own
+  // posture. Resolves the bank code via the same in-process identity call.
+  @Get('bank-masters/:id/logo/versions')
+  @HttpCode(200)
+  async bankMasterLogoVersions(@Param('id') id: string): Promise<{ version: string; filename: string; contentType: string }[]> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const row = rows.find((r) => r.tnntId === id)
+    if (row === undefined) return []
+    const versions = await this.deps.assetStore.listVersions(row.bankReferenceCode)
+    return versions.map((v) => ({ version: v.version, filename: v.meta.filename, contentType: v.meta.contentType }))
+  }
+
+  @Get('bank-masters/:id/logo/derivative')
+  async bankMasterLogoDerivative(@Param('id') id: string, @Res() res: EdgeResponse): Promise<void> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const row = rows.find((r) => r.tnntId === id)
+    const rec = row === undefined ? null : await this.deps.assetStore.getCurrent(`${row.bankReferenceCode}:derivative`)
+    if (rec === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+    res.setHeader('Content-Type', rec.meta.contentType)
+    res.status(200).send(Buffer.from(rec.bytes))
   }
 
   // P2-1: the object-spine reads. Guard-only exactly like every read above (no
