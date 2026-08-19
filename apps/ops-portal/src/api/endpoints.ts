@@ -1739,6 +1739,9 @@ export interface BatchJourneyView {
     merchantDisplay: string
     awb: string | null
     deliveryDate: string | null
+    // deviceCount > 0 means device-paired at return-sheet ingest, i.e. this
+    // row reached DISPATCHED_BY_VENDOR (sheet-eligible), not still at the printer.
+    deviceCount: number
   }[]
   watermark: Watermark
 }

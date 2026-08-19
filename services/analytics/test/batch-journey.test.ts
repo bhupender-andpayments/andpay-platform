@@ -26,13 +26,15 @@ async function insertRow(args: {
   awb?: string | null
   dispatchGroup?: string | null
   sentToVendorAt?: Date | null
+  deviceIds?: string[] | null
 }): Promise<void> {
   await db.$executeRaw`
     INSERT INTO dispatch_row
       (dispatch_id, program_id, bank_code, bank_display, merchant_display, device_ids,
        batch_id, pipeline_state, courier_status, delivery_date, activation_status,
        awb, dispatch_group, sent_to_vendor_at, billable_flag, received_at, updated_at)
-    VALUES (${args.dispatchId}, ${args.programId}::uuid, 'HDFC', 'HDFC Bank', 'Acme', ARRAY['DEV1']::text[],
+    VALUES (${args.dispatchId}, ${args.programId}::uuid, 'HDFC', 'HDFC Bank', 'Acme',
+            ${args.deviceIds === undefined ? ['DEV1'] : args.deviceIds},
             ${args.batchId}, ${args.pipelineState}, ${args.courierStatus ?? null},
             ${args.deliveryDate ?? null}, ${args.activationStatus ?? null},
             ${args.awb ?? null}, ${args.dispatchGroup ?? null}, ${args.sentToVendorAt ?? null},
@@ -155,6 +157,30 @@ describe('readBatchJourney', () => {
     expect(view.awaitingActivation[0]!.dispatchId).toBe(waiting)
     expect(view.awaitingActivation[0]!.awb).toBe('AWB9')
     expect(view.awaitingActivation[0]!.merchantDisplay).toBe('Acme')
+  })
+
+  // Device pairing happens at return-sheet ingest, so deviceCount is the
+  // same-commit signal that a row reached DISPATCHED_BY_VENDOR (sheet-eligible)
+  // rather than still sitting at the printer. Two soundboxes here: one paired,
+  // one not, so the worklist must report deviceCount 1 and 0 respectively.
+  it('reports deviceCount on the awaiting-activation worklist, from device_ids length', async () => {
+    const paired = `asgn_${randomUUID()}`
+    const unpaired = `asgn_${randomUUID()}`
+    await insertRow({
+      dispatchId: paired, programId: progA, batchId: BATCH, pipelineState: 'DISPATCHED',
+      courierStatus: 'IN_TRANSIT', dispatchGroup: 'SOUNDBOX', deviceIds: ['9990000001001'],
+    })
+    await insertRow({
+      dispatchId: unpaired, programId: progA, batchId: BATCH, pipelineState: 'SENT_TO_VENDOR',
+      dispatchGroup: 'SOUNDBOX', deviceIds: null,
+    })
+
+    const view = (await readBatchJourney(db, { kind: 'crossTenant' }, BATCH))!
+    expect(view.awaitingActivation).toHaveLength(2)
+    const pairedRow = view.awaitingActivation.find((r) => r.dispatchId === paired)!
+    const unpairedRow = view.awaitingActivation.find((r) => r.dispatchId === unpaired)!
+    expect(pairedRow.deviceCount).toBe(1)
+    expect(unpairedRow.deviceCount).toBe(0)
   })
 
   // The activate route 409s a COLLATERAL group ("paper does not activate"), so a

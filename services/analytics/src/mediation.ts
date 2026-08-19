@@ -946,6 +946,11 @@ export interface BatchJourneyView {
     merchantDisplay: string
     awb: string | null
     deliveryDate: string | null
+    // The batch page's CWD section must tell a dispatched-and-awaiting row
+    // (sheet-eligible) apart from one still at the printer. Device pairing
+    // happens at return-sheet ingest, so deviceCount > 0 is the same-commit
+    // signal that this row reached DISPATCHED_BY_VENDOR.
+    deviceCount: number
   }[]
   watermark: Watermark
 }
@@ -1063,6 +1068,7 @@ export async function readBatchJourney(
       merchantDisplay: r.merchant_display,
       awb: r.awb,
       deliveryDate: iso(r.delivery_date),
+      deviceCount: r.device_ids?.length ?? 0,
     })),
     watermark,
   }
