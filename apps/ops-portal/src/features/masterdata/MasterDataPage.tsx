@@ -95,11 +95,42 @@ function childrenOf(p: BankMasterRow, rows: readonly BankMasterRow[]): BankMaste
   return rows.filter((r) => r.parentTnntId === p.tnntId)
 }
 
+function matchesQuery(r: BankMasterRow, q: string): boolean {
+  return q === '' || r.displayName.toLowerCase().includes(q) || r.bankReferenceCode.toLowerCase().includes(q)
+}
+
+/**
+ * The ONE place that decides whether a parent's children are showing: either
+ * the operator clicked its expander (`expanded`), or the current search
+ * matches one of its children, which auto-surfaces them with no click at all.
+ * `displayRows` and the column renderer both call this, so the chevron
+ * direction and its "Show/Hide child banks of X" label can never disagree
+ * with what the table actually renders beneath that row (the bug this
+ * function replaces: each side computed its own half of the same condition).
+ */
+function computeOpenParents(
+  rows: readonly BankMasterRow[],
+  expanded: Set<string>,
+  query: string,
+): Set<string> {
+  const q = query.trim().toLowerCase()
+  const open = new Set<string>()
+  for (const r of rows) {
+    if (isChildRow(r, rows)) continue
+    if (expanded.has(r.tnntId)) {
+      open.add(r.tnntId)
+      continue
+    }
+    if (q !== '' && childrenOf(r, rows).some((k) => matchesQuery(k, q))) open.add(r.tnntId)
+  }
+  return open
+}
+
 function bankMasterColumns(
   onEdit: (row: BankMasterRow) => void,
   onAddChild: (row: BankMasterRow) => void,
   rows: readonly BankMasterRow[],
-  expanded: Set<string>,
+  openParents: Set<string>,
   toggle: (tnntId: string) => void,
 ): ReadonlyArray<DataTableColumn<BankMasterRow>> {
   return [
@@ -117,7 +148,7 @@ function bankMasterColumns(
         }
         const kids = childrenOf(r, rows)
         if (kids.length === 0) return <CodeChip>{r.bankReferenceCode}</CodeChip>
-        const isOpen = expanded.has(r.tnntId)
+        const isOpen = openParents.has(r.tnntId)
         return (
           <span className="flex items-center gap-2">
             <button
@@ -240,8 +271,18 @@ function BankMastersView() {
   // grouping helper below must guard against a non-array before touching it.
   const safeRows = Array.isArray(rows) ? rows : []
 
-  // Grouped display order: each top-level bank, then (when expanded, or when
-  // a search matches a child) its children directly beneath it. A child whose
+  // The single source of truth for "is this parent's child list showing",
+  // shared with the column renderer below (via bankMasterColumns) so the
+  // chevron direction and its Show/Hide label can never disagree with what
+  // this memo actually puts in the table: both read the same set instead of
+  // each re-deriving their own half of "expanded OR search-matched-a-child".
+  const openParents = useMemo(
+    () => (Array.isArray(rows) ? computeOpenParents(rows, expanded, query) : new Set<string>()),
+    [rows, expanded, query],
+  )
+
+  // Grouped display order: each top-level bank, then (when open, per
+  // `openParents` above) its children directly beneath it. A child whose
   // parent id points at a row not in the list (never expected) falls back to
   // top-level rather than vanishing; see isChildRow above. When the read
   // failed, `rows` itself (the error envelope) is what DataTable must see, so
@@ -249,19 +290,17 @@ function BankMastersView() {
   const displayRows = useMemo(() => {
     if (!Array.isArray(rows)) return rows
     const q = query.trim().toLowerCase()
-    const matches = (r: BankMasterRow) =>
-      q === '' || r.displayName.toLowerCase().includes(q) || r.bankReferenceCode.toLowerCase().includes(q)
     const parents = rows.filter((r) => !isChildRow(r, rows))
     const out: BankMasterRow[] = []
     for (const p of parents) {
       const kids = childrenOf(p, rows)
-      const kidMatch = kids.some(matches)
-      if (!matches(p) && !kidMatch) continue
+      const kidMatch = kids.some((k) => matchesQuery(k, q))
+      if (!matchesQuery(p, q) && !kidMatch) continue
       out.push(p)
-      if (expanded.has(p.tnntId) || (q !== '' && kidMatch)) out.push(...kids.filter((k) => q === '' || matches(k)))
+      if (openParents.has(p.tnntId)) out.push(...kids.filter((k) => q === '' || matchesQuery(k, q)))
     }
     return out
-  }, [rows, expanded, query])
+  }, [rows, query, openParents])
 
   const parents = useMemo(() => safeRows.filter((r) => r.parentTnntId === null), [safeRows])
 
@@ -300,7 +339,7 @@ function BankMastersView() {
               </div>
             </div>
             <DataTable
-              columns={bankMasterColumns(setEditing, setAddingChildOf, safeRows, expanded, toggle)}
+              columns={bankMasterColumns(setEditing, setAddingChildOf, safeRows, openParents, toggle)}
               rows={displayRows ?? []}
               getRowKey={(r) => r.tnntId}
               emptyMessage="No bank masters."

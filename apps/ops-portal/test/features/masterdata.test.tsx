@@ -286,6 +286,43 @@ describe('master data views', () => {
     expect(screen.getByText('child')).toBeTruthy()
   })
 
+  it('a search matching a child auto-expands its parent, and the button says so', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(GROUPED_BANK_MASTERS)
+        return jsonResponse([])
+      }),
+    )
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+
+    // Before typing anything, the parent is collapsed: the un-rotated
+    // chevron reads "Show", and the child is not in the DOM.
+    await screen.findByRole('button', { name: 'Show child banks of GSCB' })
+    expect(screen.queryByText('VSC Bank')).toBeNull()
+
+    // Typing a query that matches ONLY the child auto-surfaces it beneath its
+    // parent without a click on the expander. The button's label (and, by the
+    // same shared computeOpenParents/openParents state, the chevron rotation)
+    // must reflect that the child is now actually showing: a stale "Show"
+    // label here would be a screen reader (and sighted user) being told the
+    // opposite of what the table is doing.
+    await userEvent.type(screen.getByLabelText('Search bank masters'), 'VSC')
+
+    expect(await screen.findByText('VSC Bank')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Hide child banks of GSCB' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Show child banks of GSCB' })).toBeNull()
+
+    // Clearing the search collapses it again, since it was never manually
+    // expanded, only auto-opened by the now-cleared match.
+    await userEvent.clear(screen.getByLabelText('Search bank masters'))
+
+    expect(await screen.findByRole('button', { name: 'Show child banks of GSCB' })).toBeTruthy()
+    expect(screen.queryByText('VSC Bank')).toBeNull()
+  })
+
   it('Damage Reasons tab renders rows and distinguishes active/inactive without a fabricated status', async () => {
     const calls: Call[] = []
     stubAllReads(calls)
