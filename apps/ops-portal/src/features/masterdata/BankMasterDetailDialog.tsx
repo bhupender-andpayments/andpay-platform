@@ -22,6 +22,20 @@ import {
 } from '@/components/ui/dialog'
 import { useCreateDialog } from './useCreateDialog.js'
 
+// The portal CSP is img-src 'self' data:, which blocks a blob: URL (Chrome
+// reports "violates the following Content Security Policy directive"), so the
+// fetched derivative Blob is read into a data: URL here rather than handed to
+// URL.createObjectURL. No revoke is needed: a data: URL holds no browser
+// resource the way an object URL does.
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read the logo blob.'))
+    reader.readAsDataURL(blob)
+  })
+}
+
 // The bank master detail dialog (Task 8, 2026-08-19): the pencil on the Bank
 // Masters tab now opens THIS, not the old BankMasterEditDialog it replaces.
 // One dialog, three sections: Details (the whole old edit form, plus the
@@ -123,19 +137,22 @@ export function BankMasterDetailDialog({
 
   useEffect(() => {
     if (!open) return
-    let revoked: string | null = null
+    let cancelled = false
     fetchBankMasterLogoDerivative(bank.tnntId)
       .then((blob) => {
-        if (blob === null) return
-        revoked = URL.createObjectURL(blob)
-        setDerivativeUrl(revoked)
+        if (blob === null || cancelled) return
+        // The portal CSP is img-src 'self' data:, which blocks a blob: URL, so
+        // the preview must be a data: URL, not URL.createObjectURL's output.
+        return blobToDataUrl(blob).then((url) => {
+          if (!cancelled) setDerivativeUrl(url)
+        })
       })
       .catch(() => setLogoError('Failed to load the current logo.'))
     getBankMasterLogoVersions(client, bank.tnntId)
       .then(setVersions)
       .catch(() => setVersions([]))
     return () => {
-      if (revoked !== null) URL.revokeObjectURL(revoked)
+      cancelled = true
     }
   }, [open, bank.tnntId, client])
 
@@ -313,8 +330,10 @@ export function BankMasterDetailDialog({
                     display order here.
                   */}
                   {versions.map((v) => (
+                    // AssetStore version tokens are already "v1", "v2", and so
+                    // on: no extra "v" prefix here, or this reads "vv1".
                     <li key={v.version}>
-                      v{v.version} {v.filename}
+                      {v.version} {v.filename}
                     </li>
                   ))}
                 </ul>

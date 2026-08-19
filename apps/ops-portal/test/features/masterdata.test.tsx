@@ -693,8 +693,6 @@ describe('master data create dialogs', () => {
         return jsonResponse([])
       }),
     )
-    // jsdom does not implement createObjectURL/revokeObjectURL.
-    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() }))
 
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
@@ -723,27 +721,28 @@ describe('master data create dialogs', () => {
     expect(form.get('derivative')).toBeTruthy()
   })
 
-  it('the version history renders in wire order, newest first, with no client-side re-sort', async () => {
+  it('the version history renders in wire order, newest first, with no client-side re-sort, and the token as-is', async () => {
     // services/fulfillment/src/storage/asset-store.ts listVersions's own port
     // contract is "All versions ever put() for key, newest first", and
     // getBankMasterLogoVersions maps that straight through. This mock hands
     // back v2 before v1, exactly as the port promises, and the dialog must
-    // show them in that same order rather than reversing them.
+    // show them in that same order rather than reversing them. The tokens
+    // are ALREADY "v1"/"v2" (AssetStore's own format), so the render must
+    // not prefix a second "v" onto them.
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
         if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
         if (url.includes('/logo/versions')) {
           return jsonResponse([
-            { version: '2', filename: 'gscb-v2.png', contentType: 'image/png' },
-            { version: '1', filename: 'gscb-v1.png', contentType: 'image/png' },
+            { version: 'v2', filename: 'gscb-v2.png', contentType: 'image/png' },
+            { version: 'v1', filename: 'gscb-v1.png', contentType: 'image/png' },
           ])
         }
         if (url.includes('/ops/bank-masters')) return jsonResponse(GROUPED_BANK_MASTERS)
         return jsonResponse([])
       }),
     )
-    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() }))
 
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
@@ -752,7 +751,34 @@ describe('master data create dialogs', () => {
     await screen.findByText(/v2 gscb-v2\.png/)
     const items = screen.getAllByRole('listitem').map((li) => li.textContent ?? '')
     const versionLines = items.filter((t) => /^v\d /.test(t))
+    // Never "vv1"/"vv2": the token is rendered as-is, not prefixed again.
     expect(versionLines).toEqual(['v2 gscb-v2.png', 'v1 gscb-v1.png'])
+  })
+
+  it('the derivative preview uses a data: URL, never a blob: URL the portal CSP would block', async () => {
+    // The real portal's CSP is img-src 'self' data:, which Chrome enforces by
+    // blocking a blob: URL image load outright. jsdom does not enforce CSP,
+    // so this only pins the SOURCE the dialog hands the <img>, not the
+    // browser's actual block; the fix is to never produce a blob: URL at all.
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/logo/derivative')) {
+          return new Response(pngBytes, { status: 200, headers: { 'content-type': 'image/png' } })
+        }
+        if (url.includes('/logo/versions')) return jsonResponse([])
+        if (url.includes('/ops/bank-masters')) return jsonResponse(GROUPED_BANK_MASTERS)
+        return jsonResponse([])
+      }),
+    )
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit bank master GSCB' }))
+
+    const img = await screen.findByAltText('GSCB logo')
+    expect(img.getAttribute('src')).toMatch(/^data:/)
   })
 
   it('the children section lists child banks and hides on a child bank', async () => {
@@ -765,7 +791,6 @@ describe('master data create dialogs', () => {
         return jsonResponse([])
       }),
     )
-    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() }))
 
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
