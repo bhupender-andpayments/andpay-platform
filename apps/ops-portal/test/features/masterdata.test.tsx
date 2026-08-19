@@ -723,6 +723,38 @@ describe('master data create dialogs', () => {
     expect(form.get('derivative')).toBeTruthy()
   })
 
+  it('the version history renders in wire order, newest first, with no client-side re-sort', async () => {
+    // services/fulfillment/src/storage/asset-store.ts listVersions's own port
+    // contract is "All versions ever put() for key, newest first", and
+    // getBankMasterLogoVersions maps that straight through. This mock hands
+    // back v2 before v1, exactly as the port promises, and the dialog must
+    // show them in that same order rather than reversing them.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
+        if (url.includes('/logo/versions')) {
+          return jsonResponse([
+            { version: '2', filename: 'gscb-v2.png', contentType: 'image/png' },
+            { version: '1', filename: 'gscb-v1.png', contentType: 'image/png' },
+          ])
+        }
+        if (url.includes('/ops/bank-masters')) return jsonResponse(GROUPED_BANK_MASTERS)
+        return jsonResponse([])
+      }),
+    )
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() }))
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit bank master GSCB' }))
+
+    await screen.findByText(/v2 gscb-v2\.png/)
+    const items = screen.getAllByRole('listitem').map((li) => li.textContent ?? '')
+    const versionLines = items.filter((t) => /^v\d /.test(t))
+    expect(versionLines).toEqual(['v2 gscb-v2.png', 'v1 gscb-v1.png'])
+  })
+
   it('the children section lists child banks and hides on a child bank', async () => {
     vi.stubGlobal(
       'fetch',

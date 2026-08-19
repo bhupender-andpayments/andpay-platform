@@ -305,7 +305,14 @@ export function BankMasterDetailDialog({
                 <p className="text-sm text-muted-foreground">No versions yet.</p>
               ) : (
                 <ul className="space-y-1 text-sm text-muted-foreground">
-                  {[...versions].reverse().map((v) => (
+                  {/*
+                    NO client-side reverse: services/fulfillment/src/storage/asset-store.ts
+                    listVersions's own port contract is "All versions ever put()
+                    for key, newest first", and getBankMasterLogoVersions maps
+                    that straight through with no re-ordering. Wire order IS
+                    display order here.
+                  */}
+                  {versions.map((v) => (
                     <li key={v.version}>
                       v{v.version} {v.filename}
                     </li>
