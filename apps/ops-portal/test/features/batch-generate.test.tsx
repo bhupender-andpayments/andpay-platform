@@ -296,7 +296,7 @@ describe('The batch page offers a Next step card driven by the batch stage', () 
   // field a different stage happened not to touch.
   function journeyView(
     counts: { total: number; deliverableAndActivatable: number; sentToVendor: number; dispatched: number; delivered: number; activated: number },
-    awaitingActivation: { dispatchId: string; merchantDisplay: string; awb: string | null; deliveryDate: string | null }[] = [],
+    awaitingActivation: { dispatchId: string; merchantDisplay: string; awb: string | null; deliveryDate: string | null; deviceCount?: number }[] = [],
   ) {
     return {
       batchId: BATCH.id,
@@ -366,7 +366,7 @@ describe('The batch page offers a Next step card driven by the batch stage', () 
   // courier dropzone rather than waiting for the last shipment to land.
   it('at SHIPPING with a partial delivery, renders both the courier dropzone and the CWD block', async () => {
     const AWAITING = [
-      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null },
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null, deviceCount: 2 },
     ]
     stubRoutes(
       DETAIL,
@@ -384,13 +384,13 @@ describe('The batch page offers a Next step card driven by the batch stage', () 
     expect(document.getElementById('embedded-upload-activation')).toBeNull()
   })
 
-  // Ruling for PRINTING: even though a batch still forming may already list
-  // soundboxes in awaitingActivation, a batch at PRINTING has nothing CWD can
-  // act on (devices are not even paired), so the block stays hidden there
-  // regardless of what awaitingActivation lists.
-  it('at PRINTING, the CWD block stays hidden even with a non-empty awaitingActivation', async () => {
+  // Ruling: the CWD block keys on device-paired rows, not on the stage. A row
+  // still sitting at zero devices (not yet paired at return-sheet ingest) has
+  // nothing CWD can act on, so it never shows up in the list or the count,
+  // even at PRINTING where the return-sheet dropzone is also on screen.
+  it('at PRINTING, the CWD block stays hidden when awaitingActivation carries no device-paired row', async () => {
     const AWAITING = [
-      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null },
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null, deviceCount: 0 },
     ]
     stubRoutes(
       DETAIL,
@@ -405,14 +405,177 @@ describe('The batch page offers a Next step card driven by the batch stage', () 
     expect(screen.queryByRole('button', { name: /mark sent to cwd/i })).toBeNull()
   })
 
+  // The reworked CWD section: still at PRINTING (only 1 of 4 dispatched by
+  // the vendor so far) but one dispatch already came back device-paired on
+  // the return sheet. The sheet is already valid for that row, so the
+  // section renders right alongside the return-sheet dropzone rather than
+  // waiting for the batch to leave PRINTING, and the batch-scoped activation
+  // list underneath shows only the device-paired row, never the one still at
+  // zero devices.
+  it('at PRINTING with one device-paired row and one not yet paired, the CWD section lists only the paired row', async () => {
+    const AWAITING = [
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: 'AWB1', deliveryDate: null, deviceCount: 2 },
+      { dispatchId: 'asgn_50000000008008000000000099', merchantDisplay: 'NOT YET PAIRED', awb: null, deliveryDate: null, deviceCount: 0 },
+    ]
+    const calls = stubRoutes(
+      DETAIL,
+      journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 1, delivered: 0, activated: 0 }, AWAITING),
+      (url) => {
+        if (url.includes('/ops/assignments/request-activation')) {
+          return jsonResponse({ deduped: false, recorded: ['asgn_50000000008008000000000001'], unknown: [] })
+        }
+        return undefined
+      },
+    )
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(document.getElementById('embedded-upload-return')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /download activation sheet/i })).toBeTruthy()
+    // The un-paired dispatch never appears anywhere on the page.
+    expect(screen.queryByText('NOT YET PAIRED')).toBeNull()
+    // Exactly one row in the batch activation list: the per-row "Mark
+    // activated" button count is the simplest proof, since it excludes the
+    // bulk "Mark N activated" button by its distinct accessible name.
+    expect(screen.getAllByRole('button', { name: /^mark activated$/i }).length).toBe(1)
+
+    await userEvent.click(screen.getByRole('button', { name: /^mark sent to cwd$/i }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toMatch(/1 dispatch\b/i)
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /mark sent to cwd/i }))
+
+    const write = await vi.waitFor(() => {
+      const found = calls.find((c) => c.url.includes('/request-activation'))
+      expect(found).toBeTruthy()
+      return found!
+    })
+    expect(JSON.parse(write.init.body as string).dispatchIds).toEqual(['asgn_50000000008008000000000001'])
+  })
+
+  it('when every awaitingActivation row has zero devices, the CWD section is entirely absent', async () => {
+    const AWAITING = [
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null, deviceCount: 0 },
+      { dispatchId: 'asgn_50000000008008000000000002', merchantDisplay: 'SECOND MERCHANT', awb: null, deliveryDate: null, deviceCount: 0 },
+    ]
+    stubRoutes(
+      DETAIL,
+      journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 0 }, AWAITING),
+    )
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    expect(await screen.findByText('Next step')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /download activation sheet/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /mark sent to cwd/i })).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /select/i })).toBeNull()
+  })
+
+  // The batch-scoped activation list's bulk flow: tick a row, confirm, and
+  // the write posts exactly the ticked dispatch id with a fresh
+  // Idempotency-Key to the bulk activate route, then the page's own journey
+  // and detail reads run again so the rail, chip and list catch up.
+  it('bulk-selecting one row in the CWD list and confirming posts that dispatchId to activate-bulk and refetches the batch', async () => {
+    const AWAITING = [
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null, deviceCount: 1 },
+      { dispatchId: 'asgn_50000000008008000000000002', merchantDisplay: 'SECOND MERCHANT', awb: null, deliveryDate: null, deviceCount: 1 },
+    ]
+    const calls = stubRoutes(
+      DETAIL,
+      journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 0 }, AWAITING),
+      (url) => {
+        if (url.includes('/ops/assignments/activate-bulk')) {
+          return jsonResponse({ results: [{ dispatchId: 'asgn_50000000008008000000000001', activated: true, reason: null }] })
+        }
+        return undefined
+      },
+    )
+    renderPage()
+
+    // 'BRILLIANT PERFUME' renders twice here: once as the dispatch grid's own
+    // row (the fixture entry shares that merchant name), once as the CWD
+    // list's row for the same dispatch id, so it is awaited with
+    // findAllByText rather than the single-match findByText the other tests
+    // use.
+    await screen.findAllByText('BRILLIANT PERFUME')
+    expect(await screen.findByText('SECOND MERCHANT')).toBeTruthy()
+
+    const journeyCallsBefore = calls.filter((c) => c.url.includes('/ops/reports/batch-journey/')).length
+    const detailCallsBefore = calls.length - journeyCallsBefore
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /select brilliant perfume/i }))
+
+    const trigger = screen.getByRole('button', { name: /^mark 1 activated$/i })
+    await userEvent.click(trigger)
+    // First click only opens the dialog; nothing has been written yet.
+    expect(calls.some((c) => c.url.includes('/activate-bulk'))).toBe(false)
+
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /^mark 1 activated$/i }))
+
+    const write = await vi.waitFor(() => {
+      const found = calls.find((c) => c.url.includes('/activate-bulk'))
+      expect(found).toBeTruthy()
+      return found!
+    })
+    expect(write.init.method).toBe('POST')
+    expect(JSON.parse(write.init.body as string).dispatchIds).toEqual(['asgn_50000000008008000000000001'])
+    const headers = write.init.headers as Record<string, string>
+    expect(headers['Idempotency-Key']).toBeTruthy()
+
+    // The per-row outcome renders in the CWD list's own table. Scoped to that
+    // table because the lifecycle rail above also has an "Activated" rung
+    // label once the batch has anything deliverable and activatable.
+    const cwdTable = screen.getByText('Last result').closest('table')
+    if (cwdTable === null) throw new Error('CWD list table not found')
+    expect(await within(cwdTable).findByText(/^activated$/i)).toBeTruthy()
+    await vi.waitFor(() => {
+      const journeyCallsAfter = calls.filter((c) => c.url.includes('/ops/reports/batch-journey/')).length
+      expect(journeyCallsAfter).toBeGreaterThan(journeyCallsBefore)
+      const detailCallsAfter = calls.length - journeyCallsAfter
+      expect(detailCallsAfter).toBeGreaterThan(detailCallsBefore)
+    })
+  })
+
+  it('a per-row Mark activated posts { dispatchId } to /ops/assignments/activate', async () => {
+    const AWAITING = [
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null, deviceCount: 1 },
+    ]
+    const calls = stubRoutes(
+      DETAIL,
+      journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 0 }, AWAITING),
+      (url) => {
+        if (url.includes('/ops/assignments/activate') && !url.includes('activate-bulk')) {
+          return jsonResponse({ activated: true })
+        }
+        return undefined
+      },
+    )
+    renderPage()
+
+    expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: /^mark activated$/i }))
+
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /^mark activated$/i }))
+
+    const write = await vi.waitFor(() => {
+      const found = calls.find((c) => c.url.includes('/ops/assignments/activate') && !c.url.includes('activate-bulk'))
+      expect(found).toBeTruthy()
+      return found!
+    })
+    expect(write.init.method).toBe('POST')
+    expect(JSON.parse(write.init.body as string)).toEqual({ dispatchId: 'asgn_50000000008008000000000001' })
+  })
+
   // The brief's READY_FOR_CWD case, read as ACTIVATION per the controller
   // ruling: everything delivered, something still activatable and not yet
   // activated. Both the CWD send actions and the activation dropzone render
   // together (the ruling's "replaces READY_FOR_CWD and AWAITING_ACTIVATION").
   it('at ACTIVATION offers the CWD download, a confirmed Mark sent to CWD posting dispatchIds with an Idempotency-Key, and the activation dropzone', async () => {
     const AWAITING = [
-      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null },
-      { dispatchId: 'asgn_50000000008008000000000002', merchantDisplay: 'SECOND MERCHANT', awb: null, deliveryDate: null },
+      { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null, deviceCount: 1 },
+      { dispatchId: 'asgn_50000000008008000000000002', merchantDisplay: 'SECOND MERCHANT', awb: null, deliveryDate: null, deviceCount: 1 },
     ]
     const calls = stubRoutes(
       DETAIL,
@@ -464,8 +627,13 @@ describe('The batch page offers a Next step card driven by the batch stage', () 
     expect(headers['Idempotency-Key']).toBeTruthy()
   })
 
-  it('at COMPLETE renders a quiet done note and no actions', async () => {
-    stubRoutes(DETAIL, journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 2 }))
+  it('at COMPLETE renders a quiet done note and no actions, even with a device-paired row still listed', async () => {
+    stubRoutes(
+      DETAIL,
+      journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 2 }, [
+        { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null, deviceCount: 1 },
+      ]),
+    )
     renderPage()
 
     expect(await screen.findByText('BRILLIANT PERFUME')).toBeTruthy()
@@ -484,7 +652,7 @@ describe('The batch page offers a Next step card driven by the batch stage', () 
     stubRoutes(
       DETAIL,
       journeyView({ total: 4, deliverableAndActivatable: 2, sentToVendor: 4, dispatched: 4, delivered: 4, activated: 0 }, [
-        { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null },
+        { dispatchId: 'asgn_50000000008008000000000001', merchantDisplay: 'BRILLIANT PERFUME', awb: null, deliveryDate: null, deviceCount: 1 },
       ]),
       (url) => (url.includes('/session/rehydrate') ? jsonResponse({ accessToken: fakeToken }) : undefined),
     )
