@@ -847,6 +847,8 @@ export interface BankMasterRow {
   pin: string | null
   mobile: string | null
   email: string | null
+  parentTnntId: string | null
+  hasLogo: boolean
 }
 
 export function getBankMasters(c: Client) {
@@ -965,6 +967,7 @@ export interface BankMasterCreateBody {
   pin: string
   mobile: string
   email: string
+  parentBankReferenceCode?: string
 }
 
 export function createBankMaster(c: Client, body: BankMasterCreateBody, idempotencyKey: string) {
@@ -994,6 +997,7 @@ export interface BankMasterEditBody {
   mobile?: string
   email?: string
   status?: string
+  parentBankReferenceCode?: string
 }
 
 export function editBankMaster(c: Client, tnntId: string, body: BankMasterEditBody, idempotencyKey: string) {
@@ -1003,6 +1007,55 @@ export function editBankMaster(c: Client, tnntId: string, body: BankMasterEditBo
     body,
     idempotencyKey,
   })
+}
+
+// The logo pair upload (spec 2026-08-19). Multipart through the typed client's
+// formBody path (client.ts), so it keeps the 401 refresh-and-retry the raw
+// fetch downloads below forgo.
+export function uploadBankMasterLogo(
+  c: Client,
+  tnntId: string,
+  master: File,
+  derivative: File,
+  idempotencyKey: string,
+) {
+  const form = new FormData()
+  form.append('master', master)
+  form.append('derivative', derivative)
+  return c.request<{ deduped: boolean; id: string | null; masterVersion: string | null; derivativeVersion: string | null }>({
+    method: 'POST',
+    path: `/ops/bank-masters/${encodeURIComponent(tnntId)}/logo`,
+    formBody: form,
+    idempotencyKey,
+  })
+}
+
+export interface BankLogoVersionRow {
+  version: string
+  filename: string
+  contentType: string
+}
+
+export function getBankMasterLogoVersions(c: Client, tnntId: string) {
+  return c.request<BankLogoVersionRow[]>({
+    method: 'GET',
+    path: `/ops/bank-masters/${encodeURIComponent(tnntId)}/logo/versions`,
+  })
+}
+
+// BINARY body, so it takes the raw-fetch-with-Bearer path the dispatch
+// downloads use (same recorded reason: client.request is JSON/text only).
+// 404 is a real answer (no logo yet), surfaced as null.
+export async function fetchBankMasterLogoDerivative(tnntId: string): Promise<Blob | null> {
+  const res = await fetch(`${opsBaseUrl()}/ops/bank-masters/${encodeURIComponent(tnntId)}/logo/derivative`, {
+    headers: { Authorization: `Bearer ${getAccessToken()}` },
+  })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const text = await res.text()
+    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+  }
+  return res.blob()
 }
 
 /** apps/ops-edge/src/ops.controller.ts DamageReasonCreateBody (BRD FR-08). */
