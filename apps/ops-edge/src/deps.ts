@@ -74,6 +74,14 @@ export const EDGE_DEPS = 'OPS_EDGE_DEPS'
 // extra exception filter is needed.
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
+// The multipart file size cap for the aggregator logo upload route
+// (authenticated-DoS guard). Bank .ai frame masters are vector artwork averaging
+// 9MB and peaking at 22MB in the real GSCB set, so the 5MB sheet cap cannot
+// serve this route. 32MB keeps a hard bound (the DoS guard survives, just sized
+// for artwork) and applies ONLY to the aggregator logo route, never the sheet
+// uploads.
+export const MAX_ARTWORK_UPLOAD_BYTES = 32 * 1024 * 1024
+
 export const DEFAULT_FULFILLMENT_DATABASE_URL =
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 export const DEFAULT_TMS_DATABASE_URL = 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'

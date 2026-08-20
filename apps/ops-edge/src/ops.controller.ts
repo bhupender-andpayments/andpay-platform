@@ -93,7 +93,7 @@ import {
   listBankMasters,
 } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
-import { EDGE_DEPS, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
+import { EDGE_DEPS, MAX_UPLOAD_BYTES, MAX_ARTWORK_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAuthzAudit } from './audit.js'
 import type { EdgeRequest } from './request.js'
 
@@ -1970,7 +1970,7 @@ export class OpsController {
         { name: 'master', maxCount: 1 },
         { name: 'derivative', maxCount: 1 },
       ],
-      { limits: { fileSize: MAX_UPLOAD_BYTES } },
+      { limits: { fileSize: MAX_ARTWORK_UPLOAD_BYTES } },
     ),
   )
   @HttpCode(200)
