@@ -23,6 +23,13 @@ export interface DataTableProps<T> {
   emptyMessage?: string
   /** Forwarded to the grid. Search only finds columns that carry sortValue. */
   searchPlaceholder?: string
+  /**
+   * Forwarded to the grid. Set false when the caller renders its OWN search
+   * box (the Bank Masters tree does: its query must also auto-expand matching
+   * parents, which the grid's plain row filter cannot), so the screen never
+   * shows two search bars.
+   */
+  searchable?: boolean
   pageSize?: number
 }
 
@@ -45,6 +52,7 @@ export function DataTable<T>({
   getRowKey,
   emptyMessage = 'No records.',
   searchPlaceholder,
+  searchable,
   pageSize,
 }: DataTableProps<T>) {
   const usable = Array.isArray(rows)
@@ -69,6 +77,7 @@ export function DataTable<T>({
       emptyTitle={usable ? 'Nothing here' : 'Could not display these rows'}
       emptyMessage={usable ? emptyMessage : 'The response was not a list. A load error above says more if the caller caught one.'}
       searchPlaceholder={searchPlaceholder}
+      searchable={searchable ?? true}
       pageSize={pageSize ?? 20}
     />
   )

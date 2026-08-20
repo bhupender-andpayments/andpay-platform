@@ -21,20 +21,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { useCreateDialog } from './useCreateDialog.js'
-
-// The portal CSP is img-src 'self' data:, which blocks a blob: URL (Chrome
-// reports "violates the following Content Security Policy directive"), so the
-// fetched derivative Blob is read into a data: URL here rather than handed to
-// URL.createObjectURL. No revoke is needed: a data: URL holds no browser
-// resource the way an object URL does.
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(reader.error ?? new Error('Failed to read the logo blob.'))
-    reader.readAsDataURL(blob)
-  })
-}
+import { blobToDataUrl } from '../../lib/blob.js'
 
 // The tenant (bank master) detail dialog (Task 8, 2026-08-20 rework): the
 // earlier parent-picker is gone along with the sibling-tenant hierarchy it

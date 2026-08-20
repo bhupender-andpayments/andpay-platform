@@ -3,6 +3,7 @@ import { Pencil } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { VendorRegistryPage } from './VendorRegistryPage.js'
 import { CourierMasterPage } from './CourierMasterPage.js'
+import { AggregatorLogoThumb } from './AggregatorLogoThumb.js'
 import { BankMasterCreateDialog } from './BankMasterCreateDialog.js'
 import { BankMasterDetailDialog } from './BankMasterDetailDialog.js'
 import { AggregatorCreateDialog } from './AggregatorCreateDialog.js'
@@ -238,7 +239,7 @@ function bankMasterColumns(
       cell: (row) =>
         row.kind === 'aggregator' ? (
           row.a.hasLogo ? (
-            <StatusPill value="SET" />
+            <AggregatorLogoThumb aggrId={row.a.aggrId} name={row.a.displayName} />
           ) : (
             <span className="text-muted-foreground">none</span>
           )
@@ -389,6 +390,10 @@ function BankMastersView() {
               rows={(displayRows as TreeRow[]) ?? []}
               getRowKey={(row) => (row.kind === 'tenant' ? row.t.tnntId : row.a.aggrId)}
               emptyMessage="No bank masters."
+              // The tree renders its OWN search box above (its query also
+              // auto-expands matching parents); the grid's built-in one would
+              // be a second, dumber search bar on the same screen.
+              searchable={false}
             />
           </>
         )}

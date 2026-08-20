@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   editAggregator,
   uploadAggregatorLogo,
@@ -21,20 +21,9 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { useCreateDialog } from './useCreateDialog.js'
-
-// The portal CSP is img-src 'self' data:, which blocks a blob: URL (Chrome
-// reports "violates the following Content Security Policy directive"), so the
-// fetched derivative Blob is read into a data: URL here rather than handed to
-// URL.createObjectURL. No revoke is needed: a data: URL holds no browser
-// resource the way an object URL does.
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(reader.error ?? new Error('Failed to read the logo blob.'))
-    reader.readAsDataURL(blob)
-  })
-}
+import { invalidateLogoThumb } from './AggregatorLogoThumb.js'
+import { blobToDataUrl } from '../../lib/blob.js'
+import { rasterizeAiFile, derivativeFileFor } from '../../lib/ai-preview.js'
 
 // The aggregator detail dialog (Task 8, 2026-08-20): the pencil on an
 // aggregator row opens this. Two sections: Details (name, status, the
@@ -124,29 +113,71 @@ export function AggregatorDetailDialog({
   const [versions, setVersions] = useState<BankLogoVersionRow[] | null>(null)
   const [masterFile, setMasterFile] = useState<File | null>(null)
   const [derivativeFile, setDerivativeFile] = useState<File | null>(null)
+  // The data: URL preview of the PENDING pair, shown beside the current logo
+  // BEFORE anything is uploaded, so the operator sees what they picked.
+  const [pendingUrl, setPendingUrl] = useState<string | null>(null)
+  // True while the picked .ai is being drawn in the browser.
+  const [rendering, setRendering] = useState(false)
+  // Non-null once a picked .ai could not be rendered (saved without PDF
+  // compatibility); the manual PNG/SVG input is then the way through.
+  const [renderHint, setRenderHint] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [logoError, setLogoError] = useState<string | null>(null)
+  // Remount key for the two native file inputs: clearing React state after a
+  // successful upload does not clear an uncontrolled input's shown filename.
+  const [inputEpoch, setInputEpoch] = useState(0)
+  // Bumps on every file pick; an async rasterize or preview result only lands
+  // if its token is still current, so a stale render can never clobber a file
+  // the operator picked afterwards.
+  const pickSeq = useRef(0)
 
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
+  function loadCurrent(): void {
     fetchAggregatorLogoDerivative(aggregator.aggrId)
       .then((blob) => {
-        if (blob === null || cancelled) return
+        if (blob === null) return
         // The portal CSP is img-src 'self' data:, which blocks a blob: URL, so
         // the preview must be a data: URL, not URL.createObjectURL's output.
-        return blobToDataUrl(blob).then((url) => {
-          if (!cancelled) setDerivativeUrl(url)
-        })
+        return blobToDataUrl(blob).then(setDerivativeUrl)
       })
       .catch(() => setLogoError('Failed to load the current logo.'))
     getAggregatorLogoVersions(client, aggregator.aggrId)
       .then(setVersions)
       .catch(() => setVersions([]))
-    return () => {
-      cancelled = true
-    }
+  }
+
+  useEffect(() => {
+    if (!open) return
+    loadCurrent()
   }, [open, aggregator.aggrId, client])
+
+  async function pickMaster(file: File | null): Promise<void> {
+    const token = ++pickSeq.current
+    setMasterFile(file)
+    setRenderHint(null)
+    if (file === null) return
+    setRendering(true)
+    try {
+      const { pngBlob, dataUrl } = await rasterizeAiFile(file)
+      if (pickSeq.current !== token) return
+      setDerivativeFile(derivativeFileFor(file.name, pngBlob))
+      setPendingUrl(dataUrl)
+    } catch {
+      if (pickSeq.current !== token) return
+      setRenderHint(
+        'This .ai could not be rendered in the browser (it was likely saved without PDF compatibility). Attach a PNG or SVG derivative manually.',
+      )
+    } finally {
+      if (pickSeq.current === token) setRendering(false)
+    }
+  }
+
+  async function pickDerivative(file: File | null): Promise<void> {
+    const token = ++pickSeq.current
+    setDerivativeFile(file)
+    if (file === null) return
+    const url = await blobToDataUrl(file)
+    if (pickSeq.current === token) setPendingUrl(url)
+  }
 
   async function uploadLogo(): Promise<void> {
     if (masterFile === null || derivativeFile === null) return
@@ -155,8 +186,18 @@ export function AggregatorDetailDialog({
     try {
       await uploadAggregatorLogo(client, aggregator.aggrId, masterFile, derivativeFile, newIdempotencyKey())
       toast(`${aggregator.displayName} logo updated`)
+      // Stay OPEN and refresh in place: the operator watches the current logo
+      // and the version list flip to what they just uploaded, instead of the
+      // dialog vanishing on them.
+      pickSeq.current++
+      setMasterFile(null)
+      setDerivativeFile(null)
+      setPendingUrl(null)
+      setRenderHint(null)
+      setInputEpoch((n) => n + 1)
+      invalidateLogoThumb(aggregator.aggrId)
+      loadCurrent()
       onSaved()
-      onOpenChange(false)
     } catch (err) {
       setLogoError(err instanceof Error ? err.message : 'Failed to upload the logo.')
     } finally {
@@ -263,26 +304,61 @@ export function AggregatorDetailDialog({
           <div className="space-y-3 border-t pt-4">
             <h3 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-foreground">Logo</h3>
             {logoError !== null && <ErrorNote>{logoError}</ErrorNote>}
-            {derivativeUrl !== null ? (
-              <img src={derivativeUrl} alt={`${aggregator.displayName} logo`} className="max-h-16" />
-            ) : (
-              <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
-            )}
+            <div className="flex items-start gap-6">
+              <div className="space-y-1">
+                <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">Current</p>
+                {derivativeUrl !== null ? (
+                  <img
+                    src={derivativeUrl}
+                    alt={`${aggregator.displayName} logo`}
+                    className="max-h-24 rounded border border-border bg-white object-contain p-1"
+                  />
+                ) : (
+                  <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
+                )}
+              </div>
+              {(pendingUrl !== null || rendering) && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">
+                    New (not uploaded yet)
+                  </p>
+                  {rendering ? (
+                    <p className="text-sm text-muted-foreground">Rendering the .ai…</p>
+                  ) : (
+                    <img
+                      src={pendingUrl ?? undefined}
+                      alt="Selected logo preview"
+                      className="max-h-24 rounded border border-dashed border-border bg-white object-contain p-1"
+                    />
+                  )}
+                </div>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Logo master (.ai)" htmlFor="agg-logo-master">
+              <Field
+                label="Logo master (.ai)"
+                htmlFor="agg-logo-master"
+                hint="Pick the .ai; the preview and its PNG render derivative are generated right here in the browser."
+              >
                 <Input
                   id="agg-logo-master"
+                  key={`master-${inputEpoch}`}
                   type="file"
                   accept=".ai,application/postscript,application/pdf"
-                  onChange={(e) => setMasterFile(e.target.files?.[0] ?? null)}
+                  onChange={(e) => void pickMaster(e.target.files?.[0] ?? null)}
                 />
               </Field>
-              <Field label="Render derivative (PNG or SVG)" htmlFor="agg-logo-derivative">
+              <Field
+                label="Render derivative (PNG or SVG)"
+                htmlFor="agg-logo-derivative"
+                hint={renderHint ?? 'Auto-generated from the .ai; pick one here only to override it.'}
+              >
                 <Input
                   id="agg-logo-derivative"
+                  key={`derivative-${inputEpoch}`}
                   type="file"
                   accept="image/png,image/svg+xml"
-                  onChange={(e) => setDerivativeFile(e.target.files?.[0] ?? null)}
+                  onChange={(e) => void pickDerivative(e.target.files?.[0] ?? null)}
                 />
               </Field>
             </div>

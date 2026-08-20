@@ -354,6 +354,26 @@ describe('master data views', () => {
     expect(screen.queryByText('VSC Bank')).toBeNull()
   })
 
+  it('Bank Masters shows exactly ONE search box: the tree-aware one, with the grid built-in silenced', async () => {
+    // Two search bars shipped on 2026-08-20: the view's tree-aware box (which
+    // auto-expands matching parents) stacked on top of DataGrid's built-in
+    // filter. The grid's must stay off here or the screen regresses to two.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
+        return jsonResponse([])
+      }),
+    )
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await screen.findByText('Gujarat State Co-op Bank')
+
+    expect(screen.getAllByPlaceholderText(/Search/)).toHaveLength(1)
+    expect(screen.getByLabelText('Search bank masters')).toBeTruthy()
+  })
+
   it('Damage Reasons tab renders rows and distinguishes active/inactive without a fabricated status', async () => {
     const calls: Call[] = []
     stubAllReads(calls)
