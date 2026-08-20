@@ -370,3 +370,40 @@ describe('auto-mint reconciliation: admin-created Bank Master and ingest resolve
     expect(await db.tenant.count()).toBe(1)
   })
 })
+
+describe('ingest resolves-or-mints aggregators (per-row bankReferenceCode)', () => {
+  it('projectRowFact mints and locks an aggregator for the per-row code', async () => {
+    await projectRowFact(db, ingestRow({ bankReferenceCode: '3', tenantReference: 'BREF-ADMIN-1' }))
+    const rows = await db.$queryRaw<{ aggregator_code: string; code_locked_at: Date | null; is_default: boolean }[]>`
+      SELECT aggregator_code, code_locked_at, is_default FROM aggregator ORDER BY aggregator_code
+    `
+    expect(rows.map((r) => r.aggregator_code)).toContain('3')
+    const minted = rows.find((r) => r.aggregator_code === '3')!
+    expect(minted.code_locked_at).not.toBeNull()
+    expect(minted.is_default).toBe(false)
+    const facts = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.aggregator.v1'
+    `
+    expect(Number(facts[0]!.n)).toBeGreaterThanOrEqual(1)
+  })
+
+  it('a second row with the same code resolves without a second mint or fact', async () => {
+    await projectRowFact(db, ingestRow({ bankReferenceCode: '3', tenantReference: 'BREF-ADMIN-1' }))
+    const before = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.aggregator.v1'
+    `
+    await projectRowFact(db, ingestRow({ bankReferenceCode: '3', bankMerchantReference: 'BREF-M-2', vpaHint: 'x@y', tenantReference: 'BREF-ADMIN-1' }, 'file-bm|2'))
+    const after = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.aggregator.v1'
+    `
+    expect(Number(after[0]!.n)).toBe(Number(before[0]!.n))
+  })
+
+  it('an ingest-minted tenant gets its default aggregator', async () => {
+    await projectRowFact(db, ingestRow({ bankReferenceCode: 'NEWB' }))
+    const rows = await db.$queryRaw<{ aggregator_code: string; is_default: boolean }[]>`
+      SELECT aggregator_code, is_default FROM aggregator
+    `
+    expect(rows.some((r) => r.aggregator_code === 'NEWB' && r.is_default)).toBe(true)
+  })
+})

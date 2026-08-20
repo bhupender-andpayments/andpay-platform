@@ -10,10 +10,12 @@ import {
   tenantFactEnvelope,
   programFactEnvelope,
   enrollmentFactEnvelope,
+  aggregatorFactEnvelope,
   IDENTITY_MERCHANT_TOPIC,
   IDENTITY_TENANT_TOPIC,
   IDENTITY_PROGRAM_TOPIC,
   IDENTITY_ENROLLMENT_TOPIC,
+  IDENTITY_AGGREGATOR_TOPIC,
 } from './events.js'
 
 // The consumer name for the inbox (E6). One row fact is processed effectively
@@ -102,6 +104,52 @@ export async function resolveProgram(
   `
   await setProgramContext(tx, w[0]!.id)
   return { programUuid: w[0]!.id, created: false }
+}
+
+// Resolve the sub-tenant aggregator by (tenant, per-row code), minting an
+// aggr_ on first sight and LOCKING the code (spec 4.3: once ingest has
+// matched on a code, editing it would orphan every row that carried it).
+// The default flag is decided by whether the code IS the tenant's own
+// reference code. Emits the aggregator fact only on mint; the resolve
+// branch also backfills code_locked_at for admin-created rows on their
+// first file match.
+async function resolveAggregator(
+  tx: Tx,
+  tenantUuid: string,
+  tnntId: string,
+  code: string,
+  env: { id: string; traceId: string },
+): Promise<void> {
+  const hit = await tx.$queryRaw<{ id: string; code_locked_at: Date | null }[]>`
+    SELECT id, code_locked_at FROM aggregator
+    WHERE tenant_id = ${tenantUuid}::uuid AND aggregator_code = ${code}
+  `
+  if (hit.length > 0) {
+    if (hit[0]!.code_locked_at === null) {
+      await tx.$executeRaw`UPDATE aggregator SET code_locked_at = now() WHERE id = ${hit[0]!.id}::uuid`
+    }
+    return
+  }
+  const candidate = toUuid(newId('aggr'))
+  const won = await tx.$queryRaw<{ id: string }[]>`
+    INSERT INTO aggregator (id, tenant_id, aggregator_code, display_name, status, is_default, code_locked_at, updated_at)
+    VALUES (${candidate}::uuid, ${tenantUuid}::uuid, ${code}, ${code}, 'ACTIVE', false, now(), now())
+    ON CONFLICT (tenant_id, aggregator_code) DO NOTHING
+    RETURNING id
+  `
+  if (won.length === 0) return
+  await enqueue(tx, {
+    aggregateType: 'aggregator',
+    aggregateId: fromUuid('aggr', candidate),
+    eventType: IDENTITY_AGGREGATOR_TOPIC,
+    partitionKey: tnntId,
+    payload: aggregatorFactEnvelope({
+      payload: { aggrId: fromUuid('aggr', candidate), tnntId, aggregatorCode: code,
+        displayName: code, status: 'ACTIVE', isDefault: false },
+      dedupKey: eventKey(env.id, `identity.aggregator.${code}`),
+      traceId: env.traceId,
+    }),
+  })
 }
 
 interface MerchantFields {
@@ -236,7 +284,8 @@ export async function projectRowFact(db: IdentityDb, env: RowFactEnvelope): Prom
       // codes must yield ONE tenant, ONE program and ONE pool, not 19. The
       // fallback keeps every pre-existing fact working: with no tenantReference
       // the aggregator code IS the tenant, exactly as before.
-      const tenant = await resolveTenant(tx, p.tenantReference ?? p.bankReferenceCode)
+      const tenantCode = p.tenantReference ?? p.bankReferenceCode
+      const tenant = await resolveTenant(tx, tenantCode)
       const program = await resolveProgram(tx, tenant.tenantUuid, p.productType)
       const merchant = await resolveMerchant(tx, tenant.tenantUuid, p.bankMerchantReference, p.vpaHint, {
         displayName: p.displayName,
@@ -272,7 +321,34 @@ export async function projectRowFact(db: IdentityDb, env: RowFactEnvelope): Prom
             traceId: env.traceId,
           }),
         })
+
+        // An ingest-minted tenant gets its own default aggregator, exactly like
+        // the admin createBankMaster path: code = the tenant's own reference
+        // code (the resolved tenantCode, not the per-row bankReferenceCode),
+        // is_default true, no lock (nothing has matched a file row yet).
+        const defaultAggrId = toUuid(newId('aggr'))
+        await tx.$executeRaw`
+          INSERT INTO aggregator (id, tenant_id, aggregator_code, display_name, status, is_default, code_locked_at, updated_at)
+          VALUES (${defaultAggrId}::uuid, ${tenant.tenantUuid}::uuid, ${tenantCode}, ${tenantCode}, 'ACTIVE', true, NULL, now())
+        `
+        await enqueue(tx, {
+          aggregateType: 'aggregator',
+          aggregateId: fromUuid('aggr', defaultAggrId),
+          eventType: IDENTITY_AGGREGATOR_TOPIC,
+          partitionKey: tnntId,
+          payload: aggregatorFactEnvelope({
+            payload: { aggrId: fromUuid('aggr', defaultAggrId), tnntId, aggregatorCode: tenantCode,
+              displayName: tenantCode, status: 'ACTIVE', isDefault: true },
+            dedupKey: eventKey(env.id, 'identity.aggregator.default'),
+            traceId: env.traceId,
+          }),
+        })
       }
+
+      // Resolve/mint the per-row aggregator for the code this row actually
+      // carries (may equal the tenant's default code when there is no
+      // tenantReference, per the Fork B fallback above).
+      await resolveAggregator(tx, tenant.tenantUuid, tnntId, p.bankReferenceCode, env)
 
       if (program.created) {
         await enqueue(tx, {

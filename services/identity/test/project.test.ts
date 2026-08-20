@@ -46,7 +46,7 @@ beforeEach(async () => {
 })
 
 describe('consume-project-emit (spec 05, check 1 resolution and dedup)', () => {
-  it('1(a): a first row creates one merchant, one resolver row, one enrollment, four facts', async () => {
+  it('1(a): a first row creates one merchant, one resolver row, one enrollment, five facts', async () => {
     const res = await projectRowFact(db, row())
     expect(res.deduped).toBe(false)
     if (res.deduped) return
@@ -57,7 +57,9 @@ describe('consume-project-emit (spec 05, check 1 resolution and dedup)', () => {
     expect(await db.enrollment.count()).toBe(1)
     expect(await db.tenant.count()).toBe(1)
     expect(await db.program.count()).toBe(1)
-    expect(await db.outbox.count()).toBe(4)
+    // tenant, program, merchant, enrollment, and the ingest-minted tenant's
+    // default aggregator (2026-08-20).
+    expect(await db.outbox.count()).toBe(5)
     expect(await db.subMerchant.count()).toBe(1)
   })
 
@@ -209,11 +211,13 @@ describe('consume-project-emit (spec 05, checks 3, 5, 7, 8, 9)', () => {
     expect(await db.subMerchant.count()).toBe(0)
   })
 
-  it('7: E1, a successful projection commits the merchant, its sub_merchant, and all four facts together', async () => {
+  it('7: E1, a successful projection commits the merchant, its sub_merchant, and all five facts together', async () => {
     const res = await projectRowFact(db, row())
     expect(res.deduped).toBe(false)
     expect(await db.merchant.count()).toBe(1)
-    expect(await db.outbox.count()).toBe(4)
+    // tenant, program, merchant, enrollment, and the ingest-minted tenant's
+    // default aggregator (2026-08-20).
+    expect(await db.outbox.count()).toBe(5)
     expect(await db.subMerchant.count()).toBe(1)
   })
 
@@ -226,10 +230,10 @@ describe('consume-project-emit (spec 05, checks 3, 5, 7, 8, 9)', () => {
     expect(JSON.stringify(outbox).includes('bank_')).toBe(false)
   })
 
-  it('9: the row fact trace_id appears on all four emitted facts (S21)', async () => {
+  it('9: the row fact trace_id appears on all five emitted facts (S21)', async () => {
     await projectRowFact(db, row({}, 'file1|1', 'trace-xyz'))
     const outbox = await db.outbox.findMany()
-    expect(outbox).toHaveLength(4)
+    expect(outbox).toHaveLength(5)
     for (const o of outbox) {
       expect((o.payload as { traceId: string }).traceId).toBe('trace-xyz')
     }
@@ -244,10 +248,11 @@ const merchantEventType = (facts: FactRow[]): string | undefined => {
 }
 
 describe('fact hygiene: emit on change, always enrollment (spec 05)', () => {
-  it('a create row emits all four facts with MerchantCreated', async () => {
+  it('a create row emits all five facts with MerchantCreated', async () => {
     await projectRowFact(db, row({}, 'file1|1'))
     const facts = await db.outbox.findMany()
     expect(topicsOf(facts)).toEqual([
+      'fct.identity.aggregator.v1',
       'fct.identity.enrollment.v1',
       'fct.identity.merchant.v1',
       'fct.identity.program.v1',
