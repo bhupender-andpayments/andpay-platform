@@ -104,6 +104,18 @@ describe('createAggregator / editAggregator', () => {
       .rejects.toMatchObject({ kind: 'invalid', message: 'the aggregator code is locked; ingest has already matched on it' })
   })
 
+  it('the default aggregator carries the bank reference code and its code cannot change', async () => {
+    await createBankMaster(db, createArgs())
+    const rows = await listBankMasters(db)
+    const def = rows[0]!.aggregators.find((x) => x.isDefault)!
+    await expect(editAggregator(db, { aggrId: def.aggrId, aggregatorCode: 'SOMETHING-ELSE',
+      clientKey: randomUUID(), actorId: 'a', traceId: 'tr' }))
+      .rejects.toMatchObject({
+        kind: 'invalid',
+        message: 'the default aggregator carries the bank reference code and its code cannot change',
+      })
+  })
+
   it('the default aggregator cannot be suspended while its tenant is ACTIVE', async () => {
     await createBankMaster(db, createArgs())
     const rows = await listBankMasters(db)

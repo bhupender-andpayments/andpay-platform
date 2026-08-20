@@ -1064,6 +1064,18 @@ export async function editAggregator(
           if (before.code_locked_at !== null) {
             throw new OpsClientError('invalid', 'the aggregator code is locked; ingest has already matched on it')
           }
+
+          // The default aggregator's code IS the tenant's own bank reference
+          // code (the spec invariant default.aggregatorCode == tenant's
+          // code): editing it away would let ingest mint a SECOND, non-default
+          // aggregator for the tenant's own code on the next file match, and
+          // would detach the tenant's own logo (which is keyed on that code).
+          if (before.is_default) {
+            throw new OpsClientError(
+              'invalid',
+              'the default aggregator carries the bank reference code and its code cannot change',
+            )
+          }
         }
 
         // The default aggregator cannot be suspended while its tenant is ACTIVE.
