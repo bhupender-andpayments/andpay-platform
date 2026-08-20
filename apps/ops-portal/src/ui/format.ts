@@ -13,7 +13,6 @@ export function pillClass(variant: PillVariant): string {
 const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   // device lifecycle (unit-lifecycle.ts spine + terminals)
   IN_STOCK: { variant: 'positive', label: 'In stock' },
-  ALLOCATED: { variant: 'pending', label: 'Allocated' },
   PRINTED: { variant: 'info', label: 'At print vendor' },
   DAMAGED: { variant: 'negative', label: 'Damaged' },
   // batch lifecycle (BATCH_STATUSES in services/fulfillment/src/batch-status.ts).
@@ -70,7 +69,6 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   RETURNED: { variant: 'negative', label: 'RTO' },
   FAILED: { variant: 'negative', label: 'Failed' },
   // D-16 activation branch: the request half. ACTIVATED is already above.
-  REQUEST_SENT_TO_CWD: { variant: 'pending', label: 'Request sent to CWD' },
   // activation
   ACTIVE: { variant: 'positive', label: 'Active' },
   PENDING: { variant: 'pending', label: 'Pending' },

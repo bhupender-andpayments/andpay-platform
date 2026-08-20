@@ -72,7 +72,6 @@ import {
   deactivateDamageReasonOps,
   updateDamageCaseStatusOps,
   activateAssignmentOps,
-  requestActivationOps,
   ManualDevicePort,
   type BankRequestRow,
   type BankPreviewResult,
@@ -152,12 +151,6 @@ const MAX_FLAG_REMARKS_LENGTH = 500
 // id (the BRD Dispatch ID), decoded server-side by TMS, never here (D99).
 interface ActivateAssignmentBody {
   dispatchId: string
-}
-// D-16 (T4.1b): the other half of the activation branch. A LIST, because an
-// operator exports a worklist and sends it to the CWD in one go; stamping thirty
-// rows through thirty requests would leave a half-sent batch on any failure.
-interface RequestActivationBody {
-  dispatchIds: string[]
 }
 // D-19 (T5.4): the bulk mark-activated body. A list for the same reason the
 // CWD-request body is one, and the response is PER ROW rather than a single
@@ -376,6 +369,15 @@ interface ResolveStatusExceptionBody {
 interface Gated {
   clientKey: string
   actorId: string
+  /**
+   * The actor's login handle from the verified claim (LeanClaim.hdl), for
+   * DISPLAY ATTRIBUTION on the rows this request writes. Optional because a
+   * token minted before the claim existed is still valid until it expires, so
+   * every writer must tolerate its absence and fall back to the id.
+   *
+   * NEVER an authorization input. Every gate below decides on `sub` alone.
+   */
+  actorDisplay: string | undefined
   traceId: string
 }
 
@@ -433,6 +435,7 @@ export class OpsController {
     stepUpKey?: keyof typeof OPS_STEP_UP_CATALOG,
   ): Promise<Gated> {
     const actorId = req.claim.sub
+    const actorDisplay = req.claim.hdl
     const clientKey = idempotencyKey
     if (clientKey === undefined || clientKey.trim() === '') {
       throw new BadRequestException('Idempotency-Key header is required')
@@ -491,7 +494,7 @@ export class OpsController {
       throw new ForbiddenException()
     }
 
-    return { clientKey, actorId, traceId: req.traceId }
+    return { clientKey, actorId, actorDisplay, traceId: req.traceId }
   }
 
   // The read-like authorize for the preview surface: a plain D2 authorize with
@@ -1094,38 +1097,10 @@ export class OpsController {
     })
   }
 
-  // D-16 (T4.1b, 13 Aug 2026): record that the activation request for these
-  // dispatch ids has LEFT US for the CWD. This is the window an operator chases,
-  // between asking and being told, and nothing could express it before.
-  //
-  // A POST rather than a side effect of GET /ops/reports/activation, which is
-  // where D-16's literal wording would put it: that route is a pinned pure read,
-  // and a mutating GET is retried by proxies and prefetched by browsers. The
-  // domain write is the same function either way, so the trigger can move later
-  // at the cost of a route and no state (PLAN.md Q24).
-  //
-  // Shape validation only, here. Nothing about WHICH ids are legitimate is
-  // decided at the edge: TMS resolves each assignment and its program
-  // server-side (D99) and reports back the ones it did not recognise.
-  @Post('assignments/request-activation')
-  @HttpCode(200)
-  async requestActivationRoute(
-    @Req() req: EdgeRequest,
-    @Body() body: RequestActivationBody,
-    @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ deduped: boolean; recorded: string[]; unknown: string[] }> {
-    const ids = Array.isArray(body?.dispatchIds) ? body.dispatchIds.filter((id) => typeof id === 'string') : []
-    if (ids.length === 0) {
-      throw new BadRequestException('dispatchIds must be a non-empty array')
-    }
-    const g = await this.gate(req, 'ops:request-activation', idem, ids)
-    return requestActivationOps(this.deps.tmsDb, {
-      asgnIds: ids,
-      clientKey: g.clientKey,
-      actorId: g.actorId,
-      traceId: g.traceId,
-    })
-  }
+  // requestActivationRoute DELETED (ACTIVATION.md, 21 Aug 2026): the team
+  // ruled there is no useful "request sent to CWD" window worth tracking.
+  // Activation is a one-time toggle now (activateAssignmentRoute above), with
+  // no earlier state to record.
 
   // D-19 (T5.4, 13 Aug 2026): mark SEVERAL dispatches activated in one action.
   //

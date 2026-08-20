@@ -26,12 +26,16 @@ import {
   listDispatches,
   listDeviceInventory,
   readDeviceDetail,
+  readUnitTrailOps,
+  readPoolEntryTrailOps,
+  readBatchTrailOps,
   type BatchRow,
   type BatchDetailView,
   type PoolEntryRow,
   type DispatchRow,
   type UnitInventoryRow,
   type UnitDetailView,
+  type StatusTrailRow,
   type VendorRow,
   type IntakeExceptionView,
   type CourierStatusExceptionView,
@@ -256,6 +260,35 @@ export class OpsReadController {
     const detail = await readDeviceDetail(this.deps.fulfillmentDb, unitId)
     if (detail === null) throw new NotFoundException('device not found')
     return detail
+  }
+
+  // STATUS_STAGES.md (21 Aug 2026): the three status trails, the siblings of
+  // the shipment trail the dispatch-detail composition already serves. Same
+  // guard-only posture as every other read on this controller: they expose
+  // when a status this operator can already see changed, and nothing more.
+  //
+  // Each is SINGLE-CONTEXT (fulfillment only), which is what keeps them on
+  // this controller rather than the composing reports controller.
+  //
+  // An empty array is a real answer, not a 404: an entity whose status has
+  // never moved since the log existed has an empty trail, and the portal rail
+  // renders that as "only the starting rung reached" rather than an error.
+  @Get('devices/:unitId/trail')
+  @HttpCode(200)
+  async deviceTrail(@Param('unitId') unitId: string): Promise<StatusTrailRow[]> {
+    return readUnitTrailOps(this.deps.fulfillmentDb, unitId)
+  }
+
+  @Get('dispatches/:asgnId/trail')
+  @HttpCode(200)
+  async dispatchTrail(@Param('asgnId') asgnId: string): Promise<StatusTrailRow[]> {
+    return readPoolEntryTrailOps(this.deps.fulfillmentDb, asgnId)
+  }
+
+  @Get('batches/:btchId/trail')
+  @HttpCode(200)
+  async batchTrail(@Param('btchId') btchId: string): Promise<StatusTrailRow[]> {
+    return readBatchTrailOps(this.deps.fulfillmentDb, btchId)
   }
 
   // 404 on an unknown batch rather than an empty-but-valid-looking detail, so

@@ -59,7 +59,6 @@ const DISPATCH = {
       overrideReason: null,
     },
   ],
-  activationTrail: [],
   watermark: { asOf: null, perTopic: {} },
 }
 

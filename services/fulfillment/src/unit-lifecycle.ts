@@ -4,6 +4,7 @@ import type { Envelope } from '@andpay/envelope'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteRole } from './write-context.js'
+import { logUnitStatuses, type StatusLogSource } from './status-log.js'
 
 // The device lifecycle (Bhupender, 2026-08-07).
 //
@@ -109,7 +110,55 @@ export function canAdvanceUnitStatus(from: string, to: AnyUnitStatus): boolean {
  * both win. `status` is a compile-time constant from the vocabulary above,
  * never caller input.
  */
-export async function advanceUnitStatus(tx: Tx, unitUuid: string, to: AnyUnitStatus): Promise<boolean> {
+/**
+ * How a device transition should be recorded on the device's own status trail
+ * (STATUS_STAGES.md). Optional on every writer below so the many existing
+ * callers keep compiling; when omitted the trail still records the transition,
+ * attributing it to the fact/file that caused it rather than to an operator.
+ */
+export interface UnitStatusLogOpts {
+  statusSource?: StatusLogSource
+  actorId?: string | null
+  traceId?: string
+  /** Reported time where a reporter exists (a courier file's own stamp). */
+  occurredAt?: Date
+}
+
+/**
+ * Append the trail rows for whatever the guarded UPDATE actually moved.
+ *
+ * DRIVEN BY `RETURNING`, never by the caller's intent: the monotonic guard
+ * above legitimately moves nothing when a redelivered fact re-applies a
+ * transition that already happened, and a trail that recorded the attempt
+ * would grow a duplicate rung on every redelivery (E2/E6 make redelivery
+ * normal, not exceptional). No rows moved, no rows logged.
+ */
+async function appendUnitTrail(
+  tx: Tx,
+  moved: readonly { id: string }[],
+  to: AnyUnitStatus,
+  log?: UnitStatusLogOpts,
+): Promise<void> {
+  if (moved.length === 0) return
+  await logUnitStatuses(
+    tx,
+    moved.map((m) => m.id),
+    {
+      status: to,
+      occurredAt: log?.occurredAt ?? new Date(),
+      statusSource: log?.statusSource ?? 'unspecified',
+      actorId: log?.actorId ?? null,
+      traceId: log?.traceId ?? 'unit-lifecycle',
+    },
+  )
+}
+
+export async function advanceUnitStatus(
+  tx: Tx,
+  unitUuid: string,
+  to: AnyUnitStatus,
+  log?: UnitStatusLogOpts,
+): Promise<boolean> {
   const allowedFrom = isTerminal(to)
     ? [...UNIT_STATUS_ORDER]
     : UNIT_STATUS_ORDER.slice(0, rank(to)).map((s) => s)
@@ -119,6 +168,7 @@ export async function advanceUnitStatus(tx: Tx, unitUuid: string, to: AnyUnitSta
     WHERE id = ${unitUuid}::uuid AND status = ANY(${allowedFrom}::text[])
     RETURNING id::text AS id
   `
+  await appendUnitTrail(tx, moved, to, log)
   return moved.length > 0
 }
 
@@ -127,7 +177,12 @@ export async function advanceUnitStatus(tx: Tx, unitUuid: string, to: AnyUnitSta
  * status rail, where the carrier reports on the SHIPMENT and the devices inside
  * it inherit that outcome.
  */
-export async function advanceUnitsForShipment(tx: Tx, shptUuid: string, to: AnyUnitStatus): Promise<number> {
+export async function advanceUnitsForShipment(
+  tx: Tx,
+  shptUuid: string,
+  to: AnyUnitStatus,
+  log?: UnitStatusLogOpts,
+): Promise<number> {
   const allowedFrom = isTerminal(to)
     ? [...UNIT_STATUS_ORDER]
     : UNIT_STATUS_ORDER.slice(0, rank(to)).map((s) => s)
@@ -137,6 +192,7 @@ export async function advanceUnitsForShipment(tx: Tx, shptUuid: string, to: AnyU
     WHERE shipment = ${shptUuid}::uuid AND status = ANY(${allowedFrom}::text[])
     RETURNING id::text AS id
   `
+  await appendUnitTrail(tx, moved, to, log)
   return moved.length
 }
 
@@ -146,7 +202,12 @@ export async function advanceUnitsForShipment(tx: Tx, shptUuid: string, to: AnyU
  * carries asgn_id, since a merchant can hold several assignments over time and
  * printed_for_merchant cannot tell them apart.
  */
-export async function advanceUnitsForAssignment(tx: Tx, asgnUuid: string, to: AnyUnitStatus): Promise<number> {
+export async function advanceUnitsForAssignment(
+  tx: Tx,
+  asgnUuid: string,
+  to: AnyUnitStatus,
+  log?: UnitStatusLogOpts,
+): Promise<number> {
   const allowedFrom = isTerminal(to)
     ? [...UNIT_STATUS_ORDER]
     : UNIT_STATUS_ORDER.slice(0, rank(to)).map((s) => s)
@@ -156,6 +217,7 @@ export async function advanceUnitsForAssignment(tx: Tx, asgnUuid: string, to: An
     WHERE asgn_id = ${asgnUuid}::uuid AND status = ANY(${allowedFrom}::text[])
     RETURNING id::text AS id
   `
+  await appendUnitTrail(tx, moved, to, log)
   return moved.length
 }
 
@@ -266,7 +328,10 @@ export async function projectReplacementToUnits(
   await db.$transaction(async (tx) => {
     await enterWriteRole(tx as unknown as Tx, 'fulfillment_write')
     await onceWithin(tx as unknown as Tx, CONSUMER, `${env.dedupKey}|unit_damaged`, async () => {
-      advanced = await advanceUnitsForAssignment(tx as unknown as Tx, toUuid(env.payload.replacedAsgnId), 'DAMAGED')
+      advanced = await advanceUnitsForAssignment(tx as unknown as Tx, toUuid(env.payload.replacedAsgnId), 'DAMAGED', {
+        statusSource: 'replacement-raised',
+        traceId: env.traceId,
+      })
     })
   })
   return { advanced }

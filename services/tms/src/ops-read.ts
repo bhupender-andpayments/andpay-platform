@@ -198,8 +198,11 @@ export interface VpaDispatchRow {
   replacementOfAsgnId: string | null
   caseStatus: string | null
   demandState: string
+  /** Derived from activatedAt (ACTIVATION.md): 'ACTIVATED' or null. */
   activationStatus: string | null
   activatedAt: string | null
+  /** Who marked it activated, null when no operator was behind it. */
+  activatedBy: string | null
   createdAt: string
 }
 
@@ -216,8 +219,8 @@ interface VpaDispatchDbRow {
   replacement_of: string | null
   case_status: string | null
   demand_state: string
-  activation_status: string | null
   activated_at: Date | null
+  activated_by: string | null
   created_at: Date
 }
 
@@ -231,7 +234,7 @@ export async function searchDispatchesByVpa(db: TmsDb, vpa: string): Promise<Vpa
     return tx.$queryRaw<VpaDispatchDbRow[]>`
       SELECT id, dispatch_group, bank_reference_code, bank_display_name, merchant_display_name,
              soundbox, standee_count, sticker_count, billable, replacement_of, case_status,
-             demand_state, activation_status, activated_at, created_at
+             demand_state, activated_at, activated_by::text AS activated_by, created_at
       FROM assignment
       WHERE LOWER(TRIM(vpa_value)) = LOWER(TRIM(${vpa}))
       ORDER BY created_at DESC
@@ -250,8 +253,11 @@ export async function searchDispatchesByVpa(db: TmsDb, vpa: string): Promise<Vpa
     replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
     caseStatus: r.case_status,
     demandState: r.demand_state,
-    activationStatus: r.activation_status,
+    // ACTIVATION.md (21 Aug 2026): derived, not stored. The old
+    // activation_status column is gone; a set activated_at IS the activation.
+    activationStatus: r.activated_at === null ? null : 'ACTIVATED',
     activatedAt: r.activated_at === null ? null : r.activated_at.toISOString(),
+    activatedBy: r.activated_by,
     createdAt: r.created_at.toISOString(),
   }))
 }
@@ -417,43 +423,7 @@ export async function readQuarantineQueue(
   return rows.map(toDto)
 }
 
-// D-16 (T4.5): the ACTIVATION branch's trail for one dispatch, for the
-// per-dispatch detail page. The counterpart of fulfillment's
-// readShipmentTrailOps: same shape of question, the other axis, the other
-// context, composed by the edge and never by a join (C4).
-//
-// tms_ops_read is cross-tenant by construction, which is what an ops operator
-// is. IDs, enum tokens and timestamps only; the trail carries nothing else.
-export interface ActivationTrailOpsRow {
-  status: string
-  occurredAt: Date
-  statusSource: string
-  actorId: string | null
-  recordedAt: Date
-}
-
-export async function readActivationTrailOps(db: TmsDb, asgnId: string): Promise<ActivationTrailOpsRow[]> {
-  const asgnUuid = toUuid(asgnId)
-  const rows = await db.$transaction(async (tx: Tx) => {
-    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
-    return tx.$queryRaw<{
-      status: string
-      occurred_at: Date
-      status_source: string
-      actor_id: string | null
-      created_at: Date
-    }[]>`
-      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, created_at
-      FROM assignment_activation_event
-      WHERE asgn_id = ${asgnUuid}::uuid
-      ORDER BY occurred_at ASC, created_at ASC
-    `
-  })
-  return rows.map((r) => ({
-    status: r.status,
-    occurredAt: r.occurred_at,
-    statusSource: r.status_source,
-    actorId: r.actor_id,
-    recordedAt: r.created_at,
-  }))
-}
+// readActivationTrailOps / ActivationTrailOpsRow DELETED (ACTIVATION.md,
+// 21 Aug 2026): activation has no trail any more, it is a parallel toggle
+// (Assignment.activatedAt/activatedBy). The per-dispatch detail page reads
+// those two columns directly instead of a trail.

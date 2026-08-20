@@ -234,6 +234,10 @@ export {
   listDeviceInventory,
   readDeviceDetail,
   readShipmentTrailOps,
+  readUnitTrailOps,
+  readPoolEntryTrailOps,
+  readBatchTrailOps,
+  type StatusTrailRow,
   resolveAssignmentsByDeviceSerial,
   // R-5: the activation report's ICCID fan-out (the SIM never reaches
   // analytics; the ops edge merges it from here).
@@ -252,3 +256,12 @@ export {
   type ShipmentReadRow,
   type ShipmentStatusEventRow,
 } from './read.js'
+export {
+  logUnitStatus,
+  logUnitStatuses,
+  logPoolEntryStatus,
+  logPoolEntryStatusesForBatch,
+  logBatchStatus,
+  type StatusLogSource,
+  type StatusLogArgs,
+} from './status-log.js'

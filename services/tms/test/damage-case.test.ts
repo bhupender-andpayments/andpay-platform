@@ -16,7 +16,7 @@ import type { DevicePort } from '../src/device-port.js'
 const url = process.env.TMS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'
 const db = new PrismaClient({ datasourceUrl: url })
 
-const TRUNCATE = 'TRUNCATE assignment, assignment_activation_event, quarantine_row, outbox, inbox'
+const TRUNCATE = 'TRUNCATE assignment, quarantine_row, outbox, inbox'
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(TRUNCATE)

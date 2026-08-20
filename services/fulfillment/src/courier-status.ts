@@ -166,8 +166,12 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
     // device's own state, and FAILED is a delivery attempt that may still
     // succeed on a retry. Advancing is monotonic, so a redelivered courier fact
     // is a no-op rather than a device that reverts.
-    if (u.status === 'DELIVERED') await advanceUnitsForShipment(tx, shptUuid, 'DELIVERED')
-    else if (u.status === 'RETURNED') await advanceUnitsForShipment(tx, shptUuid, 'RETURNED')
+    // The device trail records the COURIER's own instant, not ours: the
+    // parcel's outcome and the devices' inherited outcome happened at the
+    // same reported moment (S22's two clocks, same as shpt_status_event).
+    const unitLog = { statusSource: 'courier-file', occurredAt: u.courierTimestamp, traceId: u.traceId } as const
+    if (u.status === 'DELIVERED') await advanceUnitsForShipment(tx, shptUuid, 'DELIVERED', unitLog)
+    else if (u.status === 'RETURNED') await advanceUnitsForShipment(tx, shptUuid, 'RETURNED', unitLog)
 
     // The dedupKey MUST be per-transition. The spec-08 birth fact uses the bare
     // shpt wire id, so a bare key here would let an E6 inbox consumer dedup

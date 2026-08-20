@@ -747,6 +747,47 @@ export function getDeviceDetail(c: Client, unitId: string) {
   return c.request<UnitDetailRow>({ method: 'GET', path: `/ops/devices/${encodeURIComponent(unitId)}` })
 }
 
+/**
+ * One entity's status trail (STATUS_STAGES.md, 21 Aug 2026).
+ *
+ * The shape is identical for devices, dispatches and batches, and identical in
+ * spirit to DeliveryTrailEntry (the shipment's own trail, which predates these
+ * three). occurredAt is the reported instant, recordedAt is when the platform
+ * learned it; the two differ whenever a reporter stamps its own time, which is
+ * the S22 two-clock rule the courier trail already follows.
+ *
+ * actorId is null when no human was behind the transition: a fact, a timer or a
+ * file moved it. That is a meaning, not a gap.
+ */
+export interface StatusTrailEntry {
+  status: string
+  occurredAt: string
+  statusSource: string
+  actorId: string | null
+  recordedAt: string
+}
+
+export function getDeviceTrail(c: Client, unitId: string) {
+  return c.request<StatusTrailEntry[]>({
+    method: 'GET',
+    path: `/ops/devices/${encodeURIComponent(unitId)}/trail`,
+  })
+}
+
+export function getDispatchTrail(c: Client, asgnId: string) {
+  return c.request<StatusTrailEntry[]>({
+    method: 'GET',
+    path: `/ops/dispatches/${encodeURIComponent(asgnId)}/trail`,
+  })
+}
+
+export function getBatchTrail(c: Client, btchId: string) {
+  return c.request<StatusTrailEntry[]>({
+    method: 'GET',
+    path: `/ops/batches/${encodeURIComponent(btchId)}/trail`,
+  })
+}
+
 // Manual unit-status correction (2026-08-13 ruling): the device page's edit
 // control. Forward-only, same rule as everywhere else; the edge/domain reject
 // an illegal move rather than trusting the picker's own option list.
@@ -1991,15 +2032,9 @@ export interface DeliveryTrailEntry {
   overrideReason: string | null
 }
 
-export interface ActivationTrailEntry {
-  status: string
-  /** The reported instant (the CWD's own). */
-  occurredAt: string
-  statusSource: string
-  actorId: string | null
-  /** When the platform recorded it. */
-  recordedAt: string
-}
+// ActivationTrailEntry DELETED (ACTIVATION.md, 21 Aug 2026): activation has
+// no trail any more, it is a parallel toggle (activationStatus/activationDate
+// below already carry the current state).
 
 export interface DispatchDetailView {
   dispatchId: string
@@ -2017,7 +2052,6 @@ export interface DispatchDetailView {
   activationStatus: string | null
   activationDate: string | null
   deliveryTrail: DeliveryTrailEntry[]
-  activationTrail: ActivationTrailEntry[]
   watermark: Watermark
 }
 
@@ -2179,16 +2213,9 @@ export function markActivatedBulk(c: Client, dispatchIds: string[], idempotencyK
   })
 }
 
-// D-16 (T4.1b): record that the activation request for these dispatch ids has
-// gone out to the CWD. A list, because that is how a send happens.
-export function requestActivation(c: Client, dispatchIds: string[], idempotencyKey: string) {
-  return c.request<{ deduped: boolean; recorded: string[]; unknown: string[] }>({
-    method: 'POST',
-    path: '/ops/assignments/request-activation',
-    body: { dispatchIds },
-    idempotencyKey,
-  })
-}
+// requestActivation DELETED (ACTIVATION.md, 21 Aug 2026): the route it called
+// is gone. Activation is a one-time toggle now, with no earlier state to
+// record. It already had no caller in this file before this deletion.
 
 export function getBatchJourney(c: Client, btchId: string) {
   return c.request<BatchJourneyView>({

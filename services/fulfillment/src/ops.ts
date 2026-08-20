@@ -6,6 +6,7 @@ import type { Acr } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope, enterWriteRole } from './write-context.js'
+import { logPoolEntryStatus, logBatchStatus } from './status-log.js'
 import { advanceShipmentStatus, collateralAsgnIdsFor, type AdvanceOutcome } from './courier-status.js'
 import { canAdvanceUnitStatus, advanceUnitStatus, type AnyUnitStatus } from './unit-lifecycle.js'
 import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
@@ -432,7 +433,11 @@ export async function correctUnitStatus(
       if (!canAdvanceUnitStatus(current[0]!.status, args.status as AnyUnitStatus)) {
         throw new OpsClientError('invalid', `cannot move a unit from ${current[0]!.status} to ${args.status}`)
       }
-      advanced = await advanceUnitStatus(tx, unitUuid, args.status as AnyUnitStatus)
+      advanced = await advanceUnitStatus(tx, unitUuid, args.status as AnyUnitStatus, {
+        statusSource: 'ops:correct-unit-status',
+        actorId: args.actorId,
+        traceId: args.traceId,
+      })
 
       // Co-commit the ALLOW 6e (S15/T2 ruling), unconditional once this
       // callback runs, mirroring correctStatus above: the audit records the
@@ -858,12 +863,25 @@ export async function releaseRecord(
     await enterWriteScope(tx, 'fulfillment_write', rows[0]!.program_id)
 
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:record-release'), async () => {
-      const count = await tx.$executeRaw`
+      const releasedRows = await tx.$queryRaw<{ id: string; trace_id: string }[]>`
         UPDATE pending_pool_entry
         SET pool_status = 'POOLED', released_by_actor = ${args.actorId}::uuid, released_at = now(), updated_at = now()
         WHERE asgn_id = ${asgnUuid}::uuid AND pool_status = 'HELD'
+        RETURNING id::text AS id, trace_id
       `
-      released = count > 0
+      released = releasedRows.length > 0
+      // The trail records the release only when the row was actually HELD.
+      // Note this differs from the 6e audit below on purpose: the audit records
+      // the authorized ATTEMPT, the trail records what the dispatch DID.
+      if (releasedRows.length > 0) {
+        await logPoolEntryStatus(tx, releasedRows[0]!.id, rows[0]!.program_id, {
+          status: 'POOLED',
+          occurredAt: new Date(),
+          statusSource: 'ops:release-hold',
+          actorId: args.actorId,
+          traceId: releasedRows[0]!.trace_id,
+        })
+      }
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the release.
       // The operator's privileged release action is audited whenever the
       // client-key callback runs (once, never on a replay), independent of
@@ -995,6 +1013,16 @@ export async function sendBatchToVendor(
           UPDATE batch SET status = 'SENT_TO_PRINT_VENDOR', updated_at = now()
           WHERE id = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
         `
+        // The batch trail. THIS is what finally gives the batch page a real
+        // sent-at: batch has no such column, so before this table the only
+        // answer was the row's single updated_at, which the close overwrote.
+        await logBatchStatus(tx, btchUuid, programUuid, {
+          status: 'SENT_TO_PRINT_VENDOR',
+          occurredAt: new Date(),
+          statusSource: 'ops:send-to-vendor',
+          actorId: args.actorId,
+          traceId: args.traceId,
+        })
         sent = true
       })
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the effect,
@@ -1083,6 +1111,15 @@ export async function closeBatch(
         UPDATE batch SET status = 'CLOSED', updated_at = now()
         WHERE id = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
       `
+      // The batch trail's closed-at, the other timestamp the batch page had no
+      // way to show.
+      await logBatchStatus(tx, btchUuid, programUuid, {
+        status: 'CLOSED',
+        occurredAt: new Date(),
+        statusSource: 'ops:close-batch',
+        actorId: args.actorId,
+        traceId: args.traceId,
+      })
       closed = true
       await enqueue(
         tx,

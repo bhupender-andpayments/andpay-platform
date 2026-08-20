@@ -25,7 +25,6 @@ import {
   type TileName,
 } from '@andpay/analytics-service'
 import { readShipmentTrailOps, readUnitSimsBySerialsOps } from '@andpay/fulfillment-service'
-import { readActivationTrailOps } from '@andpay/tms-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAnalyticsRead, emitOpsAnalyticsCrossTenant } from './audit.js'
@@ -261,9 +260,12 @@ export class ReportsController {
     // dispatched is a stage, not an error.
     const deliveryTrail =
       detail.shptId === null ? [] : await readShipmentTrailOps(this.deps.fulfillmentDb, detail.shptId)
-    const activationTrail = await readActivationTrailOps(this.deps.tmsDb, asgnId)
+    // activationTrail DELETED (ACTIVATION.md, 21 Aug 2026): activation has no
+    // trail any more, it is a parallel toggle. `detail` already carries the
+    // analytics activationStatus/activatedAt fields fed by the unchanged
+    // fct.tms.assignment.activated.v1 fact.
     res.setHeader('x-analytics-watermark', detail.watermark.asOf ?? 'none')
-    return { ...detail, deliveryTrail, activationTrail }
+    return { ...detail, deliveryTrail }
   }
 
   // GET /ops/reports/activation/batch/:btchId/xlsx: ONE batch's awaiting

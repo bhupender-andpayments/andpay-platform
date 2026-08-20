@@ -120,6 +120,12 @@ model Unit {
   /// device side of activation has exactly one transition; REQUEST_SENT_TO_CWD
   /// is assignment-level and lives on tms.assignment_activation_event.
   activatedAt        DateTime? @map("activated_at") @db.Timestamptz(6)
+  /// The actor who marked this device activated (21 Aug 2026, activation
+  /// simplification). Null exactly when activatedAt is null; both clear
+  /// together on deactivate, since activation is a toggle, not a lifecycle
+  /// (no log table backs this column, see unit_status_event below, which
+  /// covers `status` only).
+  activatedBy        String?   @map("activated_by") @db.Uuid
   location           String?
   // quantity-line-only
   qrString           String?  @map("qr_string")
@@ -502,6 +508,71 @@ model ShptStatusEvent {
 
   @@index([shptId])
   @@map("shpt_status_event")
+}
+
+/// Append-only status trail for a dispatch (STATUS_STAGES.md, 21 Aug 2026),
+/// cloned from ShptStatusEvent's shape. Covers both axes fulfillment keeps on
+/// pending_pool_entry: pool_status (POOLED/HELD/BATCHED/CANCELLED) and
+/// dispatch_state (QR_GENERATED/SENT_TO_VENDOR/DISPATCHED_BY_VENDOR). Written
+/// by every existing writer that touches either column, in the SAME
+/// transaction as the status write, never as a separate step. Never mutated;
+/// a correction is a new forward event.
+model PoolEntryStatusEvent {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  poolEntryId  String   @map("pool_entry_id") @db.Uuid
+  programId    String   @map("program_id") @db.Uuid
+  status       String
+  occurredAt   DateTime @map("occurred_at") @db.Timestamptz(6)
+  statusSource String   @map("status_source")
+  /// Nullable: not every writer has a human behind it (e.g. the automatic
+  /// pool-to-batch move on lot size has no operator, mirrors
+  /// assignment_activation_event.actor_id's own precedent).
+  actorId      String?  @map("actor_id") @db.Uuid
+  traceId      String   @map("trace_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([poolEntryId])
+  @@map("pool_entry_status_event")
+}
+
+/// Append-only status trail for a device (STATUS_STAGES.md, 21 Aug 2026).
+/// Covers unit.status only (the delivery spine plus the DAMAGED/RETURNED
+/// branches); activation is a parallel toggle with no log, by design, see
+/// Unit.activatedAt/activatedBy above. PLATFORM-WIDE like unit itself (no
+/// program_id column exists on unit to scope by), so RLS follows
+/// device_inventory_upload's permissive USING(true) shape, not
+/// ShptStatusEvent's program-scoped shape.
+model UnitStatusEvent {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  unitId       String   @map("unit_id") @db.Uuid
+  status       String
+  occurredAt   DateTime @map("occurred_at") @db.Timestamptz(6)
+  statusSource String   @map("status_source")
+  actorId      String?  @map("actor_id") @db.Uuid
+  traceId      String   @map("trace_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([unitId])
+  @@map("unit_status_event")
+}
+
+/// Append-only status trail for a batch (STATUS_STAGES.md, 21 Aug 2026).
+/// Gives the batch page its first real sent-at and closed-at timestamps,
+/// which exist nowhere today. Written by batching.ts (birth, BATCHED) and
+/// ops.ts (send, close).
+model BatchStatusEvent {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchId      String   @map("batch_id") @db.Uuid
+  programId    String   @map("program_id") @db.Uuid
+  status       String
+  occurredAt   DateTime @map("occurred_at") @db.Timestamptz(6)
+  statusSource String   @map("status_source")
+  actorId      String?  @map("actor_id") @db.Uuid
+  traceId      String   @map("trace_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([batchId])
+  @@map("batch_status_event")
 }
 
 /// Courier-channel quarantine (103d), sibling of intake_exception. An unknown

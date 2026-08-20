@@ -61,6 +61,13 @@ interface BatchablePool {
   records: number
   /** Dispatches, the shipping grain, shown as secondary context. */
   dispatches: number
+  /**
+   * Soundbox legs only (row.soundbox === true), so the device-in-stock
+   * warning below compares like with like: `inStock` counts serialized
+   * devices, which only soundbox dispatches ever consume. Collateral
+   * (standee/sticker) has no device and must never count toward this.
+   */
+  soundboxDispatches: number
   banks: number
   bankNames: string[]
   oldestCreatedAt: string
@@ -85,6 +92,7 @@ export function groupBatchablePools(entries: readonly PoolEntryRow[]): Batchable
       // the panel and the server could disagree about whether the lot was met.
       records: new Set(rows.map((r) => r.sourceEventId ?? r.asgnId)).size,
       dispatches: rows.length,
+      soundboxDispatches: rows.filter((r) => r.soundbox).length,
       // Counted on the AGGREGATOR code, not the display name: D7 leaves
       // bank_display_name as the partner ("GSCB") on every row, so counting
       // names would report 1 bank for a pool spanning 19 aggregators.
@@ -404,7 +412,7 @@ export function BatchablePools<Row>({
             const days = ageInDays(pool.oldestCreatedAt)
             const lot = lotSizeFor?.(pool.tenantId, pool.programId) ?? null
             const maxWaitDays = maxWaitSeconds !== undefined ? Math.round(maxWaitSeconds / 86_400) : null
-            const shortfall = inStock !== null && pool.dispatches > inStock
+            const shortfall = inStock !== null && pool.soundboxDispatches > inStock
             return (
               // Each pool is its own PANEL: a subtle primary top accent
               // borrows the "layout selector" pattern from the batch generate
@@ -482,7 +490,7 @@ export function BatchablePools<Row>({
                     <span className="basis-full rounded-md bg-amber-500/10 px-2 py-1 text-[12px] font-medium text-amber-700 dark:text-amber-400">
                       {inStock === 0
                         ? 'No devices in stock. The batch can still form; nothing prints against it yet.'
-                        : `Only ${inStock} of ${pool.dispatches} dispatches have a device in stock. The shortfall will stall at the print vendor.`}
+                        : `Only ${inStock} of ${pool.soundboxDispatches} soundbox dispatches have a device in stock. The shortfall will stall at the print vendor.`}
                     </span>
                   )}
                 </div>

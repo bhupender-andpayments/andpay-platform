@@ -15,7 +15,7 @@ const url = process.env.TMS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@loca
 const db = new PrismaClient({ datasourceUrl: url })
 
 beforeEach(async () => {
-  await db.$executeRawUnsafe('TRUNCATE assignment, assignment_activation_event, quarantine_row, outbox, inbox')
+  await db.$executeRawUnsafe('TRUNCATE assignment, quarantine_row, outbox, inbox')
 })
 afterAll(async () => {
   await db.$disconnect()

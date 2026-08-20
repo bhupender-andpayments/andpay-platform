@@ -1116,6 +1116,95 @@ export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): P
   }))
 }
 
+// STATUS_STAGES.md (21 Aug 2026): the three status trails this context owns,
+// the siblings of readShipmentTrailOps above. Same shape of question, same
+// role, same oldest-first ordering; the portal renders all four the same way.
+//
+// ORDERED BY occurred_at THEN created_at, exactly like the shipment trail: two
+// transitions stamped with the same reported instant still read back in the
+// order the platform learned them, rather than in whatever order the planner
+// happens to return.
+//
+// tms_ops_read's counterpart, fulfillment_ops_read, is cross-tenant by
+// construction, which is what an ops operator is. IDs, enum tokens and
+// timestamps only.
+export interface StatusTrailRow {
+  status: string
+  occurredAt: Date
+  statusSource: string
+  actorId: string | null
+  recordedAt: Date
+}
+
+interface StatusTrailDbRow {
+  status: string
+  occurred_at: Date
+  status_source: string
+  actor_id: string | null
+  created_at: Date
+}
+
+function toStatusTrail(rows: StatusTrailDbRow[]): StatusTrailRow[] {
+  return rows.map((r) => ({
+    status: r.status,
+    occurredAt: r.occurred_at,
+    statusSource: r.status_source,
+    actorId: r.actor_id,
+    recordedAt: r.created_at,
+  }))
+}
+
+/** One device's status history. unitId is a wire `unit_` id. */
+export async function readUnitTrailOps(db: FulfillmentDb, unitId: string): Promise<StatusTrailRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<StatusTrailDbRow[]>`
+      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, created_at
+      FROM unit_status_event
+      WHERE unit_id = ${toUuid(unitId)}::uuid
+      ORDER BY occurred_at ASC, created_at ASC
+    `
+  })
+  return toStatusTrail(rows)
+}
+
+/**
+ * One dispatch's status history, BOTH axes interleaved in time (pool_status and
+ * dispatch_state land in the same table, see status-log.ts for why).
+ *
+ * Keyed by the ASSIGNMENT id, not the pool entry's own id: an assignment id is
+ * what every other ops surface carries and what an operator can actually paste,
+ * and pending_pool_entry.asgn_id is unique, so the join resolves to one entry.
+ */
+export async function readPoolEntryTrailOps(db: FulfillmentDb, asgnId: string): Promise<StatusTrailRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<StatusTrailDbRow[]>`
+      SELECT e.status, e.occurred_at, e.status_source, e.actor_id::text AS actor_id, e.created_at
+      FROM pool_entry_status_event e
+      JOIN pending_pool_entry p ON p.id = e.pool_entry_id
+      WHERE p.asgn_id = ${toUuid(asgnId)}::uuid
+      ORDER BY e.occurred_at ASC, e.created_at ASC
+    `
+  })
+  return toStatusTrail(rows)
+}
+
+/** One batch's status history. This is where the batch page's sent-at and
+ * closed-at come from: the batch row itself has no such columns. */
+export async function readBatchTrailOps(db: FulfillmentDb, btchId: string): Promise<StatusTrailRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<StatusTrailDbRow[]>`
+      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, created_at
+      FROM batch_status_event
+      WHERE batch_id = ${toUuid(btchId)}::uuid
+      ORDER BY occurred_at ASC, created_at ASC
+    `
+  })
+  return toStatusTrail(rows)
+}
+
 // T5.5 (D-19): resolve DEVICE SERIALS back to the assignments they were printed
 // for, so the ops activation upload can drive the TMS activation write.
 //

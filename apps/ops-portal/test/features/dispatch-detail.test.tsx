@@ -42,10 +42,6 @@ const DETAIL = {
     { status: 'PICKED_UP', courierTimestamp: '2026-08-12T09:00:00.000Z', statusSource: 'courier-file', sourceRef: 'vndr_1|file_7', receivedAt: '2026-08-12T09:05:00.000Z', overrideReason: null },
     { status: 'IN_TRANSIT', courierTimestamp: '2026-08-12T15:00:00.000Z', statusSource: 'courier-file', sourceRef: 'vndr_1|file_8', receivedAt: '2026-08-12T15:04:00.000Z', overrideReason: null },
   ],
-  activationTrail: [
-    { status: 'REQUEST_SENT_TO_CWD', occurredAt: '2026-08-12T10:00:00.000Z', statusSource: 'ops:request-activation', actorId: null, recordedAt: '2026-08-12T10:00:30.000Z' },
-    { status: 'ACTIVATED', occurredAt: '2026-08-12T12:00:00.000Z', statusSource: 'ops:mark-activated', actorId: null, recordedAt: '2026-08-12T12:00:20.000Z' },
-  ],
   watermark: { asOf: '2026-08-12T16:00:00.000Z', perTopic: {} },
 }
 
@@ -122,7 +118,7 @@ describe('DispatchDetailPage (D-16, T4.5)', () => {
   })
 
   it('a COLLATERAL dispatch renders the same page with no activation surface', async () => {
-    stub({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null, activationTrail: [] })
+    stub({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null })
     renderPage()
 
     expect(await screen.findByText('Dispatch lifecycle')).toBeTruthy()
@@ -143,7 +139,6 @@ describe('DispatchDetailPage (D-16, T4.5)', () => {
       courierStatus: null,
       deliveryTrail: [],
       activationStatus: null,
-      activationTrail: [],
     })
     renderPage()
 
@@ -231,7 +226,6 @@ const NOT_SHIPPED = {
   deliveryDate: null,
   deliveryTrail: [],
   activationStatus: null,
-  activationTrail: [],
 }
 
 function courierEvent(status: string, at: string) {
@@ -618,7 +612,7 @@ describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
   })
 
   it('a COLLATERAL dispatch requires a total of at least one item before submit unlocks', async () => {
-    stubFlag({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null, activationTrail: [] })
+    stubFlag({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null })
     renderPage()
     await openFlagDialog()
 
@@ -637,7 +631,7 @@ describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
   })
 
   it('submit posts the reason CODE, the trimmed remarks and the counts, then links the child dispatch', async () => {
-    const calls = stubFlag({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null, activationTrail: [] })
+    const calls = stubFlag({ ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null })
     renderPage()
     await openFlagDialog()
 

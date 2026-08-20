@@ -147,7 +147,11 @@ export async function ingestOpsUnitStatus(
           rows.push({ rowNo: r.rowNo, deviceId: r.deviceId, outcome: 'illegal_transition', errors: [] })
           continue
         }
-        const advanced = await advanceUnitStatus(tx, id, r.newStatus as AnyUnitStatus)
+        const advanced = await advanceUnitStatus(tx, id, r.newStatus as AnyUnitStatus, {
+          statusSource: 'ops:correct-unit-status',
+          actorId: args.actorId,
+          traceId: args.traceId,
+        })
         if (advanced) {
           const unitWire = fromUuid('unit', id)
           movedUnitIds.push(unitWire)

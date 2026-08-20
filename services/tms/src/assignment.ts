@@ -13,7 +13,6 @@ import {
 } from './events.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope } from './write-context.js'
-import { recordActivationStatusWithinTx, type ActivationStatusSource } from './activation-branch.js'
 import { advanceCaseStatusWithinTx } from './damage-case.js'
 import type { DevicePort } from './device-port.js'
 
@@ -364,10 +363,10 @@ export async function activateAssignmentWithinTx(
   traceId: string,
   opts?: {
     onAudit?: (tx: Tx) => Promise<void>
-    // D-16: who to name on the activation trail row. The ops trigger passes its
-    // own door and actor; the port path passes neither and the trail records
-    // 'port' with no operator, which is a meaning rather than a gap.
-    statusSource?: ActivationStatusSource
+    // ACTIVATION.md (21 Aug 2026): who to stamp as activatedBy. The ops
+    // trigger passes its own actor; the port path passes none, and
+    // activatedBy stays null, which is a meaning (no operator behind it)
+    // rather than a gap.
     actorId?: string
   },
 ): Promise<{ activated: boolean }> {
@@ -385,26 +384,18 @@ export async function activateAssignmentWithinTx(
   await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
 
   const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
-    await tx.$executeRaw`UPDATE assignment SET activated_at = ${activatedAt}::timestamptz, demand_state = 'activated', updated_at = now() WHERE id = ${asgnUuid}::uuid`
-    // D-16: the same transition, recorded on the ACTIVATION AXIS. activated_at
-    // and demand_state above are the old scalar shape and stay exactly as they
-    // were, so nothing reading them moves; this adds the branch state and its
-    // append-only trail alongside. Inside the onceWithin, so a redelivered
-    // activation appends nothing and the trail cannot grow a duplicate.
-    //
-    // statusSource is 'port' rather than the operator door: this function is
-    // reached both by activateAssignment (the DevicePort path, no human) and by
-    // activateAssignmentOps, and the caller that KNOWS an operator was behind it
-    // is the one that passes opts.statusSource.
-    await recordActivationStatusWithinTx(tx, {
-      asgnId,
-      programUuid: target[0]!.program_id,
-      status: 'ACTIVATED',
-      occurredAt: new Date(activatedAt),
-      statusSource: opts?.statusSource ?? 'port',
-      actorId: opts?.actorId ?? null,
-      traceId,
-    })
+    // ACTIVATION.md (21 Aug 2026): activated_at + activated_by, a parallel
+    // flag with no log (activation is a one-time toggle, not a lifecycle;
+    // the old activation_status axis and its append-only trail are deleted).
+    // demand_state stays exactly as it was.
+    await tx.$executeRaw`
+      UPDATE assignment
+      SET activated_at = ${activatedAt}::timestamptz,
+          activated_by = ${opts?.actorId ?? null}::uuid,
+          demand_state = 'activated',
+          updated_at = now()
+      WHERE id = ${asgnUuid}::uuid
+    `
     // D-24 (T6.5): if this assignment is a REPLACEMENT, activation is its
     // terminal, so the damage case it answers closes here. The write's own
     // predicate checks `replacement_of IS NOT NULL`, so an ordinary activation

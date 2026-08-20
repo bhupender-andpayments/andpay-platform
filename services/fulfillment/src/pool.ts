@@ -5,6 +5,7 @@ import type { FulfillmentDb } from './db.js'
 import type { AssignmentFactView } from './events.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope } from './write-context.js'
+import { logPoolEntryStatus } from './status-log.js'
 
 export async function projectDemandFact(db: FulfillmentDb, env: Envelope<AssignmentFactView>): Promise<{ deduped: boolean }> {
   const p = env.payload
@@ -40,6 +41,17 @@ export async function projectDemandFact(db: FulfillmentDb, env: Envelope<Assignm
         RETURNING id::text AS id
       `
       wrote = won.length > 0
+      // The dispatch's first trail rung. Driven by RETURNING, so the
+      // ON CONFLICT DO NOTHING path (a redelivered demand fact) appends
+      // nothing: the entry was already born and already logged.
+      if (won.length > 0) {
+        await logPoolEntryStatus(tx, won[0]!.id, progUuid, {
+          status: 'POOLED',
+          occurredAt: new Date(),
+          statusSource: 'pool:projection',
+          traceId: env.traceId,
+        })
+      }
     })
   })
   return { deduped: !wrote }

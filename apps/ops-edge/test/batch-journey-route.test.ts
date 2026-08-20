@@ -251,11 +251,9 @@ describe('ops reports edge: GET /ops/reports/dispatch/:asgnId (D-16, T4.5)', () 
       INSERT INTO shpt_status_event (id, shpt_id, program_id, status, courier_timestamp, status_source, source_ref, trace_id)
       VALUES (gen_random_uuid(), ${shptUuid}::uuid, ${prog}::uuid, 'IN_TRANSIT', ${new Date('2026-08-12T15:00:00.000Z')}, 'courier-file', 'ref-2', 't-2')`
 
-    // The ACTIVATION trail, in tms. Note the CWD confirmed while the parcel was
-    // still in transit, which is exactly the shape the old ladder could not hold.
-    await tmsDb.$executeRaw`
-      INSERT INTO assignment_activation_event (id, asgn_id, program_id, status, occurred_at, status_source, trace_id)
-      VALUES (gen_random_uuid(), ${asgnUuid}::uuid, ${prog}::uuid, 'ACTIVATED', ${new Date('2026-08-12T12:00:00.000Z')}, 'ops:mark-activated', 't-3')`
+    // The activation-trail insert is GONE (ACTIVATION.md, 21 Aug 2026): the
+    // table it wrote to no longer exists. activationStatus below still comes
+    // from analytics' own column, fed by the unchanged activated fact.
 
     const token = await mint()
     const res = await request(app.getHttpServer())
@@ -265,10 +263,8 @@ describe('ops reports edge: GET /ops/reports/dispatch/:asgnId (D-16, T4.5)', () 
     expect(res.status).toBe(200)
     expect(res.body.dispatchId).toBe(asgnId)
     expect(res.body.courierStatus).toBe('IN_TRANSIT')
-    expect(res.body.activationStatus).toBe('ACTIVATED')
     expect(res.body.deliveryTrail.map((e: { status: string }) => e.status)).toEqual(['PICKED_UP', 'IN_TRANSIT'])
-    expect(res.body.activationTrail).toHaveLength(1)
-    expect(res.body.activationTrail[0].status).toBe('ACTIVATED')
+    expect(res.body.activationTrail).toBeUndefined()
     expect(res.headers['x-analytics-watermark']).toBe(WATERMARK_ISO)
   })
 
@@ -284,7 +280,7 @@ describe('ops reports edge: GET /ops/reports/dispatch/:asgnId (D-16, T4.5)', () 
 
     expect(res.status).toBe(200)
     expect(res.body.deliveryTrail).toEqual([])
-    expect(res.body.activationTrail).toEqual([])
+    expect(res.body.activationTrail).toBeUndefined()
   })
 
   it('404 on an unprojected dispatch, so "no such dispatch" never renders as "stage zero"', async () => {
