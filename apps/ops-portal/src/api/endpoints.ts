@@ -847,12 +847,67 @@ export interface BankMasterRow {
   pin: string | null
   mobile: string | null
   email: string | null
-  parentTnntId: string | null
+  aggregators: AggregatorRow[]
+}
+
+export interface AggregatorRow {
+  aggrId: string
+  tnntId: string
+  aggregatorCode: string
+  displayName: string
+  status: string
+  isDefault: boolean
+  codeLocked: boolean
   hasLogo: boolean
+  address1: string | null
+  address2: string | null
+  address3: string | null
+  city: string | null
+  district: string | null
+  country: string | null
+  pin: string | null
+  mobile: string | null
+  email: string | null
 }
 
 export function getBankMasters(c: Client) {
   return c.request<BankMasterRow[]>({ method: 'GET', path: '/ops/bank-masters' })
+}
+
+export interface AggregatorCreateBody {
+  displayName: string
+  aggregatorCode: string
+  address1?: string
+  address2?: string
+  address3?: string
+  city?: string
+  district?: string
+  country?: string
+  pin?: string
+  mobile?: string
+  email?: string
+}
+
+export interface AggregatorEditBody extends Partial<AggregatorCreateBody> {
+  status?: string
+}
+
+export function createAggregator(c: Client, tnntId: string, body: AggregatorCreateBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; aggrId: string | null }>({
+    method: 'POST',
+    path: `/ops/bank-masters/${encodeURIComponent(tnntId)}/aggregators`,
+    body,
+    idempotencyKey,
+  })
+}
+
+export function editAggregator(c: Client, aggrId: string, body: AggregatorEditBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; changedFields: string[] }>({
+    method: 'POST',
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/edit`,
+    body,
+    idempotencyKey,
+  })
 }
 
 /**
@@ -967,7 +1022,6 @@ export interface BankMasterCreateBody {
   pin: string
   mobile: string
   email: string
-  parentBankReferenceCode?: string
 }
 
 export function createBankMaster(c: Client, body: BankMasterCreateBody, idempotencyKey: string) {
@@ -997,7 +1051,6 @@ export interface BankMasterEditBody {
   mobile?: string
   email?: string
   status?: string
-  parentBankReferenceCode?: string
 }
 
 export function editBankMaster(c: Client, tnntId: string, body: BankMasterEditBody, idempotencyKey: string) {
@@ -1012,9 +1065,9 @@ export function editBankMaster(c: Client, tnntId: string, body: BankMasterEditBo
 // The logo pair upload (spec 2026-08-19). Multipart through the typed client's
 // formBody path (client.ts), so it keeps the 401 refresh-and-retry the raw
 // fetch downloads below forgo.
-export function uploadBankMasterLogo(
+export function uploadAggregatorLogo(
   c: Client,
-  tnntId: string,
+  aggrId: string,
   master: File,
   derivative: File,
   idempotencyKey: string,
@@ -1024,7 +1077,7 @@ export function uploadBankMasterLogo(
   form.append('derivative', derivative)
   return c.request<{ deduped: boolean; id: string | null; masterVersion: string | null; derivativeVersion: string | null }>({
     method: 'POST',
-    path: `/ops/bank-masters/${encodeURIComponent(tnntId)}/logo`,
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo`,
     formBody: form,
     idempotencyKey,
   })
@@ -1036,18 +1089,18 @@ export interface BankLogoVersionRow {
   contentType: string
 }
 
-export function getBankMasterLogoVersions(c: Client, tnntId: string) {
+export function getAggregatorLogoVersions(c: Client, aggrId: string) {
   return c.request<BankLogoVersionRow[]>({
     method: 'GET',
-    path: `/ops/bank-masters/${encodeURIComponent(tnntId)}/logo/versions`,
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo/versions`,
   })
 }
 
 // BINARY body, so it takes the raw-fetch-with-Bearer path the dispatch
 // downloads use (same recorded reason: client.request is JSON/text only).
 // 404 is a real answer (no logo yet), surfaced as null.
-export async function fetchBankMasterLogoDerivative(tnntId: string): Promise<Blob | null> {
-  const res = await fetch(`${opsBaseUrl()}/ops/bank-masters/${encodeURIComponent(tnntId)}/logo/derivative`, {
+export async function fetchAggregatorLogoDerivative(aggrId: string): Promise<Blob | null> {
+  const res = await fetch(`${opsBaseUrl()}/ops/aggregators/${encodeURIComponent(aggrId)}/logo/derivative`, {
     headers: { Authorization: `Bearer ${getAccessToken()}` },
   })
   if (res.status === 404) return null
