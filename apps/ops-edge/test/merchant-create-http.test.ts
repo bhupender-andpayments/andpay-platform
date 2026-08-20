@@ -160,7 +160,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await identityDb.$executeRawUnsafe(
-    'TRUNCATE sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
+    'TRUNCATE sub_merchant, merchant, merchant_bank_ref, aggregator, tenant, program, enrollment, outbox, inbox',
   )
   await fulfillmentDb.$executeRawUnsafe('TRUNCATE outbox, inbox CASCADE')
 })
