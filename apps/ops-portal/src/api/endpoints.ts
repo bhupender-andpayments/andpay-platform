@@ -1111,6 +1111,24 @@ export async function fetchAggregatorLogoDerivative(aggrId: string): Promise<Blo
   return res.blob()
 }
 
+// The MASTER bytes at one token from the dialog's history list (the list IS
+// the master key's history, so its tokens are only valid against that key;
+// the derivative key runs its own version sequence). The caller rasterizes
+// the .ai in the browser, exactly like a freshly picked file. Same raw-fetch
+// shape as above; 404 means an unknown token, surfaced as null.
+export async function fetchAggregatorLogoVersionMaster(aggrId: string, version: string): Promise<Blob | null> {
+  const res = await fetch(
+    `${opsBaseUrl()}/ops/aggregators/${encodeURIComponent(aggrId)}/logo/versions/${encodeURIComponent(version)}/master`,
+    { headers: { Authorization: `Bearer ${getAccessToken()}` } },
+  )
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const text = await res.text()
+    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+  }
+  return res.blob()
+}
+
 /** apps/ops-edge/src/ops.controller.ts DamageReasonCreateBody (BRD FR-08). */
 export interface DamageReasonCreateBody {
   /** A stable machine identifier, never derived from the label. */

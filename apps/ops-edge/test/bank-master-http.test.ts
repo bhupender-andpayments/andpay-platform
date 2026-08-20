@@ -396,6 +396,69 @@ describe('aggregator logo over HTTP', () => {
     expect(row2.aggregators[0].hasLogo).toBe(true)
   })
 
+  it('streams the master bytes AT each listed version token, and 404s an unknown token', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T6C' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    // TOKENS COME FROM THE VERSIONS ENDPOINT, never hardcoded: the dev asset
+    // store persists in the OS tmpdir across gate runs, so this key's history
+    // does not restart at v1 each run.
+    for (const name of ['ai one.ai', 'ai two.ai']) {
+      await request(app.getHttpServer())
+        .post(`/ops/aggregators/${aggrId}/logo`)
+        .set('Authorization', `Bearer ${tok}`)
+        .set('Idempotency-Key', randomUUID())
+        .attach('master', Buffer.from(`master bytes of ${name}`), { filename: name, contentType: 'application/postscript' })
+        .attach('derivative', Buffer.from('png bytes'), { filename: 'logo.png', contentType: 'image/png' })
+        .expect(200)
+    }
+
+    const versions = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/versions`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    // Newest first: [0] is "ai two.ai", [1] is "ai one.ai". Each token must
+    // return its OWN bytes, not the current version twice.
+    const [newest, older] = versions.body as { version: string; filename: string }[]
+    expect(newest!.filename).toBe('ai two.ai')
+    expect(older!.filename).toBe('ai one.ai')
+
+    // supertest only buffers content types it knows; application/postscript
+    // needs an explicit binary parse or body arrives as {}.
+    const asBuffer = (res: request.Response, cb: (err: Error | null, body: Buffer) => void) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => cb(null, Buffer.concat(chunks)))
+    }
+
+    const newRes = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/versions/${newest!.version}/master`)
+      .set('Authorization', `Bearer ${tok}`)
+      .buffer()
+      .parse(asBuffer)
+      .expect(200)
+    expect(newRes.headers['content-type']).toContain('application/postscript')
+    expect((newRes.body as Buffer).toString()).toBe('master bytes of ai two.ai')
+
+    const oldRes = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/versions/${older!.version}/master`)
+      .set('Authorization', `Bearer ${tok}`)
+      .buffer()
+      .parse(asBuffer)
+      .expect(200)
+    expect((oldRes.body as Buffer).toString()).toBe('master bytes of ai one.ai')
+
+    await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/versions/v999999/master`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(404)
+  })
+
   it('rejects a wrong-type derivative with a 400 and a missing file with a 400', async () => {
     const tok = await mint()
     const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)

@@ -4,6 +4,7 @@ import {
   uploadAggregatorLogo,
   getAggregatorLogoVersions,
   fetchAggregatorLogoDerivative,
+  fetchAggregatorLogoVersionMaster,
   type AggregatorEditBody,
   type AggregatorRow,
   type BankLogoVersionRow,
@@ -123,6 +124,10 @@ export function AggregatorDetailDialog({
   const [renderHint, setRenderHint] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [logoError, setLogoError] = useState<string | null>(null)
+  // The version-history preview: which token the operator clicked, and what
+  // came back for it (a data: URL, 'loading', or 'none' for a 404).
+  const [viewedVersion, setViewedVersion] = useState<string | null>(null)
+  const [versionPreview, setVersionPreview] = useState<string | 'loading' | 'none' | null>(null)
   // Remount key for the two native file inputs: clearing React state after a
   // successful upload does not clear an uncontrolled input's shown filename.
   const [inputEpoch, setInputEpoch] = useState(0)
@@ -171,6 +176,33 @@ export function AggregatorDetailDialog({
     }
   }
 
+  async function viewVersion(version: string): Promise<void> {
+    if (viewedVersion === version) {
+      // Second click on the same row folds the preview away.
+      setViewedVersion(null)
+      setVersionPreview(null)
+      return
+    }
+    const token = ++pickSeq.current
+    setViewedVersion(version)
+    setVersionPreview('loading')
+    try {
+      const blob = await fetchAggregatorLogoVersionMaster(aggregator.aggrId, version)
+      if (blob === null) {
+        if (pickSeq.current === token) setVersionPreview('none')
+        return
+      }
+      // The stored master is the .ai itself; render it in the browser the
+      // same way a freshly picked file is previewed. A master saved without
+      // PDF compatibility cannot be drawn, which reads as "no preview".
+      const { dataUrl } = await rasterizeAiFile(new File([blob], `${version}.ai`, { type: 'application/pdf' }))
+      // Only land if the operator has not clicked another row meanwhile.
+      if (pickSeq.current === token) setVersionPreview(dataUrl)
+    } catch {
+      if (pickSeq.current === token) setVersionPreview('none')
+    }
+  }
+
   async function pickDerivative(file: File | null): Promise<void> {
     const token = ++pickSeq.current
     setDerivativeFile(file)
@@ -194,6 +226,8 @@ export function AggregatorDetailDialog({
       setDerivativeFile(null)
       setPendingUrl(null)
       setRenderHint(null)
+      setViewedVersion(null)
+      setVersionPreview(null)
       setInputEpoch((n) => n + 1)
       invalidateLogoThumb(aggregator.aggrId)
       loadCurrent()
@@ -386,8 +420,27 @@ export function AggregatorDetailDialog({
                   {versions.map((v) => (
                     // AssetStore version tokens are already "v1", "v2", and so
                     // on: no extra "v" prefix here, or this reads "vv1".
-                    <li key={v.version}>
-                      {v.version} {v.filename}
+                    <li key={v.version} className="space-y-1">
+                      <button
+                        type="button"
+                        className="text-left text-primary hover:underline"
+                        aria-label={`Preview logo version ${v.version}`}
+                        onClick={() => void viewVersion(v.version)}
+                      >
+                        {v.version} {v.filename}
+                      </button>
+                      {viewedVersion === v.version &&
+                        (versionPreview === 'loading' ? (
+                          <p className="text-xs text-muted-foreground">Loading preview…</p>
+                        ) : versionPreview === 'none' ? (
+                          <p className="text-xs text-muted-foreground">No preview stored for this version.</p>
+                        ) : versionPreview !== null ? (
+                          <img
+                            src={versionPreview}
+                            alt={`Logo version ${v.version}`}
+                            className="max-h-24 rounded border border-border bg-white object-contain p-1"
+                          />
+                        ) : null)}
                     </li>
                   ))}
                 </ul>

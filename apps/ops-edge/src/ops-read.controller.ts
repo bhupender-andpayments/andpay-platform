@@ -228,6 +228,32 @@ export class OpsReadController {
     return versions.map((v) => ({ version: v.version, filename: v.meta.filename, contentType: v.meta.contentType }))
   }
 
+  // The preview behind each row of the versions list above: the MASTER bytes
+  // at that exact token. The list is the master key's history, so its tokens
+  // are authoritative HERE and only here; the derivative key runs its own
+  // version sequence (per the AssetStore port) and matching across the two by
+  // token would silently serve the wrong artwork whenever they drift. The
+  // portal rasterizes the returned .ai in the browser, the same way it
+  // previews a freshly picked file.
+  @Get('aggregators/:aggrId/logo/versions/:version/master')
+  async aggregatorLogoVersionMaster(
+    @Param('aggrId') aggrId: string,
+    @Param('version') version: string,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    const versions = agg === undefined ? [] : await this.deps.assetStore.listVersions(agg.aggregatorCode)
+    const match = versions.find((v) => v.version === version)
+    const rec = match === undefined ? null : await this.deps.assetStore.getByReference(match.reference)
+    if (rec === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+    res.setHeader('Content-Type', rec.meta.contentType)
+    res.status(200).send(Buffer.from(rec.bytes))
+  }
+
   @Get('aggregators/:aggrId/logo/derivative')
   async aggregatorLogoDerivative(@Param('aggrId') aggrId: string, @Res() res: EdgeResponse): Promise<void> {
     const rows = await listBankMasters(this.deps.identityDb)
