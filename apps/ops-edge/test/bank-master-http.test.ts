@@ -287,6 +287,56 @@ describe('GET /ops/bank-masters (guard-only read)', () => {
     const res = await request(app.getHttpServer()).get('/ops/bank-masters')
     expect(res.status).toBe(401)
   })
+
+  it('hasLogo is scoped per tenant: two tenants sharing an aggregator code do not cross-contaminate', async () => {
+    const tok = await mint()
+    const sharedCode = `SHARED-${randomUUID().slice(0, 8)}`
+
+    const tenantA = await request(app.getHttpServer())
+      .post('/ops/bank-masters')
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send(body({ bankReferenceCode: `BREF-A-${randomUUID().slice(0, 8)}` }))
+      .expect(200)
+    const tenantB = await request(app.getHttpServer())
+      .post('/ops/bank-masters')
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send(body({ bankReferenceCode: `BREF-B-${randomUUID().slice(0, 8)}` }))
+      .expect(200)
+
+    const aggA = await request(app.getHttpServer())
+      .post(`/ops/bank-masters/${tenantA.body.tnntId}/aggregators`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ displayName: 'Shared Aggregator A', aggregatorCode: sharedCode })
+      .expect(200)
+    const aggB = await request(app.getHttpServer())
+      .post(`/ops/bank-masters/${tenantB.body.tnntId}/aggregators`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ displayName: 'Shared Aggregator B', aggregatorCode: sharedCode })
+      .expect(200)
+
+    // Upload a logo pair for tenant A's aggregator ONLY.
+    await request(app.getHttpServer())
+      .post(`/ops/aggregators/${aggA.body.aggrId}/logo`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('master', Buffer.from('%!PS-Adobe ai bytes'), { filename: 'logo.ai', contentType: 'application/postscript' })
+      .attach('derivative', Buffer.from('png bytes'), { filename: 'logo.png', contentType: 'image/png' })
+      .expect(200)
+
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const rowA = list.body.find((r: { tnntId: string }) => r.tnntId === tenantA.body.tnntId)
+    const rowB = list.body.find((r: { tnntId: string }) => r.tnntId === tenantB.body.tnntId)
+    const shownA = rowA.aggregators.find((a: { aggrId: string }) => a.aggrId === aggA.body.aggrId)
+    const shownB = rowB.aggregators.find((a: { aggrId: string }) => a.aggrId === aggB.body.aggrId)
+    expect(shownA.aggregatorCode).toBe(sharedCode)
+    expect(shownB.aggregatorCode).toBe(sharedCode)
+    expect(shownA.hasLogo).toBe(true)
+    expect(shownB.hasLogo).toBe(false)
+  })
 })
 
 describe('aggregator create/edit over HTTP', () => {

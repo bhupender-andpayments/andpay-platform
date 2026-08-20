@@ -11,6 +11,7 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common'
+import { toUuid } from '@andpay/ids'
 import {
   listVendors,
   readIntakeExceptions,
@@ -187,12 +188,21 @@ export class OpsReadController {
   async bankMasters(): Promise<(BankMasterRow & { aggregators: (AggregatorRow & { hasLogo: boolean })[] })[]> {
     const rows = await listBankMasters(this.deps.identityDb)
     const configs = await listBankCompositionConfigs(this.deps.fulfillmentDb)
+    // Keyed on (tenantId, bankCode), not bankCode alone: two tenants can
+    // legitimately share an aggregator code, and a bare-code Set would let
+    // one tenant's uploaded logo read as present on the other's aggregator
+    // of the same code.
     const withLogo = new Set(
-      configs.filter((c) => c.branchCode === '' && c.logoMasterRef !== null).map((c) => c.bankCode),
+      configs
+        .filter((c) => c.branchCode === '' && c.logoMasterRef !== null)
+        .map((c) => `${c.tenantId}:${c.bankCode}`),
     )
     return rows.map((r) => ({
       ...r,
-      aggregators: r.aggregators.map((a) => ({ ...a, hasLogo: withLogo.has(a.aggregatorCode) })),
+      aggregators: r.aggregators.map((a) => ({
+        ...a,
+        hasLogo: withLogo.has(`${toUuid(a.tnntId)}:${a.aggregatorCode}`),
+      })),
     }))
   }
 

@@ -207,6 +207,9 @@ importers:
       '@andpay/identity-service':
         specifier: workspace:*
         version: link:../../services/identity
+      '@andpay/ids':
+        specifier: workspace:*
+        version: link:../../packages/ids
       '@andpay/tms-service':
         specifier: workspace:*
         version: link:../../services/tms
