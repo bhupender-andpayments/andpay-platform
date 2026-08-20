@@ -23,6 +23,7 @@
     "db:down": "docker compose -f infra/docker-compose.dev.yml down",
     "db:migrate": "./infra/db.sh",
     "rds:sync": "bash ./infra/rds-sync.sh",
+    "s3:preflight": "node infra/s3-preflight.mjs",
     "db:migrate:dev": "./infra/db.sh dev init"
   },
   "devDependencies": {
