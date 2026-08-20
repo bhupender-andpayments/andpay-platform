@@ -16,5 +16,6 @@ export type {
   TnntId,
   ProgId,
   SmrchId,
+  AggrId,
 } from './registry.js'
 export { PAYLOAD_LENGTH } from './crockford.js'
