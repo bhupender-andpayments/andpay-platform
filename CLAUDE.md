@@ -161,8 +161,28 @@ after work lands on `main`:
    `bash scripts/demo.sh` with NO `source infra/rds-env.sh`).
 2. Before merging: pull `main`, resolve conflicts, run the gate.
 3. Merge to `main`.
-4. THEN sync the shared RDS from local, so RDS only ever holds schema that is
-   already on `main`.
+4. THEN sync the shared RDS, so `main`'s code and the shared database are the
+   one default everybody works from:
+
+       pnpm rds:sync            # DRY RUN: what would be applied
+       pnpm rds:sync --apply    # apply it
+
+**SCHEMA ONLY. The shared data is never touched** (Rahul, 20 Aug 2026).
+`infra/rds-sync.sh` runs `prisma migrate deploy` and nothing else: no seed, no
+truncate, no `migrate dev`, no reset. Refreshing the shared demo dataset is a
+separate, explicitly destructive decision that needs its own go-ahead.
+
+The script enforces the rule rather than trusting memory: it refuses off `main`,
+refuses with uncommitted migrations, refuses when the checkout is behind
+`origin/main`, refuses a loopback host, and derives the urls into its own
+process so the calling shell is never poisoned for `pnpm test`. It defaults to a
+dry run because "schema only" is not the same as "cannot lose data": a migration
+may carry `DROP COLUMN` or `DELETE FROM`, so the dry run scans the pending SQL
+and names every destructive statement before you decide.
+
+Other developers stay in sync by pulling `main` and running `bash ./infra/db.sh`
+against their own local docker. Only the shared instance goes through
+`rds:sync`.
 
 Two consequences worth stating, because both have already bitten:
 
@@ -172,11 +192,14 @@ Two consequences worth stating, because both have already bitten:
   `damage-flow-edge-case` branch. `migrate deploy` tolerates an extra applied
   row; `migrate dev` wants to reset. Run `prisma migrate status` per context
   before assuming a database matches the branch you are on.
-- Step 4 needs its scope stated every time. "Sync the schema" (run
-  `migrate deploy` against RDS) is routine and safe. "Sync the data" would
-  overwrite the shared demo dataset, including the 93 imported bank
-  aggregators and their artwork, and is a separate, destructive decision that
-  needs an explicit go-ahead.
+- The shared RDS can be AHEAD of `main` from before this rule existed. It
+  already carries the three `feature/bank-master-hierarchy` migrations
+  (`20260820023159_tenant_aggregator`,
+  `20260820120000_backfill_default_aggregators`, and tms
+  `20260820052713_aggregator_projection`), applied by hand on 19 and 20 Aug so
+  the 93-bank import could run there. `rds:sync` will therefore report nothing
+  pending when that branch merges. Being ahead is benign for `migrate deploy`;
+  the point of the rule is that it stops happening.
 
 ### The shared developer database
 

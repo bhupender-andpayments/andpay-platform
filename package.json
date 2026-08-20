@@ -22,6 +22,7 @@
     "db:up": "docker compose -f infra/docker-compose.dev.yml up -d --wait",
     "db:down": "docker compose -f infra/docker-compose.dev.yml down",
     "db:migrate": "./infra/db.sh",
+    "rds:sync": "bash ./infra/rds-sync.sh",
     "db:migrate:dev": "./infra/db.sh dev init"
   },
   "devDependencies": {
