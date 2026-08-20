@@ -115,6 +115,20 @@ describe('createBankMaster (BRD Annexure D)', () => {
     expect(audit[0]!.resourceIds).toEqual([res.tnntId])
   })
 
+  it('createBankMaster mints the default aggregator in the same transaction', async () => {
+    const res = await createBankMaster(db, createArgs())
+    const rows = await listBankMasters(db)
+    const row = rows.find((r) => r.tnntId === res.tnntId)!
+    expect(row.aggregators).toHaveLength(1)
+    expect(row.aggregators[0]!.aggregatorCode).toBe('BREF-ADMIN-1')
+    expect(row.aggregators[0]!.isDefault).toBe(true)
+    expect(row.aggregators[0]!.displayName).toBe('HDFC Bank')
+    const facts = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.aggregator.v1'
+    `
+    expect(Number(facts[0]!.n)).toBe(1)
+  })
+
   it('a duplicate bankReferenceCode is a 4xx OpsClientError, NEVER a resolve-to-existing', async () => {
     await createBankMaster(db, createArgs())
     await expect(createBankMaster(db, createArgs({ clientKey: randomUUID() }))).rejects.toMatchObject({
@@ -141,58 +155,6 @@ describe('createBankMaster (BRD Annexure D)', () => {
     expect(await auditRowsFor('ops:bank-master-create')).toHaveLength(1)
   })
 
-  it('creates a child bank under a parent resolved by bank reference code', async () => {
-    const parent = await createBankMaster(db, createArgs())
-    const child = await createBankMaster(
-      db,
-      createArgs({
-        bankReferenceCode: 'VSC',
-        displayName: 'VSC Bank',
-        parentBankReferenceCode: 'BREF-ADMIN-1',
-        clientKey: randomUUID(),
-      }),
-    )
-    expect(child.tnntId?.startsWith('tnnt_')).toBe(true)
-    const rows = await listBankMasters(db)
-    const childRow = rows.find((r) => r.bankReferenceCode === 'VSC')!
-    expect(childRow.parentTnntId).toBe(parent.tnntId)
-    const parentRow = rows.find((r) => r.bankReferenceCode === 'BREF-ADMIN-1')!
-    expect(parentRow.parentTnntId).toBeNull()
-  })
-
-  it('rejects an unknown parent bank reference code', async () => {
-    await expect(
-      createBankMaster(db, createArgs({ parentBankReferenceCode: 'NOPE', clientKey: randomUUID() })),
-    ).rejects.toMatchObject({ kind: 'invalid', message: 'no bank master with this parent bank reference code' })
-  })
-
-  it('rejects a parent that is itself a child (one level only)', async () => {
-    await createBankMaster(db, createArgs())
-    await createBankMaster(
-      db,
-      createArgs({
-        bankReferenceCode: 'VSC',
-        displayName: 'VSC Bank',
-        parentBankReferenceCode: 'BREF-ADMIN-1',
-        clientKey: randomUUID(),
-      }),
-    )
-    await expect(
-      createBankMaster(
-        db,
-        createArgs({ bankReferenceCode: 'DEEP', displayName: 'Too Deep', parentBankReferenceCode: 'VSC', clientKey: randomUUID() }),
-      ),
-    ).rejects.toMatchObject({ kind: 'invalid' })
-  })
-
-  it('rejects a bank naming itself as parent', async () => {
-    await expect(
-      createBankMaster(
-        db,
-        createArgs({ parentBankReferenceCode: 'BREF-ADMIN-1', clientKey: randomUUID() }),
-      ),
-    ).rejects.toMatchObject({ kind: 'invalid', message: 'a bank cannot be its own parent' })
-  })
 })
 
 describe('editBankMaster (BRD Annexure D.4)', () => {
@@ -262,73 +224,6 @@ describe('editBankMaster (BRD Annexure D.4)', () => {
     ).rejects.toMatchObject({ kind: 'not-found' })
   })
 
-  it('sets and clears the parent, recording changed:parentTnntId', async () => {
-    const parent = await createBankMaster(db, createArgs())
-    const solo = await createBankMaster(
-      db,
-      createArgs({ bankReferenceCode: 'VSC', displayName: 'VSC Bank', clientKey: randomUUID() }),
-    )
-    const setRes = await editBankMaster(db, {
-      tnntId: solo.tnntId!,
-      parentBankReferenceCode: 'BREF-ADMIN-1',
-      clientKey: randomUUID(),
-      actorId: 'actor-admin-1',
-      traceId: 'trace-bm-parent',
-    })
-    expect(setRes.changedFields).toContain('parentTnntId')
-    let rows = await listBankMasters(db)
-    expect(rows.find((r) => r.bankReferenceCode === 'VSC')!.parentTnntId).toBe(parent.tnntId)
-
-    const clearRes = await editBankMaster(db, {
-      tnntId: solo.tnntId!,
-      parentBankReferenceCode: '',
-      clientKey: randomUUID(),
-      actorId: 'actor-admin-1',
-      traceId: 'trace-bm-parent-2',
-    })
-    expect(clearRes.changedFields).toContain('parentTnntId')
-    rows = await listBankMasters(db)
-    expect(rows.find((r) => r.bankReferenceCode === 'VSC')!.parentTnntId).toBeNull()
-  })
-
-  it('a bank with children cannot itself become a child', async () => {
-    const parent = await createBankMaster(db, createArgs())
-    await createBankMaster(
-      db,
-      createArgs({ bankReferenceCode: 'VSC', displayName: 'VSC Bank', parentBankReferenceCode: 'BREF-ADMIN-1', clientKey: randomUUID() }),
-    )
-    const other = await createBankMaster(
-      db,
-      createArgs({ bankReferenceCode: 'OTHER', displayName: 'Other Bank', clientKey: randomUUID() }),
-    )
-    await expect(
-      editBankMaster(db, {
-        tnntId: parent.tnntId!,
-        parentBankReferenceCode: 'OTHER',
-        clientKey: randomUUID(),
-        actorId: 'actor-admin-1',
-        traceId: 'trace-bm-guard',
-      }),
-    ).rejects.toMatchObject({ kind: 'invalid', message: 'this bank has child banks and cannot itself become a child' })
-    void other
-  })
-
-  it('a parent with an ACTIVE child cannot be SUSPENDED', async () => {
-    const parent = await createBankMaster(db, createArgs())
-    await createBankMaster(
-      db,
-      createArgs({ bankReferenceCode: 'VSC', displayName: 'VSC Bank', parentBankReferenceCode: 'BREF-ADMIN-1', clientKey: randomUUID() }),
-    )
-    await expect(
-      editBankMaster(db, {
-        tnntId: parent.tnntId!,
-        status: 'SUSPENDED',
-        clientKey: randomUUID(),
-        actorId: 'actor-admin-1',
-        traceId: 'trace-bm-suspend',
-      }),
-    ).rejects.toMatchObject({ kind: 'invalid', message: 'suspend the child banks first' })
-  })
 })
 
 // The admin write path must PUBLISH what it changes, or TMS never learns the

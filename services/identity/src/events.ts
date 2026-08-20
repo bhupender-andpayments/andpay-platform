@@ -6,6 +6,7 @@ export const IDENTITY_MERCHANT_TOPIC = 'fct.identity.merchant.v1'
 export const IDENTITY_TENANT_TOPIC = 'fct.identity.tenant.v1'
 export const IDENTITY_PROGRAM_TOPIC = 'fct.identity.program.v1'
 export const IDENTITY_ENROLLMENT_TOPIC = 'fct.identity.enrollment.v1'
+export const IDENTITY_AGGREGATOR_TOPIC = 'fct.identity.aggregator.v1'
 
 // registered_address is minimized reference identity and is carried on the
 // merchant fact (S7); it is NEVER logged (see redact.ts). No KYC/PAN/GSTIN.
@@ -45,6 +46,19 @@ export interface EnrollmentFactPayload {
   tnntId: string
   status: string
   sourceEventId: string
+}
+
+// The aggregator (spec 2026-08-20, the sub-tenant under a Tenant, mirroring
+// Merchant -> SubMerchant). Ordered within its own tenant (subject and
+// partition key = tnntId), never globally: aggregators belong to one bank and
+// their relative ordering across banks carries no meaning.
+export interface AggregatorFactPayload {
+  aggrId: string
+  tnntId: string
+  aggregatorCode: string
+  displayName: string
+  status: string
+  isDefault: boolean
 }
 
 interface FactInput<T> {
@@ -87,6 +101,21 @@ export function programFactEnvelope(
     type: IDENTITY_PROGRAM_TOPIC,
     version: 1,
     subject: input.payload.progId,
+    dedupKey: input.dedupKey,
+    traceId: input.traceId,
+    payload: input.payload,
+  })
+}
+
+// Ordered per tenant (aggregators sort within their own bank): subject and
+// partition key = tnntId, not aggrId.
+export function aggregatorFactEnvelope(
+  input: FactInput<AggregatorFactPayload>,
+): Envelope<AggregatorFactPayload> {
+  return newEnvelope({
+    type: IDENTITY_AGGREGATOR_TOPIC,
+    version: 1,
+    subject: input.payload.tnntId,
     dedupKey: input.dedupKey,
     traceId: input.traceId,
     payload: input.payload,
