@@ -406,4 +406,19 @@ describe('ingest resolves-or-mints aggregators (per-row bankReferenceCode)', () 
     `
     expect(rows.some((r) => r.aggregator_code === 'NEWB' && r.is_default)).toBe(true)
   })
+
+  // Whole-branch review finding: a per-row bankReferenceCode flows straight
+  // off the bank file into resolveAggregator's dedup key. A '|' in that code
+  // used to be interpolated into the eventKey purpose, and eventKey's
+  // assertLeaf throws on a '|' in a purpose leaf, so a pipe-bearing code made
+  // this consumer throw and retry forever instead of minting the aggregator.
+  it('a per-row bankReferenceCode containing a pipe mints the aggregator instead of throwing', async () => {
+    await expect(
+      projectRowFact(db, ingestRow({ bankReferenceCode: 'BAD|CODE', tenantReference: 'BREF-ADMIN-1' })),
+    ).resolves.not.toThrow()
+    const rows = await db.$queryRaw<{ aggregator_code: string }[]>`
+      SELECT aggregator_code FROM aggregator ORDER BY aggregator_code
+    `
+    expect(rows.map((r) => r.aggregator_code)).toContain('BAD|CODE')
+  })
 })

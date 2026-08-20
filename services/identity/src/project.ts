@@ -146,7 +146,13 @@ async function resolveAggregator(
     payload: aggregatorFactEnvelope({
       payload: { aggrId: fromUuid('aggr', candidate), tnntId, aggregatorCode: code,
         displayName: code, status: 'ACTIVE', isDefault: false },
-      dedupKey: eventKey(env.id, `identity.aggregator.${code}`),
+      // The purpose is a constant, never the file-supplied code: eventKey's
+      // assertLeaf rejects a '|' in the purpose, and code comes straight off
+      // a bank file row, so interpolating it here would let a pipe-bearing
+      // code throw and retry forever. One row fact carries exactly one
+      // per-row code already, so the constant purpose stays distinct from
+      // the tenant-default mint's 'identity.aggregator.default'.
+      dedupKey: eventKey(env.id, 'identity.aggregator.row'),
       traceId: env.traceId,
     }),
   })
