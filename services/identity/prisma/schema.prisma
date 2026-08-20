@@ -121,12 +121,6 @@ model Tenant {
   pin               String?
   mobile            String?
   email             String?
-  // Bank Master hierarchy (spec 2026-08-19): a member (child) bank points at
-  // its aggregator (parent). NULL = top-level. ONE level only, enforced in
-  // ops.ts (createBankMaster/editBankMaster), never by a trigger.
-  parentTenantId    String?  @map("parent_tenant_id") @db.Uuid
-  parent            Tenant?  @relation("TenantHierarchy", fields: [parentTenantId], references: [id])
-  children          Tenant[] @relation("TenantHierarchy")
   // Present in the table since 20260721054958_identity_domain but undeclared
   // here until 2026-08-17. The omission was a latent landmine, not a spare
   // column: `prisma migrate dev` diffs the model against the database, so the
@@ -136,8 +130,43 @@ model Tenant {
   // the schema states what the table actually holds.
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  aggregators       Aggregator[]
+
   @@map("tenant")
-  @@index([parentTenantId])
+}
+
+/// The sub-tenant (spec 2026-08-20): a member bank under a Tenant, mirroring
+/// Merchant -> SubMerchant. Lightweight by decision: name + code + status
+/// mandatory, the D.1 block optional (ingest auto-mints bare rows and the
+/// 93-bank import has names only). Exactly one is_default row per tenant,
+/// enforced in ops.ts and backstopped by a partial unique index (hand SQL in
+/// the tenant_aggregator migration; Prisma cannot express it).
+model Aggregator {
+  id             String   @id @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  aggregatorCode String   @map("aggregator_code")
+  displayName    String   @map("display_name")
+  status         String
+  isDefault      Boolean  @default(false) @map("is_default")
+  // Set the first time ingest resolves this code (project.ts
+  // resolveAggregator); once set, editAggregator refuses a code change.
+  codeLockedAt   DateTime? @map("code_locked_at") @db.Timestamptz(6)
+  address1  String?
+  address2  String?
+  address3  String?
+  city      String?
+  district  String?
+  country   String?
+  pin       String?
+  mobile    String?
+  email     String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([tenantId, aggregatorCode])
+  @@index([tenantId])
+  @@map("aggregator")
 }
 
 /// The Program (the sponsorship wrapper), Program-scoped by its own id. STATED

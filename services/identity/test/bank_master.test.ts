@@ -90,7 +90,7 @@ afterAll(async () => {
 })
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
+    'TRUNCATE aggregator, sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
   )
 })
 
