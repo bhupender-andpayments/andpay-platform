@@ -1502,12 +1502,16 @@ export interface SetBankLogoInput {
 
 /**
  * Store a new bank/branch logo via the T3 AssetStore port and persist the
- * returned reference into logoMasterRef, nulling logoDerivativeRef
- * (rasterization is deferred -- see the schema.prisma comment on both
- * columns). Creates the config row if it does not already exist (a logo can
- * be the FIRST write for a (tenant, bank, branch), before any branding/
- * template upsert), otherwise updates the existing row in place, leaving
- * brandingParams/imageTemplates untouched.
+ * returned reference into logoMasterRef. logoDerivativeRef is owned by the
+ * pair path (setBankLogoPair below) and is left UNTOUCHED here: a single
+ * master-only refresh (this function) keeps whatever derivative is already on
+ * the row until a subsequent pair upload replaces both together. On a FIRST
+ * write for a (tenant, bank, branch) there is no existing derivative, so the
+ * inserted row still gets an explicit NULL; only the ON CONFLICT branch skips
+ * the derivative column. Creates the config row if it does not already exist
+ * (a logo can be the FIRST write for a (tenant, bank, branch), before any
+ * branding/template upsert), otherwise updates the existing row in place,
+ * leaving brandingParams/imageTemplates untouched.
  *
  * The AssetStore `key` is the bank/branch CODE ONLY -- never the tenantId,
  * actorId, or any PII (S4; the T3 dev reference embeds the key in plaintext,
@@ -1554,7 +1558,7 @@ export async function setBankLogo(
         INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at)
         VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${args.bankCode}, ${branchCode}, ${put.reference}, NULL, '{}'::jsonb, '{}'::jsonb, now())
         ON CONFLICT (tenant_id, bank_code, branch_code)
-        DO UPDATE SET logo_master_ref = EXCLUDED.logo_master_ref, logo_derivative_ref = NULL, updated_at = now()
+        DO UPDATE SET logo_master_ref = EXCLUDED.logo_master_ref, updated_at = now()
         RETURNING id::text AS id
       `
       id = rows[0]!.id

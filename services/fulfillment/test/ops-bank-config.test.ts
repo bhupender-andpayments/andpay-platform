@@ -350,6 +350,39 @@ describe('setBankLogo (Phase 3 Task 5b, BRD Annexure D.4, T3 AssetStore port)', 
     const rows = await auditRowsFor('ops:bank-logo-set')
     expect(rows).toHaveLength(1)
   })
+
+  it('does not NULL an existing logoDerivativeRef: a single-master refresh after a pair upload keeps the derivative', async () => {
+    const store = new InMemoryAssetStore()
+    const tenantWire = newId('tnnt')
+
+    const pair = await setBankLogoPair(db, store, {
+      tenantWire,
+      bankCode: 'HDFC',
+      master: { bytes: new TextEncoder().encode('%AI'), contentType: 'application/postscript', filename: 'hdfc.ai' },
+      derivative: { bytes: new TextEncoder().encode('PNG'), contentType: 'image/png', filename: 'hdfc.png' },
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-logo-pair-then-single',
+    })
+    const beforeRow = await readConfigRow(pair.id!)
+    expect(beforeRow.logo_derivative_ref).not.toBeNull()
+
+    const single = await setBankLogo(db, store, {
+      tenantWire,
+      bankCode: 'HDFC',
+      bytes: new TextEncoder().encode('new-master-bytes'),
+      contentType: 'application/postscript',
+      filename: 'hdfc-refresh.ai',
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-logo-single-after-pair',
+    })
+    expect(single.id).toBe(pair.id)
+
+    const afterRow = await readConfigRow(pair.id!)
+    expect(afterRow.logo_master_ref).toBe(single.reference)
+    expect(afterRow.logo_derivative_ref).toBe(beforeRow.logo_derivative_ref)
+  })
 })
 
 describe('setBankLogoPair (Task 4, bank master hierarchy: master plus rasterised derivative)', () => {
