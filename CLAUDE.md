@@ -151,20 +151,48 @@ Generated Prisma clients live under `services/*/generated` and
 `packages/*/generated` and are gitignored. If a suite fails on a missing
 `generated/client`, run `bash ./infra/db.sh`.
 
+### Local first, then sync (RULE, 20 Aug 2026)
+
+**All development work runs against LOCAL docker.** Feature branches never point
+at the shared RDS. The shared instance is a downstream mirror, refreshed only
+after work lands on `main`:
+
+1. Develop and demo against local docker (`pnpm db:up`, then plain
+   `bash scripts/demo.sh` with NO `source infra/rds-env.sh`).
+2. Before merging: pull `main`, resolve conflicts, run the gate.
+3. Merge to `main`.
+4. THEN sync the shared RDS from local, so RDS only ever holds schema that is
+   already on `main`.
+
+Two consequences worth stating, because both have already bitten:
+
+- A migration applied to a database from an UNMERGED branch leaves that
+  database ahead of `main`. On 20 Aug the local `andpay` carried
+  `20260819061949_damage_replacement_raised_marker` from the unmerged
+  `damage-flow-edge-case` branch. `migrate deploy` tolerates an extra applied
+  row; `migrate dev` wants to reset. Run `prisma migrate status` per context
+  before assuming a database matches the branch you are on.
+- Step 4 needs its scope stated every time. "Sync the schema" (run
+  `migrate deploy` against RDS) is routine and safe. "Sync the data" would
+  overwrite the shared demo dataset, including the 93 imported bank
+  aggregators and their artwork, and is a separate, destructive decision that
+  needs an explicit go-ahead.
+
 ### The shared developer database
 
 `infra/docker-compose.dev.yml` remains the ONLY database the test gate ever
 touches. A shared AWS RDS Postgres in ap-south-1 holds the common dataset for
-portal and demo work.
+portal and demo work, refreshed from local per the rule above.
 
     source infra/rds-env.sh     # export the six urls for the SHARED dataset
     bash infra/rds-bootstrap.sh # first time only: create and migrate it
 
-Bootstrapped 2026-08-17: all 78 migrations are applied across the six schemas
-and the dataset is live. The instance runs PostgreSQL 18.3, which is fine.
-An earlier note here called for recreating it at 16 on the belief that Prisma
-predated 18; the installed client is 6.19.3, not the 6.3.0 floor declared in
-`package.json`, and it applied every migration cleanly.
+Bootstrapped 2026-08-17. As of 20 Aug 2026 all 84 migrations are applied across
+the six schemas on all three databases (local `andpay`, local `andpay_test`, and
+the shared RDS) and the dataset is live. The instance runs PostgreSQL 18.3,
+which is fine. An earlier note here called for recreating it at 16 on the belief
+that Prisma predated 18; the installed client is 6.19.3, not the 6.3.0 floor
+declared in `package.json`, and it applied every migration cleanly.
 
 Credentials come from a gitignored `.env` holding four keys; see
 `.env.example`. `infra/db-url.mjs` derives the urls, parsing the file

@@ -1,0 +1,3648 @@
+{
+  "info": {
+    "name": "AndPayments Platform",
+    "description": "GENERATED FILE - do not edit by hand.\n\nRegenerate with `node postman/build-collection.mjs` whenever an edge HTTP route changes; `node postman/build-collection.mjs --check` fails if this file has drifted from the controllers. Push to the cloud copy with `node postman/sync.mjs --push --yes` (destructive: PUT replaces the whole collection).\n\nSet the per-edge base URL variables below to whatever you are running. Set bearerToken from a POST /session/login response (auth edge for operators, vendor auth edge for vendor operators).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{bearerToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "authBase",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "opsBase",
+      "value": "http://localhost:3001",
+      "type": "string"
+    },
+    {
+      "key": "vendorBase",
+      "value": "http://localhost:3002",
+      "type": "string"
+    },
+    {
+      "key": "vendorAuthBase",
+      "value": "http://localhost:3011",
+      "type": "string"
+    },
+    {
+      "key": "tenantBase",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "bearerToken",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth edge",
+      "description": "Internal operator login, MFA, step-up, session.",
+      "item": [
+        {
+          "name": "enroll",
+          "description": "apps/auth-edge/src/enroll.controller.ts - @Controller('')",
+          "item": [
+            {
+              "name": "POST /enroll",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"targetPrincipalId\": \"\",\n  \"targetAccountLabel\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{authBase}}/enroll",
+                  "host": [
+                    "{{authBase}}"
+                  ],
+                  "path": [
+                    "enroll"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: enroll.enroll (source order preserved).\nGuard: AuthEdgeAdminGuard.\nSuccess status: 200.\nBody type: EnrollBody."
+              }
+            },
+            {
+              "name": "POST /enroll/confirm",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"totp\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{authBase}}/enroll/confirm",
+                  "host": [
+                    "{{authBase}}"
+                  ],
+                  "path": [
+                    "enroll",
+                    "confirm"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: enroll.confirm (source order preserved).\nGuard: AuthEdgeAdminGuard.\nSuccess status: 200.\nOptional fields (send only when meaningful): totp."
+              }
+            }
+          ]
+        },
+        {
+          "name": "login",
+          "description": "apps/auth-edge/src/login.controller.ts - @Controller('session')",
+          "item": [
+            {
+              "name": "POST /session/login",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"handle\": \"\",\n  \"password\": \"\",\n  \"totp\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{authBase}}/session/login",
+                  "host": [
+                    "{{authBase}}"
+                  ],
+                  "path": [
+                    "session",
+                    "login"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: login.login (source order preserved).\nUnauthenticated.\nSuccess status: 200.\nOptional fields (send only when meaningful): handle, password, totp."
+              }
+            }
+          ]
+        },
+        {
+          "name": "probe",
+          "description": "apps/auth-edge/src/probe.controller.ts - @Controller('probe')",
+          "item": [
+            {
+              "name": "GET /probe",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{authBase}}/probe",
+                  "host": [
+                    "{{authBase}}"
+                  ],
+                  "path": [
+                    "probe"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: probe.probe (source order preserved).\nUnauthenticated."
+              }
+            }
+          ]
+        },
+        {
+          "name": "session",
+          "description": "apps/auth-edge/src/session.controller.ts - @Controller('session')",
+          "item": [
+            {
+              "name": "POST /session/refresh",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{authBase}}/session/refresh",
+                  "host": [
+                    "{{authBase}}"
+                  ],
+                  "path": [
+                    "session",
+                    "refresh"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: session.refresh (source order preserved).\nNo guard, but the handler reads the Authorization header itself, so a bearer token is required.\nAlso reads the refresh cookie.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "POST /session/rehydrate",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{authBase}}/session/rehydrate",
+                  "host": [
+                    "{{authBase}}"
+                  ],
+                  "path": [
+                    "session",
+                    "rehydrate"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: session.rehydrate (source order preserved).\nNo guard and no bearer: this authenticates against the refresh cookie that POST /session/login sets. Send it with cookies enabled.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "POST /session/logout",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{authBase}}/session/logout",
+                  "host": [
+                    "{{authBase}}"
+                  ],
+                  "path": [
+                    "session",
+                    "logout"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: session.logout (source order preserved).\nNo guard and no bearer: this authenticates against the refresh cookie that POST /session/login sets. Send it with cookies enabled.\nSuccess status: 204."
+              }
+            }
+          ]
+        },
+        {
+          "name": "stepup",
+          "description": "apps/auth-edge/src/stepup.controller.ts - @Controller('session')",
+          "item": [
+            {
+              "name": "POST /session/stepup",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"totp\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{authBase}}/session/stepup",
+                  "host": [
+                    "{{authBase}}"
+                  ],
+                  "path": [
+                    "session",
+                    "stepup"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: stepup.stepup (source order preserved).\nNo guard, but the handler reads the Authorization header itself, so a bearer token is required.\nSuccess status: 200.\nOptional fields (send only when meaningful): totp."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Ops edge",
+      "description": "Operator reads, writes, and reports.",
+      "item": [
+        {
+          "name": "ops-read",
+          "description": "apps/ops-edge/src/ops-read.controller.ts - @Controller('ops')",
+          "item": [
+            {
+              "name": "GET /ops/vendors",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/vendors",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "vendors"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.vendors (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/damage-reasons",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/damage-reasons",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "damage-reasons"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.damageReasons (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/quarantine",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/quarantine",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "quarantine"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.quarantine (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/damage-cases",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/damage-cases",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "damage-cases"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.damageCases (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/damage-cases/summary",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/damage-cases/summary",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "damage-cases",
+                    "summary"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.damageCaseSummary (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/exceptions/intake",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/exceptions/intake",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "exceptions",
+                    "intake"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.intakeExceptions (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/exceptions/status",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/exceptions/status",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "exceptions",
+                    "status"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.statusExceptions (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/bank-config",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/bank-config",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "bank-config"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.bankConfig (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/batching-config",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/batching-config",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batching-config"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.batchingConfig (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/bank-masters",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/bank-masters",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "bank-masters"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.bankMasters (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/aggregators/:aggrId/logo/versions",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/aggregators/:aggrId/logo/versions",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "aggregators",
+                    ":aggrId",
+                    "logo",
+                    "versions"
+                  ],
+                  "variable": [
+                    {
+                      "key": "aggrId",
+                      "value": "",
+                      "description": "Path parameter :aggrId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.aggregatorLogoVersions (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: aggrId."
+              }
+            },
+            {
+              "name": "GET /ops/aggregators/:aggrId/logo/versions/:version/master",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/aggregators/:aggrId/logo/versions/:version/master",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "aggregators",
+                    ":aggrId",
+                    "logo",
+                    "versions",
+                    ":version",
+                    "master"
+                  ],
+                  "variable": [
+                    {
+                      "key": "aggrId",
+                      "value": "",
+                      "description": "Path parameter :aggrId"
+                    },
+                    {
+                      "key": "version",
+                      "value": "",
+                      "description": "Path parameter :version"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.aggregatorLogoVersionMaster (source order preserved).\nGuard: OpsEdgeGuard.\nPath parameters: aggrId, version."
+              }
+            },
+            {
+              "name": "GET /ops/aggregators/:aggrId/logo/derivative",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/aggregators/:aggrId/logo/derivative",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "aggregators",
+                    ":aggrId",
+                    "logo",
+                    "derivative"
+                  ],
+                  "variable": [
+                    {
+                      "key": "aggrId",
+                      "value": "",
+                      "description": "Path parameter :aggrId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.aggregatorLogoDerivative (source order preserved).\nGuard: OpsEdgeGuard.\nPath parameters: aggrId."
+              }
+            },
+            {
+              "name": "GET /ops/batches",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/batches",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batches"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.batches (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/merchants",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/merchants",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "merchants"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.merchants (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/pool",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/pool",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "pool"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.pool (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/dispatches",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/dispatches",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "dispatches"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.dispatches (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/dispatches/by-vpa",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/dispatches/by-vpa",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "dispatches",
+                    "by-vpa"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.dispatchesByVpa (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/devices",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/devices",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "devices"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.devices (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/devices/:unitId",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/devices/:unitId",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "devices",
+                    ":unitId"
+                  ],
+                  "variable": [
+                    {
+                      "key": "unitId",
+                      "value": "",
+                      "description": "Path parameter :unitId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.deviceDetail (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: unitId."
+              }
+            },
+            {
+              "name": "GET /ops/batches/:btchId",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/batches/:btchId",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batches",
+                    ":btchId"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.batchDetail (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: btchId."
+              }
+            },
+            {
+              "name": "GET /ops/batches/:btchId/excel/:groupKey",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/batches/:btchId/excel/:groupKey",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batches",
+                    ":btchId",
+                    "excel",
+                    ":groupKey"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    },
+                    {
+                      "key": "groupKey",
+                      "value": "",
+                      "description": "Path parameter :groupKey"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.dispatchExcel (source order preserved).\nGuard: OpsEdgeGuard.\nPath parameters: btchId, groupKey."
+              }
+            },
+            {
+              "name": "GET /ops/batches/:btchId/collateral/:collateralKey",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/batches/:btchId/collateral/:collateralKey",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batches",
+                    ":btchId",
+                    "collateral",
+                    ":collateralKey"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    },
+                    {
+                      "key": "collateralKey",
+                      "value": "",
+                      "description": "Path parameter :collateralKey"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.collateral (source order preserved).\nGuard: OpsEdgeGuard.\nPath parameters: btchId, collateralKey."
+              }
+            }
+          ]
+        },
+        {
+          "name": "ops",
+          "description": "apps/ops-edge/src/ops.controller.ts - @Controller('ops')",
+          "item": [
+            {
+              "name": "POST /ops/uploads/bank/preview",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/bank/preview",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "bank",
+                    "preview"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.previewBank (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/uploads/bank/commit",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/bank/commit",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "bank",
+                    "commit"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.commitBank (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/uploads/device-inventory/preview",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/device-inventory/preview",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "device-inventory",
+                    "preview"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.previewDeviceInventory (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/uploads/device-inventory",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    },
+                    {
+                      "key": "manufacturerVndrId",
+                      "value": "",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/device-inventory",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "device-inventory"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.uploadDeviceInventory (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: DeviceInventoryUploadBody.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/uploads/courier-status",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    },
+                    {
+                      "key": "courierVndrId",
+                      "value": "",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/courier-status",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "courier-status"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.uploadCourierStatus (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: CourierStatusUploadBody.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/uploads/unit-status/preview",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/unit-status/preview",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "unit-status",
+                    "preview"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.previewUnitStatus (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/uploads/unit-status",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/unit-status",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "unit-status"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.uploadUnitStatus (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/uploads/return/preview",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/return/preview",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "return",
+                    "preview"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.previewReturnUpload (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/uploads/return",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    },
+                    {
+                      "key": "batchId",
+                      "value": "null",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/return",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "return"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.uploadReturn (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nOptional fields (send only when meaningful): batchId.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/shipments/:id/correct",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"status\": \"\",\n  \"courierTimestamp\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/shipments/:id/correct",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "shipments",
+                    ":id",
+                    "correct"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.correct (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: CorrectBody.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/batches/:id/deliver-all",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "url": {
+                  "raw": "{{opsBase}}/ops/batches/:id/deliver-all",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batches",
+                    ":id",
+                    "deliver-all"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.bulkDeliver (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/units/:id/status",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"status\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/units/:id/status",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "units",
+                    ":id",
+                    "status"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.correctUnit (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: UnitStatusBody.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/shipments/:id/override",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"status\": \"\",\n  \"courierTimestamp\": \"\",\n  \"overrideReason\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/shipments/:id/override",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "shipments",
+                    ":id",
+                    "override"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.override (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: OverrideBody.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/artifacts/recompose",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"asgnId\": \"\",\n  \"artifactType\": \"\",\n  \"requestedShipTo\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/artifacts/recompose",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "artifacts",
+                    "recompose"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.recompose (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: RecomposeBody.\nOptional fields (send only when meaningful): requestedShipTo."
+              }
+            },
+            {
+              "name": "POST /ops/records/:asgnId/hold",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"reason\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/records/:asgnId/hold",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "records",
+                    ":asgnId",
+                    "hold"
+                  ],
+                  "variable": [
+                    {
+                      "key": "asgnId",
+                      "value": "",
+                      "description": "Path parameter :asgnId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.hold (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: HoldBody.\nPath parameters: asgnId."
+              }
+            },
+            {
+              "name": "POST /ops/records/:asgnId/release",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "url": {
+                  "raw": "{{opsBase}}/ops/records/:asgnId/release",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "records",
+                    ":asgnId",
+                    "release"
+                  ],
+                  "variable": [
+                    {
+                      "key": "asgnId",
+                      "value": "",
+                      "description": "Path parameter :asgnId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.release (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: asgnId."
+              }
+            },
+            {
+              "name": "POST /ops/records/:asgnId/damage-case-status",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"status\": \"\",\n  \"opsRemarks\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/records/:asgnId/damage-case-status",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "records",
+                    ":asgnId",
+                    "damage-case-status"
+                  ],
+                  "variable": [
+                    {
+                      "key": "asgnId",
+                      "value": "",
+                      "description": "Path parameter :asgnId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.updateDamageCase (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: DamageCaseStatusBody.\nOptional fields (send only when meaningful): opsRemarks.\nPath parameters: asgnId."
+              }
+            },
+            {
+              "name": "POST /ops/records/:asgnId/flag-damage",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"reasonCode\": \"\",\n  \"remarks\": \"\",\n  \"standeeCount\": 0,\n  \"stickerCount\": 0\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/records/:asgnId/flag-damage",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "records",
+                    ":asgnId",
+                    "flag-damage"
+                  ],
+                  "variable": [
+                    {
+                      "key": "asgnId",
+                      "value": "",
+                      "description": "Path parameter :asgnId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.flagDamage (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 201.\nBody type: FlagDamageBody.\nOptional fields (send only when meaningful): standeeCount, stickerCount.\nPath parameters: asgnId."
+              }
+            },
+            {
+              "name": "POST /ops/assignments/activate",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"dispatchId\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/assignments/activate",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "assignments",
+                    "activate"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.activateAssignmentRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: ActivateAssignmentBody."
+              }
+            },
+            {
+              "name": "POST /ops/assignments/request-activation",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"dispatchIds\": []\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/assignments/request-activation",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "assignments",
+                    "request-activation"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.requestActivationRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: RequestActivationBody."
+              }
+            },
+            {
+              "name": "POST /ops/assignments/activate-bulk",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"dispatchIds\": []\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/assignments/activate-bulk",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "assignments",
+                    "activate-bulk"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.activateAssignmentsBulk (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: BulkActivateBody."
+              }
+            },
+            {
+              "name": "POST /ops/uploads/activation",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/uploads/activation",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "uploads",
+                    "activation"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.uploadActivation (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/batches/trigger",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"tenantWire\": \"\",\n  \"programWire\": \"\",\n  \"reason\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/batches/trigger",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batches",
+                    "trigger"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.batchTrigger (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: BatchTriggerBody."
+              }
+            },
+            {
+              "name": "POST /ops/batches/:btchId/send-to-vendor",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "url": {
+                  "raw": "{{opsBase}}/ops/batches/:btchId/send-to-vendor",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batches",
+                    ":btchId",
+                    "send-to-vendor"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.batchSendToVendor (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: btchId."
+              }
+            },
+            {
+              "name": "POST /ops/batches/:btchId/close",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "url": {
+                  "raw": "{{opsBase}}/ops/batches/:btchId/close",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batches",
+                    ":btchId",
+                    "close"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.batchClose (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: btchId."
+              }
+            },
+            {
+              "name": "POST /ops/vendors",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"type\": \"\",\n  \"displayName\": \"\",\n  \"courierCode\": \"\",\n  \"integrationMode\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/vendors",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "vendors"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.createVendor (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: VendorCreateBody.\nOptional fields (send only when meaningful): courierCode, integrationMode."
+              }
+            },
+            {
+              "name": "POST /ops/vendors/:id/suspend",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "url": {
+                  "raw": "{{opsBase}}/ops/vendors/:id/suspend",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "vendors",
+                    ":id",
+                    "suspend"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.suspendVendorRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/vendors/:id/edit",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"displayName\": \"\",\n  \"courierCode\": \"\",\n  \"integrationMode\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/vendors/:id/edit",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "vendors",
+                    ":id",
+                    "edit"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.editVendorRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: VendorEditBody.\nOptional fields (send only when meaningful): displayName, courierCode, integrationMode.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/damage-reasons",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"code\": \"\",\n  \"label\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/damage-reasons",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "damage-reasons"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.createDamageReason (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: DamageReasonCreateBody."
+              }
+            },
+            {
+              "name": "POST /ops/damage-reasons/:id/edit",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"code\": \"\",\n  \"label\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/damage-reasons/:id/edit",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "damage-reasons",
+                    ":id",
+                    "edit"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.editDamageReasonRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: DamageReasonEditBody.\nOptional fields (send only when meaningful): code, label.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/damage-reasons/:id/activate",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "url": {
+                  "raw": "{{opsBase}}/ops/damage-reasons/:id/activate",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "damage-reasons",
+                    ":id",
+                    "activate"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.activateDamageReasonRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/damage-reasons/:id/deactivate",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "url": {
+                  "raw": "{{opsBase}}/ops/damage-reasons/:id/deactivate",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "damage-reasons",
+                    ":id",
+                    "deactivate"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.deactivateDamageReasonRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/quarantine/:id/resolve",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"correctedRow\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/quarantine/:id/resolve",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "quarantine",
+                    ":id",
+                    "resolve"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.resolveQuarantine (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: ResolveQuarantineBody.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/quarantine/:id/close",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "url": {
+                  "raw": "{{opsBase}}/ops/quarantine/:id/close",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "quarantine",
+                    ":id",
+                    "close"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.closeQuarantine (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/intake-exceptions/:id/resolve",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"correctedSheet\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/intake-exceptions/:id/resolve",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "intake-exceptions",
+                    ":id",
+                    "resolve"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.resolveIntakeExceptionRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: ResolveIntakeExceptionBody.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/status-exceptions/:id/resolve",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"shptId\": \"\",\n  \"status\": \"\",\n  \"courierTimestamp\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/status-exceptions/:id/resolve",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "status-exceptions",
+                    ":id",
+                    "resolve"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.resolveStatusExceptionRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: ResolveStatusExceptionBody.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/bank-config",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"tenantWire\": \"\",\n  \"bankCode\": \"\",\n  \"branchCode\": \"\",\n  \"brandingParams\": null,\n  \"imageTemplates\": null\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/bank-config",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "bank-config"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.upsertBankConfigRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: BankConfigUpsertBody.\nOptional fields (send only when meaningful): branchCode."
+              }
+            },
+            {
+              "name": "POST /ops/bank-config/logo",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    },
+                    {
+                      "key": "tenantWire",
+                      "value": "",
+                      "type": "text"
+                    },
+                    {
+                      "key": "bankCode",
+                      "value": "",
+                      "type": "text"
+                    },
+                    {
+                      "key": "branchCode",
+                      "value": "",
+                      "type": "text"
+                    },
+                    {
+                      "key": "brandingParams",
+                      "value": "null",
+                      "type": "text"
+                    },
+                    {
+                      "key": "imageTemplates",
+                      "value": "null",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/bank-config/logo",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "bank-config",
+                    "logo"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.setBankLogoRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: BankConfigUpsertBody.\nOptional fields (send only when meaningful): branchCode.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/bank-config/template",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    },
+                    {
+                      "key": "tenantWire",
+                      "value": "",
+                      "type": "text"
+                    },
+                    {
+                      "key": "bankCode",
+                      "value": "",
+                      "type": "text"
+                    },
+                    {
+                      "key": "branchCode",
+                      "value": "",
+                      "type": "text"
+                    },
+                    {
+                      "key": "group",
+                      "value": "",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/bank-config/template",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "bank-config",
+                    "template"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.setBankTemplateMasterRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: BankTemplateMasterUploadBody.\nOptional fields (send only when meaningful): branchCode.\nMultipart file field(s): file."
+              }
+            },
+            {
+              "name": "POST /ops/batching-config",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"tenantWire\": \"\",\n  \"programWire\": \"\",\n  \"bankReferenceCode\": \"\",\n  \"minLotSize\": 0,\n  \"maxWaitSeconds\": 0\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/batching-config",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batching-config"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.setBatchingConfigRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: BatchingConfigSetBody.\nOptional fields (send only when meaningful): tenantWire, programWire, bankReferenceCode, maxWaitSeconds."
+              }
+            },
+            {
+              "name": "POST /ops/vendors/:vndrId/print-layout",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"layout\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/vendors/:vndrId/print-layout",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "vendors",
+                    ":vndrId",
+                    "print-layout"
+                  ],
+                  "variable": [
+                    {
+                      "key": "vndrId",
+                      "value": "",
+                      "description": "Path parameter :vndrId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.setVendorPrintLayoutRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: VendorPrintLayoutSetBody.\nPath parameters: vndrId."
+              }
+            },
+            {
+              "name": "POST /ops/bank-masters",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"bankReferenceCode\": \"\",\n  \"displayName\": \"\",\n  \"address1\": \"\",\n  \"address2\": \"\",\n  \"address3\": \"\",\n  \"city\": \"\",\n  \"district\": \"\",\n  \"country\": \"\",\n  \"pin\": \"\",\n  \"mobile\": \"\",\n  \"email\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/bank-masters",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "bank-masters"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.createBankMasterRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: BankMasterCreateBody.\nOptional fields (send only when meaningful): address2, address3."
+              }
+            },
+            {
+              "name": "POST /ops/merchants",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"tnntWire\": \"\",\n  \"displayName\": \"\",\n  \"legalName\": \"\",\n  \"mcc\": \"\",\n  \"vpa\": \"\",\n  \"contactName\": \"\",\n  \"mobile\": \"\",\n  \"email\": \"\",\n  \"address\": \"\",\n  \"address2\": \"\",\n  \"address3\": \"\",\n  \"city\": \"\",\n  \"state\": \"\",\n  \"pincode\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/merchants",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "merchants"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops.createMerchantRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: MerchantCreateBody.\nOptional fields (send only when meaningful): email, address2, address3."
+              }
+            },
+            {
+              "name": "POST /ops/bank-masters/:id/edit",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"displayName\": \"\",\n  \"address1\": \"\",\n  \"address2\": \"\",\n  \"address3\": \"\",\n  \"city\": \"\",\n  \"district\": \"\",\n  \"country\": \"\",\n  \"pin\": \"\",\n  \"mobile\": \"\",\n  \"email\": \"\",\n  \"status\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/bank-masters/:id/edit",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "bank-masters",
+                    ":id",
+                    "edit"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.editBankMasterRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: BankMasterEditBody.\nOptional fields (send only when meaningful): displayName, address1, address2, address3, city, district, country, pin, mobile, email, status.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "POST /ops/bank-masters/:tnntId/aggregators",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"displayName\": \"\",\n  \"aggregatorCode\": \"\",\n  \"address1\": \"\",\n  \"address2\": \"\",\n  \"address3\": \"\",\n  \"city\": \"\",\n  \"district\": \"\",\n  \"country\": \"\",\n  \"pin\": \"\",\n  \"mobile\": \"\",\n  \"email\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/bank-masters/:tnntId/aggregators",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "bank-masters",
+                    ":tnntId",
+                    "aggregators"
+                  ],
+                  "variable": [
+                    {
+                      "key": "tnntId",
+                      "value": "",
+                      "description": "Path parameter :tnntId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.createAggregatorRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: AggregatorCreateBody.\nOptional fields (send only when meaningful): address1, address2, address3, city, district, country, pin, mobile, email.\nPath parameters: tnntId."
+              }
+            },
+            {
+              "name": "POST /ops/aggregators/:aggrId/edit",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"displayName\": \"\",\n  \"aggregatorCode\": \"\",\n  \"status\": \"\",\n  \"address1\": \"\",\n  \"address2\": \"\",\n  \"address3\": \"\",\n  \"city\": \"\",\n  \"district\": \"\",\n  \"country\": \"\",\n  \"pin\": \"\",\n  \"mobile\": \"\",\n  \"email\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/aggregators/:aggrId/edit",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "aggregators",
+                    ":aggrId",
+                    "edit"
+                  ],
+                  "variable": [
+                    {
+                      "key": "aggrId",
+                      "value": "",
+                      "description": "Path parameter :aggrId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.editAggregatorRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nBody type: AggregatorEditBody.\nOptional fields (send only when meaningful): displayName, aggregatorCode, status, address1, address2, address3, city, district, country, pin, mobile, email.\nPath parameters: aggrId."
+              }
+            },
+            {
+              "name": "POST /ops/aggregators/:aggrId/logo",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "master",
+                      "type": "file",
+                      "src": []
+                    },
+                    {
+                      "key": "derivative",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/aggregators/:aggrId/logo",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "aggregators",
+                    ":aggrId",
+                    "logo"
+                  ],
+                  "variable": [
+                    {
+                      "key": "aggrId",
+                      "value": "",
+                      "description": "Path parameter :aggrId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.setAggregatorLogoRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): master, derivative.\nPath parameters: aggrId."
+              }
+            }
+          ]
+        },
+        {
+          "name": "probe",
+          "description": "apps/ops-edge/src/probe.controller.ts - @Controller('probe')",
+          "item": [
+            {
+              "name": "GET /probe",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/probe",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "probe"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: probe.probe (source order preserved).\nGuard: OpsEdgeGuard."
+              }
+            }
+          ]
+        },
+        {
+          "name": "reports",
+          "description": "apps/ops-edge/src/reports.controller.ts - @Controller('ops/reports')",
+          "item": [
+            {
+              "name": "GET /ops/reports/tiles",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/reports/tiles",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "reports",
+                    "tiles"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: reports.tiles (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /ops/reports/tiles/:tile",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/reports/tiles/:tile",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "reports",
+                    "tiles",
+                    ":tile"
+                  ],
+                  "variable": [
+                    {
+                      "key": "tile",
+                      "value": "",
+                      "description": "Path parameter :tile"
+                    }
+                  ]
+                },
+                "description": "Handler: reports.tileDrilldown (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: tile."
+              }
+            },
+            {
+              "name": "GET /ops/reports/batch-journey/:btchId",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/reports/batch-journey/:btchId",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "reports",
+                    "batch-journey",
+                    ":btchId"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    }
+                  ]
+                },
+                "description": "Handler: reports.batchJourney (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: btchId."
+              }
+            },
+            {
+              "name": "GET /ops/reports/dispatch/:asgnId",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/reports/dispatch/:asgnId",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "reports",
+                    "dispatch",
+                    ":asgnId"
+                  ],
+                  "variable": [
+                    {
+                      "key": "asgnId",
+                      "value": "",
+                      "description": "Path parameter :asgnId"
+                    }
+                  ]
+                },
+                "description": "Handler: reports.dispatchDetail (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: asgnId."
+              }
+            },
+            {
+              "name": "GET /ops/reports/activation/batch/:btchId/xlsx",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/reports/activation/batch/:btchId/xlsx",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "reports",
+                    "activation",
+                    "batch",
+                    ":btchId",
+                    "xlsx"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    }
+                  ]
+                },
+                "description": "Handler: reports.activationBatchXlsx (source order preserved).\nGuard: OpsEdgeGuard.\nPath parameters: btchId."
+              }
+            },
+            {
+              "name": "GET /ops/reports/:name",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/reports/:name",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "reports",
+                    ":name"
+                  ],
+                  "variable": [
+                    {
+                      "key": "name",
+                      "value": "",
+                      "description": "Path parameter :name"
+                    }
+                  ]
+                },
+                "description": "Handler: reports.report (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: name."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Vendor edge",
+      "description": "Vendor intake, pull, return, courier status. The demo harness serves this on 3002 while vendor-portal defaults to 3010; set the variable to match what you are running.",
+      "item": [
+        {
+          "name": "courier-status",
+          "description": "apps/vendor-edge/src/courier-status.controller.ts - @Controller('vendor')",
+          "item": [
+            {
+              "name": "POST /vendor/courier/status",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{vendorBase}}/vendor/courier/status",
+                  "host": [
+                    "{{vendorBase}}"
+                  ],
+                  "path": [
+                    "vendor",
+                    "courier",
+                    "status"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: courier-status.submit (source order preserved).\nGuard: EdgeCredentialGuard.\nSuccess status: 200."
+              }
+            }
+          ]
+        },
+        {
+          "name": "intake",
+          "description": "apps/vendor-edge/src/intake.controller.ts - @Controller('vendor')",
+          "item": [
+            {
+              "name": "POST /vendor/intake",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{vendorBase}}/vendor/intake",
+                  "host": [
+                    "{{vendorBase}}"
+                  ],
+                  "path": [
+                    "vendor",
+                    "intake"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: intake.submit (source order preserved).\nGuard: EdgeCredentialGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            }
+          ]
+        },
+        {
+          "name": "pull",
+          "description": "apps/vendor-edge/src/pull.controller.ts - @Controller('vendor')",
+          "item": [
+            {
+              "name": "GET /vendor/batch/:btchId/package/:groupKey",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{vendorBase}}/vendor/batch/:btchId/package/:groupKey",
+                  "host": [
+                    "{{vendorBase}}"
+                  ],
+                  "path": [
+                    "vendor",
+                    "batch",
+                    ":btchId",
+                    "package",
+                    ":groupKey"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    },
+                    {
+                      "key": "groupKey",
+                      "value": "",
+                      "description": "Path parameter :groupKey"
+                    }
+                  ]
+                },
+                "description": "Handler: pull.pull (source order preserved).\nGuard: EdgeCredentialGuard.\nPath parameters: btchId, groupKey."
+              }
+            },
+            {
+              "name": "GET /vendor/batch/:btchId/collateral/:collateralKey",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{vendorBase}}/vendor/batch/:btchId/collateral/:collateralKey",
+                  "host": [
+                    "{{vendorBase}}"
+                  ],
+                  "path": [
+                    "vendor",
+                    "batch",
+                    ":btchId",
+                    "collateral",
+                    ":collateralKey"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    },
+                    {
+                      "key": "collateralKey",
+                      "value": "",
+                      "description": "Path parameter :collateralKey"
+                    }
+                  ]
+                },
+                "description": "Handler: pull.collateral (source order preserved).\nGuard: EdgeCredentialGuard.\nPath parameters: btchId, collateralKey."
+              }
+            }
+          ]
+        },
+        {
+          "name": "return",
+          "description": "apps/vendor-edge/src/return.controller.ts - @Controller('vendor')",
+          "item": [
+            {
+              "name": "POST /vendor/return",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{vendorBase}}/vendor/return",
+                  "host": [
+                    "{{vendorBase}}"
+                  ],
+                  "path": [
+                    "vendor",
+                    "return"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: return.submit (source order preserved).\nGuard: EdgeCredentialGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            }
+          ]
+        },
+        {
+          "name": "status-file",
+          "description": "apps/vendor-edge/src/status-file.controller.ts - @Controller('vendor')",
+          "item": [
+            {
+              "name": "POST /vendor/courier/status-file",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{vendorBase}}/vendor/courier/status-file",
+                  "host": [
+                    "{{vendorBase}}"
+                  ],
+                  "path": [
+                    "vendor",
+                    "courier",
+                    "status-file"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: status-file.submit (source order preserved).\nGuard: EdgeCredentialGuard.\nSuccess status: 200.\nMultipart file field(s): file."
+              }
+            }
+          ]
+        },
+        {
+          "name": "vendor-reads",
+          "description": "apps/vendor-edge/src/vendor-reads.controller.ts - @Controller('vendor')",
+          "item": [
+            {
+              "name": "GET /vendor/work-queue",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{vendorBase}}/vendor/work-queue",
+                  "host": [
+                    "{{vendorBase}}"
+                  ],
+                  "path": [
+                    "vendor",
+                    "work-queue"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: vendor-reads.workQueue (source order preserved).\nGuard: EdgeCredentialGuard."
+              }
+            },
+            {
+              "name": "GET /vendor/history",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{vendorBase}}/vendor/history",
+                  "host": [
+                    "{{vendorBase}}"
+                  ],
+                  "path": [
+                    "vendor",
+                    "history"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: vendor-reads.history (source order preserved).\nGuard: EdgeCredentialGuard."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Vendor auth edge",
+      "description": "Vendor operator login and provisioning.",
+      "item": [
+        {
+          "name": "enroll",
+          "description": "apps/vendor-auth-edge/src/enroll.controller.ts - @Controller('')",
+          "item": [
+            {
+              "name": "POST /enroll",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"principalId\": \"\",\n  \"accountLabel\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{vendorAuthBase}}/enroll",
+                  "host": [
+                    "{{vendorAuthBase}}"
+                  ],
+                  "path": [
+                    "enroll"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: enroll.enroll (source order preserved).\nGuard: VendorAuthEdgeAdminGuard.\nSuccess status: 200.\nBody type: EnrollBody."
+              }
+            }
+          ]
+        },
+        {
+          "name": "password",
+          "description": "apps/vendor-auth-edge/src/password.controller.ts - @Controller('password')",
+          "item": [
+            {
+              "name": "POST /password/change",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"currentPassword\": \"\",\n  \"newPassword\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{vendorAuthBase}}/password/change",
+                  "host": [
+                    "{{vendorAuthBase}}"
+                  ],
+                  "path": [
+                    "password",
+                    "change"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: password.change (source order preserved).\nNo guard, but the handler reads the Authorization header itself, so a bearer token is required.\nSuccess status: 204.\nBody type: ChangePasswordBody.\nOptional fields (send only when meaningful): currentPassword, newPassword."
+              }
+            },
+            {
+              "name": "POST /password/admin-reset",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"operatorId\": \"\",\n  \"newPassword\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{vendorAuthBase}}/password/admin-reset",
+                  "host": [
+                    "{{vendorAuthBase}}"
+                  ],
+                  "path": [
+                    "password",
+                    "admin-reset"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: password.adminReset (source order preserved).\nGuard: VendorAuthEdgeAdminGuard.\nSuccess status: 204.\nBody type: AdminResetPasswordBody.\nOptional fields (send only when meaningful): operatorId, newPassword."
+              }
+            }
+          ]
+        },
+        {
+          "name": "probe",
+          "description": "apps/vendor-auth-edge/src/probe.controller.ts - @Controller('probe')",
+          "item": [
+            {
+              "name": "GET /probe",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{vendorAuthBase}}/probe",
+                  "host": [
+                    "{{vendorAuthBase}}"
+                  ],
+                  "path": [
+                    "probe"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: probe.probe (source order preserved).\nUnauthenticated."
+              }
+            }
+          ]
+        },
+        {
+          "name": "provision",
+          "description": "apps/vendor-auth-edge/src/provision.controller.ts - @Controller('')",
+          "item": [
+            {
+              "name": "POST /provision",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"vndrId\": \"\",\n  \"username\": \"\",\n  \"password\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{vendorAuthBase}}/provision",
+                  "host": [
+                    "{{vendorAuthBase}}"
+                  ],
+                  "path": [
+                    "provision"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: provision.provision (source order preserved).\nGuard: VendorAuthEdgeAdminGuard.\nSuccess status: 200.\nBody type: ProvisionBody."
+              }
+            }
+          ]
+        },
+        {
+          "name": "session",
+          "description": "apps/vendor-auth-edge/src/session.controller.ts - @Controller('session')",
+          "item": [
+            {
+              "name": "POST /session/login",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"handle\": \"\",\n  \"password\": \"\",\n  \"totp\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{vendorAuthBase}}/session/login",
+                  "host": [
+                    "{{vendorAuthBase}}"
+                  ],
+                  "path": [
+                    "session",
+                    "login"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: session.login (source order preserved).\nUnauthenticated.\nSuccess status: 200.\nOptional fields (send only when meaningful): handle, password, totp."
+              }
+            },
+            {
+              "name": "POST /session/refresh",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{vendorAuthBase}}/session/refresh",
+                  "host": [
+                    "{{vendorAuthBase}}"
+                  ],
+                  "path": [
+                    "session",
+                    "refresh"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: session.refresh (source order preserved).\nNo guard, but the handler reads the Authorization header itself, so a bearer token is required.\nAlso reads the refresh cookie.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "POST /session/logout",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{vendorAuthBase}}/session/logout",
+                  "host": [
+                    "{{vendorAuthBase}}"
+                  ],
+                  "path": [
+                    "session",
+                    "logout"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: session.logout (source order preserved).\nNo guard and no bearer: this authenticates against the refresh cookie that POST /session/login sets. Send it with cookies enabled.\nSuccess status: 204."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Tenant edge",
+      "description": "Tenant reads and reports. No dev port is assigned anywhere in the repo; it falls back to PORT ?? 3000, which collides with auth-edge. Set this variable before use.",
+      "item": [
+        {
+          "name": "probe",
+          "description": "apps/tenant-edge/src/probe.controller.ts - @Controller('probe')",
+          "item": [
+            {
+              "name": "GET /probe",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{tenantBase}}/probe",
+                  "host": [
+                    "{{tenantBase}}"
+                  ],
+                  "path": [
+                    "probe"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: probe.probe (source order preserved).\nGuard: TenantEdgeGuard."
+              }
+            }
+          ]
+        },
+        {
+          "name": "read",
+          "description": "apps/tenant-edge/src/read.controller.ts - @Controller('tenant')",
+          "item": [
+            {
+              "name": "GET /tenant/assignments",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{tenantBase}}/tenant/assignments",
+                  "host": [
+                    "{{tenantBase}}"
+                  ],
+                  "path": [
+                    "tenant",
+                    "assignments"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: read.assignments (source order preserved).\nGuard: TenantEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /tenant/assignments/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{tenantBase}}/tenant/assignments/:id",
+                  "host": [
+                    "{{tenantBase}}"
+                  ],
+                  "path": [
+                    "tenant",
+                    "assignments",
+                    ":id"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: read.assignmentById (source order preserved).\nGuard: TenantEdgeGuard.\nSuccess status: 200.\nPath parameters: id."
+              }
+            },
+            {
+              "name": "GET /tenant/shipments",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{tenantBase}}/tenant/shipments",
+                  "host": [
+                    "{{tenantBase}}"
+                  ],
+                  "path": [
+                    "tenant",
+                    "shipments"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: read.shipments (source order preserved).\nGuard: TenantEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /tenant/shipments/:id/status",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{tenantBase}}/tenant/shipments/:id/status",
+                  "host": [
+                    "{{tenantBase}}"
+                  ],
+                  "path": [
+                    "tenant",
+                    "shipments",
+                    ":id",
+                    "status"
+                  ],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "",
+                      "description": "Path parameter :id"
+                    }
+                  ]
+                },
+                "description": "Handler: read.shipmentStatus (source order preserved).\nGuard: TenantEdgeGuard.\nSuccess status: 200.\nPath parameters: id."
+              }
+            }
+          ]
+        },
+        {
+          "name": "reports",
+          "description": "apps/tenant-edge/src/reports.controller.ts - @Controller('tenant/reports')",
+          "item": [
+            {
+              "name": "GET /tenant/reports/tiles",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{tenantBase}}/tenant/reports/tiles",
+                  "host": [
+                    "{{tenantBase}}"
+                  ],
+                  "path": [
+                    "tenant",
+                    "reports",
+                    "tiles"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: reports.tiles (source order preserved).\nGuard: TenantEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
+              "name": "GET /tenant/reports/tiles/:tile",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{tenantBase}}/tenant/reports/tiles/:tile",
+                  "host": [
+                    "{{tenantBase}}"
+                  ],
+                  "path": [
+                    "tenant",
+                    "reports",
+                    "tiles",
+                    ":tile"
+                  ],
+                  "variable": [
+                    {
+                      "key": "tile",
+                      "value": "",
+                      "description": "Path parameter :tile"
+                    }
+                  ]
+                },
+                "description": "Handler: reports.tileDrilldown (source order preserved).\nGuard: TenantEdgeGuard.\nSuccess status: 200.\nPath parameters: tile."
+              }
+            },
+            {
+              "name": "GET /tenant/reports/:name",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{tenantBase}}/tenant/reports/:name",
+                  "host": [
+                    "{{tenantBase}}"
+                  ],
+                  "path": [
+                    "tenant",
+                    "reports",
+                    ":name"
+                  ],
+                  "variable": [
+                    {
+                      "key": "name",
+                      "value": "",
+                      "description": "Path parameter :name"
+                    }
+                  ]
+                },
+                "description": "Handler: reports.report (source order preserved).\nGuard: TenantEdgeGuard.\nSuccess status: 200.\nPath parameters: name."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
