@@ -54,7 +54,7 @@ export const IDENTITY_FACT_SCHEMAS: Record<string, object> = {
       status: { type: 'string' },
       isDefault: { type: 'boolean' },
     },
-    required: ['aggrId', 'status'],
+    required: ['aggrId', 'tnntId', 'status'],
   },
   'fct.identity.enrollment.v1': {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
