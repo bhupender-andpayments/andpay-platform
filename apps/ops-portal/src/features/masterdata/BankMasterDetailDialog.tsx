@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import {
   editBankMaster,
-  uploadBankMasterLogo,
-  getBankMasterLogoVersions,
-  fetchBankMasterLogoDerivative,
+  uploadAggregatorLogo,
+  getAggregatorLogoVersions,
+  fetchAggregatorLogoDerivative,
   type BankMasterEditBody,
   type BankMasterRow,
   type BankLogoVersionRow,
@@ -11,7 +11,7 @@ import {
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { useAuth } from '../../auth/AuthContext.js'
 import { useToast } from '../../ui/Toast.js'
-import { Button, ErrorNote, Field, Input, Select, CodeChip } from '../../ui/primitives.js'
+import { Button, ErrorNote, Field, Input, Select, CodeChip, StatusPill } from '../../ui/primitives.js'
 import {
   Dialog,
   DialogContent,
@@ -36,12 +36,14 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   })
 }
 
-// The bank master detail dialog (Task 8, 2026-08-19): the pencil on the Bank
-// Masters tab now opens THIS, not the old BankMasterEditDialog it replaces.
-// One dialog, three sections: Details (the whole old edit form, plus the
-// parent picker Task 7's hierarchy needs), Logo (the D.2 master/derivative
-// pair upload and its version history), and Children (only on a top-level
-// bank, listing its own children and an Add-child shortcut).
+// The tenant (bank master) detail dialog (Task 8, 2026-08-20 rework): the
+// earlier parent-picker is gone along with the sibling-tenant hierarchy it
+// edited. Three sections remain: Details (the tenant's own D.1 fields, no
+// parent), Logo (the D.2 master/derivative pair upload and its version
+// history, now targeting this tenant's DEFAULT aggregator rather than the
+// tenant itself: the logo asset lives on the aggregator that ingest actually
+// resolves files against), and Aggregators (the tenant's own aggregator list,
+// default first, with an Add-aggregator shortcut).
 //
 // THE BANK REFERENCE CODE IS NOT EDITABLE HERE, same as before: it is the
 // immutable ingest resolver key and the edit route never accepts it.
@@ -50,27 +52,21 @@ const STATUSES = ['ACTIVE', 'SUSPENDED'] as const
 
 export function BankMasterDetailDialog({
   bank,
-  allRows,
   open,
   onOpenChange,
   onSaved,
-  onAddChild,
+  onAddAggregator,
 }: {
   bank: BankMasterRow
-  allRows: BankMasterRow[]
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved: () => void
-  onAddChild: (parent: BankMasterRow) => void
+  onAddAggregator: (tenant: BankMasterRow) => void
 }) {
   const { client } = useAuth()
   const { toast } = useToast()
 
   // -- Details ---------------------------------------------------------- //
-
-  const currentParentCode = allRows.find((r) => r.tnntId === bank.parentTnntId)?.bankReferenceCode ?? ''
-  const hasChildren = allRows.some((r) => r.parentTnntId === bank.tnntId)
-  const parentOptions = allRows.filter((r) => r.parentTnntId === null && r.tnntId !== bank.tnntId)
 
   const { f, set, setValue, filled, saving, error, save } = useCreateDialog(open, () => ({
     displayName: bank.displayName,
@@ -84,7 +80,6 @@ export function BankMasterDetailDialog({
     mobile: bank.mobile ?? '',
     email: bank.email ?? '',
     status: bank.status,
-    parentBankReferenceCode: currentParentCode,
   }))
 
   const incomplete = !filled('displayName')
@@ -104,7 +99,6 @@ export function BankMasterDetailDialog({
     ['mobile', bank.mobile ?? ''],
     ['email', bank.email ?? ''],
     ['status', bank.status],
-    ['parentBankReferenceCode', currentParentCode],
   ]
 
   async function submit(): Promise<void> {
@@ -126,7 +120,9 @@ export function BankMasterDetailDialog({
     }, 'Failed to save this bank master.')
   }
 
-  // -- Logo --------------------------------------------------------------- //
+  // -- Logo (the tenant's DEFAULT aggregator) ------------------------------ //
+
+  const defaultAggregator = bank.aggregators.find((a) => a.isDefault) ?? null
 
   const [derivativeUrl, setDerivativeUrl] = useState<string | null>(null)
   const [versions, setVersions] = useState<BankLogoVersionRow[] | null>(null)
@@ -136,9 +132,10 @@ export function BankMasterDetailDialog({
   const [logoError, setLogoError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!open) return
+    if (!open || defaultAggregator === null) return
+    const aggrId = defaultAggregator.aggrId
     let cancelled = false
-    fetchBankMasterLogoDerivative(bank.tnntId)
+    fetchAggregatorLogoDerivative(aggrId)
       .then((blob) => {
         if (blob === null || cancelled) return
         // The portal CSP is img-src 'self' data:, which blocks a blob: URL, so
@@ -148,21 +145,21 @@ export function BankMasterDetailDialog({
         })
       })
       .catch(() => setLogoError('Failed to load the current logo.'))
-    getBankMasterLogoVersions(client, bank.tnntId)
+    getAggregatorLogoVersions(client, aggrId)
       .then(setVersions)
       .catch(() => setVersions([]))
     return () => {
       cancelled = true
     }
-  }, [open, bank.tnntId, client])
+  }, [open, defaultAggregator, client])
 
   async function uploadLogo(): Promise<void> {
-    if (masterFile === null || derivativeFile === null) return
+    if (masterFile === null || derivativeFile === null || defaultAggregator === null) return
     setUploading(true)
     setLogoError(null)
     try {
-      await uploadBankMasterLogo(client, bank.tnntId, masterFile, derivativeFile, newIdempotencyKey())
-      toast(`${bank.displayName} logo updated`)
+      await uploadAggregatorLogo(client, defaultAggregator.aggrId, masterFile, derivativeFile, newIdempotencyKey())
+      toast(`${defaultAggregator.displayName} logo updated`)
       onSaved()
       onOpenChange(false)
     } catch (err) {
@@ -172,10 +169,9 @@ export function BankMasterDetailDialog({
     }
   }
 
-  // -- Children ------------------------------------------------------------ //
+  // -- Aggregators ---------------------------------------------------------- //
 
-  const isTopLevel = bank.parentTnntId === null
-  const children = allRows.filter((r) => r.parentTnntId === bank.tnntId)
+  const aggregators = [...bank.aggregators].sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -213,29 +209,6 @@ export function BankMasterDetailDialog({
                   </Select>
                 </Field>
               </div>
-              <Field
-                label="Parent bank"
-                htmlFor="bm-detail-parent"
-                hint={
-                  hasChildren
-                    ? 'This bank has child banks and cannot itself become a child.'
-                    : 'One level only. Clearing makes this a top-level bank.'
-                }
-              >
-                <Select
-                  id="bm-detail-parent"
-                  value={f('parentBankReferenceCode')}
-                  onChange={(e) => setValue('parentBankReferenceCode', e.target.value)}
-                  disabled={hasChildren}
-                >
-                  <option value="">None (top-level bank)</option>
-                  {parentOptions.map((p) => (
-                    <option key={p.tnntId} value={p.bankReferenceCode}>
-                      {p.displayName} ({p.bankReferenceCode})
-                    </option>
-                  ))}
-                </Select>
-              </Field>
             </div>
 
             <div className="space-y-3">
@@ -284,89 +257,96 @@ export function BankMasterDetailDialog({
 
           <div className="space-y-3 border-t pt-4">
             <h3 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-foreground">Logo</h3>
-            {logoError !== null && <ErrorNote>{logoError}</ErrorNote>}
-            {derivativeUrl !== null ? (
-              <img src={derivativeUrl} alt={`${bank.displayName} logo`} className="max-h-16" />
+            {defaultAggregator === null ? (
+              <p className="text-sm text-muted-foreground">No default aggregator.</p>
             ) : (
-              <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
+              <>
+                {logoError !== null && <ErrorNote>{logoError}</ErrorNote>}
+                {derivativeUrl !== null ? (
+                  <img src={derivativeUrl} alt={`${defaultAggregator.displayName} logo`} className="max-h-16" />
+                ) : (
+                  <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Logo master (.ai)" htmlFor="bm-logo-master">
+                    <Input
+                      id="bm-logo-master"
+                      type="file"
+                      accept=".ai,application/postscript,application/pdf"
+                      onChange={(e) => setMasterFile(e.target.files?.[0] ?? null)}
+                    />
+                  </Field>
+                  <Field label="Render derivative (PNG or SVG)" htmlFor="bm-logo-derivative">
+                    <Input
+                      id="bm-logo-derivative"
+                      type="file"
+                      accept="image/png,image/svg+xml"
+                      onChange={(e) => setDerivativeFile(e.target.files?.[0] ?? null)}
+                    />
+                  </Field>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void uploadLogo()}
+                  disabled={masterFile === null || derivativeFile === null}
+                  loading={uploading}
+                >
+                  Upload logo
+                </Button>
+                <div className="space-y-1">
+                  {versions === null || versions.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No versions yet.</p>
+                  ) : (
+                    <ul className="space-y-1 text-sm text-muted-foreground">
+                      {/*
+                        NO client-side reverse: services/fulfillment/src/storage/asset-store.ts
+                        listVersions's own port contract is "All versions ever put()
+                        for key, newest first", and getAggregatorLogoVersions maps
+                        that straight through with no re-ordering. Wire order IS
+                        display order here.
+                      */}
+                      {versions.map((v) => (
+                        // AssetStore version tokens are already "v1", "v2", and
+                        // so on: no extra "v" prefix here, or this reads "vv1".
+                        <li key={v.version}>
+                          {v.version} {v.filename}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </>
             )}
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Logo master (.ai)" htmlFor="bm-logo-master">
-                <Input
-                  id="bm-logo-master"
-                  type="file"
-                  accept=".ai,application/postscript,application/pdf"
-                  onChange={(e) => setMasterFile(e.target.files?.[0] ?? null)}
-                />
-              </Field>
-              <Field label="Render derivative (PNG or SVG)" htmlFor="bm-logo-derivative">
-                <Input
-                  id="bm-logo-derivative"
-                  type="file"
-                  accept="image/png,image/svg+xml"
-                  onChange={(e) => setDerivativeFile(e.target.files?.[0] ?? null)}
-                />
-              </Field>
-            </div>
+          </div>
+
+          <div className="space-y-3 border-t pt-4">
+            <h3 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-foreground">Aggregators</h3>
+            {aggregators.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No aggregators.</p>
+            ) : (
+              <ul className="space-y-1 text-sm">
+                {aggregators.map((a) => (
+                  <li key={a.aggrId} className="flex items-center gap-2">
+                    <CodeChip>{a.aggregatorCode}</CodeChip>
+                    <span>{a.displayName}</span>
+                    <StatusPill value={a.status} />
+                    {a.isDefault && <CodeChip>default</CodeChip>}
+                  </li>
+                ))}
+              </ul>
+            )}
             <Button
               type="button"
               variant="secondary"
-              onClick={() => void uploadLogo()}
-              disabled={masterFile === null || derivativeFile === null}
-              loading={uploading}
+              onClick={() => {
+                onAddAggregator(bank)
+                onOpenChange(false)
+              }}
             >
-              Upload logo
+              Add aggregator
             </Button>
-            <div className="space-y-1">
-              {versions === null || versions.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No versions yet.</p>
-              ) : (
-                <ul className="space-y-1 text-sm text-muted-foreground">
-                  {/*
-                    NO client-side reverse: services/fulfillment/src/storage/asset-store.ts
-                    listVersions's own port contract is "All versions ever put()
-                    for key, newest first", and getBankMasterLogoVersions maps
-                    that straight through with no re-ordering. Wire order IS
-                    display order here.
-                  */}
-                  {versions.map((v) => (
-                    // AssetStore version tokens are already "v1", "v2", and so
-                    // on: no extra "v" prefix here, or this reads "vv1".
-                    <li key={v.version}>
-                      {v.version} {v.filename}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
           </div>
-
-          {isTopLevel && (
-            <div className="space-y-3 border-t pt-4">
-              <h3 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-foreground">Children</h3>
-              {children.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No child banks.</p>
-              ) : (
-                <ul className="space-y-1 text-sm">
-                  {children.map((c) => (
-                    <li key={c.tnntId}>
-                      {c.displayName} ({c.bankReferenceCode}) {c.status}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => {
-                  onAddChild(bank)
-                  onOpenChange(false)
-                }}
-              >
-                Add child bank
-              </Button>
-            </div>
-          )}
         </div>
 
         <DialogFooter>

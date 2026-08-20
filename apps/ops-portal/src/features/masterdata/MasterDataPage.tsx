@@ -5,6 +5,8 @@ import { VendorRegistryPage } from './VendorRegistryPage.js'
 import { CourierMasterPage } from './CourierMasterPage.js'
 import { BankMasterCreateDialog } from './BankMasterCreateDialog.js'
 import { BankMasterDetailDialog } from './BankMasterDetailDialog.js'
+import { AggregatorCreateDialog } from './AggregatorCreateDialog.js'
+import { AggregatorDetailDialog } from './AggregatorDetailDialog.js'
 import { DamageReasonCreateDialog } from './DamageReasonCreateDialog.js'
 import { DamageReasonEditDialog } from './DamageReasonEditDialog.js'
 import { BatchingConfigDialog } from './BatchingConfigDialog.js'
@@ -14,6 +16,7 @@ import {
   getDamageReasons,
   getBatchingConfig,
   type BankMasterRow,
+  type AggregatorRow,
   type DamageReasonRow,
   type BatchingConfigRow,
 } from '../../api/endpoints.js'
@@ -79,34 +82,37 @@ export function MasterDataPage() {
 
 // -- Bank masters (GET /ops/bank-masters, identity.tenant list) ------- //
 //
-// GROUPED HIERARCHY (Task 7, 2026-08-19): a bank master can carry a
-// parentTnntId (Task 6's identity write, spec 13). The view renders each
-// top-level bank followed by its children, collapsed by default behind an
-// expander, rather than the old flat list. "Parent" here means any row not
-// classified as a child below, which INCLUDES a row whose parentTnntId points
-// at nothing in the current list (never expected in practice, but falling
-// back to top-level beats a row silently vanishing from the table).
+// TENANT-AND-AGGREGATOR TREE (Task 8, 2026-08-20): the earlier grouped
+// hierarchy (a bank master carrying a sibling `parentTnntId`, Task 7) is gone.
+// A bank master (tenant) now embeds its own `aggregators` array directly
+// (Task 6/7's identity write, spec 13); the tree renders each tenant followed
+// by its aggregators, default pinned first, collapsed by default behind an
+// expander, rather than a flat list or a tenant-to-tenant nesting.
 
-function isChildRow(r: BankMasterRow, rows: readonly BankMasterRow[]): boolean {
-  return r.parentTnntId !== null && rows.some((p) => p.tnntId === r.parentTnntId)
+type TreeRow = { kind: 'tenant'; t: BankMasterRow } | { kind: 'aggregator'; t: BankMasterRow; a: AggregatorRow }
+
+function matchesTenantQuery(t: BankMasterRow, q: string): boolean {
+  return q === '' || t.displayName.toLowerCase().includes(q) || t.bankReferenceCode.toLowerCase().includes(q)
 }
 
-function childrenOf(p: BankMasterRow, rows: readonly BankMasterRow[]): BankMasterRow[] {
-  return rows.filter((r) => r.parentTnntId === p.tnntId)
+function matchesAggregatorQuery(a: AggregatorRow, q: string): boolean {
+  return q === '' || a.displayName.toLowerCase().includes(q) || a.aggregatorCode.toLowerCase().includes(q)
 }
 
-function matchesQuery(r: BankMasterRow, q: string): boolean {
-  return q === '' || r.displayName.toLowerCase().includes(q) || r.bankReferenceCode.toLowerCase().includes(q)
+/** Default first, member order preserved otherwise. */
+function sortedAggregators(t: BankMasterRow): AggregatorRow[] {
+  return [...t.aggregators].sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
 }
 
 /**
- * The ONE place that decides whether a parent's children are showing: either
- * the operator clicked its expander (`expanded`), or the current search
- * matches one of its children, which auto-surfaces them with no click at all.
- * `displayRows` and the column renderer both call this, so the chevron
- * direction and its "Show/Hide child banks of X" label can never disagree
- * with what the table actually renders beneath that row (the bug this
- * function replaces: each side computed its own half of the same condition).
+ * The ONE place that decides whether a tenant's aggregators are showing:
+ * either the operator clicked its expander (`expanded`), or the current
+ * search matches one of its aggregators, which auto-surfaces them with no
+ * click at all. `displayRows` and the column renderer both call this, so the
+ * chevron direction and its "Show/Hide aggregators of X" label can never
+ * disagree with what the table actually renders beneath that row (the bug
+ * this function replaces: each side computed its own half of the same
+ * condition).
  */
 function computeOpenParents(
   rows: readonly BankMasterRow[],
@@ -115,54 +121,53 @@ function computeOpenParents(
 ): Set<string> {
   const q = query.trim().toLowerCase()
   const open = new Set<string>()
-  for (const r of rows) {
-    if (isChildRow(r, rows)) continue
-    if (expanded.has(r.tnntId)) {
-      open.add(r.tnntId)
+  for (const t of rows) {
+    if (expanded.has(t.tnntId)) {
+      open.add(t.tnntId)
       continue
     }
-    if (q !== '' && childrenOf(r, rows).some((k) => matchesQuery(k, q))) open.add(r.tnntId)
+    if (q !== '' && t.aggregators.some((a) => matchesAggregatorQuery(a, q))) open.add(t.tnntId)
   }
   return open
 }
 
 function bankMasterColumns(
-  onEdit: (row: BankMasterRow) => void,
-  onAddChild: (row: BankMasterRow) => void,
-  rows: readonly BankMasterRow[],
+  onEditTenant: (row: BankMasterRow) => void,
+  onAddAggregator: (row: BankMasterRow) => void,
+  onEditAggregator: (row: AggregatorRow) => void,
   openParents: Set<string>,
   toggle: (tnntId: string) => void,
-): ReadonlyArray<DataTableColumn<BankMasterRow>> {
+): ReadonlyArray<DataTableColumn<TreeRow>> {
   return [
     {
       key: 'bankReferenceCode',
       header: 'Bank ref code',
-      cell: (r) => {
-        if (isChildRow(r, rows)) {
+      cell: (row) => {
+        if (row.kind === 'aggregator') {
           return (
             <span className="flex items-center gap-2 pl-6">
-              <CodeChip>{r.bankReferenceCode}</CodeChip>
-              <CodeChip>child</CodeChip>
+              <CodeChip>{row.a.aggregatorCode}</CodeChip>
+              <CodeChip>{row.a.isDefault ? 'default' : 'child'}</CodeChip>
             </span>
           )
         }
-        const kids = childrenOf(r, rows)
-        if (kids.length === 0) return <CodeChip>{r.bankReferenceCode}</CodeChip>
-        const isOpen = openParents.has(r.tnntId)
+        const t = row.t
+        if (t.aggregators.length === 0) return <CodeChip>{t.bankReferenceCode}</CodeChip>
+        const isOpen = openParents.has(t.tnntId)
         return (
           <span className="flex items-center gap-2">
             <button
               type="button"
-              aria-label={`${isOpen ? 'Hide' : 'Show'} child banks of ${r.displayName}`}
+              aria-label={`${isOpen ? 'Hide' : 'Show'} aggregators of ${t.displayName}`}
               className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
               onClick={(e) => {
                 e.stopPropagation()
-                toggle(r.tnntId)
+                toggle(t.tnntId)
               }}
             >
               <IconChevron width={14} height={14} className={isOpen ? 'rotate-90' : ''} aria-hidden="true" />
             </button>
-            <CodeChip>{r.bankReferenceCode}</CodeChip>
+            <CodeChip>{t.bankReferenceCode}</CodeChip>
           </span>
         )
       },
@@ -170,55 +175,102 @@ function bankMasterColumns(
     {
       key: 'displayName',
       header: 'Display name',
-      cell: (r) => {
-        const kids = childrenOf(r, rows)
+      cell: (row) => {
+        if (row.kind === 'aggregator') return <span className="font-medium text-foreground">{row.a.displayName}</span>
+        const t = row.t
         return (
           <span className="flex items-center gap-2">
-            <span className="font-medium text-foreground">{r.displayName}</span>
-            {kids.length > 0 && (
+            <span className="font-medium text-foreground">{t.displayName}</span>
+            {t.aggregators.length > 0 && (
               <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                {kids.length} child{kids.length === 1 ? '' : 'ren'}
+                {t.aggregators.length} aggregator{t.aggregators.length === 1 ? '' : 's'}
               </span>
             )}
           </span>
         )
       },
     },
-    { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
-    { key: 'city', header: 'City', cell: (r) => r.city ?? <span className="text-muted-foreground">-</span> },
-    { key: 'country', header: 'Country', cell: (r) => r.country ?? <span className="text-muted-foreground">-</span> },
-    { key: 'mobile', header: 'Mobile', cell: (r) => r.mobile ?? <span className="text-muted-foreground">-</span> },
-    { key: 'email', header: 'Email', cell: (r) => r.email ?? <span className="text-muted-foreground">-</span> },
-    { key: 'tnntId', header: 'Tenant ID', cell: (r) => <CodeChip>{shortId(r.tnntId)}</CodeChip> },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (row) => <StatusPill value={row.kind === 'tenant' ? row.t.status : row.a.status} />,
+    },
+    {
+      key: 'city',
+      header: 'City',
+      cell: (row) => {
+        const city = row.kind === 'tenant' ? row.t.city : row.a.city
+        return city ?? <span className="text-muted-foreground">-</span>
+      },
+    },
+    {
+      key: 'country',
+      header: 'Country',
+      cell: (row) => {
+        const country = row.kind === 'tenant' ? row.t.country : row.a.country
+        return country ?? <span className="text-muted-foreground">-</span>
+      },
+    },
+    {
+      key: 'mobile',
+      header: 'Mobile',
+      cell: (row) => {
+        const mobile = row.kind === 'tenant' ? row.t.mobile : row.a.mobile
+        return mobile ?? <span className="text-muted-foreground">-</span>
+      },
+    },
+    {
+      key: 'email',
+      header: 'Email',
+      cell: (row) => {
+        const email = row.kind === 'tenant' ? row.t.email : row.a.email
+        return email ?? <span className="text-muted-foreground">-</span>
+      },
+    },
+    {
+      key: 'id',
+      header: 'ID',
+      cell: (row) => <CodeChip>{shortId(row.kind === 'tenant' ? row.t.tnntId : row.a.aggrId)}</CodeChip>,
+    },
     {
       key: 'logo',
       header: 'Logo',
-      cell: (r) => (r.hasLogo ? <StatusPill value="SET" /> : <span className="text-muted-foreground">none</span>),
+      cell: (row) =>
+        row.kind === 'aggregator' ? (
+          row.a.hasLogo ? (
+            <StatusPill value="SET" />
+          ) : (
+            <span className="text-muted-foreground">none</span>
+          )
+        ) : (
+          <span className="text-muted-foreground">-</span>
+        ),
     },
     {
       key: 'actions',
       header: '',
-      cell: (r) => (
+      cell: (row) => (
         <span className="flex items-center justify-end gap-2">
-          {!isChildRow(r, rows) && (
+          {row.kind === 'tenant' && (
             <button
               type="button"
               className="whitespace-nowrap rounded px-1 text-xs font-medium text-primary transition-colors hover:underline"
               onClick={(e) => {
                 e.stopPropagation()
-                onAddChild(r)
+                onAddAggregator(row.t)
               }}
             >
-              Add child
+              Add aggregator
             </button>
           )}
           <button
             type="button"
-            aria-label={`Edit bank master ${r.displayName}`}
+            aria-label={row.kind === 'tenant' ? `Edit bank master ${row.t.displayName}` : `Edit aggregator ${row.a.displayName}`}
             className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
             onClick={(e) => {
               e.stopPropagation()
-              onEdit(r)
+              if (row.kind === 'tenant') onEditTenant(row.t)
+              else onEditAggregator(row.a)
             }}
           >
             <Pencil className="size-3.5" aria-hidden="true" />
@@ -236,7 +288,8 @@ function BankMastersView() {
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<BankMasterRow | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [addingChildOf, setAddingChildOf] = useState<BankMasterRow | null>(null)
+  const [addingAggregatorFor, setAddingAggregatorFor] = useState<BankMasterRow | null>(null)
+  const [editingAggregator, setEditingAggregator] = useState<AggregatorRow | null>(null)
   const [query, setQuery] = useState('')
 
   const toggle = useCallback((tnntId: string) => {
@@ -266,43 +319,36 @@ function BankMastersView() {
     load()
   }, [load])
 
-  // `rows` is TYPED BankMasterRow[], but a failed read arrives here as an
-  // error envelope, not a list (see the comment in `load` above), so every
-  // grouping helper below must guard against a non-array before touching it.
-  const safeRows = Array.isArray(rows) ? rows : []
-
-  // The single source of truth for "is this parent's child list showing",
-  // shared with the column renderer below (via bankMasterColumns) so the
-  // chevron direction and its Show/Hide label can never disagree with what
-  // this memo actually puts in the table: both read the same set instead of
-  // each re-deriving their own half of "expanded OR search-matched-a-child".
+  // The single source of truth for "is this tenant's aggregator list
+  // showing", shared with the column renderer below (via bankMasterColumns)
+  // so the chevron direction and its Show/Hide label can never disagree with
+  // what this memo actually puts in the table: both read the same set instead
+  // of each re-deriving their own half of "expanded OR search-matched-an-
+  // aggregator".
   const openParents = useMemo(
     () => (Array.isArray(rows) ? computeOpenParents(rows, expanded, query) : new Set<string>()),
     [rows, expanded, query],
   )
 
-  // Grouped display order: each top-level bank, then (when open, per
-  // `openParents` above) its children directly beneath it. A child whose
-  // parent id points at a row not in the list (never expected) falls back to
-  // top-level rather than vanishing; see isChildRow above. When the read
-  // failed, `rows` itself (the error envelope) is what DataTable must see, so
-  // this returns it unchanged rather than the always-empty `safeRows`.
-  const displayRows = useMemo(() => {
+  // Tree display order: each tenant, then (when open, per `openParents`
+  // above) its aggregators directly beneath it, default pinned first. When
+  // the read failed, `rows` itself (the error envelope) is what DataTable
+  // must see, so this returns it unchanged rather than an always-empty list.
+  const displayRows = useMemo((): TreeRow[] | unknown => {
     if (!Array.isArray(rows)) return rows
     const q = query.trim().toLowerCase()
-    const parents = rows.filter((r) => !isChildRow(r, rows))
-    const out: BankMasterRow[] = []
-    for (const p of parents) {
-      const kids = childrenOf(p, rows)
-      const kidMatch = kids.some((k) => matchesQuery(k, q))
-      if (!matchesQuery(p, q) && !kidMatch) continue
-      out.push(p)
-      if (openParents.has(p.tnntId)) out.push(...kids.filter((k) => q === '' || matchesQuery(k, q)))
+    const out: TreeRow[] = []
+    for (const t of rows) {
+      const aggMatch = t.aggregators.some((a) => matchesAggregatorQuery(a, q))
+      if (!matchesTenantQuery(t, q) && !aggMatch) continue
+      out.push({ kind: 'tenant', t })
+      if (openParents.has(t.tnntId)) {
+        const kids = sortedAggregators(t).filter((a) => q === '' || matchesAggregatorQuery(a, q))
+        out.push(...kids.map((a): TreeRow => ({ kind: 'aggregator', t, a })))
+      }
     }
     return out
   }, [rows, query, openParents])
-
-  const parents = useMemo(() => safeRows.filter((r) => r.parentTnntId === null), [safeRows])
 
   return (
     <div className="space-y-4">
@@ -318,7 +364,7 @@ function BankMastersView() {
           }
         />
         {rows === null ? (
-          <SkeletonRows rows={5} cols={9} />
+          <SkeletonRows rows={5} cols={10} />
         ) : (
           <>
             <div className="px-4 pt-3">
@@ -339,37 +385,47 @@ function BankMastersView() {
               </div>
             </div>
             <DataTable
-              columns={bankMasterColumns(setEditing, setAddingChildOf, safeRows, openParents, toggle)}
-              rows={displayRows ?? []}
-              getRowKey={(r) => r.tnntId}
+              columns={bankMasterColumns(setEditing, setAddingAggregatorFor, setEditingAggregator, openParents, toggle)}
+              rows={(displayRows as TreeRow[]) ?? []}
+              getRowKey={(row) => (row.kind === 'tenant' ? row.t.tnntId : row.a.aggrId)}
               emptyMessage="No bank masters."
             />
           </>
         )}
       </Card>
-      <BankMasterCreateDialog
-        open={adding || addingChildOf !== null}
-        onOpenChange={(next) => {
-          setAdding(next)
-          if (!next) setAddingChildOf(null)
-        }}
-        onCreated={load}
-        parents={parents}
-        presetParent={addingChildOf ?? undefined}
-      />
+      <BankMasterCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} />
+      {addingAggregatorFor !== null && (
+        <AggregatorCreateDialog
+          tenant={addingAggregatorFor}
+          open
+          onOpenChange={(next) => {
+            if (!next) setAddingAggregatorFor(null)
+          }}
+          onCreated={load}
+        />
+      )}
       {editing !== null && (
         <BankMasterDetailDialog
           bank={editing}
-          allRows={rows ?? []}
           open
           onOpenChange={(next) => {
             if (!next) setEditing(null)
           }}
           onSaved={load}
-          onAddChild={(p) => {
+          onAddAggregator={(t) => {
             setEditing(null)
-            setAddingChildOf(p)
+            setAddingAggregatorFor(t)
           }}
+        />
+      )}
+      {editingAggregator !== null && (
+        <AggregatorDetailDialog
+          aggregator={editingAggregator}
+          open
+          onOpenChange={(next) => {
+            if (!next) setEditingAggregator(null)
+          }}
+          onSaved={load}
         />
       )}
     </div>
