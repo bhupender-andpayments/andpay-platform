@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newEnvelope } from '@andpay/envelope'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { projectMerchantFact, projectTenantFact } from '../src/projections.js'
+import { projectMerchantFact, projectTenantFact, projectAggregatorFact } from '../src/projections.js'
 
 const url =
   process.env.TMS_DATABASE_URL ??
@@ -11,7 +11,7 @@ const db = new PrismaClient({ datasourceUrl: url })
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
+    'TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, aggregator_projection, ingest_file, quarantine_row, outbox, inbox',
   )
 })
 afterAll(async () => { await db.$disconnect() })
@@ -50,5 +50,20 @@ describe('tms projections (T7, C4)', () => {
     const rows = await db.$queryRaw<{ bank_reference_code: string }[]>`SELECT bank_reference_code FROM tenant_projection WHERE id = ${toUuid(tnntId)}::uuid`
     expect(rows).toHaveLength(1)
     expect(rows[0]!.bank_reference_code).toBe('HDFC')
+  })
+
+  it('projects the aggregator fact into aggregator_projection', async () => {
+    const tnntId = fromUuid('tnnt', toUuid(newId('tnnt')))
+    const aggrId = fromUuid('aggr', toUuid(newId('aggr')))
+    const env = newEnvelope({
+      type: 'fct.identity.aggregator.v1', version: 1, subject: tnntId,
+      dedupKey: 'evt-a|identity.aggregator', traceId: 't',
+      payload: { aggrId, tnntId, aggregatorCode: 'VSC', displayName: 'VSC Bank', status: 'ACTIVE', isDefault: true },
+    })
+    await projectAggregatorFact(db, env)
+    const rows = await db.$queryRaw<{ aggregator_code: string; display_name: string }[]>`
+      SELECT aggregator_code, display_name FROM aggregator_projection
+    `
+    expect(rows).toEqual([{ aggregator_code: 'VSC', display_name: 'VSC Bank' }])
   })
 })

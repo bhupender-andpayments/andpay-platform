@@ -48,6 +48,22 @@ export const FACT_SCHEMAS: FactSchema[] = [
     },
   },
   {
+    name: 'fct.identity.aggregator.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        aggrId: { type: 'string' },
+        tnntId: { type: 'string' },
+        aggregatorCode: { type: 'string' },
+        displayName: { type: 'string' },
+        status: { type: 'string' },
+        isDefault: { type: 'boolean' },
+      },
+      required: ['aggrId', 'tnntId', 'status'],
+    },
+  },
+  {
     name: 'fct.identity.program.v1',
     schema: {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -303,6 +319,7 @@ export const FACT_SCHEMAS: FactSchema[] = [
 export const TOPIC_NAMES = [
   'fct.identity.merchant.v1',
   'fct.identity.tenant.v1',
+  'fct.identity.aggregator.v1',
   'fct.identity.program.v1',
   'fct.identity.enrollment.v1',
   'fct.tms.assignment.v1',

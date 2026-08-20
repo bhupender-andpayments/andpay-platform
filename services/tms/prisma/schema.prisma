@@ -198,6 +198,21 @@ model TenantProjection {
   @@map("tenant_projection")
 }
 
+/// TMS read-model from fct.identity.aggregator.v1 (T7). The Aggregator is
+/// Identity's sub-tenant below Tenant (spec 2026-08-20).
+model AggregatorProjection {
+  id             String   @id @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  aggregatorCode String   @map("aggregator_code")
+  displayName    String   @map("display_name")
+  status         String
+  isDefault      Boolean  @map("is_default")
+  updatedAt      DateTime @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([tenantId, aggregatorCode])
+  @@map("aggregator_projection")
+}
+
 /// The S8 ingest record. Permissive in v1 (ratified): a file can span Programs
 /// and is written before resolution.
 model IngestFile {

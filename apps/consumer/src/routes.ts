@@ -3,6 +3,7 @@ import { projectRowFact, type PrismaClient as IdentityClient } from '@andpay/ide
 import {
   projectMerchantFact,
   projectTenantFact,
+  projectAggregatorFact,
   createAssignmentFromEnrollment,
   projectDispatchToCases,
   projectShipmentToCases,
@@ -121,6 +122,7 @@ export function tmsRoutes(db: TmsClient): ConsumerRoute {
     topics: [
       'fct.identity.merchant.v1',
       'fct.identity.tenant.v1',
+      'fct.identity.aggregator.v1',
       'fct.identity.enrollment.v1',
       // D-24 (T6.5): a damage case moves to In Progress when the replacement
       // it answers enters the pipeline. That is a FULFILLMENT event, and TMS
@@ -145,6 +147,9 @@ export function tmsRoutes(db: TmsClient): ConsumerRoute {
           return
         case 'fct.identity.tenant.v1':
           await projectTenantFact(db, envelope as Parameters<typeof projectTenantFact>[1])
+          return
+        case 'fct.identity.aggregator.v1':
+          await projectAggregatorFact(db, envelope as Parameters<typeof projectAggregatorFact>[1])
           return
         case 'fct.identity.enrollment.v1':
           await createAssignmentFromEnrollment(db, envelope as Parameters<typeof createAssignmentFromEnrollment>[1])

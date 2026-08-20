@@ -24,7 +24,7 @@ export {
   type StructuralParseErrorCode,
   type BankRequestParseResult,
 } from './bank-file-adapter.js'
-export { projectMerchantFact, projectTenantFact } from './projections.js'
+export { projectMerchantFact, projectTenantFact, projectAggregatorFact } from './projections.js'
 export {
   createAssignmentFromEnrollment,
   emitDemandFact,

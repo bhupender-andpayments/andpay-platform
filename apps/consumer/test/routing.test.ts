@@ -40,6 +40,7 @@ describe('the routing table matches the pump table it was copied from', () => {
     expect([...ROUTES.tms.topics].sort()).toEqual([
       'fct.fulfillment.dispatch.v1',
       'fct.fulfillment.shipment.v1',
+      'fct.identity.aggregator.v1',
       'fct.identity.enrollment.v1',
       'fct.identity.merchant.v1',
       'fct.identity.tenant.v1',
