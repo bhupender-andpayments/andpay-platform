@@ -84,7 +84,14 @@ import {
   type DuplicateVpaOriginal,
 } from '@andpay/tms-service'
 import { readDispatchActivationStatus } from '@andpay/analytics-service'
-import { createBankMaster, createMerchant, editBankMaster, listBankMasters } from '@andpay/identity-service'
+import {
+  createAggregator,
+  createBankMaster,
+  createMerchant,
+  editAggregator,
+  editBankMaster,
+  listBankMasters,
+} from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAuthzAudit } from './audit.js'
@@ -295,13 +302,11 @@ interface BankMasterCreateBody {
   pin: string
   mobile: string
   email: string
-  parentBankReferenceCode?: string
 }
 // The Bank Master edit body. bankReferenceCode is DELIBERATELY ABSENT: it is
 // the immutable ingest resolver key and can neither be accepted nor mutated by
 // the edit path. Every content field is optional (a partial edit); the target
-// tnnt is the route param, never here. parentBankReferenceCode is likewise
-// optional; an empty string detaches the child from its parent.
+// tnnt is the route param, never here.
 interface BankMasterEditBody {
   displayName?: string
   address1?: string
@@ -314,7 +319,41 @@ interface BankMasterEditBody {
   mobile?: string
   email?: string
   status?: string
-  parentBankReferenceCode?: string
+}
+// The aggregator (sub-tenant) create body (spec 2026-08-20). aggregatorCode is
+// set ONCE here at create time; the target tnnt is the route param, never
+// here (M7/S16). Every address/contact field is optional (D.1), same posture
+// as BankMasterCreateBody's own optionals.
+interface AggregatorCreateBody {
+  displayName: string
+  aggregatorCode: string
+  address1?: string
+  address2?: string
+  address3?: string
+  city?: string
+  district?: string
+  country?: string
+  pin?: string
+  mobile?: string
+  email?: string
+}
+// The aggregator edit body. Every field is optional (a partial edit); the
+// target aggr is the route param, never here. Unlike BankMasterEditBody,
+// aggregatorCode IS editable here (guarded server-side once ingest locks it,
+// per editAggregator's own doc comment).
+interface AggregatorEditBody {
+  displayName?: string
+  aggregatorCode?: string
+  status?: string
+  address1?: string
+  address2?: string
+  address3?: string
+  city?: string
+  district?: string
+  country?: string
+  pin?: string
+  mobile?: string
+  email?: string
 }
 // The minimal multer file shape the upload routes read (mirrors vendor-edge's
 // UploadedJson, extended with originalname): the raw bytes plus the client
@@ -1760,7 +1799,6 @@ export class OpsController {
       pin: body.pin,
       mobile: body.mobile,
       email: body.email,
-      ...(body.parentBankReferenceCode !== undefined ? { parentBankReferenceCode: body.parentBankReferenceCode } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
@@ -1831,7 +1869,75 @@ export class OpsController {
       ...(body.mobile !== undefined ? { mobile: body.mobile } : {}),
       ...(body.email !== undefined ? { email: body.email } : {}),
       ...(body.status !== undefined ? { status: body.status } : {}),
-      ...(body.parentBankReferenceCode !== undefined ? { parentBankReferenceCode: body.parentBankReferenceCode } : {}),
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // The aggregator (sub-tenant) create, under a Bank Master (spec 2026-08-20).
+  // Same gate/idempotency/co-committed-6e posture as createBankMasterRoute
+  // above; NOT step-up-gated, same reasoning (master-data maintenance). The
+  // target tnnt rides the route param; the write is an IDENTITY-context
+  // function called with deps.identityDb, so the edge never does a
+  // cross-context DB write (C4); an unknown tnntId or a duplicate
+  // (tenant, code) surfaces as identity's OpsClientError, mapped by the
+  // app-wide OpsErrorFilter.
+  @Post('bank-masters/:tnntId/aggregators')
+  @HttpCode(200)
+  async createAggregatorRoute(
+    @Req() req: EdgeRequest,
+    @Param('tnntId') tnntId: string,
+    @Body() body: AggregatorCreateBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; aggrId: string | null }> {
+    const g = await this.gate(req, 'ops:aggregator-create', idem, [])
+    return createAggregator(this.deps.identityDb, {
+      tnntId,
+      displayName: body.displayName,
+      aggregatorCode: body.aggregatorCode,
+      ...(body.address1 !== undefined ? { address1: body.address1 } : {}),
+      ...(body.address2 !== undefined ? { address2: body.address2 } : {}),
+      ...(body.address3 !== undefined ? { address3: body.address3 } : {}),
+      ...(body.city !== undefined ? { city: body.city } : {}),
+      ...(body.district !== undefined ? { district: body.district } : {}),
+      ...(body.country !== undefined ? { country: body.country } : {}),
+      ...(body.pin !== undefined ? { pin: body.pin } : {}),
+      ...(body.mobile !== undefined ? { mobile: body.mobile } : {}),
+      ...(body.email !== undefined ? { email: body.email } : {}),
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // The aggregator edit, addressed by its own wire aggr id (mirrors
+  // editBankMasterRoute exactly). aggregatorCode IS accepted here (unlike
+  // bankReferenceCode on the parent edit), since editAggregator itself is the
+  // guard against an ingest-locked code change.
+  @Post('aggregators/:aggrId/edit')
+  @HttpCode(200)
+  async editAggregatorRoute(
+    @Req() req: EdgeRequest,
+    @Param('aggrId') aggrId: string,
+    @Body() body: AggregatorEditBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; changedFields: string[] }> {
+    const g = await this.gate(req, 'ops:aggregator-edit', idem, [aggrId])
+    return editAggregator(this.deps.identityDb, {
+      aggrId,
+      ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
+      ...(body.aggregatorCode !== undefined ? { aggregatorCode: body.aggregatorCode } : {}),
+      ...(body.status !== undefined ? { status: body.status } : {}),
+      ...(body.address1 !== undefined ? { address1: body.address1 } : {}),
+      ...(body.address2 !== undefined ? { address2: body.address2 } : {}),
+      ...(body.address3 !== undefined ? { address3: body.address3 } : {}),
+      ...(body.city !== undefined ? { city: body.city } : {}),
+      ...(body.district !== undefined ? { district: body.district } : {}),
+      ...(body.country !== undefined ? { country: body.country } : {}),
+      ...(body.pin !== undefined ? { pin: body.pin } : {}),
+      ...(body.mobile !== undefined ? { mobile: body.mobile } : {}),
+      ...(body.email !== undefined ? { email: body.email } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
@@ -1839,21 +1945,25 @@ export class OpsController {
   }
 
   // Resolve which (tenantWire, bankCode) the composition-config row for this
-  // bank master keys on. A CHILD bank's collateral rows carry the PARENT
-  // tenant (ingest resolves the partner tenant; the per-row code is the
-  // child's), so the child's logo must land under the parent's tenant id
-  // with the child's own bank code, or the renderer's lookup never finds it.
-  private async resolveLogoTarget(tnntId: string): Promise<{ tenantWire: string; bankCode: string }> {
+  // AGGREGATOR keys on (spec 2026-08-20): the aggregator's own tnntId paired
+  // with its own aggregatorCode. The parent-hierarchy resolveLogoTarget this
+  // replaced is gone along with parentTnntId; every logo now targets the
+  // aggregator that will actually render it.
+  private async resolveAggregatorLogoTarget(aggrId: string): Promise<{ tenantWire: string; bankCode: string }> {
     const rows = await listBankMasters(this.deps.identityDb)
-    const row = rows.find((r) => r.tnntId === tnntId)
-    if (row === undefined) throw new NotFoundException('bank master not found')
-    return { tenantWire: row.parentTnntId ?? row.tnntId, bankCode: row.bankReferenceCode }
+    for (const row of rows) {
+      const agg = row.aggregators.find((a) => a.aggrId === aggrId)
+      if (agg !== undefined) return { tenantWire: agg.tnntId, bankCode: agg.aggregatorCode }
+    }
+    throw new NotFoundException('aggregator not found')
   }
 
-  // The bank-master logo pair (spec 2026-08-19): the .ai MASTER (BRD D.2
-  // source of truth, versioned) plus the PNG/SVG DERIVATIVE the renderer
-  // embeds. Both validated here at the edge, a 400 before the domain call.
-  @Post('bank-masters/:id/logo')
+  // The aggregator logo pair (spec 2026-08-20, re-homed from the old
+  // bank-masters/:id/logo route): the .ai MASTER (BRD D.2 source of truth,
+  // versioned) plus the PNG/SVG DERIVATIVE the renderer embeds. Both
+  // validated here at the edge, a 400 before the domain call, identically to
+  // the route this replaced.
+  @Post('aggregators/:aggrId/logo')
   @UseInterceptors(
     FileFieldsInterceptor(
       [
@@ -1864,13 +1974,13 @@ export class OpsController {
     ),
   )
   @HttpCode(200)
-  async setBankMasterLogoRoute(
+  async setAggregatorLogoRoute(
     @Req() req: EdgeRequest,
-    @Param('id') id: string,
+    @Param('aggrId') aggrId: string,
     @UploadedFiles() files: { master?: UploadedLogoFile[]; derivative?: UploadedLogoFile[] },
     @Headers('idempotency-key') idem: string | undefined,
   ): Promise<{ deduped: boolean; id: string | null; masterVersion: string | null; derivativeVersion: string | null }> {
-    const g = await this.gate(req, 'ops:bank-logo-set', idem, [id])
+    const g = await this.gate(req, 'ops:bank-logo-set', idem, [aggrId])
     const master = files.master?.[0]
     const derivative = files.derivative?.[0]
     if (!master || !derivative) throw new BadRequestException('both master and derivative files are required')
@@ -1883,7 +1993,7 @@ export class OpsController {
     if (derivative.mimetype !== 'image/png' && derivative.mimetype !== 'image/svg+xml') {
       throw new BadRequestException('derivative must be a PNG or SVG image')
     }
-    const target = await this.resolveLogoTarget(id)
+    const target = await this.resolveAggregatorLogoTarget(aggrId)
     return setBankLogoPair(this.deps.fulfillmentDb, this.deps.assetStore, {
       tenantWire: target.tenantWire,
       bankCode: target.bankCode,

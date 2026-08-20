@@ -143,7 +143,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await identityDb.$executeRawUnsafe(
-    'TRUNCATE sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
+    'TRUNCATE aggregator, sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
   )
   await fulfillmentDb.$executeRawUnsafe('TRUNCATE outbox, inbox, bank_composition_config CASCADE')
 })
@@ -262,9 +262,9 @@ describe('POST /ops/bank-masters/:id/edit (Phase 3 Task 7)', () => {
 })
 
 describe('GET /ops/bank-masters (guard-only read)', () => {
-  it('returns configured Bank Masters, no 6e emitted', async () => {
+  it('returns configured Bank Masters, each nested with its aggregators, no 6e emitted', async () => {
     const token = await mint()
-    await request(app.getHttpServer())
+    const created = await request(app.getHttpServer())
       .post('/ops/bank-masters')
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
@@ -273,7 +273,14 @@ describe('GET /ops/bank-masters (guard-only read)', () => {
     const res = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
     expect(Array.isArray(res.body)).toBe(true)
-    expect(res.body.some((b: { bankReferenceCode: string }) => b.bankReferenceCode === 'BREF-LIST-1')).toBe(true)
+    const row = res.body.find((b: { bankReferenceCode: string }) => b.bankReferenceCode === 'BREF-LIST-1')
+    expect(row).toBeDefined()
+    // A fresh tenant carries exactly its own default aggregator, unlogo'd.
+    expect(row.aggregators).toHaveLength(1)
+    expect(row.aggregators[0].aggregatorCode).toBe('BREF-LIST-1')
+    expect(row.aggregators[0].isDefault).toBe(true)
+    expect(row.aggregators[0].hasLogo).toBe(false)
+    void created
   })
 
   it('an unauthenticated request -> 401', async () => {
@@ -282,54 +289,38 @@ describe('GET /ops/bank-masters (guard-only read)', () => {
   })
 })
 
-describe('bank master hierarchy over HTTP', () => {
-  it('creates a child via parentBankReferenceCode and lists parentTnntId + hasLogo', async () => {
+describe('aggregator create/edit over HTTP', () => {
+  it('creates and edits an aggregator over HTTP', async () => {
     const tok = await mint()
-    const parent = await request(app.getHttpServer())
-      .post('/ops/bank-masters')
-      .set('Authorization', `Bearer ${tok}`)
-      .set('Idempotency-Key', randomUUID())
-      .send(body({ bankReferenceCode: 'GSCB-T5' }))
-      .expect(200)
+    const t = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'GSCB-T6' })).expect(200)
+    const created = await request(app.getHttpServer())
+      .post(`/ops/bank-masters/${t.body.tnntId}/aggregators`)
+      .set('Authorization', `Bearer ${tok}`).set('Idempotency-Key', randomUUID())
+      .send({ displayName: 'VSC Bank', aggregatorCode: 'VSC-T6' }).expect(200)
+    expect(created.body.aggrId.startsWith('aggr_')).toBe(true)
     await request(app.getHttpServer())
-      .post('/ops/bank-masters')
-      .set('Authorization', `Bearer ${tok}`)
-      .set('Idempotency-Key', randomUUID())
-      .send(body({ bankReferenceCode: 'VSC-T5', displayName: 'VSC Bank', parentBankReferenceCode: 'GSCB-T5' }))
-      .expect(200)
-    const list = await request(app.getHttpServer())
-      .get('/ops/bank-masters')
-      .set('Authorization', `Bearer ${tok}`)
-      .expect(200)
-    const child = (list.body as { bankReferenceCode: string; parentTnntId: string | null; hasLogo: boolean }[]).find(
-      (r) => r.bankReferenceCode === 'VSC-T5',
-    )!
-    expect(child.parentTnntId).toBe(parent.body.tnntId)
-    expect(child.hasLogo).toBe(false)
-  })
-
-  it('rejects a parent that is itself a child with a 400', async () => {
-    const tok = await mint()
-    await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
-      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'GSCB-T5B' })).expect(200)
-    await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
-      .set('Idempotency-Key', randomUUID())
-      .send(body({ bankReferenceCode: 'VSC-T5B', parentBankReferenceCode: 'GSCB-T5B' })).expect(200)
-    await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
-      .set('Idempotency-Key', randomUUID())
-      .send(body({ bankReferenceCode: 'DEEP-T5B', parentBankReferenceCode: 'VSC-T5B' })).expect(400)
+      .post(`/ops/aggregators/${created.body.aggrId}/edit`)
+      .set('Authorization', `Bearer ${tok}`).set('Idempotency-Key', randomUUID())
+      .send({ displayName: 'VSC Bank Ltd' }).expect(200)
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { bankReferenceCode: string }) => r.bankReferenceCode === 'GSCB-T6')
+    expect(row.aggregators.map((a: { aggregatorCode: string }) => a.aggregatorCode).sort()).toEqual(['GSCB-T6', 'VSC-T6'])
   })
 })
 
-describe('bank master logo over HTTP', () => {
+describe('aggregator logo over HTTP', () => {
   it('uploads the master+derivative pair, then lists versions and streams the derivative', async () => {
     const tok = await mint()
     const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
-      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T5' })).expect(200)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T6' })).expect(200)
     const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
 
     const upload = await request(app.getHttpServer())
-      .post(`/ops/bank-masters/${tnntId}/logo`)
+      .post(`/ops/aggregators/${aggrId}/logo`)
       .set('Authorization', `Bearer ${tok}`)
       .set('Idempotency-Key', randomUUID())
       .attach('master', Buffer.from('%!PS-Adobe ai bytes'), { filename: 'logo.ai', contentType: 'application/postscript' })
@@ -338,42 +329,47 @@ describe('bank master logo over HTTP', () => {
     expect(upload.body.masterVersion).not.toBeNull()
 
     const versions = await request(app.getHttpServer())
-      .get(`/ops/bank-masters/${tnntId}/logo/versions`)
+      .get(`/ops/aggregators/${aggrId}/logo/versions`)
       .set('Authorization', `Bearer ${tok}`)
       .expect(200)
     expect(versions.body).toHaveLength(1)
     expect(versions.body[0].filename).toBe('logo.ai')
 
     const derivative = await request(app.getHttpServer())
-      .get(`/ops/bank-masters/${tnntId}/logo/derivative`)
+      .get(`/ops/aggregators/${aggrId}/logo/derivative`)
       .set('Authorization', `Bearer ${tok}`)
       .expect(200)
     expect(derivative.headers['content-type']).toContain('image/png')
 
-    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
-    expect(list.body.find((r: { bankReferenceCode: string }) => r.bankReferenceCode === 'LOGO-T5').hasLogo).toBe(true)
+    const list2 = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row2 = list2.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    expect(row2.aggregators[0].hasLogo).toBe(true)
   })
 
   it('rejects a wrong-type derivative with a 400 and a missing file with a 400', async () => {
     const tok = await mint()
     const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
-      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T5B' })).expect(200)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T6B' })).expect(200)
     const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
     await request(app.getHttpServer())
-      .post(`/ops/bank-masters/${tnntId}/logo`)
+      .post(`/ops/aggregators/${aggrId}/logo`)
       .set('Authorization', `Bearer ${tok}`)
       .set('Idempotency-Key', randomUUID())
       .attach('master', Buffer.from('ai'), { filename: 'logo.ai', contentType: 'application/postscript' })
       .attach('derivative', Buffer.from('exe'), { filename: 'logo.exe', contentType: 'application/octet-stream' })
       .expect(400)
     await request(app.getHttpServer())
-      .post(`/ops/bank-masters/${tnntId}/logo`)
+      .post(`/ops/aggregators/${aggrId}/logo`)
       .set('Authorization', `Bearer ${tok}`)
       .set('Idempotency-Key', randomUUID())
       .attach('master', Buffer.from('ai'), { filename: 'logo.ai', contentType: 'application/postscript' })
       .expect(400)
     await request(app.getHttpServer())
-      .get(`/ops/bank-masters/${tnntId}/logo/derivative`)
+      .get(`/ops/aggregators/${aggrId}/logo/derivative`)
       .set('Authorization', `Bearer ${tok}`)
       .expect(404)
   })
