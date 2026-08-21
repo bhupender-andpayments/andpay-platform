@@ -181,7 +181,7 @@ describe('DamageCasesPage (D-24, T6.6)', () => {
     expect(await screen.findByText(/moves the case backwards/i)).toBeTruthy()
   })
 
-  it('sends the operator note with the transition, in the walkthrough spelling', async () => {
+  it("sends the operator note with the transition, in the SERVER's spelling", async () => {
     const calls = stub()
     renderPage()
 
@@ -196,10 +196,13 @@ describe('DamageCasesPage (D-24, T6.6)', () => {
     })
     const write = calls.find((c) => c.url.includes('/ops/records/'))!
     const body = JSON.parse(String(write.init.body)) as { status: string; opsRemarks?: string }
-    // "In Progress" is the walkthrough's spelling; the column stores
-    // "In-Progress" and the server normalizes, so the portal sends what an
-    // operator read on the menu item.
-    expect(body.status).toBe('In Progress')
+    // ONE SPELLING, THE SERVER'S (21 Aug 2026). This used to assert the spaced
+    // "In Progress", on the grounds that the server normalized it anyway. It
+    // did, but the portal then held two spellings of one value and a comparison
+    // between them could never match, which is how an in-progress case came to
+    // be offered "In Progress" as somewhere to move to. The hyphenated form is
+    // canonical and the database now enforces it, so the portal sends that.
+    expect(body.status).toBe('In-Progress')
     expect(body.opsRemarks).toBe('awaiting bank reply')
   })
 

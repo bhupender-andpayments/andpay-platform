@@ -42,7 +42,6 @@ import {
   UNIT_TERMINAL,
   STAGE_COPY,
   legalNextStatuses,
-  isTerminalStatus,
   statusLabel,
 } from './unitStatus.js'
 

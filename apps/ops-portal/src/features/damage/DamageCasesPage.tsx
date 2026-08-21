@@ -71,16 +71,20 @@ import { cn } from '@/lib/utils'
 // The three values D-24 grants, in LIFECYCLE ORDER, which is what lets the
 // dialog below tell a forward move from a backward one.
 //
-// `wire` is the walkthrough's spelling and `label` is what an operator reads.
-// The column itself stores 'In-Progress', a third spelling; the server
-// normalizes all of them (normalizeCaseStatus), so nothing here has to pick a
-// winner. What every comparison MUST use is statusKey, never `===`: comparing
-// 'In Progress' to the stored 'In-Progress' is always unequal, which is exactly
-// why an in-progress case used to be offered "In Progress" as somewhere to move
-// to. The status a case is already in is not a move.
+// ONE SPELLING, THE SERVER'S (21 Aug 2026). This file used to carry two, and the
+// ?status= list below carried a third: `wire` said 'In Progress', the filters
+// said 'In-Progress', and the column stored 'In-Progress'. The server normalized
+// all of them on the way in, so nothing broke loudly, but every comparison had to
+// go through statusKey and one that forgot offered an in-progress case "In
+// Progress" as somewhere to move to. The status a case is already in is not a
+// move.
+//
+// The hyphenated form is now canonical and the DATABASE enforces it
+// (assignment_case_status_check, 21 Aug 2026), so there is a single right answer
+// and this file uses it. statusKey survives below as a read-side guard only.
 const CASE_MOVES = [
   { wire: 'Open', label: 'Open' },
-  { wire: 'In Progress', label: 'In progress' },
+  { wire: 'In-Progress', label: 'In progress' },
   { wire: 'Closed', label: 'Closed' },
 ] as const
 
@@ -106,18 +110,28 @@ function rankOf(status: string | null | undefined): number {
 // reads it later and believes it.
 const MOVE_MEANING: Record<string, string> = {
   Open: 'Open says the replacement is raised and nobody is working it yet.',
-  'In Progress': 'In progress says someone is actively working this replacement.',
+  'In-Progress': 'In progress says someone is actively working this replacement.',
   Closed:
     'Closed says the replacement reached the merchant. Cases close on their own when a soundbox replacement activates or a collateral replacement is delivered.',
 }
 
 // The ?status= vocabulary (D-31): the dashboard tile links with these exact
-// values. Comparison is spelling-insensitive (statusKey below) because the
-// column stores 'In-Progress' while the walkthrough writes 'In Progress'.
+// values. Now identical to CASE_MOVES' wire spellings above, which is the point:
+// two lists of the same vocabulary that disagreed on spelling were two chances
+// to compare them wrongly.
 const STATUS_FILTERS = ['Open', 'In-Progress', 'Closed'] as const
 type StatusFilter = (typeof STATUS_FILTERS)[number]
 
-/** One spelling-insensitive key for a case status: hyphen, space and case dropped. */
+/**
+ * One spelling-insensitive key for a case status: hyphen, space and case
+ * dropped.
+ *
+ * A READ-SIDE GUARD, no longer a translator between this file's own two
+ * spellings (there is one now, matching the server's). It still earns its place:
+ * the DB CHECK constraint that pins the spelling is newer than the oldest rows,
+ * and a case status arrives here over HTTP from a service this bundle cannot
+ * import, so comparing on a normalized key costs nothing and cannot be wrong.
+ */
 function statusKey(raw: string | null | undefined): string {
   return (raw ?? '').replace(/[\s-]+/g, '').toLowerCase()
 }

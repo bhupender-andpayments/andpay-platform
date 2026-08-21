@@ -5,6 +5,7 @@ import { fmtWait, resolveGlobalRule } from './BatchingRules.js'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { BatchablePools } from './BatchablePools.js'
+import { POOL_QUERY_STATUSES } from './poolStatuses.js'
 import { BatchPreviewCard } from './BatchPreviewCard.js'
 import { RequestDispatchesDialog } from './RequestDispatchesDialog.js'
 import { PoolEntryActions } from './PoolEntryActions.js'
@@ -124,9 +125,12 @@ export function PoolPage() {
         // asked for it, so a held dispatch could not be found again, let alone
         // released. Two reads rather than one unfiltered read keeps each view
         // exactly what its tab claims.
+        // The two statuses come from the shared vocabulary (poolStatuses.ts),
+        // not from bare literals typed here: this call and the server's own
+        // POOL_STATUSES are now held together by a parity test.
         const [pooledRows, heldRows] = await Promise.all([
-          getPoolEntries(client, 'POOLED'),
-          getPoolEntries(client, 'HELD'),
+          getPoolEntries(client, POOL_QUERY_STATUSES[0]),
+          getPoolEntries(client, POOL_QUERY_STATUSES[1]),
         ])
         setPooled(pooledRows)
         setHeld(heldRows)

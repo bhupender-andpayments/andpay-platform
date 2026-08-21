@@ -13,6 +13,13 @@ import { enterWriteRole } from './write-context.js'
 // deleted damage.ts (D-25): the case overlay lives on the replacement
 // assignment, and this module is its lifecycle.
 export const CASE_STATUS_VALUES = ['Open', 'In-Progress', 'Closed'] as const
+
+// THE CANONICAL SPELLING IS THE HYPHENATED ONE, and as of 21 Aug 2026 the
+// database enforces it: assignment_case_status_check admits only these values
+// (plus 'Cancelled', reserved for the damage cancel flow that DAMAGE.md
+// describes and no code writes yet). normalizeCaseStatus below still accepts the
+// spaced form on the way IN, because the walkthrough writes it that way and an
+// operator's request should not fail on a space, but nothing stores it.
 export type CaseStatus = (typeof CASE_STATUS_VALUES)[number]
 
 /**

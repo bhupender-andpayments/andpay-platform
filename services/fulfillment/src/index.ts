@@ -62,6 +62,12 @@ export {
   ingestIntakeSheetWithinTx,
   isSheetStructurallyValid,
 } from './intake.js'
+export {
+  POOL_STATUSES,
+  DISPATCH_STATES,
+  type PoolStatus,
+  type DispatchStateValue,
+} from './batch-status.js'
 export { BATCH_STATUSES, type BatchStatus } from './batch-status.js'
 export { consumeBatchFact, TemplateTrimMismatchError } from './dispatch.js'
 export {

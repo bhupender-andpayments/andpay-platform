@@ -1,4 +1,4 @@
-import { fromUuid, toUuid } from '@andpay/ids'
+import { fromUuid } from '@andpay/ids'
 import type { TmsDb } from './db.js'
 import type { Tx } from './internal.js'
 import { toDamageReasonDto, type DamageReasonDbRow, type DamageReasonRow } from './damage-reason.js'
