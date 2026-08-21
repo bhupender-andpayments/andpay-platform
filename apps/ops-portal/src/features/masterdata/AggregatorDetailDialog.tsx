@@ -137,7 +137,7 @@ export function AggregatorDetailDialog({
   const pickSeq = useRef(0)
 
   function loadCurrent(): void {
-    fetchAggregatorLogoDerivative(aggregator.aggrId)
+    fetchAggregatorLogoDerivative(client, aggregator.aggrId)
       .then((blob) => {
         if (blob === null) return
         // The portal CSP is img-src 'self' data:, which blocks a blob: URL, so
@@ -187,7 +187,7 @@ export function AggregatorDetailDialog({
     setViewedVersion(version)
     setVersionPreview('loading')
     try {
-      const blob = await fetchAggregatorLogoVersionMaster(aggregator.aggrId, version)
+      const blob = await fetchAggregatorLogoVersionMaster(client, aggregator.aggrId, version)
       if (blob === null) {
         if (pickSeq.current === token) setVersionPreview('none')
         return

@@ -21,7 +21,16 @@ export interface ApiRequest {
   // with JSON.parse exactly as before. 'text' skips JSON.parse and returns the
   // raw response text, for a text/csv body that is not valid JSON. Nothing
   // else in sendOnce, attempt, or the 401/403 interceptors branches on this.
-  responseType?: 'json' | 'text'
+  //
+  // 'blob' (21 Aug 2026) returns the raw bytes for a 2xx and still parses a
+  // non-2xx body as JSON/text, so the 401/403 interceptors see the same error
+  // shape they always did. It exists because the logo thumbnail and the
+  // per-version preview used raw fetch with a Bearer, which silently opted
+  // them out of the refresh-and-retry: ten minutes after the last refresh
+  // every thumbnail on the Bank Masters page decayed to "unavailable" while
+  // the typed calls on the same page kept working. A passive render cannot
+  // "click the button again" the way the dispatch downloads can.
+  responseType?: 'json' | 'text' | 'blob'
   // Multipart uploads. Kept SEPARATE from `body` for two reasons: FormData must
   // never be JSON.stringify'd, and the Content-Type must NOT be set by hand
   // because it carries the multipart boundary the browser generates. Upload
@@ -65,6 +74,9 @@ export async function sendOnce(deps: ApiClientDeps, req: ApiRequest): Promise<Ap
     ...(req.withCookie ? { credentials: 'include' } : {}),
   }
   const res = await fetch(`${base}${req.path}`, init)
+  if (req.responseType === 'blob' && res.status >= 200 && res.status < 300) {
+    return { status: res.status, headers: res.headers, data: await res.blob() }
+  }
   const text = await res.text()
   const data = req.responseType === 'text' ? text : text === '' ? null : JSON.parse(text)
   return { status: res.status, headers: res.headers, data }

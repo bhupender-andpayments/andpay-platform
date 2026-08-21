@@ -1096,37 +1096,42 @@ export function getAggregatorLogoVersions(c: Client, aggrId: string) {
   })
 }
 
-// BINARY body, so it takes the raw-fetch-with-Bearer path the dispatch
-// downloads use (same recorded reason: client.request is JSON/text only).
-// 404 is a real answer (no logo yet), surfaced as null.
-export async function fetchAggregatorLogoDerivative(aggrId: string): Promise<Blob | null> {
-  const res = await fetch(`${opsBaseUrl()}/ops/aggregators/${encodeURIComponent(aggrId)}/logo/derivative`, {
-    headers: { Authorization: `Bearer ${getAccessToken()}` },
-  })
-  if (res.status === 404) return null
-  if (!res.ok) {
-    const text = await res.text()
-    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+// BINARY body, routed through the client's 'blob' responseType so it gets the
+// refresh-on-401-and-retry. These two used raw fetch with a Bearer, and unlike
+// the dispatch downloads (a button the operator can click again after a typed
+// call refreshes the token) the thumbnail is a passive render: once the access
+// token aged out, every logo on the Bank Masters page decayed to
+// "unavailable" until a full reload. 404 is a real answer (no logo yet),
+// surfaced as null.
+export async function fetchAggregatorLogoDerivative(c: Client, aggrId: string): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo/derivative`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
   }
-  return res.blob()
 }
 
 // The MASTER bytes at one token from the dialog's history list (the list IS
 // the master key's history, so its tokens are only valid against that key;
 // the derivative key runs its own version sequence). The caller rasterizes
-// the .ai in the browser, exactly like a freshly picked file. Same raw-fetch
+// the .ai in the browser, exactly like a freshly picked file. Same routed
 // shape as above; 404 means an unknown token, surfaced as null.
-export async function fetchAggregatorLogoVersionMaster(aggrId: string, version: string): Promise<Blob | null> {
-  const res = await fetch(
-    `${opsBaseUrl()}/ops/aggregators/${encodeURIComponent(aggrId)}/logo/versions/${encodeURIComponent(version)}/master`,
-    { headers: { Authorization: `Bearer ${getAccessToken()}` } },
-  )
-  if (res.status === 404) return null
-  if (!res.ok) {
-    const text = await res.text()
-    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+export async function fetchAggregatorLogoVersionMaster(c: Client, aggrId: string, version: string): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo/versions/${encodeURIComponent(version)}/master`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
   }
-  return res.blob()
 }
 
 /** apps/ops-edge/src/ops.controller.ts DamageReasonCreateBody (BRD FR-08). */

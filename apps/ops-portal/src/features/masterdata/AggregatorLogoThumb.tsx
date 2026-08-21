@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchAggregatorLogoDerivative } from '../../api/endpoints.js'
+import { useAuth } from '../../auth/AuthContext.js'
 import { blobToDataUrl } from '../../lib/blob.js'
 
 // The Logo column thumbnail. The derivative endpoint needs the bearer token,
@@ -15,6 +16,9 @@ export function invalidateLogoThumb(aggrId: string): void {
 }
 
 export function AggregatorLogoThumb({ aggrId, name }: { aggrId: string; name: string }) {
+  // The client (not a raw fetch) so an expired access token refreshes and
+  // retries instead of decaying every thumbnail to "unavailable" at once.
+  const { client } = useAuth()
   const [url, setUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
 
@@ -22,7 +26,7 @@ export function AggregatorLogoThumb({ aggrId, name }: { aggrId: string; name: st
     let cancelled = false
     let p = thumbCache.get(aggrId)
     if (p === undefined) {
-      p = fetchAggregatorLogoDerivative(aggrId).then((blob) => (blob === null ? null : blobToDataUrl(blob)))
+      p = fetchAggregatorLogoDerivative(client, aggrId).then((blob) => (blob === null ? null : blobToDataUrl(blob)))
       thumbCache.set(aggrId, p)
     }
     p.then((u) => {
@@ -35,7 +39,7 @@ export function AggregatorLogoThumb({ aggrId, name }: { aggrId: string; name: st
     return () => {
       cancelled = true
     }
-  }, [aggrId])
+  }, [aggrId, client])
 
   if (failed) return <span className="text-muted-foreground">unavailable</span>
   if (url === null) return <span className="text-muted-foreground">…</span>

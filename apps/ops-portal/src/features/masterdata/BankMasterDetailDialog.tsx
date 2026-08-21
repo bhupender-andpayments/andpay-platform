@@ -122,7 +122,7 @@ export function BankMasterDetailDialog({
     if (!open || defaultAggregator === null) return
     const aggrId = defaultAggregator.aggrId
     let cancelled = false
-    fetchAggregatorLogoDerivative(aggrId)
+    fetchAggregatorLogoDerivative(client, aggrId)
       .then((blob) => {
         if (blob === null || cancelled) return
         // The portal CSP is img-src 'self' data:, which blocks a blob: URL, so
