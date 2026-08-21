@@ -64,6 +64,7 @@ export interface S3AssetStoreOptions {
     PutObjectCommand: new (input: Record<string, unknown>) => unknown
     GetObjectCommand: new (input: Record<string, unknown>) => unknown
     ListObjectsV2Command: new (input: Record<string, unknown>) => unknown
+    HeadObjectCommand: new (input: Record<string, unknown>) => unknown
   }
 }
 
@@ -204,7 +205,7 @@ export class S3AssetStore implements AssetStore {
   async listVersions(key: string): Promise<StoredAsset[]> {
     const { ListObjectsV2Command } = this.commands
     const prefix = this.keyPrefix(key)
-    const found: StoredAsset[] = []
+    const names: string[] = []
     let token: string | undefined
     do {
       const page = (await this.client.send(
@@ -213,23 +214,42 @@ export class S3AssetStore implements AssetStore {
       for (const item of page.Contents ?? []) {
         const name = item.Key?.slice(prefix.length)
         if (name === undefined || !/^v\d+$/.test(name)) continue
-        found.push({
-          reference: `s3-asset:${key}:${name}`,
-          version: name,
-          // A listing carries no metadata; the port's own contract for
-          // listVersions is "without their bytes", and the two meta fields are
-          // filled on read. Emitting a placeholder rather than issuing one HEAD
-          // per version keeps a 90-version history a single request.
-          meta: { contentType: '', filename: '' },
-        })
+        names.push(name)
       }
       token = page.IsTruncated === true ? page.NextContinuationToken : undefined
     } while (token !== undefined)
 
     // Newest first, matching the port's stated order. Numeric, not
     // lexicographic: v10 must sort above v9.
-    found.sort((a, b) => versionNumber(b.version) - versionNumber(a.version))
-    return found
+    names.sort((a, b) => versionNumber(b) - versionNumber(a))
+
+    // A LIST response carries no user metadata, so the filename and content
+    // type need one HEAD each. That cost is deliberate: listVersions feeds the
+    // version-history UI, which prints the filename beside each version, and
+    // returning blanks there showed up immediately as "v2" with no name next to
+    // it. Version counts per key are small (one per re-upload of a logo), and
+    // the heads run concurrently, so this is one round trip in practice.
+    const { HeadObjectCommand } = this.commands
+    return Promise.all(
+      names.map(async (version) => {
+        let meta: AssetMeta = { contentType: '', filename: '' }
+        try {
+          const head = (await this.client.send(
+            new HeadObjectCommand({ Bucket: this.bucket, Key: this.objectKey(key, version) }),
+          )) as { ContentType?: string; Metadata?: Record<string, string> }
+          const raw = head.Metadata?.filename
+          meta = {
+            contentType: head.ContentType ?? '',
+            filename: raw === undefined ? '' : decodeURIComponent(raw),
+          }
+        } catch {
+          // A version that lists but will not HEAD still belongs in the
+          // history; the caller gets the version token with empty metadata
+          // rather than losing the entry altogether.
+        }
+        return { reference: `s3-asset:${key}:${version}`, version, meta }
+      }),
+    )
   }
 
   private async read(key: string, version: string): Promise<AssetRecord | null> {
@@ -266,14 +286,14 @@ export class S3AssetStore implements AssetStore {
  * credential is ever read from code or a config file here.
  */
 export async function createS3AssetStore(options: { bucket: string; prefix: string; region: string }): Promise<AssetStore> {
-  const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } = await import('@aws-sdk/client-s3')
+  const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command, HeadObjectCommand } = await import('@aws-sdk/client-s3')
   // The injection type is deliberately loose (Record<string, unknown>) so a
   // test can supply a fake without importing the SDK. The SDK's own
   // constructors are narrower than that, and a TS interface has no implicit
   // index signature, so they need one cast at this single production seam. The
   // adapter is the only thing that builds these inputs and it always builds
   // valid ones; the alternative is dragging the SDK's types into every test.
-  const commands = { PutObjectCommand, GetObjectCommand, ListObjectsV2Command } as unknown as S3AssetStoreOptions['commands']
+  const commands = { PutObjectCommand, GetObjectCommand, ListObjectsV2Command, HeadObjectCommand } as unknown as S3AssetStoreOptions['commands']
   return new S3AssetStore({
     bucket: options.bucket,
     prefix: options.prefix,

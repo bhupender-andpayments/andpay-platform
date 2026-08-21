@@ -54,6 +54,13 @@ class FakeS3 implements S3Like {
         Metadata: found.metadata,
       }
     }
+    if (c.__type === 'Head') {
+      const found = this.objects.get(input.Key as string)
+      if (found === undefined) {
+        throw Object.assign(new Error('Not Found'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } })
+      }
+      return { ContentType: found.contentType, Metadata: found.metadata, ContentLength: found.body.length }
+    }
     if (c.__type === 'List') {
       const prefix = (input.Prefix as string) ?? ''
       const keys = [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort()
@@ -74,6 +81,10 @@ const commands = {
   },
   ListObjectsV2Command: class {
     __type = 'List'
+    constructor(public input: Record<string, unknown>) {}
+  },
+  HeadObjectCommand: class {
+    __type = 'Head'
     constructor(public input: Record<string, unknown>) {}
   },
 }
@@ -250,5 +261,41 @@ describe('the exported layout function the migration shares', () => {
 
   it('trims stray slashes on the prefix, so "dev/" and "dev" are one location', () => {
     expect(s3ObjectKey('/dev/', 'K', 'v1')).toBe(s3ObjectKey('dev', 'K', 'v1'))
+  })
+})
+
+describe('listVersions metadata, which the version-history UI prints', () => {
+  it('returns the real filename and content type per version, not blanks', async () => {
+    // Regression: the first cut returned empty meta because an S3 LIST carries
+    // no user metadata, and the aggregator dialog promptly rendered "v2" with
+    // no filename beside it. Caught against the live bucket, not in this file,
+    // which is why the case is here now.
+    await store.put('ADC-BANK', bytes('one'), { contentType: 'application/postscript', filename: 'first.ai' })
+    await store.put('ADC-BANK', bytes('two'), { contentType: 'application/postscript', filename: 'second.ai' })
+    const versions = await store.listVersions('ADC-BANK')
+    expect(versions.map((v) => [v.version, v.meta.filename])).toEqual([
+      ['v2', 'second.ai'],
+      ['v1', 'first.ai'],
+    ])
+    expect(versions[0]!.meta.contentType).toBe('application/postscript')
+  })
+
+  it('keeps a version in the history even when its metadata cannot be read', async () => {
+    await store.put('K', bytes('b'), meta)
+    const flaky = new S3AssetStore({
+      bucket: 'b',
+      prefix: 'dev',
+      client: {
+        async send(command: unknown) {
+          const c = command as { __type: string; input: Record<string, unknown> }
+          if (c.__type === 'Head') throw new Error('transient')
+          return s3.send(command)
+        },
+      },
+      commands,
+    })
+    const versions = await flaky.listVersions('K')
+    expect(versions.map((v) => v.version)).toEqual(['v1'])
+    expect(versions[0]!.meta.filename).toBe('')
   })
 })
