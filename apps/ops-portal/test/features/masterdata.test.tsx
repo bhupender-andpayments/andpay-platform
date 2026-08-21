@@ -280,14 +280,18 @@ describe('master data views', () => {
 
     expect(await screen.findByText('First National Bank')).toBeTruthy()
     expect(screen.getByText('FNB')).toBeTruthy()
-    expect(screen.getByText('Mumbai')).toBeTruthy()
-    expect(screen.getByText('IN')).toBeTruthy()
-    expect(screen.getByText('9900011122')).toBeTruthy()
+    // Redesign 21 Aug 2026: the flat list carries ONE contact cell (email
+    // first, mobile as the fallback), not the address columns; those live in
+    // the edit dialog.
     expect(screen.getByText('ops@fnb.example')).toBeTruthy()
+    expect(screen.queryByText('Mumbai')).toBeNull()
     expect(calls.some((c) => c.url.includes('/ops/bank-masters'))).toBe(true)
   })
 
-  it('groups aggregators under their tenant with an expander, default pinned first', async () => {
+  // Redesign 21 Aug 2026 (mockup): a FLAT list, no expander. Every aggregator
+  // is a visible row under its tenant, tenant first with an aggregator-count
+  // badge, the default aggregator badged 'default' and pinned before members.
+  it('lists tenant then aggregators flat, default pinned first, with badges', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
@@ -299,25 +303,22 @@ describe('master data views', () => {
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
 
-    expect(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' })).toBeTruthy()
-    expect(screen.queryByText('VSC Bank')).toBeNull()
+    // No expander: the member is simply there.
+    expect(await screen.findByText('VSC Bank')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /show aggregators/i })).toBeNull()
     expect(screen.getByText('2 aggregators')).toBeTruthy()
+    expect(screen.getByText('default')).toBeTruthy()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
-
-    const rows = await screen.findAllByRole('row')
-    // Default (GSCB) must appear before the member (VSC Bank), regardless of
-    // fixture order, and the default row carries a `default` marker while the
-    // member carries a `child` marker.
-    const rowTexts = rows.map((r) => r.textContent ?? '')
-    const defaultIdx = rowTexts.findIndex((t) => t.includes('VSC Bank') === false && t.includes('GSCB') && t.includes('default'))
-    const memberIdx = rowTexts.findIndex((t) => t.includes('VSC Bank'))
-    expect(defaultIdx).toBeGreaterThanOrEqual(0)
+    const items = screen.getAllByRole('listitem').map((li) => li.textContent ?? '')
+    const tenantIdx = items.findIndex((t) => t.includes('2 aggregators'))
+    const defaultIdx = items.findIndex((t) => t.includes('default') && !t.includes('aggregators'))
+    const memberIdx = items.findIndex((t) => t.includes('VSC Bank'))
+    expect(tenantIdx).toBeGreaterThanOrEqual(0)
+    expect(defaultIdx).toBeGreaterThan(tenantIdx)
     expect(memberIdx).toBeGreaterThan(defaultIdx)
-    expect(screen.getByText('child')).toBeTruthy()
   })
 
-  it('a search matching a member aggregator auto-expands its tenant, and the button says so', async () => {
+  it('the search filters the flat list by name or code, keeping the tenant heading', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
@@ -328,36 +329,23 @@ describe('master data views', () => {
 
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await screen.findByText('VSC Bank')
 
-    // Before typing anything, the tenant is collapsed: the un-rotated chevron
-    // reads "Show", and the member aggregator is not in the DOM.
-    await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' })
-    expect(screen.queryByText('VSC Bank')).toBeNull()
-
-    // Typing a query that matches ONLY the member auto-surfaces it beneath its
-    // tenant without a click on the expander. The button's label (and, by the
-    // same shared computeOpenParents/openParents state, the chevron rotation)
-    // must reflect that the aggregator is now actually showing: a stale "Show"
-    // label here would be a screen reader (and sighted user) being told the
-    // opposite of what the table is doing.
     await userEvent.type(screen.getByLabelText('Search bank masters'), 'VSC')
 
+    // The matching member stays, its tenant stays as the group heading, and
+    // the non-matching default aggregator is filtered out.
     expect(await screen.findByText('VSC Bank')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Hide aggregators of Gujarat State Co-op Bank' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' })).toBeNull()
+    expect(screen.getByText('Gujarat State Co-op Bank')).toBeTruthy()
+    expect(screen.queryByText('default')).toBeNull()
 
-    // Clearing the search collapses it again, since it was never manually
-    // expanded, only auto-opened by the now-cleared match.
     await userEvent.clear(screen.getByLabelText('Search bank masters'))
-
-    expect(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' })).toBeTruthy()
-    expect(screen.queryByText('VSC Bank')).toBeNull()
+    expect(await screen.findByText('default')).toBeTruthy()
   })
 
-  it('Bank Masters shows exactly ONE search box: the tree-aware one, with the grid built-in silenced', async () => {
-    // Two search bars shipped on 2026-08-20: the view's tree-aware box (which
-    // auto-expands matching parents) stacked on top of DataGrid's built-in
-    // filter. The grid's must stay off here or the screen regresses to two.
+  it('Bank Masters shows exactly ONE search box', async () => {
+    // Two search bars shipped on 2026-08-20; the regression stays pinned
+    // through the flat-list redesign.
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
@@ -448,7 +436,7 @@ describe('master data views', () => {
     // The count is the falsehood being guarded. Nothing on the card may say it.
     expect(screen.queryByText(/undefined/i)).toBeNull()
     // And the table says it could not show the rows, never "No vendors."
-    expect(screen.getByText(/could not display these rows/i)).toBeTruthy()
+    expect(screen.getByText(/unexpected response shape/i)).toBeTruthy()
     expect(screen.queryByText('No vendors.')).toBeNull()
   })
 
@@ -473,7 +461,7 @@ describe('master data views', () => {
 
     expect(await screen.findByText('Unexpected response shape.')).toBeTruthy()
     expect(screen.queryByText(/undefined/i)).toBeNull()
-    expect(screen.getByText(/could not display these rows/i)).toBeTruthy()
+    expect(screen.getByText(/unexpected response shape/i)).toBeTruthy()
   })
 
   it('carries exactly one create control and one Edit button per row on every tab, and none of the still-deferred actions', async () => {
@@ -503,7 +491,14 @@ describe('master data views', () => {
       // single tenant carries no aggregators, so no "Add aggregator" fires
       // here; its own coverage lives in the tests below.
       for (const name of names) {
-        expect([...tabLabels, control].includes(name) || /^Edit /.test(name) || name === 'Add aggregator').toBe(true)
+        expect(
+          [...tabLabels, control].includes(name) ||
+            /^Edit /.test(name) ||
+            name === 'Add aggregator' ||
+            // The flat Bank Masters list pages 20 rows at a time.
+            name === 'Previous' ||
+            name === 'Next',
+        ).toBe(true)
       }
       // Suspend, activate and deactivate stay deferred under L9; edit does not
       // (see the describe block below).
@@ -679,6 +674,9 @@ describe('master data create dialogs', () => {
     stubAggregatorWrites(calls)
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    // Redesign 21 Aug 2026: the flat list carries Edit only; Add aggregator
+    // lives inside the tenant's own edit dialog.
+    await userEvent.click(await screen.findByRole('button', { name: /edit bank master/i }))
     await userEvent.click(await screen.findByRole('button', { name: 'Add aggregator' }))
 
     await type(/display name/i, 'New Aggregator')
@@ -741,7 +739,6 @@ describe('master data create dialogs', () => {
     stubAggregatorWrites(calls)
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     const codeInput = screen.getByLabelText(/aggregator code/i) as HTMLInputElement
@@ -754,7 +751,6 @@ describe('master data create dialogs', () => {
     stubAggregatorWrites(calls)
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator VSC Bank' }))
 
     // VSC (aggr_c1) is not codeLocked, so the code input is editable here.
@@ -776,7 +772,6 @@ describe('master data create dialogs', () => {
     stubAggregatorWrites(calls)
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     expect(await screen.findByText('No logo uploaded yet.')).toBeTruthy()
@@ -821,7 +816,6 @@ describe('master data create dialogs', () => {
 
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     await screen.findByText(/v2 gscb-v2\.png/)
@@ -852,7 +846,6 @@ describe('master data create dialogs', () => {
 
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     const img = await screen.findByAltText('GSCB logo')
@@ -878,8 +871,11 @@ describe('master data create dialogs', () => {
 
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
+
+    // Redesign 21 Aug 2026: with a logo stored, the upload area sits behind
+    // the Replace button; the summary line above it already names the master.
+    await userEvent.click(await screen.findByRole('button', { name: 'Replace' }))
 
     // Both names render, each tagged with its own version token: the master
     // and the derivative run separate sequences, so neither line is derived
@@ -911,7 +907,6 @@ describe('master data create dialogs', () => {
 
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     // Two ways in: the clickable thumbnail and the explicit Preview button.

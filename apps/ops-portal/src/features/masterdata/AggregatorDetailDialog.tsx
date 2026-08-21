@@ -72,6 +72,11 @@ export function AggregatorDetailDialog({
   }))
 
   const incomplete = !filled('displayName', 'aggregatorCode')
+  // Folds the optional block only while it is genuinely empty; one typed
+  // character anywhere keeps it open.
+  const hasAnyContact = (
+    ['address1', 'address2', 'address3', 'city', 'district', 'country', 'pin', 'mobile', 'email'] as const
+  ).some((k) => f(k).trim() !== '')
 
   // Only fields the operator actually changed go on the wire: editAggregator
   // is a partial COALESCE update, and sending every field back unconditionally
@@ -120,6 +125,13 @@ export function AggregatorDetailDialog({
   const [stored, setStored] = useState<AggregatorLogoCurrent | null>(null)
   // The click-to-enlarge popup over the CURRENT thumbnail.
   const [lightboxOpen, setLightboxOpen] = useState(false)
+  // Redesign 21 Aug 2026 (mockup): the upload controls live behind an explicit
+  // Replace button once a logo exists, and are open from the start when none
+  // does; the optional address/contact grid stays folded behind an Add link
+  // until it holds a value. UI state only; every field and endpoint is the
+  // same as before the redesign.
+  const [replacing, setReplacing] = useState(false)
+  const [contactOpen, setContactOpen] = useState(false)
   const [masterFile, setMasterFile] = useState<File | null>(null)
   const [derivativeFile, setDerivativeFile] = useState<File | null>(null)
   // The data: URL preview of the PENDING pair, shown beside the current logo
@@ -240,6 +252,7 @@ export function AggregatorDetailDialog({
       setViewedVersion(null)
       setVersionPreview(null)
       setInputEpoch((n) => n + 1)
+      setReplacing(false)
       invalidateLogoThumb(aggregator.aggrId)
       loadCurrent()
       onSaved()
@@ -260,228 +273,282 @@ export function AggregatorDetailDialog({
         {error !== null && <ErrorNote>{error}</ErrorNote>}
 
         <div className="space-y-6">
+          {/* -- Identity ----------------------------------------------- */}
           <div className="space-y-4">
-            <h3 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-foreground">Details</h3>
-            <div className="space-y-3">
-              <h4 className="text-[12px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Identity</h4>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Display name" htmlFor="agg-detail-name">
-                  <Input id="agg-detail-name" value={f('displayName')} onChange={set('displayName')} />
-                </Field>
-                <Field label="Status" htmlFor="agg-detail-status">
-                  <Select
-                    id="agg-detail-status"
-                    value={f('status')}
-                    onChange={(e) => {
-                      setValue('status', e.target.value)
-                    }}
-                  >
-                    {STATUSES.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              </div>
-              <Field
-                label="Aggregator code"
-                htmlFor="agg-detail-code"
-                hint={
-                  aggregator.codeLocked
-                    ? 'Locked: ingest has matched on this code.'
-                    : "The code this bank appears as in the tenant's request files. Editable until a file first matches it."
-                }
-              >
-                <Input
-                  id="agg-detail-code"
-                  value={f('aggregatorCode')}
-                  onChange={set('aggregatorCode')}
-                  disabled={aggregator.codeLocked}
-                />
+            <div className="grid grid-cols-[2fr_1fr] gap-3">
+              <Field label="Display name" htmlFor="agg-detail-name">
+                <Input id="agg-detail-name" value={f('displayName')} onChange={set('displayName')} />
+              </Field>
+              <Field label="Status" htmlFor="agg-detail-status">
+                <Select
+                  id="agg-detail-status"
+                  value={f('status')}
+                  onChange={(e) => {
+                    setValue('status', e.target.value)
+                  }}
+                >
+                  {STATUSES.map((st) => (
+                    // Display prettified; the VALUE on the wire is unchanged.
+                    <option key={st} value={st}>
+                      {st.charAt(0) + st.slice(1).toLowerCase()}
+                    </option>
+                  ))}
+                </Select>
               </Field>
             </div>
-
-            <div className="space-y-3">
-              <h4 className="text-[12px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Address</h4>
-              <Field label="Address 1" htmlFor="agg-detail-addr1" hint="Optional.">
-                <Input id="agg-detail-addr1" value={f('address1')} onChange={set('address1')} />
-              </Field>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Address 2" htmlFor="agg-detail-addr2" hint="Optional.">
-                  <Input id="agg-detail-addr2" value={f('address2')} onChange={set('address2')} />
-                </Field>
-                <Field label="Address 3" htmlFor="agg-detail-addr3" hint="Optional.">
-                  <Input id="agg-detail-addr3" value={f('address3')} onChange={set('address3')} />
-                </Field>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="City" htmlFor="agg-detail-city" hint="Optional.">
-                  <Input id="agg-detail-city" value={f('city')} onChange={set('city')} />
-                </Field>
-                <Field label="District" htmlFor="agg-detail-district" hint="Optional.">
-                  <Input id="agg-detail-district" value={f('district')} onChange={set('district')} />
-                </Field>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Country" htmlFor="agg-detail-country" hint="Optional.">
-                  <Input id="agg-detail-country" value={f('country')} onChange={set('country')} />
-                </Field>
-                <Field label="PIN" htmlFor="agg-detail-pin" hint="Optional.">
-                  <Input id="agg-detail-pin" value={f('pin')} onChange={set('pin')} />
-                </Field>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <h4 className="text-[12px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Contact</h4>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Mobile" htmlFor="agg-detail-mobile" hint="Optional. 10 digits.">
-                  <Input id="agg-detail-mobile" value={f('mobile')} inputMode="numeric" maxLength={10} onChange={set('mobile')} />
-                </Field>
-                <Field label="Email" htmlFor="agg-detail-email" hint="Optional.">
-                  <Input id="agg-detail-email" type="email" value={f('email')} onChange={set('email')} />
-                </Field>
-              </div>
-            </div>
+            <Field
+              label="Aggregator code"
+              htmlFor="agg-detail-code"
+              hint={
+                aggregator.codeLocked
+                  ? 'Locked: ingest has matched on this code.'
+                  : "The code this bank appears in the tenant's request files. Editable until a first file matches it."
+              }
+            >
+              <Input
+                id="agg-detail-code"
+                className="font-mono"
+                value={f('aggregatorCode')}
+                onChange={set('aggregatorCode')}
+                disabled={aggregator.codeLocked}
+              />
+            </Field>
           </div>
 
+          {/* -- Logo ---------------------------------------------------- */}
           <div className="space-y-3 border-t pt-4">
-            <h3 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-foreground">Logo</h3>
-            {logoError !== null && <ErrorNote>{logoError}</ErrorNote>}
-            <div className="flex items-start gap-6">
-              <div className="space-y-1">
-                <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">Current</p>
-                {derivativeUrl !== null ? (
-                  <>
-                    <button
-                      type="button"
-                      className="block cursor-zoom-in"
-                      aria-label="Preview the current logo"
-                      title="Click to preview"
-                      onClick={() => setLightboxOpen(true)}
-                    >
-                      <img
-                        src={derivativeUrl}
-                        alt={`${aggregator.displayName} logo`}
-                        className="max-h-24 rounded border border-border bg-white object-contain p-1"
-                      />
-                    </button>
-                    {/* The same popup behind an explicit control: the clickable
-                        thumbnail is not discoverable on its own. */}
-                    <Button type="button" variant="secondary" size="sm" onClick={() => setLightboxOpen(true)}>
-                      Preview
-                    </Button>
-                  </>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
-                )}
-              </div>
-              {(pendingUrl !== null || rendering) && (
-                <div className="space-y-1">
-                  <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">
-                    New (not uploaded yet)
-                  </p>
-                  {rendering ? (
-                    <p className="text-sm text-muted-foreground">Rendering the .ai…</p>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold">Logo</h3>
+                <p className="truncate text-xs text-muted-foreground">
+                  {stored?.master != null ? (
+                    <>
+                      {stored.master.filename} · {stored.master.version}
+                      {stored.derivative != null && (
+                        <>
+                          {' '}
+                          {stored.derivative.filename === `${stored.master.filename.replace(/\.[^.]+$/, '')}.png`
+                            ? '- PNG derivative generated automatically'
+                            : `- derivative ${stored.derivative.filename} (${stored.derivative.version})`}
+                        </>
+                      )}
+                    </>
                   ) : (
-                    <img
-                      src={pendingUrl ?? undefined}
-                      alt="Selected logo preview"
-                      className="max-h-24 rounded border border-dashed border-border bg-white object-contain p-1"
+                    'No logo uploaded yet.'
+                  )}
+                </p>
+              </div>
+              {stored?.master != null && (
+                <Button type="button" variant="secondary" size="sm" onClick={() => setReplacing((r) => !r)}>
+                  {replacing ? 'Keep current' : 'Replace'}
+                </Button>
+              )}
+            </div>
+            {logoError !== null && <ErrorNote>{logoError}</ErrorNote>}
+
+            {derivativeUrl !== null && (
+              <div className="flex items-center gap-3 rounded-xl border p-3">
+                <button
+                  type="button"
+                  className="block flex-none cursor-zoom-in"
+                  aria-label="Preview the current logo"
+                  title="Click to preview"
+                  onClick={() => setLightboxOpen(true)}
+                >
+                  <img
+                    src={derivativeUrl}
+                    alt={`${aggregator.displayName} logo`}
+                    className="h-12 w-12 rounded border border-border bg-white object-contain p-0.5"
+                  />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{stored?.master?.filename ?? 'Logo'}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Master file{stored?.master != null && <> · {stored.master.version}</>}
+                  </p>
+                </div>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setLightboxOpen(true)}>
+                  Preview
+                </Button>
+              </div>
+            )}
+
+            {/* The upload area: open from the start when nothing is stored,
+                behind Replace once something is. Same fields, same flow. */}
+            {(replacing || stored?.master == null) && (
+              <div className="space-y-3 rounded-xl border border-dashed p-3">
+                {(pendingUrl !== null || rendering) && (
+                  <div className="flex items-start gap-6">
+                    {derivativeUrl !== null && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">Current</p>
+                        <img
+                          src={derivativeUrl}
+                          alt={`${aggregator.displayName} logo`}
+                          className="max-h-24 rounded border border-border bg-white object-contain p-1"
+                        />
+                      </div>
+                    )}
+                    <div className="space-y-1">
+                      <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">
+                        New (not uploaded yet)
+                      </p>
+                      {rendering ? (
+                        <p className="text-sm text-muted-foreground">Rendering the .ai…</p>
+                      ) : (
+                        <img
+                          src={pendingUrl ?? undefined}
+                          alt="Selected logo preview"
+                          className="max-h-24 rounded border border-dashed border-border bg-white object-contain p-1"
+                        />
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  <Field
+                    label="Logo master (.ai)"
+                    htmlFor="agg-logo-master"
+                    hint="Pick the .ai; the preview and its PNG render derivative are generated right here in the browser."
+                  >
+                    <Input
+                      id="agg-logo-master"
+                      key={`master-${inputEpoch}`}
+                      type="file"
+                      accept=".ai,application/postscript,application/pdf"
+                      onChange={(e) => void pickMaster(e.target.files?.[0] ?? null)}
                     />
+                    {stored?.master != null && (
+                      <p className="text-xs text-foreground">
+                        Currently stored: <span className="font-medium">{stored.master.filename}</span> ({stored.master.version})
+                      </p>
+                    )}
+                  </Field>
+                  <Field
+                    label="Render derivative (PNG or SVG)"
+                    htmlFor="agg-logo-derivative"
+                    hint={renderHint ?? 'Auto-generated from the .ai; pick one here only to override it.'}
+                  >
+                    <Input
+                      id="agg-logo-derivative"
+                      key={`derivative-${inputEpoch}`}
+                      type="file"
+                      accept="image/png,image/svg+xml"
+                      onChange={(e) => void pickDerivative(e.target.files?.[0] ?? null)}
+                    />
+                    {stored?.derivative != null && (
+                      <p className="text-xs text-foreground">
+                        Currently stored: <span className="font-medium">{stored.derivative.filename}</span> ({stored.derivative.version})
+                      </p>
+                    )}
+                  </Field>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void uploadLogo()}
+                  disabled={masterFile === null || derivativeFile === null}
+                  loading={uploading}
+                >
+                  Upload logo
+                </Button>
+                <div className="space-y-1">
+                  {versions === null || versions.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No versions yet.</p>
+                  ) : (
+                    <ul className="space-y-1 text-sm text-muted-foreground">
+                      {/*
+                        NO client-side reverse: services/fulfillment/src/storage/asset-store.ts
+                        listVersions's own port contract is "All versions ever put()
+                        for key, newest first", and getAggregatorLogoVersions maps
+                        that straight through with no re-ordering. Wire order IS
+                        display order here.
+                      */}
+                      {versions.map((v) => (
+                        // AssetStore version tokens are already "v1", "v2", and so
+                        // on: no extra "v" prefix here, or this reads "vv1".
+                        <li key={v.version} className="space-y-1">
+                          <button
+                            type="button"
+                            className="text-left text-primary hover:underline"
+                            aria-label={`Preview logo version ${v.version}`}
+                            onClick={() => void viewVersion(v.version)}
+                          >
+                            {v.version} {v.filename}
+                          </button>
+                          {viewedVersion === v.version &&
+                            (versionPreview === 'loading' ? (
+                              <p className="text-xs text-muted-foreground">Loading preview…</p>
+                            ) : versionPreview === 'none' ? (
+                              <p className="text-xs text-muted-foreground">No preview stored for this version.</p>
+                            ) : versionPreview !== null ? (
+                              <img
+                                src={versionPreview}
+                                alt={`Logo version ${v.version}`}
+                                className="max-h-24 rounded border border-border bg-white object-contain p-1"
+                              />
+                            ) : null)}
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </div>
-              )}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <Field
-                label="Logo master (.ai)"
-                htmlFor="agg-logo-master"
-                hint="Pick the .ai; the preview and its PNG render derivative are generated right here in the browser."
-              >
-                <Input
-                  id="agg-logo-master"
-                  key={`master-${inputEpoch}`}
-                  type="file"
-                  accept=".ai,application/postscript,application/pdf"
-                  onChange={(e) => void pickMaster(e.target.files?.[0] ?? null)}
-                />
-                {stored?.master != null && (
-                  <p className="text-xs text-foreground">
-                    Currently stored: <span className="font-medium">{stored.master.filename}</span> ({stored.master.version})
-                  </p>
-                )}
-              </Field>
-              <Field
-                label="Render derivative (PNG or SVG)"
-                htmlFor="agg-logo-derivative"
-                hint={renderHint ?? 'Auto-generated from the .ai; pick one here only to override it.'}
-              >
-                <Input
-                  id="agg-logo-derivative"
-                  key={`derivative-${inputEpoch}`}
-                  type="file"
-                  accept="image/png,image/svg+xml"
-                  onChange={(e) => void pickDerivative(e.target.files?.[0] ?? null)}
-                />
-                {stored?.derivative != null && (
-                  <p className="text-xs text-foreground">
-                    Currently stored: <span className="font-medium">{stored.derivative.filename}</span> ({stored.derivative.version})
-                  </p>
-                )}
-              </Field>
-            </div>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => void uploadLogo()}
-              disabled={masterFile === null || derivativeFile === null}
-              loading={uploading}
-            >
-              Upload logo
-            </Button>
-            <div className="space-y-1">
-              {versions === null || versions.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No versions yet.</p>
-              ) : (
-                <ul className="space-y-1 text-sm text-muted-foreground">
-                  {/*
-                    NO client-side reverse: services/fulfillment/src/storage/asset-store.ts
-                    listVersions's own port contract is "All versions ever put()
-                    for key, newest first", and getAggregatorLogoVersions maps
-                    that straight through with no re-ordering. Wire order IS
-                    display order here.
-                  */}
-                  {versions.map((v) => (
-                    // AssetStore version tokens are already "v1", "v2", and so
-                    // on: no extra "v" prefix here, or this reads "vv1".
-                    <li key={v.version} className="space-y-1">
-                      <button
-                        type="button"
-                        className="text-left text-primary hover:underline"
-                        aria-label={`Preview logo version ${v.version}`}
-                        onClick={() => void viewVersion(v.version)}
-                      >
-                        {v.version} {v.filename}
-                      </button>
-                      {viewedVersion === v.version &&
-                        (versionPreview === 'loading' ? (
-                          <p className="text-xs text-muted-foreground">Loading preview…</p>
-                        ) : versionPreview === 'none' ? (
-                          <p className="text-xs text-muted-foreground">No preview stored for this version.</p>
-                        ) : versionPreview !== null ? (
-                          <img
-                            src={versionPreview}
-                            alt={`Logo version ${v.version}`}
-                            className="max-h-24 rounded border border-border bg-white object-contain p-1"
-                          />
-                        ) : null)}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+              </div>
+            )}
+          </div>
+
+          {/* -- Address and contact (all optional, folded while empty) --- */}
+          <div className="border-t pt-4">
+            {!contactOpen && !hasAnyContact ? (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-dashed p-3.5">
+                <div>
+                  <p className="text-sm font-semibold">Address and contact</p>
+                  <p className="text-xs text-muted-foreground">All optional. Nothing filled in yet.</p>
+                </div>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setContactOpen(true)}>
+                  Add
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold">Address and contact</h3>
+                <Field label="Address 1" htmlFor="agg-detail-addr1" hint="Optional.">
+                  <Input id="agg-detail-addr1" value={f('address1')} onChange={set('address1')} />
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Address 2" htmlFor="agg-detail-addr2" hint="Optional.">
+                    <Input id="agg-detail-addr2" value={f('address2')} onChange={set('address2')} />
+                  </Field>
+                  <Field label="Address 3" htmlFor="agg-detail-addr3" hint="Optional.">
+                    <Input id="agg-detail-addr3" value={f('address3')} onChange={set('address3')} />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="City" htmlFor="agg-detail-city" hint="Optional.">
+                    <Input id="agg-detail-city" value={f('city')} onChange={set('city')} />
+                  </Field>
+                  <Field label="District" htmlFor="agg-detail-district" hint="Optional.">
+                    <Input id="agg-detail-district" value={f('district')} onChange={set('district')} />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Country" htmlFor="agg-detail-country" hint="Optional.">
+                    <Input id="agg-detail-country" value={f('country')} onChange={set('country')} />
+                  </Field>
+                  <Field label="PIN" htmlFor="agg-detail-pin" hint="Optional.">
+                    <Input id="agg-detail-pin" value={f('pin')} onChange={set('pin')} />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Mobile" htmlFor="agg-detail-mobile" hint="Optional. 10 digits.">
+                    <Input id="agg-detail-mobile" value={f('mobile')} inputMode="numeric" maxLength={10} onChange={set('mobile')} />
+                  </Field>
+                  <Field label="Email" htmlFor="agg-detail-email" hint="Optional.">
+                    <Input id="agg-detail-email" type="email" value={f('email')} onChange={set('email')} />
+                  </Field>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

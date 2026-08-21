@@ -22,7 +22,7 @@ import {
   type BatchingConfigRow,
 } from '../../api/endpoints.js'
 import { PageHeader, Button, Card, CardHeader, Tabs, ErrorNote, StatusPill, CodeChip, SkeletonRows, Input } from '../../ui/primitives.js'
-import { IconChevron, IconSearch } from '../../ui/icons.js'
+import { IconSearch } from '../../ui/icons.js'
 import { fmtDate, fmtNumber, shortId } from '../../ui/format.js'
 import { fmtWait } from '../fulfillment/BatchingRules.js'
 
@@ -87,10 +87,13 @@ export function MasterDataPage() {
 // hierarchy (a bank master carrying a sibling `parentTnntId`, Task 7) is gone.
 // A bank master (tenant) now embeds its own `aggregators` array directly
 // (Task 6/7's identity write, spec 13); the tree renders each tenant followed
-// by its aggregators, default pinned first, collapsed by default behind an
-// expander, rather than a flat list or a tenant-to-tenant nesting.
+// by its aggregators, default pinned first. Redesign 21 Aug 2026 (mockup): a
+// FLAT list, one row per bank, tenant first with an aggregator-count badge,
+// the default aggregator badged 'default', searched by name or code and paged
+// 20 at a time. UI only; the data, the dialogs, and the endpoints are the
+// same as the tree this replaces.
 
-type TreeRow = { kind: 'tenant'; t: BankMasterRow } | { kind: 'aggregator'; t: BankMasterRow; a: AggregatorRow }
+type FlatRow = { kind: 'tenant'; t: BankMasterRow } | { kind: 'aggregator'; t: BankMasterRow; a: AggregatorRow }
 
 function matchesTenantQuery(t: BankMasterRow, q: string): boolean {
   return q === '' || t.displayName.toLowerCase().includes(q) || t.bankReferenceCode.toLowerCase().includes(q)
@@ -105,182 +108,15 @@ function sortedAggregators(t: BankMasterRow): AggregatorRow[] {
   return [...t.aggregators].sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
 }
 
-/**
- * The ONE place that decides whether a tenant's aggregators are showing:
- * either the operator clicked its expander (`expanded`), or the current
- * search matches one of its aggregators, which auto-surfaces them with no
- * click at all. `displayRows` and the column renderer both call this, so the
- * chevron direction and its "Show/Hide aggregators of X" label can never
- * disagree with what the table actually renders beneath that row (the bug
- * this function replaces: each side computed its own half of the same
- * condition).
- */
-function computeOpenParents(
-  rows: readonly BankMasterRow[],
-  expanded: Set<string>,
-  query: string,
-): Set<string> {
-  const q = query.trim().toLowerCase()
-  const open = new Set<string>()
-  for (const t of rows) {
-    if (expanded.has(t.tnntId)) {
-      open.add(t.tnntId)
-      continue
-    }
-    if (q !== '' && t.aggregators.some((a) => matchesAggregatorQuery(a, q))) open.add(t.tnntId)
-  }
-  return open
+/** Two-letter initials for the avatar circle, from the display name. */
+function initialsOf(name: string): string {
+  const words = name.trim().split(/\s+/).filter((w) => w !== '')
+  if (words.length === 0) return '?'
+  if (words.length === 1) return words[0]!.slice(0, 2).toUpperCase()
+  return (words[0]![0]! + words[1]![0]!).toUpperCase()
 }
 
-function bankMasterColumns(
-  onEditTenant: (row: BankMasterRow) => void,
-  onAddAggregator: (row: BankMasterRow) => void,
-  onEditAggregator: (row: AggregatorRow) => void,
-  openParents: Set<string>,
-  toggle: (tnntId: string) => void,
-): ReadonlyArray<DataTableColumn<TreeRow>> {
-  return [
-    {
-      key: 'bankReferenceCode',
-      header: 'Bank ref code',
-      cell: (row) => {
-        if (row.kind === 'aggregator') {
-          return (
-            <span className="flex items-center gap-2 pl-6">
-              <CodeChip>{row.a.aggregatorCode}</CodeChip>
-              <CodeChip>{row.a.isDefault ? 'default' : 'child'}</CodeChip>
-            </span>
-          )
-        }
-        const t = row.t
-        if (t.aggregators.length === 0) return <CodeChip>{t.bankReferenceCode}</CodeChip>
-        const isOpen = openParents.has(t.tnntId)
-        return (
-          <span className="flex items-center gap-2">
-            <button
-              type="button"
-              aria-label={`${isOpen ? 'Hide' : 'Show'} aggregators of ${t.displayName}`}
-              className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-              onClick={(e) => {
-                e.stopPropagation()
-                toggle(t.tnntId)
-              }}
-            >
-              <IconChevron width={14} height={14} className={isOpen ? 'rotate-90' : ''} aria-hidden="true" />
-            </button>
-            <CodeChip>{t.bankReferenceCode}</CodeChip>
-          </span>
-        )
-      },
-    },
-    {
-      key: 'displayName',
-      header: 'Display name',
-      cell: (row) => {
-        if (row.kind === 'aggregator') return <span className="font-medium text-foreground">{row.a.displayName}</span>
-        const t = row.t
-        return (
-          <span className="flex items-center gap-2">
-            <span className="font-medium text-foreground">{t.displayName}</span>
-            {t.aggregators.length > 0 && (
-              <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                {t.aggregators.length} aggregator{t.aggregators.length === 1 ? '' : 's'}
-              </span>
-            )}
-          </span>
-        )
-      },
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      cell: (row) => <StatusPill value={row.kind === 'tenant' ? row.t.status : row.a.status} />,
-    },
-    {
-      key: 'city',
-      header: 'City',
-      cell: (row) => {
-        const city = row.kind === 'tenant' ? row.t.city : row.a.city
-        return city ?? <span className="text-muted-foreground">-</span>
-      },
-    },
-    {
-      key: 'country',
-      header: 'Country',
-      cell: (row) => {
-        const country = row.kind === 'tenant' ? row.t.country : row.a.country
-        return country ?? <span className="text-muted-foreground">-</span>
-      },
-    },
-    {
-      key: 'mobile',
-      header: 'Mobile',
-      cell: (row) => {
-        const mobile = row.kind === 'tenant' ? row.t.mobile : row.a.mobile
-        return mobile ?? <span className="text-muted-foreground">-</span>
-      },
-    },
-    {
-      key: 'email',
-      header: 'Email',
-      cell: (row) => {
-        const email = row.kind === 'tenant' ? row.t.email : row.a.email
-        return email ?? <span className="text-muted-foreground">-</span>
-      },
-    },
-    {
-      key: 'id',
-      header: 'ID',
-      cell: (row) => <CodeChip>{shortId(row.kind === 'tenant' ? row.t.tnntId : row.a.aggrId)}</CodeChip>,
-    },
-    {
-      key: 'logo',
-      header: 'Logo',
-      cell: (row) =>
-        row.kind === 'aggregator' ? (
-          row.a.hasLogo ? (
-            <AggregatorLogoThumb aggrId={row.a.aggrId} name={row.a.displayName} />
-          ) : (
-            <span className="text-muted-foreground">none</span>
-          )
-        ) : (
-          <span className="text-muted-foreground">-</span>
-        ),
-    },
-    {
-      key: 'actions',
-      header: '',
-      cell: (row) => (
-        <span className="flex items-center justify-end gap-2">
-          {row.kind === 'tenant' && (
-            <button
-              type="button"
-              className="whitespace-nowrap rounded px-1 text-xs font-medium text-primary transition-colors hover:underline"
-              onClick={(e) => {
-                e.stopPropagation()
-                onAddAggregator(row.t)
-              }}
-            >
-              Add aggregator
-            </button>
-          )}
-          <button
-            type="button"
-            aria-label={row.kind === 'tenant' ? `Edit bank master ${row.t.displayName}` : `Edit aggregator ${row.a.displayName}`}
-            className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-            onClick={(e) => {
-              e.stopPropagation()
-              if (row.kind === 'tenant') onEditTenant(row.t)
-              else onEditAggregator(row.a)
-            }}
-          >
-            <Pencil className="size-3.5" aria-hidden="true" />
-          </button>
-        </span>
-      ),
-    },
-  ]
-}
+const PAGE_SIZE = 20
 
 function BankMastersView() {
   const { client } = useAuth()
@@ -288,19 +124,10 @@ function BankMastersView() {
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<BankMasterRow | null>(null)
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [addingAggregatorFor, setAddingAggregatorFor] = useState<BankMasterRow | null>(null)
   const [editingAggregator, setEditingAggregator] = useState<AggregatorRow | null>(null)
   const [query, setQuery] = useState('')
-
-  const toggle = useCallback((tnntId: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(tnntId)) next.delete(tnntId)
-      else next.add(tnntId)
-      return next
-    })
-  }, [])
+  const [page, setPage] = useState(0)
 
   const load = useCallback((): void => {
     getBankMasters(client)
@@ -320,82 +147,202 @@ function BankMastersView() {
     load()
   }, [load])
 
-  // The single source of truth for "is this tenant's aggregator list
-  // showing", shared with the column renderer below (via bankMasterColumns)
-  // so the chevron direction and its Show/Hide label can never disagree with
-  // what this memo actually puts in the table: both read the same set instead
-  // of each re-deriving their own half of "expanded OR search-matched-an-
-  // aggregator".
-  const openParents = useMemo(
-    () => (Array.isArray(rows) ? computeOpenParents(rows, expanded, query) : new Set<string>()),
-    [rows, expanded, query],
-  )
-
-  // Tree display order: each tenant, then (when open, per `openParents`
-  // above) its aggregators directly beneath it, default pinned first. When
-  // the read failed, `rows` itself (the error envelope) is what DataTable
-  // must see, so this returns it unchanged rather than an always-empty list.
-  const displayRows = useMemo((): TreeRow[] | unknown => {
-    if (!Array.isArray(rows)) return rows
+  // FLAT display order: each tenant, then ALL its aggregators directly
+  // beneath it, default pinned first. The search filters by name or code on
+  // every row kind; a tenant whose aggregator matches stays visible as the
+  // group heading its matches sit under.
+  const flatRows = useMemo((): FlatRow[] => {
+    if (!Array.isArray(rows)) return []
     const q = query.trim().toLowerCase()
-    const out: TreeRow[] = []
+    const out: FlatRow[] = []
     for (const t of rows) {
-      const aggMatch = t.aggregators.some((a) => matchesAggregatorQuery(a, q))
-      if (!matchesTenantQuery(t, q) && !aggMatch) continue
+      const kids = sortedAggregators(t).filter((a) => matchesAggregatorQuery(a, q))
+      if (!matchesTenantQuery(t, q) && kids.length === 0) continue
       out.push({ kind: 'tenant', t })
-      if (openParents.has(t.tnntId)) {
-        const kids = sortedAggregators(t).filter((a) => q === '' || matchesAggregatorQuery(a, q))
-        out.push(...kids.map((a): TreeRow => ({ kind: 'aggregator', t, a })))
-      }
+      out.push(...kids.map((a): FlatRow => ({ kind: 'aggregator', t, a })))
     }
     return out
-  }, [rows, query, openParents])
+  }, [rows, query])
+
+  // Page AFTER filtering, and clamp rather than remember: a search that
+  // shrinks the list below the current page must not strand the operator on
+  // an empty page.
+  const pageCount = Math.max(1, Math.ceil(flatRows.length / PAGE_SIZE))
+  const safePage = Math.min(page, pageCount - 1)
+  const pageRows = flatRows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE)
+
+  const tenantCount = Array.isArray(rows) ? rows.length : 0
+  const bankCount = Array.isArray(rows) ? rows.reduce((n, t) => n + t.aggregators.length, tenantCount) : 0
+
+  function statusCell(status: string) {
+    const on = status === 'ACTIVE'
+    return (
+      <span className="inline-flex items-center gap-1.5 text-sm">
+        <span className={`size-1.5 rounded-full ${on ? 'bg-emerald-500' : 'bg-muted-foreground'}`} aria-hidden="true" />
+        {status.charAt(0) + status.slice(1).toLowerCase()}
+      </span>
+    )
+  }
 
   return (
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader
-          title="Bank masters"
-          subtitle={Array.isArray(rows) ? `${rows.length} banks` : undefined}
-          actions={
+        <div className="flex flex-wrap items-center gap-3 px-4 pt-4">
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-base font-semibold">Bank masters</h2>
+            {Array.isArray(rows) && (
+              <p className="text-sm text-muted-foreground">
+                {bankCount} banks · {tenantCount} {tenantCount === 1 ? 'tenant' : 'tenants'}
+              </p>
+            )}
+          </div>
+          <div className="ml-auto flex items-center gap-3">
+            <div className="relative w-64">
+              <IconSearch
+                width={16}
+                height={16}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                aria-label="Search bank masters"
+                placeholder="Search name or code"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value)
+                  setPage(0)
+                }}
+                className="h-9 pl-9"
+              />
+            </div>
             <Button type="button" onClick={() => setAdding(true)}>
               Add bank master
             </Button>
-          }
-        />
+          </div>
+        </div>
         {rows === null ? (
-          <SkeletonRows rows={5} cols={10} />
+          <SkeletonRows rows={5} cols={4} />
         ) : (
-          <>
-            <div className="px-4 pt-3">
-              <div className="relative w-full max-w-xs">
-                <IconSearch
-                  width={16}
-                  height={16}
-                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <Input
-                  aria-label="Search bank masters"
-                  placeholder="Search…"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  className="h-9 pl-9"
-                />
+          <div className="px-4 pb-4 pt-3">
+            <div className="grid grid-cols-[minmax(0,1fr)_180px_120px_60px] gap-3 border-b px-2 pb-2 text-[11px] font-medium uppercase tracking-[0.06em] text-muted-foreground max-sm:hidden">
+              <span>Bank</span>
+              <span>Contact</span>
+              <span>Status</span>
+              <span aria-hidden="true" />
+            </div>
+            {pageRows.length === 0 ? (
+              <p className="px-2 py-6 text-sm text-muted-foreground">No bank masters match.</p>
+            ) : (
+              <ul className="divide-y">
+                {pageRows.map((row) => {
+                  const isTenant = row.kind === 'tenant'
+                  const name = isTenant ? row.t.displayName : row.a.displayName
+                  const code = isTenant ? row.t.bankReferenceCode : row.a.aggregatorCode
+                  const status = isTenant ? row.t.status : row.a.status
+                  const contact = isTenant
+                    ? (row.t.email ?? row.t.mobile)
+                    : (row.a.email ?? row.a.mobile)
+                  return (
+                    <li
+                      key={isTenant ? row.t.tnntId : row.a.aggrId}
+                      className="grid grid-cols-[minmax(0,1fr)_180px_120px_60px] items-center gap-3 px-2 py-2.5 max-sm:grid-cols-[minmax(0,1fr)_60px]"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        {(() => {
+                          const initials = (
+                            <span
+                              aria-hidden="true"
+                              className={`flex size-9 flex-none items-center justify-center rounded-lg text-[11px] font-semibold ${
+                                isTenant ? 'bg-amber-100 text-amber-800' : 'bg-muted text-muted-foreground'
+                              }`}
+                            >
+                              {initialsOf(name)}
+                            </span>
+                          )
+                          // The avatar IS the master-data logo when one exists
+                          // (the standing ruling: bank data always shows master
+                          // data); initials only stand in where nothing is
+                          // stored or while it loads.
+                          return !isTenant && row.a.hasLogo ? (
+                            <AggregatorLogoThumb aggrId={row.a.aggrId} name={name} fallback={initials} />
+                          ) : (
+                            initials
+                          )
+                        })()}
+                        <div className="min-w-0">
+                          <p className="flex items-center gap-2 text-sm font-medium">
+                            <span className="truncate">{name}</span>
+                            {isTenant && (
+                              <span className="flex-none rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                                {row.t.aggregators.length} aggregators
+                              </span>
+                            )}
+                            {!isTenant && row.a.isDefault && (
+                              <span className="flex-none rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                                default
+                              </span>
+                            )}
+                          </p>
+                          <p className="truncate font-mono text-[11px] text-muted-foreground">{code}</p>
+                        </div>
+                      </div>
+                      <p className="truncate text-sm text-muted-foreground max-sm:hidden">{contact ?? '-'}</p>
+                      <div className="max-sm:hidden">{statusCell(status)}</div>
+                      <div className="text-right">
+                        {isTenant ? (
+                          <button
+                            type="button"
+                            className="text-sm font-medium text-primary hover:underline"
+                            aria-label={`Edit bank master ${row.t.displayName}`}
+                            onClick={() => setEditing(row.t)}
+                          >
+                            Edit
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="text-sm font-medium text-primary hover:underline"
+                            aria-label={`Edit aggregator ${row.a.displayName}`}
+                            onClick={() => setEditingAggregator(row.a)}
+                          >
+                            Edit
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            <div className="flex items-center justify-between border-t px-2 pt-3">
+              <p className="text-sm text-muted-foreground">
+                {flatRows.length === 0
+                  ? '0 of 0'
+                  : `${safePage * PAGE_SIZE + 1}-${Math.min((safePage + 1) * PAGE_SIZE, flatRows.length)} of ${flatRows.length}`}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={safePage === 0}
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                >
+                  Previous
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={safePage >= pageCount - 1}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
               </div>
             </div>
-            <DataTable
-              columns={bankMasterColumns(setEditing, setAddingAggregatorFor, setEditingAggregator, openParents, toggle)}
-              rows={(displayRows as TreeRow[]) ?? []}
-              getRowKey={(row) => (row.kind === 'tenant' ? row.t.tnntId : row.a.aggrId)}
-              emptyMessage="No bank masters."
-              // The tree renders its OWN search box above (its query also
-              // auto-expands matching parents); the grid's built-in one would
-              // be a second, dumber search bar on the same screen.
-              searchable={false}
-            />
-          </>
+          </div>
         )}
       </Card>
       <BankMasterCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} />

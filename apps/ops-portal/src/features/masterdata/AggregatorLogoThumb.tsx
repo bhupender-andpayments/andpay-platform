@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { fetchAggregatorLogoDerivative } from '../../api/endpoints.js'
 import { useAuth } from '../../auth/AuthContext.js'
 import { blobToDataUrl } from '../../lib/blob.js'
@@ -15,7 +15,18 @@ export function invalidateLogoThumb(aggrId: string): void {
   thumbCache.delete(aggrId)
 }
 
-export function AggregatorLogoThumb({ aggrId, name }: { aggrId: string; name: string }) {
+export function AggregatorLogoThumb({
+  aggrId,
+  name,
+  fallback,
+}: {
+  aggrId: string
+  name: string
+  /** Rendered instead of a text placeholder while loading or on failure (the
+   *  flat list's initials avatar), so a missing logo reads as identity, not
+   *  as an error. */
+  fallback?: ReactNode
+}) {
   // The client (not a raw fetch) so an expired access token refreshes and
   // retries instead of decaying every thumbnail to "unavailable" at once.
   const { client } = useAuth()
@@ -41,13 +52,15 @@ export function AggregatorLogoThumb({ aggrId, name }: { aggrId: string; name: st
     }
   }, [aggrId, client])
 
-  if (failed) return <span className="text-muted-foreground">unavailable</span>
-  if (url === null) return <span className="text-muted-foreground">…</span>
+  if (failed || url === null) {
+    if (fallback !== undefined) return <>{fallback}</>
+    return <span className="text-muted-foreground">{failed ? 'unavailable' : '…'}</span>
+  }
   return (
     <img
       src={url}
       alt={`${name} logo`}
-      className="h-8 max-w-24 rounded border border-border bg-white object-contain p-0.5"
+      className="size-9 flex-none rounded-lg border border-border bg-white object-contain p-0.5"
     />
   )
 }
