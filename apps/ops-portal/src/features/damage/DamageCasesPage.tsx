@@ -319,7 +319,13 @@ export function DamageCasesPage() {
         </Link>
       ),
     },
-    { key: 'dispatchGroup', header: 'Group', cell: (r) => <DispatchGroupBadge group={r.dispatchGroup} /> },
+    // THIS COLUMN WAS ALREADY HERE AND ALWAYS BLANK (fixed 21 Aug 2026). The
+    // read never selected dispatch_group, so every row rendered the badge's
+    // null case, and the page could not tell a soundbox case from a collateral
+    // one even though it had a column for exactly that. The two close on
+    // different rules, so it matters: a soundbox case needs the replacement
+    // delivered AND activated, a collateral case needs only delivery.
+    { key: 'dispatchGroup', header: 'Group', cell: (r) => <DispatchGroupBadge group={r.dispatchGroup ?? null} /> },
     { key: 'merchantDisplayName', header: 'Merchant', cell: (r) => r.merchantDisplayName },
     {
       key: 'bank',

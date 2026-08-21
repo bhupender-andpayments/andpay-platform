@@ -477,6 +477,16 @@ export interface BatchEntryRow {
   // Not recipient PII: an opaque ingest coordinate, no name, address or number
   // in it. So the D104 default-exclude posture above is not breached.
   sourceEventId: string
+  /**
+   * The dispatch this one REPLACES (DAMAGE.md), or null on an original.
+   *
+   * This is what lets the pool and the batch page mark a replacement without
+   * downloading every damage case and joining in the browser. Event-carried from
+   * fct.tms.assignment.v1's optional replacementOf, so it is null on rows minted
+   * before that field existed as well as on genuine originals; the two are
+   * indistinguishable here and neither is a replacement worth flagging.
+   */
+  replacementOfAsgnId: string | null
   // 19 Aug 2026 (demo need): the courier's own axis, not the dispatch's.
   // dispatch_state above never reaches DELIVERED by design (it stops at
   // DISPATCHED_BY_VENDOR, courier progress lives on shpt.status), so a batch
@@ -502,6 +512,7 @@ interface BatchEntryDbRow {
   ship_to_superseded: boolean
   dispatch_group: string | null
   source_event_id: string
+  replacement_of: string | null
   courier_status: string | null
 }
 
@@ -521,6 +532,7 @@ function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
     shipToSuperseded: r.ship_to_superseded,
     dispatchGroup: r.dispatch_group,
     sourceEventId: r.source_event_id,
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
     courierStatus: r.courier_status,
   }
 }
@@ -726,7 +738,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
       SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             dispatch_group, source_event_id,
+             dispatch_group, source_event_id, replacement_of::text AS replacement_of,
              COALESCE(
                (SELECT s.status FROM unit u JOIN shpt s ON s.id = u.shipment WHERE u.asgn_id = pending_pool_entry.asgn_id),
                (SELECT s.status FROM shpt s WHERE s.id = pending_pool_entry.collateral_shipment)
@@ -838,7 +850,7 @@ function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
 const POOL_ENTRY_COLUMNS = `asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             dispatch_group, source_event_id,
+             dispatch_group, source_event_id, replacement_of::text AS replacement_of,
              COALESCE(
                (SELECT s.status FROM unit u JOIN shpt s ON s.id = u.shipment WHERE u.asgn_id = pending_pool_entry.asgn_id),
                (SELECT s.status FROM shpt s WHERE s.id = pending_pool_entry.collateral_shipment)

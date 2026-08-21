@@ -1,4 +1,4 @@
-import { fromUuid } from '@andpay/ids'
+import { fromUuid, toUuid } from '@andpay/ids'
 import type { TmsDb } from './db.js'
 import type { Tx } from './internal.js'
 import { toDamageReasonDto, type DamageReasonDbRow, type DamageReasonRow } from './damage-reason.js'
@@ -104,13 +104,24 @@ export interface DamageCaseView {
   replacementOf: string
   merchantDisplayName: string
   bankReferenceCode: string
+  /** For the Name (CODE) display rule (DEC-14); the read carried only the code. */
+  bankDisplayName: string
   branchCode: string | null
+  /**
+   * SOUNDBOX or COLLATERAL (DAMAGE.md). Absent from this read until 21 Aug 2026,
+   * which meant the damage-cases page could not tell a soundbox case from a
+   * collateral one at all: the two close on different rules and an operator
+   * chasing one has to know which they are looking at.
+   */
+  dispatchGroup: 'SOUNDBOX' | 'COLLATERAL'
   damageReason: string | null
   /** What the BANK wrote on the damage row. */
   bankRemarks: string | null
   /** What an OPERATOR wrote about the case (T6.4). Different people's words. */
   opsRemarks: string | null
   caseStatus: string | null
+  /** Why it was cancelled, on a Cancelled case only. */
+  caseCancelRemarks: string | null
   billable: boolean
   demandState: string
   createdAt: Date
@@ -122,11 +133,14 @@ interface DamageCaseDbRow {
   replacement_of: string
   merchant_display_name: string
   bank_reference_code: string
+  bank_display_name: string
   branch_code: string | null
+  dispatch_group: 'SOUNDBOX' | 'COLLATERAL'
   damage_reason: string | null
   bank_remarks: string | null
   ops_remarks: string | null
   case_status: string | null
+  case_cancel_remarks: string | null
   billable: boolean
   demand_state: string
   created_at: Date
@@ -139,11 +153,14 @@ function toDamageCaseDto(r: DamageCaseDbRow): DamageCaseView {
     replacementOf: fromUuid('asgn', r.replacement_of),
     merchantDisplayName: r.merchant_display_name,
     bankReferenceCode: r.bank_reference_code,
+    bankDisplayName: r.bank_display_name,
     branchCode: r.branch_code,
+    dispatchGroup: r.dispatch_group,
     damageReason: r.damage_reason,
     bankRemarks: r.bank_remarks,
     opsRemarks: r.ops_remarks,
     caseStatus: r.case_status,
+    caseCancelRemarks: r.case_cancel_remarks,
     billable: r.billable,
     demandState: r.demand_state,
     createdAt: r.created_at,
@@ -159,15 +176,17 @@ export async function readDamageCases(
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
     return args.includeClosed
       ? await tx.$queryRaw<DamageCaseDbRow[]>`
-          SELECT id, replacement_of, merchant_display_name, bank_reference_code, branch_code,
-                 damage_reason, bank_remarks, ops_remarks, case_status, billable, demand_state, created_at, updated_at
+          SELECT id, replacement_of, merchant_display_name, bank_reference_code, bank_display_name, branch_code,
+                 dispatch_group, damage_reason, bank_remarks, ops_remarks, case_status,
+                 case_cancel_remarks, billable, demand_state, created_at, updated_at
           FROM assignment
           WHERE replacement_of IS NOT NULL
           ORDER BY created_at
         `
       : await tx.$queryRaw<DamageCaseDbRow[]>`
-          SELECT id, replacement_of, merchant_display_name, bank_reference_code, branch_code,
-                 damage_reason, bank_remarks, ops_remarks, case_status, billable, demand_state, created_at, updated_at
+          SELECT id, replacement_of, merchant_display_name, bank_reference_code, bank_display_name, branch_code,
+                 dispatch_group, damage_reason, bank_remarks, ops_remarks, case_status,
+                 case_cancel_remarks, billable, demand_state, created_at, updated_at
           FROM assignment
           WHERE replacement_of IS NOT NULL AND case_status IS DISTINCT FROM 'Closed'
           ORDER BY created_at
@@ -259,6 +278,100 @@ export async function searchDispatchesByVpa(db: TmsDb, vpa: string): Promise<Vpa
     activatedAt: r.activated_at === null ? null : r.activated_at.toISOString(),
     activatedBy: r.activated_by,
     createdAt: r.created_at.toISOString(),
+  }))
+}
+
+/**
+ * THE REPLACEMENT CHAIN through any member of it (DAMAGE.md, 21 Aug 2026).
+ *
+ * replacement_of is a ONE-LEVEL pointer, and nothing walked it. That was fine
+ * while a chain was at most two long, and stopped being fine the moment repeat
+ * damage became a real flow: an operator holding the third generation could see
+ * its parent and had no way to reach the original, and an operator on the
+ * original could not tell that two replacements had already been through.
+ *
+ * Walks UP to the root first and then DOWN, so any member returns the same whole
+ * chain: "show me this dispatch's history" is the same question whichever
+ * generation you ask it from.
+ *
+ * ORDERED OLDEST FIRST, so the caller renders a progression without sorting.
+ *
+ * NOT AN AGGREGATE, which matters here: this module is row-level only by
+ * construction (architecture.test.ts check 7). WITH RECURSIVE is a row-producing
+ * query, not a count or a group by, so it is inside the rule rather than an
+ * exception to it.
+ */
+export interface ChainMemberRow {
+  asgnId: string
+  /** The one it replaces, null on the root. */
+  replacementOfAsgnId: string | null
+  dispatchGroup: string
+  caseStatus: string | null
+  demandState: string
+  damageReason: string | null
+  billable: boolean
+  activatedAt: string | null
+  deliveredAt: string | null
+  createdAt: string
+  /** 0 for the original, 1 for its replacement, and so on. */
+  generation: number
+}
+
+export async function readReplacementChainOps(db: TmsDb, asgnId: string): Promise<ChainMemberRow[]> {
+  const asgnUuid = toUuid(asgnId)
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<
+      {
+        id: string
+        replacement_of: string | null
+        dispatch_group: string
+        case_status: string | null
+        demand_state: string
+        damage_reason: string | null
+        billable: boolean
+        activated_at: Date | null
+        delivered_at: Date | null
+        created_at: Date
+        generation: number
+      }[]
+    >`
+      WITH RECURSIVE up AS (
+        -- Climb to the root: the ancestor with no replacement_of.
+        SELECT id, replacement_of FROM assignment WHERE id = ${asgnUuid}::uuid
+        UNION ALL
+        SELECT a.id, a.replacement_of FROM assignment a JOIN up u ON a.id = u.replacement_of
+      ),
+      root AS (
+        SELECT id FROM up WHERE replacement_of IS NULL LIMIT 1
+      ),
+      down AS (
+        -- Then descend from it, numbering the generations as we go.
+        SELECT a.id, a.replacement_of, 0 AS generation
+        FROM assignment a JOIN root r ON a.id = r.id
+        UNION ALL
+        SELECT c.id, c.replacement_of, d.generation + 1
+        FROM assignment c JOIN down d ON c.replacement_of = d.id
+      )
+      SELECT a.id::text AS id, a.replacement_of::text AS replacement_of, a.dispatch_group,
+             a.case_status, a.demand_state, a.damage_reason, a.billable,
+             a.activated_at, a.delivered_at, a.created_at, d.generation
+      FROM down d JOIN assignment a ON a.id = d.id
+      ORDER BY d.generation ASC, a.created_at ASC
+    `
+  })
+  return rows.map((r) => ({
+    asgnId: fromUuid('asgn', r.id),
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
+    dispatchGroup: r.dispatch_group,
+    caseStatus: r.case_status,
+    demandState: r.demand_state,
+    damageReason: r.damage_reason,
+    billable: r.billable,
+    activatedAt: r.activated_at === null ? null : r.activated_at.toISOString(),
+    deliveredAt: r.delivered_at === null ? null : r.delivered_at.toISOString(),
+    createdAt: r.created_at.toISOString(),
+    generation: Number(r.generation),
   }))
 }
 

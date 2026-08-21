@@ -45,6 +45,7 @@ import {
 import {
   readQuarantineQueue,
   listRequestLegsOps,
+  readReplacementChainOps,
   listDamageReasons,
   readDamageCases,
   listMerchants,
@@ -56,6 +57,7 @@ import {
   type MerchantRow,
   type VpaDispatchRow,
   type RequestLegRow,
+  type ChainMemberRow,
   type DamageCaseSummary,
 } from '@andpay/tms-service'
 import { listBankMasters, type BankMasterRow } from '@andpay/identity-service'
@@ -238,6 +240,16 @@ export class OpsReadController {
       throw new BadRequestException('vpa query parameter is required')
     }
     return { rows: await searchDispatchesByVpa(this.deps.tmsDb, vpa) }
+  }
+
+  // THE REPLACEMENT CHAIN through any member (DAMAGE.md). Single-context, so it
+  // belongs on this controller. An unknown or non-replaced dispatch returns a
+  // one-element chain (itself), which is the honest answer and lets the caller
+  // render the same component either way rather than branching on empty.
+  @Get('dispatches/:asgnId/chain')
+  @HttpCode(200)
+  async dispatchChain(@Param('asgnId') asgnId: string): Promise<ChainMemberRow[]> {
+    return readReplacementChainOps(this.deps.tmsDb, asgnId)
   }
 
   // MERCHANT REQUESTS (DAMAGE.md): the legs, flat, newest first. The caller

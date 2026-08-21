@@ -48,6 +48,8 @@ interface RequestRow {
   stickerCount: number
   dispatches: number
   heldCount: number
+  /** Every leg replaces something: this whole request is a replacement round. */
+  isReplacement: boolean
   /** Earliest of its dispatches: how long the REQUEST has been waiting. */
   pooledAt: string
   rows: PoolEntryRow[]
@@ -84,6 +86,11 @@ export function groupByRequest(entries: readonly PoolEntryRow[]): RequestRow[] {
       stickerCount: rows.reduce((n, r) => n + r.stickerCount, 0),
       dispatches: rows.length,
       heldCount: rows.filter((r) => r.poolStatus === 'HELD').length,
+      // A REPLACEMENT REQUEST reads as one (DAMAGE.md). Every leg of a
+      // replacement round is a replacement, so `every` rather than `some`: a
+      // mixed set would mean two unrelated requests share a key, which the
+      // derived-key fix exists to prevent.
+      isReplacement: rows.length > 0 && rows.every((r) => (r.replacementOfAsgnId ?? null) !== null),
       pooledAt: rows.reduce((min, r) => (r.createdAt < min ? r.createdAt : min), first.createdAt),
       rows,
     }
@@ -192,7 +199,20 @@ export function PoolPage() {
     {
       key: 'merchant',
       header: 'Merchant',
-      cell: (r) => <span className="font-medium">{r.merchant}</span>,
+      cell: (r) => (
+        <span className="flex items-center gap-2">
+          <span className="font-medium">{r.merchant}</span>
+          {/* Native at last: this used to be impossible here, because
+              replacement_of was TMS-local and the pool row had no way to know.
+              The dispatch detail page faked it by downloading every damage case
+              and searching; a list could not fake it at all. */}
+          {r.isReplacement && (
+            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+              Replacement
+            </span>
+          )}
+        </span>
+      ),
       sortValue: (r) => r.merchant,
     },
     {

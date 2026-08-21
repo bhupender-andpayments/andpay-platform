@@ -233,6 +233,15 @@ model PendingPoolEntry {
   // to find and D103d forbids birthing one; see migration
   // 20260810120000_collateral_shipment_link for the full reasoning.
   collateralShipment  String?  @map("collateral_shipment") @db.Uuid
+  /// The dispatch this one REPLACES (DAMAGE.md, 21 Aug 2026), copied from
+  /// fct.tms.assignment.v1's optional replacementOf.
+  ///
+  /// Event-carried, never a cross-context read (C4). It exists because the pool
+  /// and the batch page could not tell a replacement from a fresh request at
+  /// all: replacement_of was TMS-local, so the data was not there to show, and
+  /// the portal's workaround was to download every damage case and join in the
+  /// browser. Null on an original.
+  replacementOf       String?  @map("replacement_of") @db.Uuid
 
   @@map("pending_pool_entry")
 }

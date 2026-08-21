@@ -24,7 +24,12 @@ import {
   type ReportFilters,
   type TileName,
 } from '@andpay/analytics-service'
-import { readShipmentTrailOps, readUnitSimsBySerialsOps } from '@andpay/fulfillment-service'
+import {
+  readShipmentTrailOps,
+  readUnitSimsBySerialsOps,
+  listPoolEntries,
+  type PoolEntryRow,
+} from '@andpay/fulfillment-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAnalyticsRead, emitOpsAnalyticsCrossTenant } from './audit.js'
@@ -147,6 +152,39 @@ export class ReportsController {
   // ONE round trip for the whole page, not one per row: the serials are
   // collected into a Set across every result row first, so a 500-row report is
   // still a single fulfillment read.
+/**
+   * Mark the rows whose dispatch is being HELD BACK from batching (DAMAGE.md).
+   *
+   * WHY THIS IS COMPOSED HERE. hold is fulfillment's state (pending_pool_entry
+   * .pool_status) and the dispatches list is an analytics report, so the two
+   * never met: an operator could hold a dispatch on the pool page and then find
+   * no trace of it on the dispatches page, which is where they go looking for a
+   * specific dispatch. Holding is also not a courier or pipeline stage, so it has
+   * no place on the analytics row's own axes.
+   *
+   * Edge composition is the sanctioned way to answer a question that spans two
+   * contexts (the same shape dispatch detail already uses for its three reads),
+   * and it is cheap here: held dispatches are a small working set by definition,
+   * one indexed read, no join.
+   *
+   * The alternative was a browser-side join, which this portal has been burned by
+   * once already (the bank-name lookup that rendered a bare "3", because the two
+   * sides keyed on different values). This one keys on asgnId, which is exact,
+   * but the lesson holds: put it on the row before it reaches the page.
+   */
+  private async mergeHoldState(rows: ReportRow[]): Promise<ReportRow[]> {
+    const held = await listPoolEntries(this.deps.fulfillmentDb, { poolStatus: 'HELD' })
+    if (held.length === 0) return rows
+    const byAsgn = new Map<string, PoolEntryRow>(held.map((h) => [h.asgnId, h]))
+    return rows.map((row) => {
+      const id = typeof row['dispatchId'] === 'string' ? row['dispatchId'] : ''
+      const hit = byAsgn.get(id)
+      // Absent rather than false on an unheld row: the field means "this is held
+      // and here is why", and a false on every row is noise in a CSV export.
+      return hit === undefined ? row : { ...row, poolStatus: 'HELD', holdReason: hit.holdReason ?? null }
+    })
+  }
+
   private async mergeActivationSims(rows: ReportRow[]): Promise<ReportRow[]> {
     const serials = new Set<string>()
     for (const row of rows) {
@@ -392,6 +430,11 @@ export class ReportsController {
     // dispatch, which is what an operator chasing an activation asks for.
     if (name === 'activation' || name === 'dispatches') {
       result.rows = await this.mergeActivationSims(result.rows)
+    }
+    // The hold marker, dispatches report only: it is the list an operator uses
+    // to find one dispatch, and a held one was invisible there (DAMAGE.md).
+    if (name === 'dispatches') {
+      result.rows = await this.mergeHoldState(result.rows)
     }
 
     res.setHeader('x-analytics-watermark', result.watermark.asOf ?? 'none')

@@ -24,6 +24,7 @@ import {
   getDevices,
   getDispatchDetail,
   getDispatchTrail,
+  getReplacementChain,
   getPoolEntries,
   type BatchEntryRow,
   type DamageCaseRow,
@@ -49,7 +50,8 @@ import {
   CodeChip,
 } from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
-import type { StatusTrailEntry } from '../../api/endpoints.js'
+import type { StatusTrailEntry, ChainMemberRow } from '../../api/endpoints.js'
+import { ReplacementChain } from './ReplacementChain.js'
 import { DispatchStatusEditDialog } from './DispatchStatusEditDialog.js'
 import {
   COURIER_RUNG,
@@ -128,6 +130,10 @@ export function DispatchDetailPage() {
   // Supplies the real instants for the rail's pre-courier rungs, which used to
   // be inferred from the entry's current state and so could carry no time.
   const [dispatchTrail, setDispatchTrail] = useState<readonly StatusTrailEntry[]>([])
+  // The replacement chain through this dispatch (DAMAGE.md). Any member returns
+  // the whole chain, so this page renders the same card wherever an operator
+  // entered it from.
+  const [chain, setChain] = useState<readonly ChainMemberRow[]>([])
   const [labelQr, setLabelQr] = useState<string | null>(null)
   const [deviceIdBySerial, setDeviceIdBySerial] = useState<ReadonlyMap<string, string>>(new Map())
 
@@ -188,6 +194,21 @@ export function DispatchDetailPage() {
   // The dispatch trail, silent on failure like every other enrichment read on
   // this page: a trail that does not arrive costs the early rungs their
   // timestamps, not the page.
+  useEffect(() => {
+    if (asgnId === undefined) return
+    let cancelled = false
+    getReplacementChain(client, asgnId)
+      .then((rows) => {
+        if (!cancelled) setChain(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setChain([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client, asgnId])
+
   useEffect(() => {
     if (asgnId === undefined) return
     let cancelled = false
@@ -434,6 +455,24 @@ export function DispatchDetailPage() {
           <LifecycleRail stages={rail} />
         </CardBody>
       </Card>
+
+      {/* THE CHAIN, directly under the rail and above everything else, because
+          when a dispatch has been replaced the first thing an operator needs is
+          which generation they are looking at. Renders nothing on a dispatch
+          that was never replaced, which is most of them. */}
+      {chain.length > 1 && asgnId !== undefined && (
+        <Card>
+          <CardBody>
+            <div className="pb-4">
+              <h2 className="text-base font-medium">Replacement history</h2>
+              <p className="text-[12.5px] text-muted-foreground">
+                Damage on this merchant's kit, oldest first. A new damage flag goes on the current one.
+              </p>
+            </div>
+            <ReplacementChain chain={chain} currentAsgnId={asgnId} />
+          </CardBody>
+        </Card>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>

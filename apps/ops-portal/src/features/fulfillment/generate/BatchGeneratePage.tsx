@@ -469,7 +469,20 @@ export function BatchGeneratePage() {
     {
       key: 'merchant',
       header: 'Merchant',
-      cell: (e) => <span className="font-medium text-foreground">{e.merchantDisplayName}</span>,
+      cell: (e) => (
+        <span className="flex items-center gap-2">
+          <span className="font-medium text-foreground">{e.merchantDisplayName}</span>
+          {/* DAMAGE.md: a replacement in the batch says so. The batch page had
+              no way to know until replacementOf started riding the assignment
+              fact, and the operator's question here is a real one: a batch of
+              replacements is a batch the bank is already chasing. */}
+          {(e.replacementOfAsgnId ?? null) !== null && (
+            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+              Replacement
+            </span>
+          )}
+        </span>
+      ),
       sortValue: (e) => e.merchantDisplayName,
     },
     {

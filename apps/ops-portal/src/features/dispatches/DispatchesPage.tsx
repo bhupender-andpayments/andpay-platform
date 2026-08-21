@@ -27,6 +27,7 @@ import {
   CodeChip,
 } from '../../ui/primitives.js'
 import { fmtDateTime } from '../../ui/format.js'
+import { cn } from '@/lib/utils'
 import { COURIER_STATUSES } from '../dashboards/courierStatuses.js'
 import { DispatchGroupBadge } from '../fulfillment/DispatchGroupBadge.js'
 
@@ -177,6 +178,9 @@ export function DispatchesPage() {
   // the dispatch grid, which would look like the tab had been deleted.
   const legacyShipmentsView = searchParams.get('view') === 'shipments'
   const groupSel = searchParams.get('group') ?? ''
+  // ?held=1, in the URL like every other filter here, so an operator can send
+  // somebody "the held ones" as a link (DAMAGE.md).
+  const heldOnly = searchParams.get('held') === '1'
 
   const anyFilter =
     q !== '' ||
@@ -186,6 +190,7 @@ export function DispatchesPage() {
     to !== '' ||
     statusSel.length > 0 ||
     stageSel.length > 0 ||
+    heldOnly ||
     groupSel !== ''
 
   // The date window and the bank go to the SERVER, because they narrow the heavy
@@ -271,9 +276,15 @@ export function DispatchesPage() {
     () =>
       searched
         .filter((r) => statusSel.length === 0 || statusSel.includes(str(r, 'courierStatus') ?? ''))
-        .filter((r) => stageSel.length === 0 || stageSel.includes(lifecycleOf(r))),
-    [searched, statusSel, stageSel],
+        .filter((r) => stageSel.length === 0 || stageSel.includes(lifecycleOf(r)))
+        // HELD is not a courier status or a pipeline stage, so it filters on its
+        // own axis rather than joining either list (DAMAGE.md). The edge marks
+        // the row; see mergeHoldState in reports.controller.
+        .filter((r) => !heldOnly || str(r, 'poolStatus') === 'HELD'),
+    [searched, statusSel, stageSel, heldOnly],
   )
+
+  const heldCount = useMemo(() => searched.filter((r) => str(r, 'poolStatus') === 'HELD').length, [searched])
 
   const countOf = useCallback(
     (statuses: readonly string[]) => searched.filter((r) => statuses.includes(str(r, 'courierStatus') ?? '')).length,
@@ -498,7 +509,23 @@ export function DispatchesPage() {
     {
       key: 'courierStatus',
       header: 'Courier status',
-      cell: (r) => <StatusPill value={str(r, 'courierStatus') ?? ''} />,
+      cell: (r) => (
+        <span className="flex items-center gap-1.5">
+          <StatusPill value={str(r, 'courierStatus') ?? ''} />
+          {/* The hold, beside the status rather than inside it: a held dispatch
+              still has whatever courier status it had, and overwriting the pill
+              would lose that. The reason rides in the title, because it is
+              operator free text and does not belong in a column. */}
+          {str(r, 'poolStatus') === 'HELD' && (
+            <span
+              className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+              title={str(r, 'holdReason') ?? 'Held back from batching'}
+            >
+              Held
+            </span>
+          )}
+        </span>
+      ),
       sortValue: (r) => str(r, 'courierStatus') ?? '',
     },
     {
@@ -622,6 +649,30 @@ export function DispatchesPage() {
               ]}
             />
           </Field>
+          {/* HELD, on its own axis (DAMAGE.md). Not folded into the courier
+              status or the stage picker, because a hold is neither: it is a
+              decision somebody made about batching, and it used to be invisible
+              on this page entirely, so a dispatch held on the pool page could
+              not be found here at all. Rendered only when something IS held, so
+              the toolbar does not carry a permanently-zero control. */}
+          {(heldCount > 0 || heldOnly) && (
+            <Field label="Hold" htmlFor="dispHeld" className="w-full sm:w-32">
+              <button
+                id="dispHeld"
+                type="button"
+                aria-pressed={heldOnly}
+                onClick={() => setParam('held', heldOnly ? '' : '1')}
+                className={cn(
+                  'h-9 w-full rounded-lg border px-3 text-[13px] font-medium transition',
+                  heldOnly
+                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                    : 'text-muted-foreground hover:bg-accent',
+                )}
+              >
+                Held ({heldCount})
+              </button>
+            </Field>
+          )}
           <Field label="Bank" htmlFor="dispBank" className="w-full sm:w-44">
             <SearchSelect
               id="dispBank"

@@ -84,6 +84,8 @@ export {
   listMerchants,
   searchDispatchesByVpa,
   listRequestLegsOps,
+  readReplacementChainOps,
+  type ChainMemberRow,
   type RequestLegRow,
   countDamageCasesByStatus,
   type QuarantineRowView,

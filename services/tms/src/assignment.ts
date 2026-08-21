@@ -73,6 +73,7 @@ interface AssignmentSnapshotRow {
   mobile: string | null
   branch_code: string | null
   dispatch_group: string
+  replacement_of: string | null
 }
 
 // Emit the demand fact for an already-inserted assignment (row present) and move
@@ -83,7 +84,8 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
     SELECT a.merchant_id, a.program_id, a.tenant_id, a.merchant_display_name AS display_name,
            a.merchant_legal_name AS legal_name, a.merchant_mcc AS mcc, a.bank_reference_code, a.bank_display_name,
            a.ship_to_address, a.qr_value, a.vpa_value, a.soundbox, a.standee_count, a.sticker_count,
-           a.billable, a.source_event_id, a.contact_name, a.mobile, a.branch_code, a.dispatch_group
+           a.billable, a.source_event_id, a.contact_name, a.mobile, a.branch_code, a.dispatch_group,
+           a.replacement_of::text AS replacement_of
     FROM assignment a WHERE a.id = ${asgnUuid}::uuid
   `
   if (rows.length === 0) throw new Error(`emitDemandFact: assignment ${asgnUuid} not found`)
@@ -125,6 +127,11 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
         // W-5: dispatch group marker. NOT NULL in tms (Task 1), so every row here
         // has one; no ?? undefined dance needed.
         dispatchGroup: a.dispatch_group as 'SOUNDBOX' | 'COLLATERAL',
+        // Omitted entirely on an original rather than sent as null: the field is
+        // optional on the wire, and an absent field and a null one mean the same
+        // thing to every consumer while the absent one keeps the payload honest
+        // about what this dispatch is.
+        ...(a.replacement_of === null ? {} : { replacementOf: fromUuid('asgn', a.replacement_of) }),
       },
       dedupKey: eventKey(envId, 'tms.assignment'),
       traceId,

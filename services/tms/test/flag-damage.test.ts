@@ -242,6 +242,34 @@ describe('flagDamageOps validation and refusal paths', () => {
   })
 })
 
+describe('the replacement quantity is capped at what was ordered (DAMAGE.md)', () => {
+  it('refuses more standees than the dispatch ordered, naming the real ceiling', async () => {
+    // seedLeg orders 2 standees and 3 stickers on a COLLATERAL leg.
+    const parent = await seedLeg('COLLATERAL')
+    await expect(
+      flagDamageOps(db, { ...baseArgs(parent), standeeCount: 99, stickerCount: 0 }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+    // Nothing was minted: the check runs before any write.
+    const n = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM assignment WHERE replacement_of = ${toUuid(parent)}::uuid
+    `
+    expect(Number(n[0]!.n)).toBe(0)
+  })
+
+  it('refuses more stickers than ordered too, on the same rule', async () => {
+    const parent = await seedLeg('COLLATERAL')
+    await expect(
+      flagDamageOps(db, { ...baseArgs(parent), standeeCount: 0, stickerCount: 99 }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+  })
+
+  it('allows exactly the ordered quantity, which is the whole consignment being replaced', async () => {
+    const parent = await seedLeg('COLLATERAL')
+    const res = await flagDamageOps(db, { ...baseArgs(parent), standeeCount: 2, stickerCount: 3 })
+    expect(res.childAsgnId).toBeTruthy()
+  })
+})
+
 describe('only the chain tip is flaggable (DAMAGE.md, revising DP-3)', () => {
   it('a replaced dispatch is refused for good, open case or closed, and the refusal names the tip', async () => {
     const parent = await seedLeg('SOUNDBOX')

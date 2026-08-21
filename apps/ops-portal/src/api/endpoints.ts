@@ -500,6 +500,15 @@ export interface BatchEntryRow {
   standeeCount: number
   stickerCount: number
   poolStatus: string
+  /**
+   * The dispatch this one REPLACES (DAMAGE.md), null on an original.
+   *
+   * Event-carried onto the pool row, which is what finally lets these lists mark
+   * a replacement natively. The dispatch detail page used to work this out by
+   * downloading every damage case and searching it, which cost a second request
+   * and could not be done on a list at all.
+   */
+  replacementOfAsgnId?: string | null
   dispatchState: string | null
   // 19 Aug 2026: the courier's own axis. dispatchState never reaches
   // DELIVERED (it stops at DISPATCHED_BY_VENDOR by design); this is what
@@ -2073,13 +2082,24 @@ export interface DamageCaseView {
   replacementOf: string
   merchantDisplayName: string
   bankReferenceCode: string
+  /** For the Name (CODE) rule; optional so an older server still parses. */
+  bankDisplayName?: string
   branchCode: string | null
+  /**
+   * SOUNDBOX or COLLATERAL (DAMAGE.md). The page could not tell the two apart
+   * before this, and they close on different rules, so an operator chasing a
+   * case had no way to know which they were looking at. Optional so an older
+   * server that predates the field still parses.
+   */
+  dispatchGroup?: 'SOUNDBOX' | 'COLLATERAL'
   damageReason: string | null
   /** What the BANK wrote on the damage row. */
   bankRemarks: string | null
   /** What an OPERATOR wrote about the case. Different people's words. */
   opsRemarks: string | null
   caseStatus: string | null
+  /** Why it was cancelled, on a Cancelled case only. */
+  caseCancelRemarks?: string | null
   billable: boolean
   demandState: string
   createdAt: string
@@ -2240,6 +2260,33 @@ export interface RequestLegRow {
   replacementOfAsgnId: string | null
   activatedAt: string | null
   createdAt: string
+}
+
+/**
+ * One member of a replacement chain (DAMAGE.md). generation 0 is the original.
+ *
+ * Any member returns the WHOLE chain, so a page can render the same rail whether
+ * the operator arrived on the original or on the third replacement.
+ */
+export interface ChainMemberRow {
+  asgnId: string
+  replacementOfAsgnId: string | null
+  dispatchGroup: string
+  caseStatus: string | null
+  demandState: string
+  damageReason: string | null
+  billable: boolean
+  activatedAt: string | null
+  deliveredAt: string | null
+  createdAt: string
+  generation: number
+}
+
+export function getReplacementChain(c: Client, asgnId: string) {
+  return c.request<ChainMemberRow[]>({
+    method: 'GET',
+    path: `/ops/dispatches/${encodeURIComponent(asgnId)}/chain`,
+  })
 }
 
 export function getRequestLegs(c: Client) {

@@ -72,6 +72,9 @@ interface ParentRow {
   dispatch_group: DispatchGroup
   /** The merchant-request identity this leg belongs to; the child derives from it. */
   source_event_id: string
+  /** What was ORDERED on this leg, the ceiling a replacement may not exceed. */
+  standee_count: number
+  sticker_count: number
 }
 
 function requireItemCount(value: number | undefined, name: string): void {
@@ -111,7 +114,8 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
     const parents = await tx.$queryRaw<ParentRow[]>`
       SELECT id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
              bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value,
-             contact_name, mobile, branch_code, dispatch_group, source_event_id
+             contact_name, mobile, branch_code, dispatch_group, source_event_id,
+             standee_count, sticker_count
       FROM assignment WHERE id = ${parentUuid}::uuid
     `
     if (parents.length !== 1) {
@@ -175,6 +179,29 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
       stickerCount = args.stickerCount ?? 0
       if (standeeCount + stickerCount < 1) {
         throw new OpsClientError('invalid', 'a collateral flag must replace at least one item')
+      }
+      // THE CEILING IS WHAT WAS ORDERED (DAMAGE.md, 21 Aug 2026). Every layer
+      // used to accept 0..99 with no reference to the parent at all, so flagging
+      // 99 standees against a dispatch that shipped one succeeded end to end and
+      // put 99 replacements into the pool.
+      //
+      // ORDERED and not DELIVERED, deliberately and with a caveat worth stating:
+      // no per-dispatch delivered quantity exists anywhere in this platform.
+      // Delivery is recorded per parcel and per serialized device, never as a
+      // collateral item count, so the ordered count is the closest honest
+      // ceiling. It can still be too generous where a partial delivery
+      // happened; it can never be absurd, which is what this fixes.
+      if (standeeCount > parent.standee_count) {
+        throw new OpsClientError(
+          'invalid',
+          `this dispatch ordered ${String(parent.standee_count)} standee(s); cannot replace ${String(standeeCount)}`,
+        )
+      }
+      if (stickerCount > parent.sticker_count) {
+        throw new OpsClientError(
+          'invalid',
+          `this dispatch ordered ${String(parent.sticker_count)} sticker(s); cannot replace ${String(stickerCount)}`,
+        )
       }
     }
 

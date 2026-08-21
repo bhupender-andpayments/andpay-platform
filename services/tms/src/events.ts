@@ -53,6 +53,24 @@ export interface AssignmentFactPayload {
   // D120 FULL compat (a pre-extension fact validates); populated for every new
   // assignment (ingest-mandatory). Feeds analytics DispatchRow.branch.
   branchCode?: string
+  /**
+   * The dispatch this one REPLACES (DAMAGE.md, 21 Aug 2026).
+   *
+   * OPTIONAL on the wire for D120 FULL compat, and null on every original, so a
+   * pre-extension fact still validates and a consumer that does not know the
+   * field ignores it.
+   *
+   * WHY IT NOW TRAVELS. replacement_of, case_status and billable were
+   * deliberately TMS-local, which meant fulfillment's pool and batch rows
+   * structurally could not tell a replacement from a fresh request: the data was
+   * not there to show. Operators asked for that distinction on the pool and the
+   * batch page repeatedly, and the portal's workaround was to download every
+   * damage case and join client-side, which does not scale past one page.
+   *
+   * Only the LINK travels. case_status stays TMS-local, because a case is a
+   * complaint's lifecycle and no other context has business advancing it.
+   */
+  replacementOf?: string
   // W-5: which physical consignment this assignment is. OPTIONAL on the wire
   // (D120 FULL compat, no v2); populated for every new assignment. A fact
   // without it is a pre-split combined row and every consumer treats it as
