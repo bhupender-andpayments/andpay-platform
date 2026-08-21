@@ -22,15 +22,27 @@ import type { StatusTrailEntry } from '../api/endpoints.js'
 // Both are now answerable, because the three status trails exist. The rail reads
 // the trail and asserts nothing the trail does not say.
 //
-// THE RULES, as ruled:
-//   - a rung the trail records is reached, and carries the trail's own instant
-//   - the newest recorded rung is current
-//   - a rung the trail does NOT record is not reached, even when later rungs are
-//     (a genuinely skipped stage reads as skipped, not as done)
+// THE RULES:
+//   - POSITION comes from the furthest rung anything proves. These ladders are
+//     monotonic and the services enforce that (canAdvanceUnitStatus and the
+//     courier LADDER_RANK both refuse a backwards move), so reaching rung N
+//     means the entity passed through the rungs below it. A parcel scanned
+//     PICKED_UP was necessarily handed over by the vendor first.
+//   - A TIMESTAMP appears only under a rung the trail actually recorded. This is
+//     the honest half: we know the parcel passed the handover, and we do not
+//     invent a time for a scan the courier never sent. It is also why this could
+//     not be done before, and why the old code dated only the current rung.
 //   - once a terminal branch appears, the rail ENDS there: no rung is drawn
-//     after it, because nothing is coming
+//     after it, because nothing is coming.
 //   - with no terminal, the unreached happy path ahead is drawn greyed, because
-//     "still to come" is useful and honest
+//     "still to come" is useful and honest.
+//
+// WHY NOT "only rungs the trail records are reached", which was tried first: the
+// trails begin at a backfill row carrying each entity's status at the moment the
+// tables were created, so every pre-existing row has exactly one event. Under
+// that stricter rule every historical device rendered as though it had skipped
+// stock and printing entirely, which trades one false claim for another. The
+// timestamp is where the distinction belongs, so that is where it lives.
 
 export interface RailFromTrailArgs {
   /** The happy-path ladder, in order. */
@@ -41,6 +53,12 @@ export interface RailFromTrailArgs {
   trail: readonly StatusTrailEntry[]
   label: (status: string) => string
   icon: (status: string) => RailStage['icon']
+  /**
+   * Extra statuses to treat as reached, for evidence outside the trail. The
+   * shipment page uses it for the row's own current status, which is real even
+   * when the trail (fetched via the owning dispatch) has not arrived.
+   */
+  extraReached?: readonly string[]
 }
 
 /**
@@ -66,6 +84,7 @@ export function buildRailFromTrail({
   trail,
   label,
   icon,
+  extraReached,
 }: RailFromTrailArgs): RailStage[] {
   const at = firstSeen(trail)
 
@@ -75,11 +94,12 @@ export function buildRailFromTrail({
   // came last.
   const terminalStatus = [...trail].reverse().find((e) => terminals.includes(e.status))?.status ?? null
 
-  // The furthest spine rung the trail actually records. Everything past it is
-  // either "still to come" (no terminal) or "never happening" (terminal).
+  // The furthest spine rung anything proves. `extraReached` lets a caller add
+  // evidence the trail does not hold (a shipment row's own current status, for
+  // instance, which is real even while the trail's own fetch is in flight).
   let lastReachedIdx = -1
   spine.forEach((key, i) => {
-    if (at.has(key)) lastReachedIdx = i
+    if (at.has(key) || extraReached?.includes(key) === true) lastReachedIdx = i
   })
 
   const stages: RailStage[] = []
@@ -89,21 +109,21 @@ export function buildRailFromTrail({
     // ahead of it.
     if (terminalStatus !== null && i > lastReachedIdx) return
 
-    const reachedAt = at.get(key)
-    if (reachedAt === undefined) {
-      // Not recorded. Not reached, whatever the rungs around it say.
+    if (i > lastReachedIdx) {
+      // Still ahead. Greyed, and never dated.
       stages.push({ key, label: label(key), icon: icon(key), state: 'future' })
       return
     }
-    // The newest reached rung is `current`, unless a terminal took over as the
-    // real head of the rail.
+    // Reached, by the monotonic argument above. The instant is shown ONLY if the
+    // trail recorded this specific rung: a rung the entity passed without an
+    // event of its own is reached but undated, which is exactly what we know.
     const isHead = i === lastReachedIdx && terminalStatus === null
     stages.push({
       key,
       label: label(key),
       icon: icon(key),
       state: isHead ? 'current' : 'reached',
-      at: reachedAt,
+      at: at.get(key) ?? null,
     })
   })
 

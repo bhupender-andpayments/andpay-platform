@@ -443,6 +443,16 @@ function buildShipmentRail(shipment: DispatchRow, dispatch: DispatchDetailView |
     return fromTrail
   }
 
+  // ONLY REAL SCANS CARRY A TIME (STATUS_STAGES.md, 21 Aug 2026).
+  //
+  // Position still comes from the ladder, and correctly so: the courier ladder is
+  // monotonic and the service enforces it by rank, so a parcel scanned PICKED_UP
+  // was necessarily handed over by the vendor before it. What changed is the
+  // dating. `at` used to be filled for every rung at or below the current one,
+  // from whatever the trail could nearest supply; now a rung shows an instant
+  // only when the courier actually sent a scan for THAT rung, and otherwise
+  // reads as passed-but-undated. Which is what we know: the parcel got past the
+  // handover, and no scan told us when.
   const stages: RailStage[] = SHIPMENT_LADDER.map((rung, i) => ({
     key: rung.key,
     label: rung.label,
