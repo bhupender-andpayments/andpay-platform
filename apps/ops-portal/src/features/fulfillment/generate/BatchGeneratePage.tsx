@@ -7,10 +7,13 @@
 // so what it previews, what it renders and what the Excel carries all name the
 // same Dispatch IDs.
 //
-// THREE SECTIONS, in the order an operator uses them: proof one card, render the
-// run (both paper layouts), take the handover files (run PDFs + the dispatch
-// Excel whose Dispatch ID / Device ID / AWB columns the print vendor fills and
-// returns).
+// THREE SECTIONS, in the order an operator uses them: proof one card, build the
+// run, take the handover files (run PDFs + the dispatch Excel whose Dispatch ID
+// / Device ID / AWB columns the print vendor fills and returns). The run PDFs
+// are the server's dispatch package (ruled 21 Aug 2026): assembled from the
+// STORED artifacts, so each aggregator's own logo from Master Data / the asset
+// store is what prints, and the paper layout is the bound print vendor's press
+// capability (W-6), never a client-side choice.
 //
 // The card rows are built from the batch's COMPOSED ARTIFACTS: labelQr is the
 // exact string the stored PDF was composed with, so the on-screen proof and the
@@ -18,7 +21,7 @@
 // compose has not run (it requires exactly one ACTIVE PRINT vendor), and the page
 // says that instead of rendering from data the store never saw.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { Boxes, Check, CheckCircle2, Copy, Download, Eye, ExternalLink, FileSpreadsheet, Loader2, PackageCheck, Send, Upload } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -35,6 +38,7 @@ import { useAuth } from '../../../auth/AuthContext.js'
 import {
   closeBatch,
   bulkDeliverBatch,
+  downloadCollateral,
   downloadDispatchExcel,
   getBatchDetail,
   sendBatchToVendor,
@@ -46,9 +50,8 @@ import { sendToVendorErrorMessage } from '../sendToVendorError.js'
 import { ConfirmDialog } from '../../../ui/ConfirmDialog.js'
 import { DispatchGroupBadge } from '../DispatchGroupBadge.js'
 import { QrPreviewDialog } from './QrPreviewDialog.js'
-import { renderCollateralPdf, type CardRow, type RenderedPdf } from './collateralPdf.js'
+import { type CardRow } from './collateralPdf.js'
 import { OUTPUT_BUNDLES, bundlesFor, type BundleId } from './collateralBundles.js'
-import { SHEET_LAYOUTS, cardsPerPage, type SheetLayout, type SheetLayoutId } from './collateralTemplate.js'
 
 /** The UPI ID, straight out of the QR's own pa= parameter, so there is no second
  *  source for it. The payload shape is upi://pay?k=v&k=v. */
@@ -88,12 +91,15 @@ export function BatchGeneratePage() {
   // page, and a card is something you ask for about one row.
   const [preview, setPreview] = useState<GenRow | null>(null)
 
-  // Run render state.
-  const [layoutId, setLayoutId] = useState<SheetLayoutId>('trim')
-  const [jobs, setJobs] = useState<Partial<Record<BundleId, RenderedPdf & { url: string }>>>({})
-  const [renderProgress, setRenderProgress] = useState<{ done: number; total: number; label: string } | null>(null)
+  // Run render state. The PDFs come from the server's dispatch package
+  // (assembleGroupPdf over the STORED per-dispatch artifacts), so what this
+  // section hands out is byte-derived from what compose stored: per-aggregator
+  // logos out of the asset store, bank fields off the master data snapshot,
+  // pages in the same bank+branch order as the vendor Excel. Ruled 21 Aug 2026:
+  // the print run renders per-aggregator logos from S3, same as the server.
+  const [jobs, setJobs] = useState<Partial<Record<BundleId, { blob: Blob; url: string; filename: string; pageCount: number | null }>>>({})
+  const [renderProgress, setRenderProgress] = useState<{ label: string } | null>(null)
   const [renderError, setRenderError] = useState<string | null>(null)
-  const cancelRef = useRef(false)
   const [downloadingExcel, setDownloadingExcel] = useState<string | null>(null)
   const [excelError, setExcelError] = useState<string | null>(null)
 
@@ -246,8 +252,6 @@ export function BatchGeneratePage() {
     [rows],
   )
 
-  const layout = useMemo<SheetLayout>(() => SHEET_LAYOUTS.find((l) => l.id === layoutId) ?? SHEET_LAYOUTS[0]!, [layoutId])
-
   /**
    * The card for a dispatch, or nothing when compose has not produced one yet.
    *
@@ -262,7 +266,13 @@ export function BatchGeneratePage() {
     [rows],
   )
 
+  // Each output bundle maps onto the server's delivery-group vocabulary
+  // (package.ts GROUP_ARTIFACT_TYPES): the print card IS the COLLATERAL group
+  // (standee plus sticker share one card), the soundbox its own group.
+  const GROUP_FOR_BUNDLE: Record<BundleId, string> = { PRINT_CARD: 'COLLATERAL', SOUNDBOX_CARD: 'SOUNDBOX' }
+
   const generate = useCallback(async (): Promise<void> => {
+    if (btchId === undefined) return
     setRenderError(null)
     // Old URLs are revoked before the jobs are replaced so a long session does
     // not leak a blob per render.
@@ -270,41 +280,41 @@ export function BatchGeneratePage() {
       for (const j of Object.values(prev)) if (j !== undefined) URL.revokeObjectURL(j.url)
       return {}
     })
-    cancelRef.current = false
     try {
-      const out: Partial<Record<BundleId, RenderedPdf & { url: string }>> = {}
+      const out: Partial<Record<BundleId, { blob: Blob; url: string; filename: string; pageCount: number | null }>> = {}
       for (const b of OUTPUT_BUNDLES) {
-        const bundleCards = (bundleRows.get(b.id) ?? []).map((r) => r.card)
-        if (bundleCards.length === 0) continue
-        setRenderProgress({ done: 0, total: bundleCards.length, label: b.label })
-        const rendered = await renderCollateralPdf(
-          // The bundle's leading artifact type supplies geometry and artwork;
-          // all types share one template today.
-          b.covers[0]!,
-          bundleCards,
-          layout,
-          (done, totalCards) => {
-            setRenderProgress({ done, total: totalCards, label: b.label })
-          },
-          () => cancelRef.current,
-        )
-        if (cancelRef.current) return
-        out[b.id] = { ...rendered, url: URL.createObjectURL(rendered.blob) }
+        if ((bundleRows.get(b.id) ?? []).length === 0) continue
+        setRenderProgress({ label: b.label })
+        // The run is ASSEMBLED SERVER-SIDE from the stored per-dispatch
+        // artifacts, never re-drawn here: the same bytes the vendor's own pull
+        // produces, carrying each aggregator's logo from the asset store and
+        // imposed per the bound print vendor's press layout (W-6). The old
+        // client-side plate renderer printed every aggregator on the one GSCB
+        // plate, which is exactly the drift this replaces.
+        const file = await downloadCollateral(client, btchId, GROUP_FOR_BUNDLE[b.id])
+        if (file === null) continue
+        // Real page count off the produced PDF, best-effort: an unparseable
+        // body still previews and downloads, it just loses the count line.
+        let pageCount: number | null = null
+        try {
+          const { PDFDocument } = await import('pdf-lib')
+          pageCount = (await PDFDocument.load(new Uint8Array(await file.blob.arrayBuffer()))).getPageCount()
+        } catch {
+          pageCount = null
+        }
+        out[b.id] = { blob: file.blob, url: URL.createObjectURL(file.blob), filename: file.filename, pageCount }
       }
       setJobs(out)
-      // A 340-card run takes long enough that the operator looks away, and the
-      // result rows appear below the fold on a small screen. This is the one
-      // thing on the page worth a transient confirmation.
-      const pages = Object.values(out).reduce((n, j) => n + (j?.pageCount ?? 0), 0)
-      if (pages > 0) toast(`Print run ready: ${pages} page(s) across ${Object.keys(out).length} PDF(s)`)
+      // The result rows appear below the fold on a small screen; this is the
+      // one thing on the page worth a transient confirmation.
+      const pdfs = Object.keys(out).length
+      if (pdfs > 0) toast(`Print run ready: ${pdfs} PDF(s), assembled from the stored artifacts`)
     } catch (err) {
-      if (!/cancel/i.test(err instanceof Error ? err.message : '')) {
-        setRenderError(err instanceof Error ? err.message : 'Could not render the run.')
-      }
+      setRenderError(err instanceof Error ? err.message : 'Could not build the run.')
     } finally {
       setRenderProgress(null)
     }
-  }, [bundleRows, layout, toast])
+  }, [btchId, bundleRows, client, toast])
 
   // ONE WORKBOOK PER DELIVERY GROUP on this branch, not one combined download.
   // The edge splits the vendor sheet the same way package.ts splits the run
@@ -732,8 +742,8 @@ export function BatchGeneratePage() {
           <CardHeader>
             <CardTitle>Print run PDFs</CardTitle>
             <CardDescription>
-              One card per merchant per type: {OUTPUT_BUNDLES.map((b) => `${b.label.toLowerCase()} ${bundleRows.get(b.id)?.length ?? 0}`).join(', ')}. Pick the paper, render, then preview in a tab before
-              downloading.
+              One card per merchant per type: {OUTPUT_BUNDLES.map((b) => `${b.label.toLowerCase()} ${bundleRows.get(b.id)?.length ?? 0}`).join(', ')}. Assembled from the stored artifacts, with each
+              aggregator's own logo from Master Data, then preview in a tab before downloading.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -757,43 +767,24 @@ export function BatchGeneratePage() {
               </InfoNote>
             ) : (
               <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {SHEET_LAYOUTS.map((l) => {
-                const on = layoutId === l.id
-                const sheets = Math.ceil(totalCards / cardsPerPage(l))
-                return (
-                  <button
-                    key={l.id}
-                    type="button"
-                    disabled={running}
-                    onClick={() => {
-                      setLayoutId(l.id)
-                      setJobs((prev) => {
-                        for (const j of Object.values(prev)) if (j !== undefined) URL.revokeObjectURL(j.url)
-                        return {}
-                      })
-                    }}
-                    aria-pressed={on}
-                    className={
-                      'rounded-xl border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ' +
-                      (on ? 'border-primary bg-primary/5' : 'hover:bg-muted/50')
-                    }
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium">{l.label}</span>
-                      {on && <Check className="size-4 flex-none text-primary" aria-hidden="true" />}
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">{l.description}</p>
-                    {totalCards > 0 && (
-                      <p className="mt-1.5 text-xs">
-                        <span className="num font-medium">{totalCards}</span> cards on about{' '}
-                        <span className="num font-medium">{sheets}</span> {sheets === 1 ? 'page' : 'pages'}
-                      </p>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
+            {/* The paper layout is NOT a choice here: W-6 rules it belongs to
+                the bound print vendor's press (readBatchPrintLayout), and the
+                Excel's count columns are worded for that same layout (D-11).
+                The old client-side picker could produce a PDF whose layout
+                disagreed with the sheet the vendor reconciles against. */}
+            <p className="text-sm text-muted-foreground">
+              {detail.printLayout === 'GRID_3X2' ? (
+                <>
+                  Imposed <span className="font-medium">3 across, 2 down</span> on the vendor sheet, copies expanded,
+                  because the bound print vendor&apos;s press cannot impose.
+                </>
+              ) : (
+                <>
+                  <span className="font-medium">One card per page</span>, the bound print vendor&apos;s press layout
+                  (the vendor runs the copy counts off the dispatch Excel).
+                </>
+              )}
+            </p>
 
             {renderError !== null && <ErrorNote>{renderError}</ErrorNote>}
 
@@ -806,31 +797,9 @@ export function BatchGeneratePage() {
                 }}
               >
                 {running && <Loader2 className="animate-spin" aria-hidden="true" />}
-                {running
-                  ? `Rendering ${renderProgress.label} ${renderProgress.done} of ${renderProgress.total}`
-                  : `Render ${totalCards} card(s)`}
+                {running ? `Building ${renderProgress.label}…` : `Render ${totalCards} card(s)`}
               </Button>
-              {running && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    cancelRef.current = true
-                  }}
-                >
-                  Cancel
-                </Button>
-              )}
             </div>
-
-            {running && (
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full bg-primary transition-[width] duration-150"
-                  style={{ width: `${(renderProgress.done / Math.max(1, renderProgress.total)) * 100}%` }}
-                />
-              </div>
-            )}
 
             {OUTPUT_BUNDLES.filter((b) => jobs[b.id] !== undefined).map((b) => {
               const job = jobs[b.id]!
@@ -839,9 +808,12 @@ export function BatchGeneratePage() {
                   <div className="min-w-0">
                     <p className="text-sm font-medium">{b.label} PDF</p>
                     <p className="text-xs text-muted-foreground">
-                      <span className="num">{job.cardCount}</span> cards on <span className="num">{job.pageCount}</span>{' '}
-                      {job.pageCount === 1 ? 'page' : 'pages'}
-                      {job.cardsPerPage > 1 && <> at {job.cardsPerPage} per sheet</>}, {(job.blob.size / 1e6).toFixed(2)} MB
+                      {job.pageCount !== null && (
+                        <>
+                          <span className="num">{job.pageCount}</span> {job.pageCount === 1 ? 'page' : 'pages'},{' '}
+                        </>
+                      )}
+                      {(job.blob.size / 1e6).toFixed(2)} MB, assembled from the stored artifacts
                     </p>
                   </div>
                   <div className="flex flex-none items-center gap-2">
@@ -855,7 +827,7 @@ export function BatchGeneratePage() {
                       type="button"
                       size="sm"
                       onClick={() => {
-                        saveBlob(`${detail.batch.id}-${b.id.toLowerCase()}-${layout.id}.pdf`, job.blob)
+                        saveBlob(job.filename, job.blob)
                       }}
                     >
                       <Download aria-hidden="true" />

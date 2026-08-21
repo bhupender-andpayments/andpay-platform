@@ -10,12 +10,13 @@
 // (services/fulfillment/src/collateral/renderer.ts, DEFAULT_SIZE). So there are
 // two copies and nothing detects drift between them.
 //
-// That is deliberate and it is currently safe, for one specific reason: the file
-// a print vendor receives is rendered HERE, client-side, from the artifact's own
-// stored QR payload. The stored artifact is not what gets printed, so a
-// divergence would show up as a difference between two things nobody compares.
-// It would stop being safe the moment the stored artifact becomes the printed
-// one again.
+// That was deliberate while the print run was rendered HERE, client-side. As
+// of 21 Aug 2026 it no longer is: the run PDFs are the server's dispatch
+// package (assembleGroupPdf over the stored artifacts), so the stored artifact
+// IS the printed one again, and these numbers serve only the on-screen
+// single-card proof (CollateralCardProof). A proof drifting from the server's
+// drawn layout is visible and annoying rather than a misprint, but the shared
+// package below remains the right end state.
 //
 // The right end state is the shared package, since the numbers came off the
 // bank's own approved output and cannot be re-derived from anything in the repo.

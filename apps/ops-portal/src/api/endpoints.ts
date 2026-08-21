@@ -1950,17 +1950,25 @@ export async function downloadActivationSheet(btchId: string): Promise<Downloade
 // - the edge itself returns 404 deliberately (ops-read.controller.ts's
 // collateral route) rather than an empty/500 - so it is surfaced as `null`,
 // not thrown.
-export async function downloadCollateral(btchId: string, artifactType: string): Promise<DownloadedFile | null> {
-  const res = await fetch(`${opsBaseUrl()}/ops/batches/${btchId}/collateral/${artifactType}`, {
-    headers: { Authorization: `Bearer ${getAccessToken()}` },
-  })
-  if (res.status === 404) return null
-  if (!res.ok) {
-    const text = await res.text()
-    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+//
+// Routed through the client's 'blob' path (21 Aug 2026): this stopped being a
+// click-again download button when the batch page's print run started being
+// BUILT from it, so it now gets the refresh-on-401-and-retry like every other
+// load-bearing read. The filename is derived locally with the exact shape the
+// edge's Content-Disposition carries (batch id first, group lowercased), since
+// the typed client returns only the body.
+export async function downloadCollateral(c: Client, btchId: string, collateralKey: string): Promise<DownloadedFile | null> {
+  try {
+    const blob = await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/batches/${encodeURIComponent(btchId)}/collateral/${encodeURIComponent(collateralKey)}`,
+      responseType: 'blob',
+    })
+    return { blob, filename: `${btchId}-${collateralKey.toLowerCase()}.pdf` }
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
   }
-  const blob = await res.blob()
-  return { blob, filename: filenameFromContentDisposition(res, `${btchId}-${artifactType.toLowerCase()}.pdf`) }
 }
 
 // -----------------------------------------------------------------------

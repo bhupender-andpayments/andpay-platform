@@ -220,6 +220,81 @@ describe('The batch page previews one dispatch QR on demand', () => {
     await screen.findByText('BRILLIANT PERFUME')
     expect(screen.queryByText('Shipped by vendor')).toBeNull()
   })
+})
+
+describe('The print run is assembled server-side from the stored artifacts', () => {
+  beforeEach(() => {
+    setAccessToken('t')
+    vi.unstubAllGlobals()
+    // jsdom has no URL.createObjectURL; the page only needs a string back.
+    vi.stubGlobal('URL', Object.assign(URL, {
+      createObjectURL: vi.fn(() => 'blob:test'),
+      revokeObjectURL: vi.fn(),
+    }))
+  })
+  afterEach(() => {
+    cleanup()
+    clearAccessToken()
+  })
+
+  const DETAIL = { batch: BATCH, entries: [entry()], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' }
+
+  function stubWithCollateral(calls: string[]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(url)
+        if (url.includes('/collateral/')) {
+          // Not a parseable PDF on purpose: the page must still produce the
+          // preview/download row, just without a page count.
+          return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'application/pdf' } })
+        }
+        return new Response(JSON.stringify(DETAIL), { status: 200, headers: { 'content-type': 'application/json' } })
+      }),
+    )
+  }
+
+  // Ruled 21 Aug 2026: the print run renders per-aggregator logos from S3,
+  // same as the server. That means the run is NOT drawn client-side off the
+  // static GSCB plate any more; it is the server's dispatch package
+  // (assembleGroupPdf over composed_artifact), fetched per delivery group.
+  it('Render fetches the server group PDFs instead of drawing cards client-side', async () => {
+    const calls: string[] = []
+    stubWithCollateral(calls)
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: /render 2 card\(s\)/i }))
+
+    // The fixture wants a standee AND a soundbox, so both delivery groups are
+    // fetched, on the server's own group vocabulary.
+    expect(await screen.findByText('Standee / sticker PDF')).toBeTruthy()
+    expect(screen.getByText('Soundbox PDF')).toBeTruthy()
+    const collateralCalls = calls.filter((u) => u.includes('/collateral/'))
+    expect(collateralCalls.some((u) => u.endsWith('/collateral/COLLATERAL'))).toBe(true)
+    expect(collateralCalls.some((u) => u.endsWith('/collateral/SOUNDBOX'))).toBe(true)
+  })
+
+  it('the paper layout is stated from the batch, not picked client-side', async () => {
+    stubWithCollateral([])
+    renderPage()
+
+    // W-6: the layout belongs to the bound print vendor's press. The old
+    // client-side picker is gone; the batch's own printLayout is stated.
+    expect(await screen.findByText(/one card per page/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /6 per sheet/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /one card per page/i })).toBeNull()
+  })
+})
+
+describe('The batch page previews one dispatch QR on demand (card-type switch)', () => {
+  beforeEach(() => {
+    setAccessToken('t')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+    clearAccessToken()
+  })
 
   it('offers the card-type switch only when the dispatch really has both cards', async () => {
     stub({
