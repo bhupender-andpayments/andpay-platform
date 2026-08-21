@@ -914,7 +914,10 @@ describe('master data create dialogs', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Preview the current logo' }))
+    // Two ways in: the clickable thumbnail and the explicit Preview button.
+    // Drive the BUTTON here, since it is the discoverable one.
+    expect(await screen.findByRole('button', { name: 'Preview the current logo' })).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
 
     // The popup shows the SAME data: URL enlarged, captioned with the stored
     // derivative's filename and version.

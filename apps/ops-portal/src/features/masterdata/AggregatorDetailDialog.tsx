@@ -353,19 +353,26 @@ export function AggregatorDetailDialog({
               <div className="space-y-1">
                 <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">Current</p>
                 {derivativeUrl !== null ? (
-                  <button
-                    type="button"
-                    className="block cursor-zoom-in"
-                    aria-label="Preview the current logo"
-                    title="Click to preview"
-                    onClick={() => setLightboxOpen(true)}
-                  >
-                    <img
-                      src={derivativeUrl}
-                      alt={`${aggregator.displayName} logo`}
-                      className="max-h-24 rounded border border-border bg-white object-contain p-1"
-                    />
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="block cursor-zoom-in"
+                      aria-label="Preview the current logo"
+                      title="Click to preview"
+                      onClick={() => setLightboxOpen(true)}
+                    >
+                      <img
+                        src={derivativeUrl}
+                        alt={`${aggregator.displayName} logo`}
+                        className="max-h-24 rounded border border-border bg-white object-contain p-1"
+                      />
+                    </button>
+                    {/* The same popup behind an explicit control: the clickable
+                        thumbnail is not discoverable on its own. */}
+                    <Button type="button" variant="secondary" size="sm" onClick={() => setLightboxOpen(true)}>
+                      Preview
+                    </Button>
+                  </>
                 ) : (
                   <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
                 )}
