@@ -263,9 +263,14 @@ function BankMastersView() {
                   return (
                     <li
                       key={isTenant ? row.t.tnntId : row.a.aggrId}
-                      className="grid grid-cols-[minmax(0,1fr)_180px_120px_60px] items-center gap-3 px-2 py-2.5 max-sm:grid-cols-[minmax(0,1fr)_60px]"
+                      className={`grid grid-cols-[minmax(0,1fr)_180px_120px_60px] items-center gap-3 py-2.5 max-sm:grid-cols-[minmax(0,1fr)_60px] ${
+                        // The tenant is the GROUP row: tinted and bold. Its
+                        // aggregators indent beneath it along a rail, so the
+                        // hierarchy reads at a glance.
+                        isTenant ? 'rounded-lg bg-muted/50 px-2' : 'py-2 pl-12 pr-2'
+                      }`}
                     >
-                      <div className="flex min-w-0 items-center gap-3">
+                      <div className={`flex min-w-0 items-center gap-3 ${isTenant ? '' : 'border-l-2 border-border pl-3'}`}>
                         {isTenant &&
                           (() => {
                             // The SAME condition flatRows renders children by,
@@ -295,8 +300,10 @@ function BankMastersView() {
                           const initials = (
                             <span
                               aria-hidden="true"
-                              className={`flex size-9 flex-none items-center justify-center rounded-lg text-[11px] font-semibold ${
-                                isTenant ? 'bg-amber-100 text-amber-800' : 'bg-muted text-muted-foreground'
+                              className={`flex flex-none items-center justify-center rounded-lg font-semibold ${
+                                isTenant
+                                  ? 'size-9 bg-amber-100 text-[11px] text-amber-800'
+                                  : 'size-8 bg-muted text-[10px] text-muted-foreground'
                               }`}
                             >
                               {initialsOf(name)}
@@ -313,7 +320,7 @@ function BankMastersView() {
                           )
                         })()}
                         <div className="min-w-0">
-                          <p className="flex items-center gap-2 text-sm font-medium">
+                          <p className={`flex items-center gap-2 text-sm ${isTenant ? 'font-semibold' : 'font-medium'}`}>
                             <span className="truncate">{name}</span>
                             {isTenant && (
                               <span className="flex-none rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">

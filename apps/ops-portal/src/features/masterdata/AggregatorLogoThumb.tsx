@@ -60,7 +60,7 @@ export function AggregatorLogoThumb({
     <img
       src={url}
       alt={`${name} logo`}
-      className="size-9 flex-none rounded-lg border border-border bg-white object-contain p-0.5"
+      className="size-8 flex-none rounded-lg border border-border bg-white object-contain p-0.5"
     />
   )
 }
