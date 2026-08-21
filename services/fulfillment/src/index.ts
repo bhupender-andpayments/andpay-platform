@@ -77,6 +77,7 @@ export {
   excelLinesFor,
   resolveCollateralGroup,
   assembleGroupPdf,
+  readComposedArtifact,
   AssetResolutionError,
 } from './package.js'
 export {

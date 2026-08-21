@@ -8,6 +8,7 @@ import {
   buildDispatchPackage,
   buildDispatchGroupXlsx,
   readBatchPrintLayout,
+  readComposedArtifact,
   AssetResolutionError,
 } from '../src/package.js'
 import { SHEET } from '../src/impose.js'
@@ -525,5 +526,64 @@ describe('buildDispatchGroupXlsx: the sheet is worded for the bound press (D-11 
     const headers = await headersOf(await buildDispatchGroupXlsx(db, btchWire, 'COLLATERAL', 'ship'))
     expect(headers).toContain('Ship To')
     expect(headers).toContain('Dispatch ID')
+  })
+})
+
+// Ruled 21 Aug 2026: the portal's on-screen proof shows the STORED artifact,
+// so this read exists to serve one dispatch's card by (batch, assignment,
+// type). Same superseded_by IS NULL and AssetResolutionError contracts as the
+// delivery path above.
+describe('readComposedArtifact: one stored card by (batch, assignment, type)', () => {
+  it('returns the stored bytes and content type; unknown type, unknown ids, and garbage ids are null', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const store = new InMemoryAssetStore()
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, null)
+    const e = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', standeeCount: 1 })
+    const ref = await putPdf(store, 'k-read-one')
+    await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'STANDEE_IMG', ref)
+
+    const rec = await readComposedArtifact(db, store, btchWire, e.asgnWire, 'STANDEE_IMG')
+    expect(rec).not.toBeNull()
+    expect(rec!.contentType).toBe('application/pdf')
+    expect((await PDFDocument.load(rec!.bytes)).getPageCount()).toBe(1)
+
+    expect(await readComposedArtifact(db, store, btchWire, e.asgnWire, 'STICKER_IMG')).toBeNull()
+    expect(await readComposedArtifact(db, store, btchWire, e.asgnWire, 'NOT_A_TYPE')).toBeNull()
+    expect(await readComposedArtifact(db, store, btchWire, newId('asgn'), 'STANDEE_IMG')).toBeNull()
+    expect(await readComposedArtifact(db, store, 'not-a-wire-id', e.asgnWire, 'STANDEE_IMG')).toBeNull()
+  })
+
+  it('serves the CURRENT row after a recompose, never the superseded one', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const store = new InMemoryAssetStore()
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, null)
+    const e = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', standeeCount: 1 })
+    const oldRef = await putPdf(store, 'k-old')
+    const newRef = await putPdf(store, 'k-new')
+    await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'STANDEE_IMG', oldRef)
+    await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'STANDEE_IMG', newRef)
+    // Mark the first row superseded by the second, the shape recomposeArtifact writes.
+    await db.$executeRaw`
+      UPDATE composed_artifact SET superseded_by = (
+        SELECT id FROM composed_artifact WHERE asset_reference = ${newRef}
+      ), superseded_at = now() WHERE asset_reference = ${oldRef}
+    `
+
+    const rec = await readComposedArtifact(db, store, btchWire, e.asgnWire, 'STANDEE_IMG')
+    expect(rec).not.toBeNull()
+    const current = await store.getByReference(newRef)
+    expect(Buffer.from(rec!.bytes).equals(Buffer.from(current!.bytes))).toBe(true)
+  })
+
+  it('a row whose reference does not resolve throws AssetResolutionError, matching assembleGroupPdf', async () => {
+    const { tenantUuid, programUuid, btchWire, btchUuid } = ids()
+    const store = new InMemoryAssetStore()
+    await seedBatchRow(tenantUuid, programUuid, btchUuid, null)
+    const e = await seedGroupEntry(tenantUuid, programUuid, btchUuid, { bankCode: 'B1', standeeCount: 1 })
+    await seedArtifact(tenantUuid, programUuid, btchUuid, e.asgnUuid, 'STANDEE_IMG', 'dev-asset:nowhere:v1')
+
+    await expect(readComposedArtifact(db, store, btchWire, e.asgnWire, 'STANDEE_IMG')).rejects.toBeInstanceOf(
+      AssetResolutionError,
+    )
   })
 })

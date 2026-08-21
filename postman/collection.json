@@ -853,6 +853,45 @@
                 },
                 "description": "Handler: ops-read.collateral (source order preserved).\nGuard: OpsEdgeGuard.\nPath parameters: btchId, collateralKey."
               }
+            },
+            {
+              "name": "GET /ops/batches/:btchId/artifacts/:asgnId/:artifactType",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/batches/:btchId/artifacts/:asgnId/:artifactType",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "batches",
+                    ":btchId",
+                    "artifacts",
+                    ":asgnId",
+                    ":artifactType"
+                  ],
+                  "variable": [
+                    {
+                      "key": "btchId",
+                      "value": "",
+                      "description": "Path parameter :btchId"
+                    },
+                    {
+                      "key": "asgnId",
+                      "value": "",
+                      "description": "Path parameter :asgnId"
+                    },
+                    {
+                      "key": "artifactType",
+                      "value": "",
+                      "description": "Path parameter :artifactType"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.dispatchArtifact (source order preserved).\nGuard: OpsEdgeGuard.\nPath parameters: btchId, asgnId, artifactType."
+              }
             }
           ]
         },

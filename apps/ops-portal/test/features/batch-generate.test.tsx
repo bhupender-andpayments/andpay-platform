@@ -182,6 +182,41 @@ describe('The batch page previews one dispatch QR on demand', () => {
     expect(dialog.textContent).toContain('upi://pay?pa=')
   })
 
+  // Ruled 21 Aug 2026: wherever bank data appears it points at master bank
+  // data. The proof therefore shows the STORED artifact (composed server-side
+  // with the aggregator's logo from the asset store), not a client-drawn
+  // lookalike: opening the dialog must fetch the dispatch's own artifact.
+  it('the proof fetches the stored artifact for that dispatch, not a client-drawn card', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(url)
+        if (url.includes('/artifacts/')) {
+          return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'application/pdf' } })
+        }
+        return new Response(
+          JSON.stringify({ batch: BATCH, entries: [entry()], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }),
+    )
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: /view qr card for BRILLIANT PERFUME/i }))
+    await screen.findByRole('dialog')
+
+    // The fixture dispatch has a STANDEE_IMG artifact, so the proof asks for
+    // exactly that stored card, keyed by batch and dispatch.
+    const artifactCalls = calls.filter((u) => u.includes('/artifacts/'))
+    expect(artifactCalls.length).toBeGreaterThan(0)
+    expect(
+      artifactCalls[0]!.endsWith(
+        '/ops/batches/btch_50000000008008000000000009/artifacts/asgn_50000000008008000000000001/STANDEE_IMG',
+      ),
+    ).toBe(true)
+  })
+
   // 19 Aug 2026: HOW FAR THROUGH THE VENDOR IS.
   //
   // A batch reads "Sent to print vendor" from the moment it is sent until every

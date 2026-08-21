@@ -1946,6 +1946,29 @@ export async function downloadActivationSheet(btchId: string): Promise<Downloade
   return { blob, filename: filenameFromContentDisposition(res, `${btchId}-activation.xlsx`) }
 }
 
+// ONE dispatch's stored card, the bytes compose wrote (aggregator logo from
+// the asset store, bank fields off the master-data snapshot). The proof dialog
+// rasterizes this in the browser, so what the operator checks IS what prints.
+// Blob path: refresh-on-401 like the other passive renders. 404 (unknown id or
+// type, or not composed yet) surfaces as null.
+export async function fetchDispatchArtifact(
+  c: Client,
+  btchId: string,
+  asgnId: string,
+  artifactType: string,
+): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/batches/${encodeURIComponent(btchId)}/artifacts/${encodeURIComponent(asgnId)}/${encodeURIComponent(artifactType)}`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
 // 404 (no artifact of that type for the batch) is a real, non-error outcome
 // - the edge itself returns 404 deliberately (ops-read.controller.ts's
 // collateral route) rather than an empty/500 - so it is surfaced as `null`,

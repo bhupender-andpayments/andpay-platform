@@ -49,8 +49,7 @@ import { newIdempotencyKey } from '../../../api/idempotency.js'
 import { sendToVendorErrorMessage } from '../sendToVendorError.js'
 import { ConfirmDialog } from '../../../ui/ConfirmDialog.js'
 import { DispatchGroupBadge } from '../DispatchGroupBadge.js'
-import { QrPreviewDialog } from './QrPreviewDialog.js'
-import { type CardRow } from './collateralPdf.js'
+import { QrPreviewDialog, type CardRow } from './QrPreviewDialog.js'
 import { OUTPUT_BUNDLES, bundlesFor, type BundleId } from './collateralBundles.js'
 
 /** The UPI ID, straight out of the QR's own pa= parameter, so there is no second
@@ -928,6 +927,10 @@ export function BatchGeneratePage() {
           }}
           entry={preview.entry}
           card={preview.card}
+          btchId={detail.batch.id}
+          artifactTypes={(detail.artifacts ?? [])
+            .filter((a) => a.asgnId === preview.entry.asgnId && a.supersededAt === null)
+            .map((a) => a.artifactType)}
         />
       )}
 

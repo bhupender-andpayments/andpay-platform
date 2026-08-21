@@ -21,6 +21,7 @@ import {
   buildDispatchGroupXlsx,
   resolveCollateralGroup,
   assembleGroupPdf,
+  readComposedArtifact,
   listBatches,
   readBatchDetail,
   listPoolEntries,
@@ -442,5 +443,30 @@ export class OpsReadController {
     // Batch id first, same reasoning as the Excel route above.
     res.setHeader('Content-Disposition', `attachment; filename="${btchId}-${collateralKey.toLowerCase()}.pdf"`)
     res.status(200).send(Buffer.from(pdf))
+  }
+
+  // ONE dispatch's stored card (ruled 21 Aug 2026: wherever bank data appears
+  // it points at master bank data, backend plus asset store). The portal's
+  // on-screen proof shows THESE bytes, rasterized in the browser, instead of
+  // re-drawing a lookalike card client-side, so proof and print cannot drift.
+  // A BINARY DOWNLOAD, carrying the same D-29/DP-8 read restriction as the two
+  // batch downloads above. 404 for an unknown id, type, or a dispatch whose
+  // card has not composed yet, the same null path those routes take.
+  @Get('batches/:btchId/artifacts/:asgnId/:artifactType')
+  async dispatchArtifact(
+    @Req() req: EdgeRequest,
+    @Param('btchId') btchId: string,
+    @Param('asgnId') asgnId: string,
+    @Param('artifactType') artifactType: string,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
+    requireUnrestrictedRead(req.claim)
+    const rec = await readComposedArtifact(this.deps.fulfillmentDb, this.deps.assetStore, btchId, asgnId, artifactType)
+    if (rec === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+    res.setHeader('Content-Type', rec.contentType)
+    res.status(200).send(Buffer.from(rec.bytes))
   }
 }
