@@ -859,6 +859,8 @@ export interface AggregatorRow {
   isDefault: boolean
   codeLocked: boolean
   hasLogo: boolean
+  /** ISO instant of the last write; optional so an older edge still parses. */
+  updatedAt?: string
   address1: string | null
   address2: string | null
   address3: string | null
@@ -1087,6 +1089,8 @@ export interface BankLogoVersionRow {
   version: string
   filename: string
   contentType: string
+  /** ISO instant the version was stored; null/absent for pre-field versions. */
+  lastModified?: string | null
 }
 
 export function getAggregatorLogoVersions(c: Client, aggrId: string) {

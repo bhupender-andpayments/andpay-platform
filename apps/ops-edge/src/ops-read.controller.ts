@@ -264,8 +264,8 @@ export class OpsReadController {
   @Get('aggregators/:aggrId/logo/current')
   @HttpCode(200)
   async aggregatorLogoCurrent(@Param('aggrId') aggrId: string): Promise<{
-    master: { version: string; filename: string; contentType: string } | null
-    derivative: { version: string; filename: string; contentType: string } | null
+    master: { version: string; filename: string; contentType: string; lastModified: string | null } | null
+    derivative: { version: string; filename: string; contentType: string; lastModified: string | null } | null
   }> {
     const rows = await listBankMasters(this.deps.identityDb)
     const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
@@ -274,7 +274,14 @@ export class OpsReadController {
       const versions = await this.deps.assetStore.listVersions(key)
       const newest = versions[0]
       if (newest === undefined) return null
-      return { version: newest.version, filename: newest.meta.filename, contentType: newest.meta.contentType }
+      return {
+        version: newest.version,
+        filename: newest.meta.filename,
+        contentType: newest.meta.contentType,
+        // The store's own write instant; null for versions stored before the
+        // adapters recorded it. The dialog renders this as "replaced N ago".
+        lastModified: newest.meta.lastModified ?? null,
+      }
     }
     const [master, derivative] = await Promise.all([head(agg.aggregatorCode), head(`${agg.aggregatorCode}:derivative`)])
     return { master, derivative }

@@ -22,7 +22,7 @@ import {
   type BatchingConfigRow,
 } from '../../api/endpoints.js'
 import { PageHeader, Button, Card, CardHeader, Tabs, ErrorNote, StatusPill, CodeChip, SkeletonRows, Input } from '../../ui/primitives.js'
-import { IconSearch } from '../../ui/icons.js'
+import { IconChevron, IconSearch } from '../../ui/icons.js'
 import { fmtDate, fmtNumber, shortId } from '../../ui/format.js'
 import { fmtWait } from '../fulfillment/BatchingRules.js'
 
@@ -128,6 +128,20 @@ function BankMastersView() {
   const [editingAggregator, setEditingAggregator] = useState<AggregatorRow | null>(null)
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(0)
+  // Collapsible tenant groups (Rahul, 21 Aug 2026): everything sits under its
+  // tenant row, folded by default, so one tenant with 94 aggregators reads as
+  // ONE row until asked. A search that matches an aggregator surfaces it with
+  // no click, exactly like the tree this list replaced.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const toggle = useCallback((tnntId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(tnntId)) next.delete(tnntId)
+      else next.add(tnntId)
+      return next
+    })
+    setPage(0)
+  }, [])
 
   const load = useCallback((): void => {
     getBankMasters(client)
@@ -159,10 +173,13 @@ function BankMastersView() {
       const kids = sortedAggregators(t).filter((a) => matchesAggregatorQuery(a, q))
       if (!matchesTenantQuery(t, q) && kids.length === 0) continue
       out.push({ kind: 'tenant', t })
-      out.push(...kids.map((a): FlatRow => ({ kind: 'aggregator', t, a })))
+      // Children show when the tenant is expanded, or when the search itself
+      // matched them (auto-surface, no click needed).
+      const open = expanded.has(t.tnntId) || (q !== '' && kids.some((a) => matchesAggregatorQuery(a, q)))
+      if (open) out.push(...kids.map((a): FlatRow => ({ kind: 'aggregator', t, a })))
     }
     return out
-  }, [rows, query])
+  }, [rows, query, expanded])
 
   // Page AFTER filtering, and clamp rather than remember: a search that
   // shrinks the list below the current page must not strand the operator on
@@ -249,6 +266,31 @@ function BankMastersView() {
                       className="grid grid-cols-[minmax(0,1fr)_180px_120px_60px] items-center gap-3 px-2 py-2.5 max-sm:grid-cols-[minmax(0,1fr)_60px]"
                     >
                       <div className="flex min-w-0 items-center gap-3">
+                        {isTenant &&
+                          (() => {
+                            // The SAME condition flatRows renders children by,
+                            // so the chevron and its label can never disagree
+                            // with what is actually below this row.
+                            const q = query.trim().toLowerCase()
+                            const isOpen =
+                              expanded.has(row.t.tnntId) ||
+                              (q !== '' && row.t.aggregators.some((a) => matchesAggregatorQuery(a, q)))
+                            return (
+                              <button
+                                type="button"
+                                aria-label={`${isOpen ? 'Hide' : 'Show'} aggregators of ${row.t.displayName}`}
+                                className="flex-none rounded p-1 text-muted-foreground hover:bg-muted"
+                                onClick={() => toggle(row.t.tnntId)}
+                              >
+                                <IconChevron
+                                  width={14}
+                                  height={14}
+                                  className={`transition-transform ${isOpen ? 'rotate-90' : ''}`}
+                                  aria-hidden="true"
+                                />
+                              </button>
+                            )
+                          })()}
                         {(() => {
                           const initials = (
                             <span

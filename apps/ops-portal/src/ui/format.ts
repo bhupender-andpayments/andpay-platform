@@ -175,6 +175,31 @@ export function shortId(id: string | null | undefined, keep = 10): string {
   return id.length <= keep + 2 ? id : `${id.slice(0, keep)}…`
 }
 
+/**
+ * "4 days ago", for a PROVENANCE line that stands alone (Rahul, 21 Aug 2026:
+ * the master-data dialog's "Last saved" and "replaced" lines). This is NOT
+ * fmtRelative walking back in (see the note below): those call sites sat
+ * relative times BESIDE absolute instants; these lines have no absolute
+ * neighbour, and every caller must still carry the real instant in `title`
+ * so the exact answer is one hover away.
+ */
+export function fmtAgo(iso: string): string {
+  const then = new Date(iso).getTime()
+  if (Number.isNaN(then)) return ''
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000))
+  if (s < 60) return 'just now'
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} minute${m === 1 ? '' : 's'} ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`
+  const d = Math.floor(h / 24)
+  if (d < 30) return `${d} day${d === 1 ? '' : 's'} ago`
+  const mo = Math.floor(d / 30)
+  if (mo < 12) return `${mo} month${mo === 1 ? '' : 's'} ago`
+  const y = Math.floor(d / 365)
+  return `${y} year${y === 1 ? '' : 's'} ago`
+}
+
 // fmtRelative ("2h ago") WAS HERE and is deliberately gone (2026-08-17 ruling:
 // one date shape everywhere). It rendered a different kind of fact beside the
 // absolute instants it sat next to - the Device page's Activity card showed

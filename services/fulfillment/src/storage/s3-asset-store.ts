@@ -236,11 +236,13 @@ export class S3AssetStore implements AssetStore {
         try {
           const head = (await this.client.send(
             new HeadObjectCommand({ Bucket: this.bucket, Key: this.objectKey(key, version) }),
-          )) as { ContentType?: string; Metadata?: Record<string, string> }
+          )) as { ContentType?: string; Metadata?: Record<string, string>; LastModified?: Date }
           const raw = head.Metadata?.filename
           meta = {
             contentType: head.ContentType ?? '',
             filename: raw === undefined ? '' : decodeURIComponent(raw),
+            // S3's own write instant, per the port's read-path contract.
+            ...(head.LastModified instanceof Date ? { lastModified: head.LastModified.toISOString() } : {}),
           }
         } catch {
           // A version that lists but will not HEAD still belongs in the

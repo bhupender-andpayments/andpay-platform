@@ -15,6 +15,7 @@ import { newIdempotencyKey } from '../../api/idempotency.js'
 import { useAuth } from '../../auth/AuthContext.js'
 import { useToast } from '../../ui/Toast.js'
 import { Button, ErrorNote, Field, Input, Select } from '../../ui/primitives.js'
+import { fmtAgo, fmtDateTime } from '../../ui/format.js'
 import {
   Dialog,
   DialogContent,
@@ -365,6 +366,15 @@ export function AggregatorDetailDialog({
                   <p className="truncate text-sm font-medium">{stored?.master?.filename ?? 'Logo'}</p>
                   <p className="text-xs text-muted-foreground">
                     Master file{stored?.master != null && <> · {stored.master.version}</>}
+                    {stored?.master?.lastModified != null && (
+                      <>
+                        {' '}
+                        ·{' '}
+                        <span title={fmtDateTime(stored.master.lastModified)}>
+                          replaced {fmtAgo(stored.master.lastModified)}
+                        </span>
+                      </>
+                    )}
                   </p>
                 </div>
                 <Button type="button" variant="ghost" size="sm" onClick={() => setLightboxOpen(true)}>
@@ -552,13 +562,22 @@ export function AggregatorDetailDialog({
           </div>
         </div>
 
-        <DialogFooter>
-          <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button type="button" onClick={() => void submit()} disabled={incomplete} loading={saving}>
-            Save changes
-          </Button>
+        <DialogFooter className="sm:justify-between">
+          {aggregator.updatedAt !== undefined ? (
+            <p className="self-center text-sm text-muted-foreground" title={fmtDateTime(aggregator.updatedAt)}>
+              Last saved {fmtAgo(aggregator.updatedAt)}
+            </p>
+          ) : (
+            <span aria-hidden="true" />
+          )}
+          <div className="flex gap-2">
+            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void submit()} disabled={incomplete} loading={saving}>
+              Save changes
+            </Button>
+          </div>
         </DialogFooter>
 
         {/* The click-to-enlarge popup for the CURRENT logo. A nested dialog

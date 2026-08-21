@@ -162,6 +162,8 @@ export interface AggregatorRow {
   status: string
   isDefault: boolean
   codeLocked: boolean
+  /** ISO instant of the last write to this row; the dialog's "Last saved". */
+  updatedAt: string
   address1: string | null
   address2: string | null
   address3: string | null
@@ -214,6 +216,7 @@ interface AggregatorDbRow {
   status: string
   is_default: boolean
   code_locked_at: Date | null
+  updated_at: Date
   address1: string | null
   address2: string | null
   address3: string | null
@@ -234,6 +237,7 @@ function toAggregatorRow(r: AggregatorDbRow): AggregatorRow {
     status: r.status,
     isDefault: r.is_default,
     codeLocked: r.code_locked_at !== null,
+    updatedAt: r.updated_at.toISOString(),
     address1: r.address1,
     address2: r.address2,
     address3: r.address3,
@@ -1172,7 +1176,7 @@ export async function listBankMasters(db: IdentityDb): Promise<BankMasterRow[]> 
   `
   const aggregatorRows = await db.$queryRaw<AggregatorDbRow[]>`
     SELECT id::text AS id, tenant_id::text AS tenant_id, aggregator_code, display_name, status, is_default,
-           code_locked_at, address1, address2, address3, city, district, country, pin, mobile, email
+           code_locked_at, updated_at, address1, address2, address3, city, district, country, pin, mobile, email
     FROM aggregator
     ORDER BY tenant_id, is_default DESC, display_name
   `

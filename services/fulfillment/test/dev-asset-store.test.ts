@@ -18,7 +18,11 @@ describe('InMemoryAssetStore (dev AssetStore adapter)', () => {
     expect(record).not.toBeNull()
     expect(record!.reference).toBe(reference)
     expect(record!.version).toBe(version)
-    expect(record!.meta).toEqual({ contentType: 'application/postscript', filename: 'hdfc-logo.ai' })
+    // lastModified is stamped by the adapter at put(), per the port's
+    // read-path contract; the caller-supplied fields round-trip untouched.
+    expect(record!.meta.contentType).toBe('application/postscript')
+    expect(record!.meta.filename).toBe('hdfc-logo.ai')
+    expect(record!.meta.lastModified).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(record!.bytes).toEqual(bytes)
   })
 

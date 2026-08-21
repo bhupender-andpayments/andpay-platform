@@ -37,7 +37,10 @@ describe('FilesystemAssetStore', () => {
 
     expect(got).not.toBeNull()
     expect(text(got!.bytes)).toBe('PDF-BYTES')
-    expect(got!.meta).toEqual(meta)
+    // The sidecar adds lastModified at put(); everything supplied round-trips.
+    expect(got!.meta.contentType).toBe(meta.contentType)
+    expect(got!.meta.filename).toBe(meta.filename)
+    expect(got!.meta.lastModified).toMatch(/^\d{4}-\d{2}-\d{2}T/)
   })
 
   it('is the behaviour the in-memory adapter CANNOT provide', async () => {
