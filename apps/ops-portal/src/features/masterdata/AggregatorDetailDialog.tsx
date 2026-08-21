@@ -3,11 +3,13 @@ import {
   editAggregator,
   uploadAggregatorLogo,
   getAggregatorLogoVersions,
+  getAggregatorLogoCurrent,
   fetchAggregatorLogoDerivative,
   fetchAggregatorLogoVersionMaster,
   type AggregatorEditBody,
   type AggregatorRow,
   type BankLogoVersionRow,
+  type AggregatorLogoCurrent,
 } from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { useAuth } from '../../auth/AuthContext.js'
@@ -112,6 +114,12 @@ export function AggregatorDetailDialog({
 
   const [derivativeUrl, setDerivativeUrl] = useState<string | null>(null)
   const [versions, setVersions] = useState<BankLogoVersionRow[] | null>(null)
+  // The names of what is stored right now, shown beside each file input so an
+  // operator sees what is already chosen before replacing it. The derivative
+  // runs its own version sequence, so this cannot be read off `versions`.
+  const [stored, setStored] = useState<AggregatorLogoCurrent | null>(null)
+  // The click-to-enlarge popup over the CURRENT thumbnail.
+  const [lightboxOpen, setLightboxOpen] = useState(false)
   const [masterFile, setMasterFile] = useState<File | null>(null)
   const [derivativeFile, setDerivativeFile] = useState<File | null>(null)
   // The data: URL preview of the PENDING pair, shown beside the current logo
@@ -148,6 +156,9 @@ export function AggregatorDetailDialog({
     getAggregatorLogoVersions(client, aggregator.aggrId)
       .then(setVersions)
       .catch(() => setVersions([]))
+    getAggregatorLogoCurrent(client, aggregator.aggrId)
+      .then(setStored)
+      .catch(() => setStored(null))
   }
 
   useEffect(() => {
@@ -342,11 +353,19 @@ export function AggregatorDetailDialog({
               <div className="space-y-1">
                 <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">Current</p>
                 {derivativeUrl !== null ? (
-                  <img
-                    src={derivativeUrl}
-                    alt={`${aggregator.displayName} logo`}
-                    className="max-h-24 rounded border border-border bg-white object-contain p-1"
-                  />
+                  <button
+                    type="button"
+                    className="block cursor-zoom-in"
+                    aria-label="Preview the current logo"
+                    title="Click to preview"
+                    onClick={() => setLightboxOpen(true)}
+                  >
+                    <img
+                      src={derivativeUrl}
+                      alt={`${aggregator.displayName} logo`}
+                      className="max-h-24 rounded border border-border bg-white object-contain p-1"
+                    />
+                  </button>
                 ) : (
                   <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
                 )}
@@ -381,6 +400,11 @@ export function AggregatorDetailDialog({
                   accept=".ai,application/postscript,application/pdf"
                   onChange={(e) => void pickMaster(e.target.files?.[0] ?? null)}
                 />
+                {stored?.master != null && (
+                  <p className="text-xs text-foreground">
+                    Currently stored: <span className="font-medium">{stored.master.filename}</span> ({stored.master.version})
+                  </p>
+                )}
               </Field>
               <Field
                 label="Render derivative (PNG or SVG)"
@@ -394,6 +418,11 @@ export function AggregatorDetailDialog({
                   accept="image/png,image/svg+xml"
                   onChange={(e) => void pickDerivative(e.target.files?.[0] ?? null)}
                 />
+                {stored?.derivative != null && (
+                  <p className="text-xs text-foreground">
+                    Currently stored: <span className="font-medium">{stored.derivative.filename}</span> ({stored.derivative.version})
+                  </p>
+                )}
               </Field>
             </div>
             <Button
@@ -457,6 +486,29 @@ export function AggregatorDetailDialog({
             Save changes
           </Button>
         </DialogFooter>
+
+        {/* The click-to-enlarge popup for the CURRENT logo. A nested dialog
+            (radix stacks them) rather than a route or a new page: the point is
+            only to showcase the stored artwork at a readable size. */}
+        <Dialog open={lightboxOpen} onOpenChange={setLightboxOpen}>
+          <DialogContent className="sm:max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Current logo</DialogTitle>
+              <DialogDescription>
+                {stored?.derivative != null
+                  ? `${stored.derivative.filename} (${stored.derivative.version})`
+                  : aggregator.displayName}
+              </DialogDescription>
+            </DialogHeader>
+            {derivativeUrl !== null && (
+              <img
+                src={derivativeUrl}
+                alt={`${aggregator.displayName} logo, enlarged`}
+                className="max-h-[65vh] w-full rounded border border-border bg-white object-contain p-2"
+              />
+            )}
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   )

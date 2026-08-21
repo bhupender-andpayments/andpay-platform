@@ -1096,6 +1096,21 @@ export function getAggregatorLogoVersions(c: Client, aggrId: string) {
   })
 }
 
+// The names of what is stored right now, one per asset key. The master and
+// the derivative run separate version sequences, so the master's history list
+// above cannot answer "which derivative is current"; this can.
+export interface AggregatorLogoCurrent {
+  master: BankLogoVersionRow | null
+  derivative: BankLogoVersionRow | null
+}
+
+export function getAggregatorLogoCurrent(c: Client, aggrId: string) {
+  return c.request<AggregatorLogoCurrent>({
+    method: 'GET',
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo/current`,
+  })
+}
+
 // BINARY body, routed through the client's 'blob' responseType so it gets the
 // refresh-on-401-and-retry. These two used raw fetch with a Bearer, and unlike
 // the dispatch downloads (a button the operator can click again after a typed

@@ -566,6 +566,34 @@
               }
             },
             {
+              "name": "GET /ops/aggregators/:aggrId/logo/current",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/aggregators/:aggrId/logo/current",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "aggregators",
+                    ":aggrId",
+                    "logo",
+                    "current"
+                  ],
+                  "variable": [
+                    {
+                      "key": "aggrId",
+                      "value": "",
+                      "description": "Path parameter :aggrId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.aggregatorLogoCurrent (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nPath parameters: aggrId."
+              }
+            },
+            {
               "name": "GET /ops/aggregators/:aggrId/logo/derivative",
               "request": {
                 "method": "GET",

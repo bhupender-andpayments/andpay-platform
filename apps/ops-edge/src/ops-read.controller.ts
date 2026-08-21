@@ -254,6 +254,31 @@ export class OpsReadController {
     res.status(200).send(Buffer.from(rec.bytes))
   }
 
+  // What is stored RIGHT NOW, by name: the newest master and the newest
+  // derivative, as metadata only. The two are separate asset keys with
+  // separate version sequences (the port contract), so answering "which files
+  // are current" honestly takes one listVersions per key; neither call moves
+  // bytes. The dialog shows these next to the file inputs so an operator can
+  // see what is already chosen before deciding to replace it.
+  @Get('aggregators/:aggrId/logo/current')
+  @HttpCode(200)
+  async aggregatorLogoCurrent(@Param('aggrId') aggrId: string): Promise<{
+    master: { version: string; filename: string; contentType: string } | null
+    derivative: { version: string; filename: string; contentType: string } | null
+  }> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    if (agg === undefined) return { master: null, derivative: null }
+    const head = async (key: string) => {
+      const versions = await this.deps.assetStore.listVersions(key)
+      const newest = versions[0]
+      if (newest === undefined) return null
+      return { version: newest.version, filename: newest.meta.filename, contentType: newest.meta.contentType }
+    }
+    const [master, derivative] = await Promise.all([head(agg.aggregatorCode), head(`${agg.aggregatorCode}:derivative`)])
+    return { master, derivative }
+  }
+
   @Get('aggregators/:aggrId/logo/derivative')
   async aggregatorLogoDerivative(@Param('aggrId') aggrId: string, @Res() res: EdgeResponse): Promise<void> {
     const rows = await listBankMasters(this.deps.identityDb)

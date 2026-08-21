@@ -396,6 +396,55 @@ describe('aggregator logo over HTTP', () => {
     expect(row2.aggregators[0].hasLogo).toBe(true)
   })
 
+  it('logo/current names the newest master and derivative, each from its own version sequence', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-CUR' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    // Before any upload: both sides null, not a 404 (the aggregator exists,
+    // it just has nothing stored).
+    const empty = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/current`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(empty.body).toEqual({ master: null, derivative: null })
+
+    for (const n of [1, 2]) {
+      await request(app.getHttpServer())
+        .post(`/ops/aggregators/${aggrId}/logo`)
+        .set('Authorization', `Bearer ${tok}`)
+        .set('Idempotency-Key', randomUUID())
+        .attach('master', Buffer.from(`%!PS-Adobe ai bytes ${n}`), { filename: `cur-v${n}.ai`, contentType: 'application/postscript' })
+        .attach('derivative', Buffer.from(`png bytes ${n}`), { filename: `cur-v${n}.png`, contentType: 'image/png' })
+        .expect(200)
+    }
+
+    const current = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/current`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    // The NEWEST of each, by name; the version tokens come from each key's own
+    // sequence rather than being assumed equal.
+    expect(current.body.master.filename).toBe('cur-v2.ai')
+    expect(current.body.master.contentType).toBe('application/postscript')
+    expect(current.body.derivative.filename).toBe('cur-v2.png')
+    expect(current.body.derivative.contentType).toBe('image/png')
+    expect(current.body.master.version).toBeTruthy()
+    expect(current.body.derivative.version).toBeTruthy()
+
+    // An unknown aggregator id: the same null shape, matching the versions
+    // route's empty-list posture for an unknown id.
+    const unknown = await request(app.getHttpServer())
+      .get('/ops/aggregators/aggr_00000000000000000000000000/logo/current')
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(unknown.body).toEqual({ master: null, derivative: null })
+  })
+
   it('streams the master bytes AT each listed version token, and 404s an unknown token', async () => {
     const tok = await mint()
     const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)

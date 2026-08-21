@@ -666,6 +666,7 @@ describe('master data create dialogs', () => {
           return jsonResponse({ deduped: false, aggrId: 'aggr_c2' })
         }
         if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
+        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null })
         if (url.includes('/logo/versions')) return jsonResponse([])
         if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
         return jsonResponse([])
@@ -806,6 +807,7 @@ describe('master data create dialogs', () => {
       'fetch',
       vi.fn(async (url: string) => {
         if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
+        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null })
         if (url.includes('/logo/versions')) {
           return jsonResponse([
             { version: 'v2', filename: 'gscb-v2.png', contentType: 'image/png' },
@@ -841,6 +843,7 @@ describe('master data create dialogs', () => {
         if (url.includes('/logo/derivative')) {
           return new Response(pngBytes, { status: 200, headers: { 'content-type': 'image/png' } })
         }
+        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null })
         if (url.includes('/logo/versions')) return jsonResponse([])
         if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
         return jsonResponse([])
@@ -854,6 +857,70 @@ describe('master data create dialogs', () => {
 
     const img = await screen.findByAltText('GSCB logo')
     expect(img.getAttribute('src')).toMatch(/^data:/)
+  })
+
+  it('the dialog names the currently stored master and derivative next to their inputs', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
+        if (url.includes('/logo/current')) {
+          return jsonResponse({
+            master: { version: 'v2', filename: 'Godhara city.ai', contentType: 'application/postscript' },
+            derivative: { version: 'v2', filename: 'Godhara city.png', contentType: 'image/png' },
+          })
+        }
+        if (url.includes('/logo/versions')) return jsonResponse([])
+        if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
+        return jsonResponse([])
+      }),
+    )
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
+
+    // Both names render, each tagged with its own version token: the master
+    // and the derivative run separate sequences, so neither line is derived
+    // from the other.
+    expect(await screen.findByText('Godhara city.ai')).toBeTruthy()
+    expect(screen.getByText('Godhara city.png')).toBeTruthy()
+    expect(screen.getAllByText(/Currently stored:/).length).toBe(2)
+  })
+
+  it('clicking the current logo opens an enlarged popup naming the stored derivative', async () => {
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/logo/derivative')) {
+          return new Response(pngBytes, { status: 200, headers: { 'content-type': 'image/png' } })
+        }
+        if (url.includes('/logo/current')) {
+          return jsonResponse({
+            master: { version: 'v2', filename: 'Godhara city.ai', contentType: 'application/postscript' },
+            derivative: { version: 'v2', filename: 'Godhara city.png', contentType: 'image/png' },
+          })
+        }
+        if (url.includes('/logo/versions')) return jsonResponse([])
+        if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
+        return jsonResponse([])
+      }),
+    )
+
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Preview the current logo' }))
+
+    // The popup shows the SAME data: URL enlarged, captioned with the stored
+    // derivative's filename and version.
+    const enlarged = await screen.findByAltText('GSCB logo, enlarged')
+    expect(enlarged.getAttribute('src')).toMatch(/^data:/)
+    expect(screen.getByText('Godhara city.png (v2)')).toBeTruthy()
   })
 
   it('the damage reason dialog posts the code and label as separate fields', async () => {
