@@ -38,6 +38,16 @@ const ROW = {
 }
 const DAMAGED_ROW = { ...ROW, id: 'unit_2', status: 'DAMAGED' }
 
+// The device's status trail (STATUS_STAGES.md), which the rail is now built
+// from. ROW is DISPATCHED, so its trail records the three rungs it passed and
+// says nothing about Delivered, which is exactly what a rail should show as
+// still ahead.
+const TRAIL = [
+  { status: 'IN_STOCK', occurredAt: '2026-08-10T09:00:00.000Z', statusSource: 'intake', actorId: null, recordedAt: '2026-08-10T09:00:01.000Z' },
+  { status: 'PRINTED', occurredAt: '2026-08-11T09:00:00.000Z', statusSource: 'return-sheet', actorId: null, recordedAt: '2026-08-11T09:00:01.000Z' },
+  { status: 'DISPATCHED', occurredAt: '2026-08-12T09:00:00.000Z', statusSource: 'return-sheet', actorId: null, recordedAt: '2026-08-12T09:00:01.000Z' },
+]
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
 }
@@ -47,6 +57,9 @@ function stub(): { url: string }[] {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     calls.push({ url })
     if (url.includes('/ops/units/') && url.endsWith('/status')) return jsonResponse({ deduped: false, advanced: true })
+    // BEFORE the /ops/devices arm below, which is a PREFIX of this path: the
+    // list route would otherwise answer the trail request with device rows.
+    if (url.includes('/ops/devices/') && url.endsWith('/trail')) return jsonResponse(TRAIL)
     if (url.includes('/ops/devices')) return jsonResponse([ROW, DAMAGED_ROW])
     if (url.includes('/ops/merchants')) return jsonResponse([])
     if (url.includes('/ops/vendors')) return jsonResponse([])
@@ -85,7 +98,13 @@ describe('DeviceDetailPage', () => {
     const calls = stub()
     renderAt('unit_1', { row: ROW })
     await screen.findAllByText('9990000001001')
-    expect(calls.some((c) => c.url.includes('/ops/devices/unit_1'))).toBe(false)
+    // The per-device DETAIL route is what this guards (it is the only route
+    // that serves the full ICCID and raw QR payload). The trail route shares
+    // its prefix and is deliberately excluded: reading a status history is not
+    // reading the detail record.
+    expect(
+      calls.some((c) => c.url.includes('/ops/devices/unit_1') && !c.url.endsWith('/trail')),
+    ).toBe(false)
     expect(screen.queryByText(/upi:\/\//)).toBeNull()
     expect(document.body.textContent).not.toMatch(/qr payload/i)
   })
@@ -149,14 +168,46 @@ describe('DeviceDetailPage', () => {
   // inventory table's two columns (19 Aug 2026). Two pills, because the two
   // facts are independent: a device can be activated and not yet delivered, or
   // delivered and not yet activated, and one of those is a real worklist.
-  it('reports activation as its own pill next to the status pill', async () => {
+  it('states ONE composed status, not two competing pills', async () => {
     stub()
     renderAt('unit_1', { row: ROW })
     await screen.findAllByText('9990000001001')
 
-    // ROW is DISPATCHED with activatedAt null, so the pair reads exactly that.
+    // STATUS_STAGES.md (21 Aug 2026): the two axes stay separate in storage,
+    // but the SCREEN reads as one lifecycle, so this is one pill.
+    //
+    // It also retires a `NOT_ACTIVATED` pill that was never a backend value.
+    // ROW is DISPATCHED and not activated, and on an undelivered device that
+    // absence is unremarkable (nothing has reached the merchant yet), so the
+    // pill simply says where the device is.
     const pills = screen.getAllByText(/not activated|dispatched/i).filter((el) => el.className.includes('pill'))
-    expect(pills.map((p) => p.textContent)).toEqual(['Not activated', 'Dispatched'])
+    expect(pills.map((p) => p.textContent)).toEqual(['Dispatched'])
+  })
+
+  it('says "not activated yet" only once DELIVERED, where the absence is the point', async () => {
+    stub()
+    renderAt('unit_1', { row: { ...ROW, status: 'DELIVERED', activatedAt: null } })
+    await screen.findAllByText('9990000001001')
+
+    // Delivered but not live is the one case an operator chases, so it is
+    // stated in words. In words and not as a pill, deliberately: it is the
+    // absence of a fact, not a status the platform stores.
+    expect(screen.getByText(/not activated yet/i)).toBeTruthy()
+    const pills = screen.getAllByText('Delivered').filter((el) => el.className.includes('pill'))
+    expect(pills.length).toBeGreaterThan(0)
+  })
+
+  it('a DELIVERED and activated device reads COMPLETED, the ruled composite', async () => {
+    stub()
+    renderAt('unit_1', { row: { ...ROW, status: 'DELIVERED', activatedAt: '2026-08-19T01:39:00.000Z' } })
+    await screen.findAllByText('9990000001001')
+
+    // The whole point of the composite: delivered AND live is "done", and an
+    // operator should not have to cross-reference two columns to learn it.
+    // COMPLETED is derived on this screen and stored nowhere.
+    const pill = screen.getAllByText('Completed').find((el) => el.className.includes('pill'))
+    expect(pill).toBeTruthy()
+    expect(screen.queryByText(/not activated yet/i)).toBeNull()
   })
 
   it('an activated device shows the positive pill, whatever its delivery status is', async () => {

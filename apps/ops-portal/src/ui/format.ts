@@ -47,6 +47,9 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   // colours the Shipments table's Status cell too, consistently.
   QR_GENERATED: { variant: 'pending', label: 'QR generated' },
   DISPATCHED_BY_VENDOR: { variant: 'info', label: 'Dispatched by vendor' },
+  // STATUS_STAGES.md: DERIVED, never stored. "Delivered and activated", the
+  // one answer an operator wants about a device that is finished.
+  COMPLETED: { variant: 'positive', label: 'Completed' },
   DELIVERED: { variant: 'positive', label: 'Delivered' },
   ACTIVATED: { variant: 'positive', label: 'Activated' },
   // NOT_ACTIVATED IS NOT A BACKEND VALUE. Activation is a timestamp axis, not an

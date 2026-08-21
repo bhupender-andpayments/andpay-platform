@@ -23,6 +23,7 @@ import {
   getDamageReasons,
   getDevices,
   getDispatchDetail,
+  getDispatchTrail,
   getPoolEntries,
   type BatchEntryRow,
   type DamageCaseRow,
@@ -48,6 +49,7 @@ import {
   CodeChip,
 } from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
+import type { StatusTrailEntry } from '../../api/endpoints.js'
 import { DispatchStatusEditDialog } from './DispatchStatusEditDialog.js'
 import {
   COURIER_RUNG,
@@ -122,6 +124,10 @@ export function DispatchDetailPage() {
   // from the reads that already serve them rather than asked of a new route.
   const [entry, setEntry] = useState<BatchEntryRow | null>(null)
   const [batchFormedAt, setBatchFormedAt] = useState<string | null>(null)
+  // The dispatch's own status trail (pool_status + dispatch_state, interleaved).
+  // Supplies the real instants for the rail's pre-courier rungs, which used to
+  // be inferred from the entry's current state and so could carry no time.
+  const [dispatchTrail, setDispatchTrail] = useState<readonly StatusTrailEntry[]>([])
   const [labelQr, setLabelQr] = useState<string | null>(null)
   const [deviceIdBySerial, setDeviceIdBySerial] = useState<ReadonlyMap<string, string>>(new Map())
 
@@ -178,6 +184,24 @@ export function DispatchDetailPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // The dispatch trail, silent on failure like every other enrichment read on
+  // this page: a trail that does not arrive costs the early rungs their
+  // timestamps, not the page.
+  useEffect(() => {
+    if (asgnId === undefined) return
+    let cancelled = false
+    getDispatchTrail(client, asgnId)
+      .then((rows) => {
+        if (!cancelled) setDispatchTrail(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setDispatchTrail([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client, asgnId])
 
   // Enrichment, and deliberately silent on failure: this page must still render
   // everything the analytics read gave it if fulfillment is unreachable. A
@@ -238,8 +262,8 @@ export function DispatchDetailPage() {
   }, [labelQr])
 
   const rail = useMemo(
-    () => (detail === null ? [] : buildRail(detail, entry, batchFormedAt)),
-    [detail, entry, batchFormedAt],
+    () => (detail === null ? [] : buildRail(detail, entry, batchFormedAt, dispatchTrail)),
+    [detail, entry, batchFormedAt, dispatchTrail],
   )
 
   // WHERE THIS DISPATCH IS, as one value, taken OUT OF THE RAIL rather than
@@ -745,7 +769,12 @@ function parseCount(raw: string): number | null {
  * OUT_FOR_DELIVERY, so recording either ordinary status drew the parcel as a red
  * failure with a warning triangle.
  */
-function buildRail(detail: DispatchDetailView, entry: BatchEntryRow | null, batchFormedAt: string | null): RailStage[] {
+function buildRail(
+  detail: DispatchDetailView,
+  entry: BatchEntryRow | null,
+  batchFormedAt: string | null,
+  dispatchTrail: readonly StatusTrailEntry[],
+): RailStage[] {
   const batched = detail.batchId !== null
   const dispatchState = entry?.dispatchState ?? null
   const trail = detail.deliveryTrail
@@ -762,6 +791,32 @@ function buildRail(detail: DispatchDetailView, entry: BatchEntryRow | null, batc
   const rungTime = (key: string): string | null =>
     trail.reduce<string | null>((latest, e) => (e.status === key ? e.courierTimestamp : latest), null)
 
+  // THE PRE-COURIER RUNGS NOW HAVE REAL INSTANTS (STATUS_STAGES.md, 21 Aug
+  // 2026). Until pool_entry_status_event existed, the first four rungs were
+  // INFERRED from the entry's current dispatch_state, which could say where the
+  // dispatch had got to but never when it got there, so they rendered bare. The
+  // dispatch trail records every one of those transitions, so each rung that
+  // actually happened now carries its own time.
+  //
+  // The trail's own vocabulary is fulfillment's two axes; this maps them onto
+  // the BRD ladder's words. POOLED is the pool wait, which the ladder calls
+  // Pending batch; BATCHED shares that rung because forming the batch is what
+  // ends the wait, and QR generation is the next rung along.
+  const TRAIL_TO_RUNG: Record<string, string> = {
+    POOLED: 'PENDING_BATCH',
+    BATCHED: 'PENDING_BATCH',
+    QR_GENERATED: 'QR_GENERATED',
+    SENT_TO_VENDOR: 'SENT_TO_VENDOR',
+    DISPATCHED_BY_VENDOR: 'DISPATCHED_BY_VENDOR',
+  }
+  /** First time this rung was entered, per the dispatch trail. */
+  const dispatchRungTime = (key: string): string | null => {
+    for (const e of dispatchTrail) {
+      if (TRAIL_TO_RUNG[e.status] === key) return e.occurredAt
+    }
+    return null
+  }
+
   const stages: RailStage[] = DISPATCH_LADDER.map((rung, i) => ({
     key: rung.key,
     label: rung.label,
@@ -770,11 +825,15 @@ function buildRail(detail: DispatchDetailView, entry: BatchEntryRow | null, batc
     // 'current': the red stop is where the parcel actually is.
     state: i < currentIdx ? 'reached' : i === currentIdx ? (offLadder ? 'reached' : 'current') : 'future',
     at:
-      rung.key === 'PENDING_BATCH' && batched
-        ? batchFormedAt
-        : i <= currentIdx
-          ? rungTime(rung.key)
-          : null,
+      i > currentIdx
+        ? null
+        : // Prefer what a trail RECORDED over anything inferred, courier trail
+          // for its own rungs and dispatch trail for the earlier ones. The
+          // batch-formed fallback stays for rows batched before the trail
+          // existed, whose history begins at their backfilled rung.
+          (rungTime(rung.key) ??
+          dispatchRungTime(rung.key) ??
+          (rung.key === 'PENDING_BATCH' && batched ? batchFormedAt : null)),
   }))
 
   if (offLadder) {

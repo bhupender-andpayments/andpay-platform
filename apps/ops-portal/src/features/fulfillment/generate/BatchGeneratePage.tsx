@@ -25,6 +25,24 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { CodeChip, ErrorNote, InfoNote, EmptyState, Spinner, StatusPill } from '../../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../../ui/LifecycleRail.js'
+import { buildRailFromTrail } from '../../../ui/statusRail.js'
+import type { StatusTrailEntry } from '../../../api/endpoints.js'
+import { BATCH_STATUSES } from '../batchStatuses.js'
+
+// The rail's words and icons for each batch state, keyed off the SAME
+// BATCH_STATUSES vocabulary the server owns, so a state added there cannot
+// silently vanish from the rail.
+const BATCH_RAIL_LABEL: Record<string, string> = {
+  BATCHED: 'Batched',
+  SENT_TO_PRINT_VENDOR: 'Sent to print vendor',
+  CLOSED: 'Closed',
+}
+
+const BATCH_RAIL_ICON: Record<string, RailStage['icon']> = {
+  BATCHED: Boxes,
+  SENT_TO_PRINT_VENDOR: Send,
+  CLOSED: CheckCircle2,
+}
 import { BackLink } from '../../../ui/DetailFacts.js'
 import { DataGrid, type GridColumn } from '../../../ui/DataGrid.js'
 import { fmtDateTime } from '../../../ui/format.js'
@@ -37,6 +55,7 @@ import {
   bulkDeliverBatch,
   downloadDispatchExcel,
   getBatchDetail,
+  getBatchTrail,
   sendBatchToVendor,
   type BatchDetailView,
   type BatchEntryRow,
@@ -81,6 +100,9 @@ export function BatchGeneratePage() {
   const [copied, setCopied] = useState(false)
 
   const [detail, setDetail] = useState<BatchDetailView | null>(null)
+  // The batch's status trail. This is where the rail's sent-at and closed-at
+  // come from: the batch row itself has never carried those columns.
+  const [trail, setTrail] = useState<readonly StatusTrailEntry[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [notFound, setNotFound] = useState(false)
 
@@ -136,6 +158,30 @@ export function BatchGeneratePage() {
     void reload()
   }, [reload])
 
+  // THE TRAIL LOADS ON ITS OWN, deliberately not inside reload(). Chaining it
+  // after the detail read made the two share a timeline: the batch page derives
+  // its per-dispatch cards from the detail, and a second awaited fetch landing
+  // mid-derivation left the QR buttons still disabled when an operator (and a
+  // test) clicked one. Independent reads, independent effects.
+  //
+  // Silent on failure, like every other supporting read here: a trail that does
+  // not arrive costs the rail its timestamps, not the page. Keyed on the batch
+  // status too, so sending to the vendor or closing refreshes the rung each
+  // action just added.
+  const reloadTrail = useCallback(async (): Promise<void> => {
+    if (btchId === undefined) return
+    try {
+      const rows = await getBatchTrail(client, btchId)
+      setTrail(Array.isArray(rows) ? rows : [])
+    } catch {
+      setTrail([])
+    }
+  }, [client, btchId])
+
+  useEffect(() => {
+    void reloadTrail()
+  }, [reloadTrail])
+
   const confirmClose = useCallback(async (): Promise<void> => {
     if (btchId === undefined) return
     setCloseBusy(true)
@@ -144,12 +190,18 @@ export function BatchGeneratePage() {
       await closeBatch(client, btchId, newIdempotencyKey())
       setCloseOpen(false)
       await reload()
+      // The rail gained a rung; refresh it explicitly rather than reactively.
+      // A reactive dependency on batch.status was tried and reverted: it fired
+      // a second fetch mid-render while this page was still deriving its
+      // per-dispatch cards, which left the QR buttons disabled at the moment an
+      // operator clicked one.
+      await reloadTrail()
     } catch (err) {
       setCloseError(err instanceof Error ? err.message : 'Could not close this batch.')
     } finally {
       setCloseBusy(false)
     }
-  }, [client, btchId, reload])
+  }, [client, btchId, reload, reloadTrail])
 
   const confirmSend = useCallback(async (): Promise<void> => {
     if (btchId === undefined) return
@@ -161,6 +213,9 @@ export function BatchGeneratePage() {
       // Re-read rather than patching state locally: sending also binds the print
       // vendor, which decides the print layout this page renders with.
       await reload()
+      // And the rail's sent-at rung, which only exists now that batches keep a
+      // status trail.
+      await reloadTrail()
     } catch (err) {
       // The coded 409 reasons get their real sentence; anything else keeps the
       // generic one. See sendToVendorError.ts for why that mattered.
@@ -168,7 +223,7 @@ export function BatchGeneratePage() {
     } finally {
       setSendBusy(false)
     }
-  }, [client, btchId, reload])
+  }, [client, btchId, reload, reloadTrail])
 
   // 19 Aug 2026 (demo need): bulk-correct every shipment in this batch to
   // DELIVERED in one click. Pure orchestration on the server (bulkDeliverBatch
@@ -377,25 +432,25 @@ export function BatchGeneratePage() {
   // offering a download the server answers 404 to.
   const excelGroups = excelGroupsFor(detail.entries)
 
-  // The batch's three states as a rail. Driven off `batch.status`, the real
-  // column (BATCH_STATUSES in services/fulfillment/src/batch-status.ts), so it
-  // cannot disagree with the Status chip above it.
+  // The batch's three states as a rail, built from the batch's own trail
+  // (STATUS_STAGES.md, 21 Aug 2026).
   //
-  // Only FORMED carries a timestamp: the batch row records createdAt and
-  // nothing else. A sent-at or closed-at would have to be invented here, and
-  // the rail is honest about what it knows (the same contract LifecycleRail's
-  // own header states), so those two rungs show their label alone.
-  const batchRail: RailStage[] = (() => {
-    const order = ['BATCHED', 'SENT_TO_PRINT_VENDOR', 'CLOSED']
-    const at = order.indexOf(detail.batch.status)
-    const stateFor = (i: number): RailStage['state'] =>
-      at === -1 ? 'future' : i < at ? 'reached' : i === at ? 'current' : 'future'
-    return [
-      { key: 'BATCHED', label: 'Batched', state: stateFor(0), icon: Boxes, at: detail.batch.createdAt },
-      { key: 'SENT_TO_PRINT_VENDOR', label: 'Sent to print vendor', state: stateFor(1), icon: Send },
-      { key: 'CLOSED', label: 'Closed', state: stateFor(2), icon: CheckCircle2 },
-    ]
-  })()
+  // ALL THREE RUNGS NOW CARRY THEIR REAL INSTANT. Until the trail existed only
+  // the first could: the batch row records createdAt and nothing else, so a
+  // sent-at or closed-at would have had to be invented, and this rail correctly
+  // refused to invent one. batch_status_event records every transition, so the
+  // two timestamps an operator actually asks for ("when did this go to the
+  // vendor", "when was it closed") are answerable at last.
+  //
+  // Batch has no terminal branches: the three states are one line, and CLOSED
+  // is the end of it rather than a branch off it.
+  const batchRail: RailStage[] = buildRailFromTrail({
+    spine: BATCH_STATUSES,
+    terminals: [],
+    trail,
+    label: (k) => BATCH_RAIL_LABEL[k] ?? k,
+    icon: (k) => BATCH_RAIL_ICON[k] ?? Boxes,
+  })
 
   // WHAT IS IN THIS BATCH, one row per Dispatch ID, in the order the server sorted
   // them (bank then branch), which is the same order the vendor Excel uses.

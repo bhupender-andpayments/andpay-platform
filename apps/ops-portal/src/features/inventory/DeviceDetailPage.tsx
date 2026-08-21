@@ -22,6 +22,7 @@ import {
 import { useAuth } from '../../auth/AuthContext.js'
 import {
   getDevices,
+  getDeviceTrail,
   getMerchants,
   getVendors,
   type UnitInventoryRow,
@@ -30,11 +31,20 @@ import {
 } from '../../api/endpoints.js'
 import { Card, CardBody, Button, ErrorNote, StatusPill, CodeChip, Spinner } from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
+import { buildRailFromTrail, deviceDisplayStatus } from '../../ui/statusRail.js'
+import type { StatusTrailEntry } from '../../api/endpoints.js'
 import { BackLink, FactRow, SectionHeading } from '../../ui/DetailFacts.js'
 import { fmtDateTime } from '../../ui/format.js'
 import { useToast } from '../../ui/Toast.js'
 import { UnitStatusEditDialog } from './UnitStatusEditDialog.js'
-import { UNIT_SPINE, STAGE_COPY, legalNextStatuses, isTerminalStatus, statusLabel } from './unitStatus.js'
+import {
+  UNIT_SPINE,
+  UNIT_TERMINAL,
+  STAGE_COPY,
+  legalNextStatuses,
+  isTerminalStatus,
+  statusLabel,
+} from './unitStatus.js'
 
 // One device, end to end. The lifecycle owns the top of the page as a
 // horizontal rail, and the facts sit under it in three cards.
@@ -80,62 +90,31 @@ const STAGE_ICON: Record<string, RailStage['icon']> = {
   RETURNED: Undo2,
 }
 
-function buildRail(row: UnitInventoryRow): RailStage[] {
-  const terminal = isTerminalStatus(row.status) ? row.status : null
-
-  // On the spine, position is exact. On a terminal branch the row's own links
-  // prove how far it got; anything beyond that is unknown and stays unreached.
-  const currentIdx =
-    terminal === null
-      ? UNIT_SPINE.indexOf(row.status as (typeof UNIT_SPINE)[number])
-      : row.shipment !== null
-        ? UNIT_SPINE.indexOf('DISPATCHED')
-        : row.printedForMerchant !== null
-          ? UNIT_SPINE.indexOf('PRINTED')
-          : UNIT_SPINE.indexOf('IN_STOCK')
-
-  const stages: RailStage[] = UNIT_SPINE.map((key, i) => ({
-    key,
-    label: STAGE_COPY[key]?.label ?? key,
-    icon: STAGE_ICON[key] ?? Box,
-    state: i < currentIdx ? 'reached' : i === currentIdx ? (terminal === null ? 'current' : 'reached') : 'future',
-    // Only the current rung can be dated: updatedAt is when the row last
-    // moved, which is this stage and no other.
-    at: terminal === null && i === currentIdx ? row.updatedAt : null,
-  }))
-
-  // NO ACTIVATED RUNG, as of 19 Aug 2026.
-  //
-  // One was pushed on here, and the reasoning given for it was the argument
-  // AGAINST it: activation is a separate axis (unit.activated_at, D-16), so a
-  // device can be activated while its delivery is still outstanding. Put that on
-  // one ordered rail and the rail stops being ordered. It rendered, on real demo
-  // data, as
-  //
-  //     ... Dispatched (done) -> Delivered (NOT reached) -> Activated (done)
-  //         -> Returned (terminal)
-  //
-  // which is not a sequence at all, and it contradicted this page's own Change
-  // status dialog, which correctly refuses to offer ACTIVATED because the server
-  // does not accept it as a status.
-  //
-  // The fact is not lost, it moved to where it belongs: a PILL in the page
-  // header beside the status pill, which is exactly how the inventory table
-  // already models it (an Activation column and a Status column, two axes, two
-  // cells). The exact instant stays on the Activity card. So the rail is the
-  // delivery spine alone, and the two axes read the same way in the list and on
-  // the page.
-  if (terminal !== null) {
-    stages.push({
-      key: terminal,
-      label: STAGE_COPY[terminal]?.label ?? terminal,
-      icon: STAGE_ICON[terminal] ?? AlertTriangle,
-      state: 'current',
-      at: row.updatedAt,
-      terminal: true,
-    })
-  }
-  return stages
+// THE RAIL COMES FROM THE DEVICE'S TRAIL (STATUS_STAGES.md, 21 Aug 2026).
+//
+// This replaces a rank comparison that claimed every rung below the current one
+// had been reached, and that dated only the current rung because `unit` kept no
+// per-stage history. It keeps none still: the history lives in
+// unit_status_event, which this page now reads, so every reached rung carries
+// its own real instant and a skipped rung reads as skipped.
+//
+// The activation axis stays OFF the rail, unchanged and for the unchanged
+// reason (recorded at length below): a device can be activated while its
+// delivery is still outstanding, so putting activation on one ordered rail
+// stops the rail being ordered. It shows as a pill in the header instead.
+//
+// An EMPTY trail is a real state, not an error: a device whose status has not
+// moved since the trails were created has only its backfilled starting rung.
+// The rail then shows that rung and the rest of the spine greyed ahead of it,
+// which is exactly right.
+function buildRail(trail: readonly StatusTrailEntry[]): RailStage[] {
+  return buildRailFromTrail({
+    spine: UNIT_SPINE,
+    terminals: UNIT_TERMINAL,
+    trail,
+    label: (k) => STAGE_COPY[k]?.label ?? k,
+    icon: (k) => STAGE_ICON[k] ?? Box,
+  })
 }
 
 export function DeviceDetailPage() {
@@ -156,6 +135,11 @@ export function DeviceDetailPage() {
   const [copied, setCopied] = useState(false)
 
   const [statusOpen, setStatusOpen] = useState(false)
+
+  // The device's status trail, which the rail is built from. Silent on failure
+  // like the other supporting reads on this page: a trail that does not arrive
+  // costs the rail its dates, not the page.
+  const [trail, setTrail] = useState<readonly StatusTrailEntry[]>([])
 
   // Direct-URL entry (no handed row): recover the row from the list read, the
   // same wire the table uses.
@@ -193,6 +177,23 @@ export function DeviceDetailPage() {
     }
   }, [client, unitId, handedRow])
 
+  // The trail. Refetched when the status dialog closes, so a correction an
+  // operator just made shows on the rail without a page reload.
+  useEffect(() => {
+    if (unitId === undefined) return
+    let cancelled = false
+    getDeviceTrail(client, unitId)
+      .then((rows) => {
+        if (!cancelled) setTrail(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setTrail([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client, unitId, statusOpen])
+
   // Names for ids, silent on failure: a lookup that does not arrive costs a
   // label, not the page.
   useEffect(() => {
@@ -215,7 +216,7 @@ export function DeviceDetailPage() {
   }, [client])
 
   const vendorNames = useMemo(() => new Map(vendors.map((v) => [v.id, v.displayName])), [vendors])
-  const rail = useMemo(() => (row === null ? null : buildRail(row)), [row])
+  const rail = useMemo(() => (row === null ? null : buildRail(trail)), [row, trail])
 
   async function copySerial(serial: string): Promise<void> {
     try {
@@ -274,15 +275,27 @@ export function DeviceDetailPage() {
           </h1>
           <p className="text-sm text-muted-foreground">{row.productType.toLowerCase()} device</p>
         </div>
-        {/* TWO AXES, TWO PILLS, in the same order the inventory table's columns
-            use them (Activation, then Status). Activation was a rung on the rail
-            below until 19 Aug 2026; buildRail records why it could never be one.
-            A device that has not been activated says so rather than going quiet,
-            because on a delivered device that absence is the thing an operator
-            came to check. */}
+        {/* ONE COMPOSED PILL (STATUS_STAGES.md, 21 Aug 2026), not two.
+            The two axes stay separate in storage for the reason buildRail
+            records, but the team ruled the SCREEN should read as one
+            lifecycle, so deviceDisplayStatus composes them: COMPLETED means
+            delivered and live, and a terminal outcome outranks both.
+
+            This also retires a `NOT_ACTIVATED` pill that was never a backend
+            value at all. The absence it existed to surface still matters on a
+            delivered device, so it is stated in words below rather than
+            dressed up as a status the platform does not store. */}
         <div className="ml-auto flex items-center gap-2">
-          <StatusPill value={row.activatedAt !== null ? 'ACTIVATED' : 'NOT_ACTIVATED'} />
-          <StatusPill value={row.status} />
+          {row.status === 'DELIVERED' && row.activatedAt === null && (
+            <span className="text-[12px] text-muted-foreground">Not activated yet</span>
+          )}
+          <StatusPill
+            value={deviceDisplayStatus({
+              status: row.status,
+              activatedAt: row.activatedAt,
+              terminals: UNIT_TERMINAL,
+            })}
+          />
         </div>
       </div>
 
