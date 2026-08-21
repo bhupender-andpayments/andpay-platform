@@ -248,6 +248,8 @@ export {
 export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
 export { InMemoryAssetStore } from './storage/dev-asset-store.js'
 export { FilesystemAssetStore, defaultAssetDir } from './storage/fs-asset-store.js'
+export { S3AssetStore, createS3AssetStore, parseAssetReference, s3ObjectKey } from './storage/s3-asset-store.js'
+export type { S3Like, S3AssetStoreOptions } from './storage/s3-asset-store.js'
 export {
   readShipments,
   readShipmentStatusTrail,

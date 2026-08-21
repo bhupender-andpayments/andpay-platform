@@ -5,7 +5,7 @@ import { buildEdgeDepsFromEnv } from './deps.js'
 // The real process bootstrap. Deferred: nothing under test/ imports this
 // file (index.ts exports buildEdgeApp only), so it never runs under vitest.
 async function bootstrap(): Promise<void> {
-  const deps = buildEdgeDepsFromEnv()
+  const deps = await buildEdgeDepsFromEnv()
   const app = await buildEdgeApp(deps)
   await app.init()
   const port = process.env.PORT ?? 3000

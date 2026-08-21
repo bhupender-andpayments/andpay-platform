@@ -26,12 +26,11 @@ export async function rasterizeAiFile(file: File): Promise<AiPreview> {
   // that merely renders the dialog.
   const pdfjs = await import('pdfjs-dist')
   pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
-  const loadingTask = pdfjs.getDocument({
-    data: await file.arrayBuffer(),
-    // The portal CSP has no 'unsafe-eval'; this keeps pdf.js on its non-eval
-    // font path instead of throwing mid-render.
-    isEvalSupported: false,
-  })
+  // No isEvalSupported here: pdf.js removed that option in v6 because the
+  // eval-based font path is gone, so there is nothing to switch off and the
+  // portal CSP's lack of 'unsafe-eval' is already satisfied. Passing it was a
+  // type error the portal's own build caught.
+  const loadingTask = pdfjs.getDocument({ data: await file.arrayBuffer() })
   const doc = await loadingTask.promise
   try {
     const page = await doc.getPage(1)
