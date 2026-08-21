@@ -63,7 +63,7 @@ export {
   isSheetStructurallyValid,
 } from './intake.js'
 export { BATCH_STATUSES, type BatchStatus } from './batch-status.js'
-export { consumeBatchFact, TemplateTrimMismatchError } from './dispatch.js'
+export { consumeBatchFact, preRenderArtifacts, TemplateTrimMismatchError } from './dispatch.js'
 export {
   type AdapterFunction,
   type PackageLine,

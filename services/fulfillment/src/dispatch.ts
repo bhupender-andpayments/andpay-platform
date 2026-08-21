@@ -159,7 +159,16 @@ interface PreparedArtifact {
   reference: string
 }
 
-async function preRenderArtifacts(
+// EXPORTED for the one-time artifact regeneration (infra/regenerate-artifacts.mjs).
+// 74 composed_artifact rows reference bytes the in-memory store lost on
+// restart, and they are recoverable precisely because this render is
+// deterministic and the asset key is derived, not stored: re-running it for a
+// batch puts the same bytes back at the same key. Calling this rather than
+// recomposeArtifact is deliberate, since that function copies the prior row's
+// asset_reference verbatim and would only mint a second row pointing at the
+// same missing object. Nothing else should call this; composition proper goes
+// through consumeBatchFact.
+export async function preRenderArtifacts(
   db: FulfillmentDb,
   assetStore: AssetStore,
   p: BatchFactPayload,
