@@ -6,7 +6,13 @@ import type { TmsDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteRole, enterWriteScope } from './write-context.js'
 import { emitDemandFact, type DispatchGroup } from './assignment.js'
-import { replacementRaisedFactEnvelope, TMS_REPLACEMENT_RAISED_TOPIC } from './events.js'
+import {
+  replacementRaisedFactEnvelope,
+  TMS_REPLACEMENT_RAISED_TOPIC,
+  replacementCancelledFactEnvelope,
+  TMS_REPLACEMENT_CANCELLED_TOPIC,
+} from './events.js'
+import { logCaseStatusWithinTx } from './damage-case.js'
 import { OpsClientError } from './ops.js'
 
 // D-26, D-27, D-28 (Damage and Replacement Workflow, 16 Aug 2026): the Flag
@@ -354,4 +360,170 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
     }
     return { childAsgnId: fromUuid('asgn', child[0]!.id), caseStatus: 'Open' as const }
   })
+}
+
+/**
+ * CANCEL A DAMAGE REQUEST (DAMAGE.md, 21 Aug 2026).
+ *
+ * An operator flags the wrong dispatch, or flags one twice, and until now there
+ * was no way back: a replacement existed in the pool, the parent was marked
+ * damaged, and its devices sat on the DAMAGED terminal branch. Every one of
+ * those is undone here.
+ *
+ * THE WINDOW IS DELIBERATELY NARROW: only while the replacement is still
+ * UN-BATCHED. Once it is in a batch, cards may already be printing and a vendor
+ * may already hold the workbook; withdrawing it then would make the platform
+ * disagree with paper in the world. Past that point the honest path is to let the
+ * replacement deliver and flag it again, which the tip-only rule already routes
+ * correctly.
+ *
+ * THE UN-BATCHED TEST IS `case_status = 'Open'`, which is exact rather than
+ * approximate, because In-Progress now fires precisely when the replacement is
+ * batched (DAMAGE.md moved that trigger to batch formation). So an Open case IS
+ * an un-batched replacement, stated in the vocabulary this context owns.
+ *
+ * demand_state was tried first and is useless for this: the child moves from
+ * 'received' to 'pooled-for-fulfillment' the moment its demand fact projects,
+ * which is immediately, so every cancellation was refused.
+ *
+ * ONE NARROW RACE REMAINS, and fulfillment closes it rather than tms pretending
+ * to. Between a batch forming and the dispatch fact arriving here, the case still
+ * reads Open, so a cancel would be accepted. The consumer of the fact this emits
+ * therefore refuses to withdraw a pool row that has already reached BATCHED: the
+ * context that owns the batch is the one that can see it.
+ *
+ * REMARKS ARE MANDATORY, unlike most of this service's free text. A cancellation
+ * erases a complaint and un-damages a device, and the next person to look needs
+ * to know why somebody decided the damage never happened.
+ *
+ * WHAT THIS DOES NOT DO, and cannot: the child's pool row and the parent's
+ * DEVICES both live in fulfillment. They are reverted by the consumer of the
+ * fact this emits, which is the same shape flagging itself uses in reverse.
+ */
+export async function cancelReplacementOps(
+  db: TmsDb,
+  args: {
+    /** The REPLACEMENT being withdrawn, not the parent. */
+    asgnId: string
+    remarks: string
+    clientKey: string
+    actorId: string
+    traceId: string
+  },
+): Promise<{ cancelled: boolean; parentAsgnId: string }> {
+  const remarks = args.remarks.trim()
+  if (remarks === '') {
+    throw new OpsClientError('invalid', 'remarks are required to cancel a damage request')
+  }
+  if (remarks.length > MAX_REMARKS_LENGTH) {
+    throw new OpsClientError('invalid', `remarks must be ${String(MAX_REMARKS_LENGTH)} characters or fewer`)
+  }
+  const childUuid = toUuid(args.asgnId)
+  let cancelled = false
+  let parentAsgnId = ''
+
+  await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'tms_write')
+
+    const rows = await tx.$queryRaw<
+      { program_id: string; replacement_of: string | null; case_status: string | null; demand_state: string }[]
+    >`
+      SELECT program_id::text AS program_id, replacement_of::text AS replacement_of,
+             case_status, demand_state
+      FROM assignment WHERE id = ${childUuid}::uuid
+    `
+    if (rows.length !== 1) throw new OpsClientError('not-found', 'no such dispatch')
+    const row = rows[0]!
+    if (row.replacement_of === null) {
+      throw new OpsClientError('invalid', 'only a replacement can be cancelled')
+    }
+    if (row.case_status === 'Cancelled') {
+      // Already withdrawn. Not an error: a retry with a fresh key should not
+      // punish the operator for a double click.
+      parentAsgnId = fromUuid('asgn', row.replacement_of)
+      return
+    }
+    if (row.case_status === 'Closed') {
+      throw new OpsClientError('conflict', 'a closed case cannot be cancelled')
+    }
+    if (row.case_status !== 'Open') {
+      throw new OpsClientError(
+        'conflict',
+        'this replacement has already been batched; let it deliver and flag it again instead',
+      )
+    }
+    parentAsgnId = fromUuid('asgn', row.replacement_of)
+    await enterWriteScope(tx, 'tms_write', row.program_id)
+
+    await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:cancel-damage'), async () => {
+      // 1. The case becomes Cancelled, with the reason, the actor and the time.
+      const moved = await tx.$queryRaw<{ id: string }[]>`
+        UPDATE assignment
+        SET case_status = 'Cancelled',
+            case_cancel_remarks = ${remarks},
+            cancelled_by = ${args.actorId}::uuid,
+            cancelled_at = now(),
+            -- The child leaves the demand pipeline. 'closed' is the value
+            -- demand_state has always documented for a row that is done and
+            -- going nowhere, and which nothing wrote until now.
+            demand_state = 'closed',
+            updated_at = now()
+        WHERE id = ${childUuid}::uuid AND case_status IS DISTINCT FROM 'Cancelled'
+        RETURNING id::text AS id
+      `
+      cancelled = moved.length > 0
+      if (!cancelled) return
+
+      await logCaseStatusWithinTx(tx, childUuid, row.program_id, {
+        status: 'Cancelled',
+        statusSource: 'ops:cancel-damage',
+        actorId: args.actorId,
+        remarks,
+        traceId: args.traceId,
+      })
+
+      // 2. The PARENT goes back to being an ordinary dispatch, so it is
+      // flaggable again (the tip-only rule keys off having a replacement child,
+      // and this one no longer counts once the fact lands and its pool row is
+      // withdrawn). demand_state returns to the pooled state it held before the
+      // flag, which is where a delivered dispatch sits.
+      await tx.$executeRaw`
+        UPDATE assignment
+        SET demand_state = 'pooled-for-fulfillment', updated_at = now()
+        WHERE id = ${toUuid(parentAsgnId)}::uuid AND demand_state = 'replacement-raised'
+      `
+
+      // 3. The fact, so fulfillment can withdraw the child's pool row and take
+      // the parent's devices back off the DAMAGED branch. Neither is reachable
+      // from here (C4), which is exactly why raising damage is a fact too.
+      await enqueue(tx, {
+        aggregateType: 'assignment',
+        aggregateId: args.asgnId,
+        eventType: TMS_REPLACEMENT_CANCELLED_TOPIC,
+        partitionKey: args.asgnId,
+        payload: replacementCancelledFactEnvelope({
+          payload: { asgnId: args.asgnId, replacedAsgnId: parentAsgnId },
+          dedupKey: eventKey(instanceKey(args.clientKey, 'ops:cancel-damage'), 'tms.assignment.replacement_cancelled'),
+          traceId: args.traceId,
+        }),
+      })
+
+      // The ALLOW 6e co-commits in the SAME tx (spec 10c CC-1). IDs and enum
+      // tokens only (S7/S10.5): the withdrawn child and the parent it frees.
+      // The REASON is deliberately not here: operator free text lives on the
+      // domain row and on the case trail, never on an audit record (DD1).
+      const record: AuthzAuditRecord = {
+        principalId: args.actorId,
+        cls: 3,
+        actorChannel: 'human-direct',
+        operation: 'ops:cancel-damage',
+        decision: 'ALLOW',
+        outcome: 'allowed',
+        resourceIds: [args.asgnId, parentAsgnId],
+        traceId: args.traceId,
+      }
+      await enqueue(tx, buildAuthzAuditEvent(record))
+    })
+  })
+  return { cancelled, parentAsgnId }
 }

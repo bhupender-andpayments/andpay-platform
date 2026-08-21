@@ -38,12 +38,18 @@ export {
   projectDispatchToCases,
   projectShipmentToCases,
   normalizeCaseStatus,
+  logCaseStatusWithinTx,
   CASE_STATUS_VALUES,
   type CaseStatus,
   type DispatchFactView,
   type ShipmentFactView,
 } from './damage-case.js'
-export { flagDamageOps, type FlagDamageArgs, type FlagDamageResult } from './flag-damage.js'
+export {
+  flagDamageOps,
+  cancelReplacementOps,
+  type FlagDamageArgs,
+  type FlagDamageResult,
+} from './flag-damage.js'
 export {
   UnwiredDevicePort,
   ManualDevicePort,

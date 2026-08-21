@@ -55,8 +55,16 @@ describe('damage case status parity between services/tms and apps/ops-portal', (
     expect(serviceStatuses()).not.toContain('In Progress')
   })
 
-  it("the portal's ?status= filters are exactly the service's values", () => {
-    expect(portalList('const STATUS_FILTERS =').sort()).toEqual([...serviceStatuses()].sort())
+  // THE FILTERS ARE A SUBSET NOW, not an equality, and the difference is
+  // deliberate. Cancelled is a real case status (a withdrawn request), but it is
+  // reached by its own action rather than by moving a case along, and a
+  // dashboard tile that counts cancellations is not something anybody asked
+  // for. What matters is that the portal never invents a value the service does
+  // not have, which is the drift this file exists to catch.
+  it("every ?status= filter the portal offers is a value the service actually writes", () => {
+    for (const f of portalList('const STATUS_FILTERS =')) {
+      expect(serviceStatuses()).toContain(f)
+    }
   })
 
   // THE REGRESSION THIS FILE EXISTS FOR. The move list's `wire` values are what
@@ -77,11 +85,16 @@ describe('damage case status parity between services/tms and apps/ops-portal', (
     }
   })
 
-  // Cancelled is granted by the DB CHECK for the damage cancel flow (DAMAGE.md)
-  // and nothing writes it yet. When that flow is built, this assertion is the
-  // reminder that BOTH sides have to learn the value together.
-  it('records that Cancelled is not yet part of either side vocabulary', () => {
-    expect(serviceStatuses()).not.toContain('Cancelled')
-    expect(portalList('const STATUS_FILTERS =')).not.toContain('Cancelled')
+  // Cancelled LANDED on 21 Aug 2026, and this assertion flipped with it: the
+  // previous version recorded that neither side knew the value yet and stood as
+  // the reminder that both would have to learn it together. The service knows it
+  // now, and the portal offers it as an ACTION (the cancel dialog) rather than as
+  // a status to move to, which is why it is absent from the move list below.
+  it('the service knows Cancelled, and the portal reaches it by action not by a move', () => {
+    expect(serviceStatuses()).toContain('Cancelled')
+    // Not a "move": cancelling carries a mandatory reason and reverses the
+    // parent and its devices, so offering it among the ordinary status changes
+    // would make a destructive correction one click from a routine one.
+    expect(portalList('const CASE_MOVES =')).not.toContain('Cancelled')
   })
 })

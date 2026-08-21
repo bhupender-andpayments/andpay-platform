@@ -47,6 +47,11 @@ export type StatusLogSource =
   | 'ops:correct-unit-status'
   | 'ops:correct-shipment-status'
   | 'replacement-raised' // the damage flag marked the parent's devices
+  // DAMAGE.md: the flag was withdrawn. The ONE source that moves a device
+  // backwards off a terminal branch, which is why it is named rather than
+  // folded into an ops correction: a reader of the trail should see that the
+  // damage was retracted, not that somebody edited a status.
+  | 'replacement-cancelled'
   | 'activation' // the activation fact, on the units it touched
   | 'backfill' // written once by the migration, never by this module
   // The fallback when a writer passes no source. Every writer in this context

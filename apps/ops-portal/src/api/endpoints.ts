@@ -2246,6 +2246,25 @@ export function getRequestLegs(c: Client) {
   return c.request<RequestLegRow[]>({ method: 'GET', path: '/ops/requests' })
 }
 
+/**
+ * Withdraw a damage request raised by mistake (DAMAGE.md).
+ *
+ * Remarks are MANDATORY: cancelling erases a complaint and takes a device back
+ * off the damaged branch, so the next person to look needs to know why somebody
+ * decided the damage never happened. The edge rejects an empty one.
+ *
+ * Allowed only while the replacement is still un-batched. Past that, cards may
+ * be printing, and the honest path is to let it deliver and flag it again.
+ */
+export function cancelDamageCase(c: Client, asgnId: string, remarks: string, idempotencyKey: string) {
+  return c.request<{ cancelled: boolean; parentAsgnId: string }>({
+    method: 'POST',
+    path: `/ops/records/${encodeURIComponent(asgnId)}/cancel-damage`,
+    body: { remarks },
+    idempotencyKey,
+  })
+}
+
 /** Undo an activation (ACTIVATION.md): clears activatedAt and activatedBy. */
 export function deactivateAssignment(c: Client, dispatchId: string, idempotencyKey: string) {
   return c.request<{ deactivated: boolean }>({

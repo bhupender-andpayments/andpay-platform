@@ -86,6 +86,33 @@ export async function collateralAsgnIdsFor(tx: Tx, shptUuid: string): Promise<st
   return rows.map((r) => fromUuid('asgn', r.asgn_id))
 }
 
+/**
+ * The SOUNDBOX assignments travelling under one AWB (DAMAGE.md, 21 Aug 2026).
+ *
+ * The sibling of collateralAsgnIdsFor above, and needed for the same reason: a
+ * fact is the only bridge (T7), so a consumer that must act on a soundbox
+ * delivery has to be told which assignments delivered.
+ *
+ * WHY TMS NEEDS IT. A soundbox replacement's damage case now closes on
+ * delivered AND activated, not on activation alone: a device that never arrived
+ * cannot have resolved a complaint, and activation can be reported by the CWD
+ * before the courier's file lands. TMS holds the activation half already; this
+ * is how it learns the other half.
+ *
+ * Resolved through `unit`, not through pending_pool_entry: the soundbox parcel
+ * is linked from the DEVICE (unit.shipment), where collateral hangs off the
+ * entry because a serial-less row has no unit to find. DISTINCT because one
+ * assignment can hold several devices in one parcel.
+ */
+export async function soundboxAsgnIdsFor(tx: Tx, shptUuid: string): Promise<string[]> {
+  const rows = await tx.$queryRaw<{ asgn_id: string }[]>`
+    SELECT DISTINCT asgn_id::text AS asgn_id FROM unit
+    WHERE shipment = ${shptUuid}::uuid AND asgn_id IS NOT NULL
+    ORDER BY asgn_id
+  `
+  return rows.map((r) => fromUuid('asgn', r.asgn_id))
+}
+
 export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<AdvanceOutcome> {
   const found = await tx.$queryRaw<{ id: string; program_id: string; courier_partner: string | null }[]>`
     SELECT id::text AS id, program_id::text AS program_id, courier_partner::text AS courier_partner
@@ -177,6 +204,13 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
     // shpt wire id, so a bare key here would let an E6 inbox consumer dedup
     // every transition away as a duplicate of the birth.
     const collateralAsgns = await collateralAsgnIdsFor(tx, shptUuid)
+    // A SEPARATE FIELD, never folded into asgnIds and never setting the
+    // `collateral` flag: analytics branches on that flag into a path that
+    // touches only the two collateral columns, so reusing either would make a
+    // soundbox delivery take the collateral route and stop updating the
+    // record's primary courier status. The field is additive and optional, so a
+    // consumer that does not know it simply ignores it (D120 FULL compat).
+    const soundboxAsgns = await soundboxAsgnIdsFor(tx, shptUuid)
     await enqueue(tx, {
       aggregateType: 'shpt',
       aggregateId: shptWire,
@@ -191,6 +225,7 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
           courierTimestamp: tsIso,
           statusSource: u.source,
           ...(collateralAsgns.length > 0 ? { collateral: true, asgnIds: collateralAsgns } : {}),
+          ...(soundboxAsgns.length > 0 ? { soundboxAsgnIds: soundboxAsgns } : {}),
         },
         dedupKey: `${shptWire}|${u.status}|${tsIso}`,
         traceId: u.traceId,

@@ -130,6 +130,18 @@ model Assignment {
   /// team ruled there is no useful "request sent" window worth tracking, and
   /// activation is a one-time toggle, not a status with history.
   activatedBy         String?   @map("activated_by") @db.Uuid
+  /// DELIVERY, projected from fct.fulfillment.shipment.v1 (DAMAGE.md, 21 Aug
+  /// 2026). Event-carried state transfer, never a cross-context read (C4).
+  ///
+  /// It exists because a SOUNDBOX replacement's damage case now closes on
+  /// DELIVERED AND ACTIVATED rather than on activation alone: a device that
+  /// never arrived cannot have resolved a complaint. The two halves are reported
+  /// by different parties (courier, CWD) in either order, so each must be
+  /// durable on its own and the close fires on whichever lands second. This is
+  /// the delivery half; activatedAt above is the other.
+  ///
+  /// Reported time, the courier's own instant (S22), not when we heard it.
+  deliveredAt         DateTime? @map("delivered_at") @db.Timestamptz(6)
   // Phase 2 task 3 (D-F): the additional-soundbox provenance marker, computed
   // TMS-side inside the same insert transaction (NO fact-schema change).
   // INITIAL = the first assignment processed for this merchant_id; ADDITIONAL
@@ -310,3 +322,35 @@ model QuarantineRow {
 // AssignmentActivationEvent DELETED (ACTIVATION.md, 21 Aug 2026): activation
 // is a parallel toggle with no history, not a lifecycle. See
 // Assignment.activatedAt/activatedBy above for what replaces it.
+
+/// Append-only status trail for a damage CASE (DAMAGE.md, 21 Aug 2026), the tms
+/// sibling of fulfillment's three trails.
+///
+/// A case is not a device status and not a dispatch status: it is a ticket about
+/// a complaint, with its own lifecycle and its own clock. "When was this
+/// complaint opened, when did work start, how long did resolution take" is a
+/// question only the case can answer, and before this table nothing could: the
+/// row carried case_status and one updated_at that every later write overwrote.
+///
+/// PROGRAM-SCOPED like the assignment it describes, so a tenant read cannot see
+/// another program's complaints.
+model DamageCaseStatusEvent {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  asgnId       String   @map("asgn_id") @db.Uuid
+  programId    String   @map("program_id") @db.Uuid
+  status       String
+  occurredAt   DateTime @map("occurred_at") @db.Timestamptz(6)
+  statusSource String   @map("status_source")
+  /// Null when no human was behind it: the batch-formation and delivery
+  /// transitions are driven by facts, not by an operator.
+  actorId      String?  @map("actor_id") @db.Uuid
+  /// The operator's words, on a Cancelled event only (DAMAGE.md requires a
+  /// reason to cancel). Free text lives on the domain row, never on a fact or
+  /// an audit record, the same posture as ops_remarks and batch.trigger_note.
+  remarks      String?
+  traceId      String   @map("trace_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([asgnId])
+  @@map("damage_case_status_event")
+}

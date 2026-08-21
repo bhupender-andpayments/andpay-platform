@@ -73,6 +73,7 @@ import {
   updateDamageCaseStatusOps,
   activateAssignmentOps,
   deactivateAssignmentOps,
+  cancelReplacementOps,
   ManualDevicePort,
   type BankRequestRow,
   type BankPreviewResult,
@@ -1092,6 +1093,40 @@ export class OpsController {
     return activateAssignmentOps(this.deps.tmsDb, {
       asgnId: body.dispatchId,
       port: new ManualDevicePort(),
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // DAMAGE.md (21 Aug 2026): withdraw a damage request raised by mistake.
+  //
+  // The whole reversal is one domain op: the case becomes Cancelled with the
+  // operator's reason, the replacement leaves the demand pipeline, the parent
+  // becomes flaggable again, and a fact carries the two halves this context
+  // cannot reach (the child's pool row and the parent's devices, both
+  // fulfillment's).
+  //
+  // Shape validation only here. WHETHER it may be cancelled is decided
+  // server-side from the row itself (only a replacement, only a live case, only
+  // while still un-batched), because those are facts about state and not about
+  // the request.
+  @Post('records/:asgnId/cancel-damage')
+  @HttpCode(200)
+  async cancelDamageRoute(
+    @Req() req: EdgeRequest,
+    @Param('asgnId') asgnId: string,
+    @Body() body: { remarks?: string },
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ cancelled: boolean; parentAsgnId: string }> {
+    const remarks = typeof body?.remarks === 'string' ? body.remarks : ''
+    if (remarks.trim() === '') {
+      throw new BadRequestException('remarks are required to cancel a damage request')
+    }
+    const g = await this.gate(req, 'ops:cancel-damage', idem, [asgnId])
+    return cancelReplacementOps(this.deps.tmsDb, {
+      asgnId,
+      remarks,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

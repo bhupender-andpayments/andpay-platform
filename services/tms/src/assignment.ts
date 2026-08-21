@@ -396,18 +396,32 @@ export async function activateAssignmentWithinTx(
           updated_at = now()
       WHERE id = ${asgnUuid}::uuid
     `
-    // D-24 (T6.5): if this assignment is a REPLACEMENT, activation is its
-    // terminal, so the damage case it answers closes here. The write's own
-    // predicate checks `replacement_of IS NOT NULL`, so an ordinary activation
-    // moves nothing and needs no branch: a case only closes when there was a
-    // case. Forward-only, so a redelivered activation closes nothing twice and
-    // a case an operator already closed stays closed.
+    // D-24 (T6.5), REVISED 21 Aug 2026 (DAMAGE.md): a soundbox replacement's
+    // case closes on DELIVERED **AND** ACTIVATED, so activation alone no longer
+    // closes it. It used to, and that closed complaints the merchant had not
+    // received yet: the CWD can confirm an activation while the parcel is still
+    // in transit, which is the same independence-of-axes that D-16 exists for.
     //
-    // This is the SOUNDBOX terminal. A COLLATERAL replacement's terminal is
-    // delivery, which is a fulfillment fact TMS cannot map to an assignment
-    // without holding a shipment reference it is not allowed to hold (T2/T12).
-    // See PLAN.md Q26: that half is not automated, and manual close covers it.
-    await advanceCaseStatusWithinTx(tx, asgnUuid, 'Closed')
+    // The halves arrive in either order, so this is the mirror of the delivery
+    // side in projectShipmentToCases: close only when the OTHER half is already
+    // on the row, and whichever lands second does the closing.
+    //
+    // Forward-only still, so a redelivered activation closes nothing twice and a
+    // case an operator already closed stays closed. The predicate keeps
+    // requiring replacement_of, so an ordinary activation moves nothing.
+    const closable = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id::text AS id FROM assignment
+      WHERE id = ${asgnUuid}::uuid
+        AND replacement_of IS NOT NULL
+        AND delivered_at IS NOT NULL
+    `
+    if (closable.length > 0) {
+      await advanceCaseStatusWithinTx(tx, asgnUuid, 'Closed', {
+        statusSource: 'activation:delivered+activated',
+        actorId: opts?.actorId ?? null,
+        traceId,
+      })
+    }
     await enqueue(tx, {
       aggregateType: 'assignment',
       aggregateId: asgnId,

@@ -2,9 +2,9 @@ import { onceWithin } from '@andpay/outbox'
 import { toUuid } from '@andpay/ids'
 import type { Envelope } from '@andpay/envelope'
 import type { FulfillmentDb } from './db.js'
-import { CONSUMER, type Tx } from './internal.js'
+import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 import { enterWriteRole } from './write-context.js'
-import { logUnitStatuses, type StatusLogSource } from './status-log.js'
+import { logUnitStatuses, logPoolEntryStatus, type StatusLogSource } from './status-log.js'
 
 // The device lifecycle (Bhupender, 2026-08-07).
 //
@@ -383,4 +383,132 @@ export async function projectReplacementToUnits(
     })
   })
   return { advanced }
+}
+
+export interface ReplacementCancelledFactView {
+  /** The withdrawn replacement, whose pool row leaves the pool. */
+  asgnId: string
+  /** The parent, whose devices come back off the DAMAGED branch. */
+  replacedAsgnId: string
+}
+
+/**
+ * fct.tms.assignment.replacement_cancelled.v1: the flag was a mistake.
+ *
+ * Two undos, one transaction, because they are one decision:
+ *
+ *  1. THE DEVICE COMES BACK. This is the only place in this file that moves a
+ *     unit BACKWARDS off a terminal branch, and it is deliberate rather than a
+ *     hole in the monotonic rule. That rule exists so a stale or redelivered
+ *     fact cannot revert a device; this is not a stale fact, it is an operator
+ *     stating that the damage never happened, carried on its own topic. A
+ *     forward-only guard that cannot be corrected by anybody just makes a
+ *     mistaken flag permanent.
+ *
+ *     The status it returns to is READ FROM THE TRAIL, not guessed: the last
+ *     non-terminal status the device actually recorded before it was damaged.
+ *     Guessing DELIVERED would be inventing history for a device that might
+ *     never have shipped, which is precisely why unit_status_event exists.
+ *
+ *  2. THE REPLACEMENT LEAVES THE POOL, via pool_status = 'CANCELLED' (the fourth
+ *     value the CHECK constraint was widened for). Not deleted: the row is what
+ *     the trail and the audit refer to, and a withdrawn request that vanished
+ *     would make both dangle.
+ */
+export async function projectReplacementCancelledToUnits(
+  db: FulfillmentDb,
+  env: Envelope<ReplacementCancelledFactView>,
+): Promise<{ reverted: number; withdrawn: number }> {
+  let reverted = 0
+  let withdrawn = 0
+  await db.$transaction(async (tx) => {
+    await enterWriteRole(tx as unknown as Tx, 'fulfillment_write')
+    await onceWithin(tx as unknown as Tx, CONSUMER, `${env.dedupKey}|replacement_cancelled`, async () => {
+      const t = tx as unknown as Tx
+      const parentUuid = toUuid(env.payload.replacedAsgnId)
+
+      // Each damaged device of the parent, with the status it held before the
+      // damage. The trail is ordered, so "the latest non-terminal status" is the
+      // one to restore; a device with no such row (damaged at intake, or older
+      // than the trail) falls back to IN_STOCK, which is where a device with no
+      // history legitimately sits.
+      const damaged = await t.$queryRaw<{ id: string; prior: string | null }[]>`
+        SELECT u.id::text AS id,
+               (
+                 SELECT e.status FROM unit_status_event e
+                 WHERE e.unit_id = u.id
+                   AND e.status <> ALL(${[...UNIT_TERMINAL_STATUSES]}::text[])
+                 ORDER BY e.occurred_at DESC, e.created_at DESC
+                 LIMIT 1
+               ) AS prior
+        FROM unit u
+        WHERE u.asgn_id = ${parentUuid}::uuid AND u.status = ${'DAMAGED'}
+      `
+      for (const d of damaged) {
+        const restore = d.prior ?? 'IN_STOCK'
+        // A DIRECT write, not advanceUnitStatus: that helper refuses to move a
+        // device off a terminal branch, which is the rule this one exception
+        // exists to break. The trail still records it, so the revert is as
+        // visible as the damage was.
+        await t.$executeRaw`
+          UPDATE unit SET status = ${restore}, updated_at = now()
+          WHERE id = ${d.id}::uuid AND status = ${'DAMAGED'}
+        `
+        await logUnitStatuses(t, [d.id], {
+          status: restore,
+          occurredAt: new Date(),
+          statusSource: 'replacement-cancelled',
+          traceId: env.traceId ?? env.dedupKey,
+        })
+        reverted++
+      }
+
+      // THE PROGRAM SCOPE, bound before touching pending_pool_entry.
+      //
+      // The unit writes above need only the ROLE: unit is platform-only and
+      // carries no program_id. pending_pool_entry and its status trail both
+      // carry a WITH CHECK on program_id, so a write with app.program_id unset
+      // is refused by the database, fail-closed. That is exactly what happened
+      // the first time this ran: the whole handler threw and the fact landed on
+      // retry.1, which is the guard working rather than a bug in it.
+      //
+      // Resolved SERVER-SIDE from the target row (D99), never from the fact.
+      const scope = await t.$queryRaw<{ program_id: string }[]>`
+        SELECT program_id::text AS program_id FROM pending_pool_entry
+        WHERE asgn_id = ${toUuid(env.payload.asgnId)}::uuid
+      `
+      if (scope.length === 0) return
+      await setProgramContext(t, scope[0]!.program_id)
+
+      // The withdrawn replacement leaves the pool, BUT ONLY IF IT IS STILL IN
+      // IT. tms gates the cancellation on the case still being Open, which means
+      // un-batched, but there is a window between a batch forming and that news
+      // reaching tms where the case still reads Open. This is the context that
+      // owns the batch, so this is where that window closes: a row already
+      // BATCHED stays batched, because cards may be printing against it and a
+      // vendor may hold the workbook.
+      //
+      // The case is Cancelled either way, which is the honest outcome of a
+      // genuine race: the complaint was withdrawn and the parcel is going out
+      // regardless. An operator sees both facts rather than one of them silently
+      // winning.
+      const gone = await t.$queryRaw<{ id: string; program_id: string; trace_id: string }[]>`
+        UPDATE pending_pool_entry
+        SET pool_status = ${'CANCELLED'}, updated_at = now()
+        WHERE asgn_id = ${toUuid(env.payload.asgnId)}::uuid
+          AND pool_status = ANY(${['POOLED', 'HELD']}::text[])
+        RETURNING id::text AS id, program_id::text AS program_id, trace_id
+      `
+      withdrawn = gone.length
+      for (const g of gone) {
+        await logPoolEntryStatus(t, g.id, g.program_id, {
+          status: 'CANCELLED',
+          occurredAt: new Date(),
+          statusSource: 'replacement-cancelled',
+          traceId: env.traceId ?? env.dedupKey,
+        })
+      }
+    })
+  })
+  return { reverted, withdrawn }
 }

@@ -35,6 +35,7 @@ export {
   projectActivationToUnits,
   projectDeactivationToUnits,
   projectReplacementToUnits,
+  projectReplacementCancelledToUnits,
   type ActivatedFactView,
   type ReplacementRaisedFactView,
 } from './unit-lifecycle.js'

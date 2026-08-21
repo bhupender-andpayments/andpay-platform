@@ -31,11 +31,13 @@ import {
   StatusPill,
 } from '../../ui/primitives.js'
 import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import { cancelDamageCase } from '../../api/endpoints.js'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { buttonVariants } from '@/components/ui/button'
 import { MoreVertical } from 'lucide-react'
@@ -176,6 +178,11 @@ export function DamageCasesPage() {
   // input living in every row.)
   const [pendingMove, setPendingMove] = useState<{ row: DamageCaseView; move: CaseMove } | null>(null)
   const [moveNote, setMoveNote] = useState('')
+  // Withdrawing a request is confirmed like a move, but its note is MANDATORY
+  // rather than optional, so it gets its own state and its own dialog.
+  const [pendingCancel, setPendingCancel] = useState<DamageCaseView | null>(null)
+  const [cancelRemarks, setCancelRemarks] = useState('')
+  const [cancelBusy, setCancelBusy] = useState(false)
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -249,6 +256,31 @@ export function DamageCasesPage() {
       setActionError(err instanceof Error ? err.message : 'Could not update the case.')
     } finally {
       setBusyId(null)
+    }
+  }
+
+  /**
+   * Withdraw a damage request (DAMAGE.md).
+   *
+   * Reloads rather than patching the row: cancelling reverses four things across
+   * two contexts (the case, the child's demand state, the parent's flag, and via
+   * a fact the parent's devices and the child's pool row), and only the server
+   * knows which of them actually moved.
+   */
+  async function handleCancel(row: DamageCaseView): Promise<void> {
+    setActionError(null)
+    setActionNote(null)
+    setCancelBusy(true)
+    try {
+      await cancelDamageCase(client, row.asgnId, cancelRemarks.trim(), newIdempotencyKey())
+      setActionNote(`${row.merchantDisplayName}: damage request cancelled. The original dispatch can be flagged again.`)
+      setPendingCancel(null)
+      setCancelRemarks('')
+      await load()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not cancel the request.')
+    } finally {
+      setCancelBusy(false)
     }
   }
 
@@ -393,7 +425,12 @@ export function DamageCasesPage() {
       // and confirmed, rather than fired by a stray click on a button sitting
       // permanently under the cursor.
       cell: (r) => {
+        // Cancelled is terminal and is NOT offered as a "move": withdrawing a
+        // request is its own action with its own reason and its own reversal of
+        // the parent and the device, so it gets its own menu item below rather
+        // than hiding among the status changes.
         const moves = CASE_MOVES.filter((m) => statusKey(m.wire) !== statusKey(r.caseStatus))
+        const cancellable = statusKey(r.caseStatus) === statusKey('Open') || statusKey(r.caseStatus) === statusKey('In-Progress')
         return (
           <DropdownMenu>
             {/* Styled with buttonVariants directly rather than `asChild` around
@@ -423,6 +460,26 @@ export function DamageCasesPage() {
                   Move to {m.label}
                 </DropdownMenuItem>
               ))}
+              {/* WITHDRAWING THE REQUEST, separated from the status moves by a
+                  divider because it is a different kind of act: the others say
+                  where the complaint has got to, this one says it should never
+                  have been raised. Destructive styling for the same reason. */}
+              {cancellable && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => {
+                      setActionError(null)
+                      setActionNote(null)
+                      setCancelRemarks('')
+                      setPendingCancel(r)
+                    }}
+                  >
+                    Cancel this request
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )
@@ -593,6 +650,49 @@ export function DamageCasesPage() {
               placeholder="e.g. bank confirmed the courier lost it"
               value={moveNote}
               onChange={(e) => setMoveNote(e.target.value)}
+            />
+          </Field>
+        </ConfirmDialog>
+      )}
+
+      {/* WITHDRAWING THE REQUEST. A separate dialog from the status moves, and
+          deliberately more emphatic: this one undoes a replacement, frees the
+          parent to be flagged again, and takes the parent's devices back off the
+          damaged branch. The note is REQUIRED, because the next person to look
+          at an un-damaged device needs to know who decided it was never
+          damaged. */}
+      {pendingCancel !== null && (
+        <ConfirmDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) {
+              setPendingCancel(null)
+              setActionError(null)
+            }
+          }}
+          title="Cancel this damage request?"
+          description={`${pendingCancel.merchantDisplayName}. The replacement is withdrawn, the original dispatch can be flagged again, and its devices go back to the status they held before the damage.`}
+          confirmLabel="Cancel the request"
+          tone="danger"
+          busy={cancelBusy}
+          error={actionError}
+          confirmDisabled={cancelRemarks.trim() === ''}
+          onConfirm={() => {
+            void handleCancel(pendingCancel)
+          }}
+        >
+          <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-[12.5px] font-medium text-amber-700 dark:text-amber-400">
+            Only possible while the replacement has not been batched. Once it is in a batch, cards may already be
+            printing: let it deliver and flag it again instead.
+          </p>
+          <Field label="Reason" htmlFor="case-cancel-note" hint="Required, and recorded on the case.">
+            <Input
+              id="case-cancel-note"
+              autoFocus
+              maxLength={MAX_CASE_NOTE_LENGTH}
+              placeholder="e.g. flagged the wrong dispatch"
+              value={cancelRemarks}
+              onChange={(e) => setCancelRemarks(e.target.value)}
             />
           </Field>
         </ConfirmDialog>

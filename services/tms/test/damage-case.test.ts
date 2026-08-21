@@ -33,19 +33,22 @@ async function seedAssignment(opts: {
   caseStatus?: string | null
   soundbox?: boolean
   dispatchGroup?: 'SOUNDBOX' | 'COLLATERAL'
+  /** Whether the parcel has already been reported delivered (DAMAGE.md). */
+  delivered?: boolean
 } = {}): Promise<string> {
   const asgnUuid = toUuid(newId('asgn'))
   const replacementOf = opts.replacement === true ? toUuid(newId('asgn')) : null
   await db.$executeRaw`INSERT INTO assignment (
     id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
     bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count,
-    billable, demand_state, source_event_id, dispatch_group, replacement_of, case_status, updated_at
+    billable, demand_state, source_event_id, dispatch_group, replacement_of, case_status, delivered_at, updated_at
   ) VALUES (
     ${asgnUuid}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
     'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'Addr', 'upi://x', ${`x-${randomUUID()}@hdfcbank`},
     ${opts.soundbox ?? true}, 0, 0,
     ${opts.replacement !== true}, 'pooled-for-fulfillment', ${`src-${randomUUID()}`}, ${opts.dispatchGroup ?? 'SOUNDBOX'},
-    ${replacementOf}::uuid, ${opts.caseStatus === undefined ? 'Open' : opts.caseStatus}, now()
+    ${replacementOf}::uuid, ${opts.caseStatus === undefined ? 'Open' : opts.caseStatus},
+    ${opts.delivered === true ? new Date() : null}, now()
   )`
   return fromUuid('asgn', asgnUuid)
 }
@@ -79,11 +82,18 @@ describe('In Progress when the replacement enters the pipeline (D-24)', () => {
     expect(await caseStatusOf(repl)).toBe('In-Progress')
   })
 
-  it('QR_GENERATED does NOT: preparing artwork is us getting ready, not the replacement moving', async () => {
+  it('QR_GENERATED MOVES IT TOO as of 21 Aug 2026: batch formation is when work starts', async () => {
     const repl = await seedAssignment({ replacement: true })
     const r = await projectDispatchToCases(db, dispatchEnvelope([repl], 'QR_GENERATED'))
-    expect(r.advanced).toBe(0)
-    expect(await caseStatusOf(repl)).toBe('Open')
+    // THIS ASSERTION IS INVERTED FROM WHAT IT WAS, deliberately (DAMAGE.md).
+    // The old rule held that generating artwork was "us getting ready, not the
+    // replacement moving", and waited for the vendor handover. The team
+    // overruled it on the operator's own ground: what they have to tell a bank
+    // chasing a complaint is whether the replacement is being worked, and it is
+    // being worked the moment it lands in a batch. Waiting left a case reading
+    // Open for as long as batching took, which reads as nobody having touched it.
+    expect(r.advanced).toBe(1)
+    expect(await caseStatusOf(repl)).toBe('In-Progress')
   })
 
   it('leaves an ORDINARY assignment alone: no case existed, so none is invented', async () => {
@@ -120,8 +130,8 @@ describe('In Progress when the replacement enters the pipeline (D-24)', () => {
 })
 
 describe('Closed when the soundbox replacement reaches its terminal (D-24)', () => {
-  it('activating a REPLACEMENT closes the case it answers', async () => {
-    const repl = await seedAssignment({ replacement: true, caseStatus: 'In-Progress' })
+  it('activating a DELIVERED replacement closes the case it answers', async () => {
+    const repl = await seedAssignment({ replacement: true, caseStatus: 'In-Progress', delivered: true })
     await activateAssignmentOps(db, {
       asgnId: repl,
       port: fixturePort,
@@ -132,10 +142,26 @@ describe('Closed when the soundbox replacement reaches its terminal (D-24)', () 
     expect(await caseStatusOf(repl)).toBe('Closed')
   })
 
+  it('activation ALONE no longer closes it: an undelivered device resolved nothing', async () => {
+    // THE RULE CHANGED ON 21 AUG 2026 (DAMAGE.md). Activation used to close a
+    // soundbox case by itself, which closed complaints the merchant had not yet
+    // received: the CWD can confirm an activation while the parcel is still in
+    // transit, which is the same axis-independence D-16 exists for.
+    const repl = await seedAssignment({ replacement: true, caseStatus: 'In-Progress' })
+    await activateAssignmentOps(db, {
+      asgnId: repl,
+      port: fixturePort,
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-case-1b',
+    })
+    expect(await caseStatusOf(repl)).toBe('In-Progress')
+  })
+
   it('closes from Open too, for a case that never passed through In Progress', async () => {
     // The dispatch fact can legitimately be missed or arrive late; a case must
     // not be stuck Open forever because of it.
-    const repl = await seedAssignment({ replacement: true, caseStatus: 'Open' })
+    const repl = await seedAssignment({ replacement: true, caseStatus: 'Open', delivered: true })
     await activateAssignmentOps(db, {
       asgnId: repl,
       port: fixturePort,

@@ -51,6 +51,11 @@ describe('the routing table matches the pump table it was copied from', () => {
       // has to hear the withdrawal too. Without this topic a deactivation
       // reached the tms row only and the DEVICE went on reporting itself live.
       'fct.tms.assignment.deactivated.v1',
+      // DAMAGE.md (21 Aug 2026): the mirror of replacement_raised. Raising
+      // damage marks the parent's devices DAMAGED here, so withdrawing it needs
+      // a channel back, or a mistaken flag strands a device on a terminal
+      // branch forever.
+      'fct.tms.assignment.replacement_cancelled.v1',
       'fct.tms.assignment.replacement_raised.v1',
       'fct.tms.assignment.v1',
     ])

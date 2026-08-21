@@ -130,6 +130,12 @@ const OPS_PERMISSIONS = [
   // two-step REQUEST_SENT_TO_CWD status it guarded is gone, so the permission
   // guarded a route that no longer exists.
   'ops:deactivate',
+  // DAMAGE.md (21 Aug 2026): withdraw a damage request raised by mistake. Its
+  // own operation string because it is not the inverse of one permission but a
+  // correction spanning two rows (the case and its parent) and, via a fact, a
+  // device coming back off a terminal branch. Same ops tier: whoever may flag
+  // damage may take that flag back.
+  'ops:cancel-damage',
   // D-17 (T5.1, 13 Aug 2026): the courier emails its morning status file and an
   // operator uploads it. Its own permission rather than reuse of
   // ops:upload-device-inventory, because the two uploads move different things

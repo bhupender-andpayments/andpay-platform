@@ -9,6 +9,12 @@ export { type RowFactPayload, type RowFactEnvelope, ROW_FACT_TYPE, rowFactEnvelo
 export const TMS_ASSIGNMENT_TOPIC = 'fct.tms.assignment.v1'
 export const TMS_SHIP_TO_AMENDED_TOPIC = 'fct.tms.assignment.ship_to_amended.v1'
 export const TMS_REPLACEMENT_RAISED_TOPIC = 'fct.tms.assignment.replacement_raised.v1'
+// DAMAGE.md (21 Aug 2026): the flag was a mistake and is being undone. The
+// mirror of replacement_raised, and needed for the same reason that fact exists:
+// raising damage marks the parent's DEVICES damaged in fulfillment, and only
+// fulfillment can unmark them (C4). Without this channel a cancelled flag left
+// the device stranded on a terminal branch it should never have entered.
+export const TMS_REPLACEMENT_CANCELLED_TOPIC = 'fct.tms.assignment.replacement_cancelled.v1'
 export const TMS_ACTIVATED_TOPIC = 'fct.tms.assignment.activated.v1'
 // ACTIVATION.md (21 Aug 2026): the toggle's other direction. Its OWN topic
 // rather than an activated fact carrying a null timestamp, because a consumer
@@ -136,6 +142,33 @@ export function deactivatedFactEnvelope(
 ): Envelope<DeactivatedFactPayload> {
   return newEnvelope({
     type: TMS_DEACTIVATED_TOPIC,
+    version: 1,
+    subject: input.payload.asgnId,
+    dedupKey: input.dedupKey,
+    traceId: input.traceId,
+    payload: input.payload,
+  })
+}
+
+export interface ReplacementCancelledFactPayload {
+  /** The replacement being withdrawn. */
+  asgnId: string
+  /** The parent whose devices must come back off the DAMAGED branch. */
+  replacedAsgnId: string
+}
+
+/**
+ * The replacement is withdrawn and the damage never happened.
+ *
+ * Carries BOTH ids because the two consumers need different ones: the parent's
+ * devices are what fulfillment has to revert, and the child is what leaves the
+ * pool. replacement_raised carries the same pair for the same reason.
+ */
+export function replacementCancelledFactEnvelope(
+  input: FactInput<ReplacementCancelledFactPayload>,
+): Envelope<ReplacementCancelledFactPayload> {
+  return newEnvelope({
+    type: TMS_REPLACEMENT_CANCELLED_TOPIC,
     version: 1,
     subject: input.payload.asgnId,
     dedupKey: input.dedupKey,
