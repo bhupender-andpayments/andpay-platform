@@ -3,8 +3,7 @@ import {
   type FulfillmentDb,
   loadOpsConfig,
   type AssetStore,
-  FilesystemAssetStore,
-  createS3AssetStore,
+  resolveAssetStoreFromEnv,
 } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient, type TmsDb } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient, type AnalyticsDb } from '@andpay/analytics-service'
@@ -96,38 +95,6 @@ export const DEFAULT_IDENTITY_DATABASE_URL =
 // clients). Every input is required and fails the process start closed if
 // absent (S4): the JWKS, issuer, and mode are never defaulted to a baked-in value.
 
-// Choose the AssetStore adapter from the environment. ANDPAY_S3_BUCKET set means
-// the S3 adapter (E-5); unset means the filesystem adapter, so local docker and
-// CI behave exactly as before and no test needs credentials.
-//
-// The environment prefix is REQUIRED whenever the bucket is: one bucket holds
-// more than one environment's assets, the logical key is a bank code that says
-// nothing about which dataset wrote it, and two environments sharing a prefix
-// interleave their version histories. That already happened once with the
-// filesystem adapter's single temp-directory root, so this fails the process
-// start closed rather than silently colliding.
-//
-// Credentials are never read here. The SDK's default chain (environment, then
-// the shared profile) resolves them, which is what lets a local access key and
-// a deployed instance role work without a code change (S4).
-async function resolveAssetStore(): Promise<AssetStore> {
-  const bucket = process.env.ANDPAY_S3_BUCKET
-  if (bucket === undefined || bucket.trim() === '') return new FilesystemAssetStore()
-  const prefix = process.env.ANDPAY_S3_PREFIX
-  if (prefix === undefined || prefix.trim() === '') {
-    throw new Error(
-      'ANDPAY_S3_BUCKET is set but ANDPAY_S3_PREFIX is not. The prefix namespaces one environment inside the bucket; without it two environments overwrite each other version history.',
-    )
-  }
-  return createS3AssetStore({
-    bucket: bucket.trim(),
-    prefix: prefix.trim(),
-    // India only (S6). Defaulted rather than required so a local run needs one
-    // variable, not three.
-    region: process.env.AWS_REGION ?? 'ap-south-1',
-  })
-}
-
 export async function buildOpsEdgeDepsFromEnv(): Promise<OpsEdgeDeps> {
   const rawJwks = process.env.OPS_EDGE_JWKS
   if (!rawJwks) {
@@ -166,6 +133,6 @@ export async function buildOpsEdgeDepsFromEnv(): Promise<OpsEdgeDeps> {
     // Filesystem-backed by default so the edge can serve collateral rendered
     // by the fulfillment CONSUMER, a different process. Set ANDPAY_S3_BUCKET
     // (plus ANDPAY_S3_PREFIX) to use the S3 adapter instead: E-5.
-    assetStore: await resolveAssetStore(),
+    assetStore: await resolveAssetStoreFromEnv(),
   }
 }

@@ -184,6 +184,52 @@ describe('cross-schema isolation guard', () => {
 // signing key, no pepper, no store, and never calls Auth. A static net over its
 // source (the pepper is INJECTED at runtime, so its absence is not statically
 // checkable here; the store/signing/Auth-coupling breaches are).
+// ONE ASSET-STORE RULE PER PROCESS (21 Aug 2026). A process that COMPOSES
+// collateral and a process that SERVES it must resolve the same AssetStore
+// adapter, or the writer's bytes are unreadable through the reader: the
+// download answers 500 while composed_artifact looks healthy, since the rows
+// are fine and only the bytes are elsewhere.
+//
+// That has happened twice, both times because an app named an adapter itself
+// instead of deferring to the shared rule. First apps/consumer held the
+// in-memory adapter while the edges held the filesystem one; then the S3
+// adapter was wired into both edges and not into the consumer, reopening the
+// same split in the other direction. Neither side's own tests can see it,
+// because each is internally consistent. So the guard is static: no app may
+// construct an adapter at all. resolveAssetStoreFromEnv is the only answer.
+describe('asset-store resolution is one shared rule, never per-app', () => {
+  // SOURCE only: dist/ carries compiled copies (and .d.ts declarations that
+  // mention assetStore without wiring anything), which would fail this for a
+  // build artifact rather than for code anyone wrote.
+  const appFiles = filesUnder('apps')
+    .filter((p) => /\.ts$/.test(p) && !p.includes('/dist/') && !p.includes('/test/') && !p.endsWith('.test.ts'))
+    .map((file) => ({ file, text: readFileSync(join(root, file), 'utf8') }))
+
+  it('has files to check', () => {
+    expect(appFiles.length).toBeGreaterThan(0)
+  })
+
+  it('no app constructs an AssetStore adapter directly', () => {
+    const offenders = appFiles
+      .filter((f) => /new\s+(FilesystemAssetStore|InMemoryAssetStore|S3AssetStore)\s*\(|createS3AssetStore\s*\(/.test(f.text))
+      .map((f) => f.file)
+    expect(offenders).toEqual([])
+  })
+
+  it('every app that OBTAINS a store gets it from resolveAssetStoreFromEnv', () => {
+    // Only files that ASSIGN a store: `const assetStore = ...` or
+    // `assetStore: await ...` in a deps literal. A file that merely RECEIVES
+    // one as a parameter (`assetStore: AssetStore`) is correct injection and
+    // is deliberately not matched, which is why this looks for the assignment
+    // rather than any mention.
+    const wiring = appFiles.filter((f) => /assetStore\s*=[^=]|assetStore:\s*await/.test(f.text))
+    expect(wiring.length).toBeGreaterThan(0)
+    for (const f of wiring) {
+      expect(f.text.includes('resolveAssetStoreFromEnv'), `${f.file} wires an assetStore without the shared resolver`).toBe(true)
+    }
+  })
+})
+
 describe('@andpay/authz secret-free DO-NOT (spec 04 REPO SHAPE)', () => {
   const authzFiles = filesUnder(join('packages', 'authz', 'src'))
     .filter((p) => p.endsWith('.ts'))
