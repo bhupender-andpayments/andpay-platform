@@ -16,10 +16,11 @@
  * at all survived in the UI.
  *
  * ORDER IS THE LIFECYCLE for the first three. CANCELLED is off that line: it is
- * granted by the database CHECK constraint and reserved for the damage cancel
- * flow (DAMAGE.md), which is not built yet, so no screen offers it and no code
- * writes it. It is listed because the column may legally hold it, not because
- * anything reaches it.
+ * where a replacement entry lands when its damage request is withdrawn (the
+ * DAMAGE.md cancel flow, landed 21 Aug 2026), written by fulfillment's
+ * projectReplacementCancelledToUnits and never by a screen. An entry reaches it
+ * from POOLED or HELD only, because a BATCHED entry is a batch's contents and
+ * the batch, not the entry, is what would have to be undone.
  */
 export const POOL_STATUSES = ['POOLED', 'HELD', 'BATCHED', 'CANCELLED'] as const
 
@@ -28,6 +29,7 @@ export type PoolStatus = (typeof POOL_STATUSES)[number]
 /**
  * The two the pool screen actually queries. BATCHED entries have left the pool
  * by definition (they are a batch's contents now, which the batch page owns),
- * and CANCELLED is not implemented.
+ * and CANCELLED has left it by withdrawal, so neither belongs on a screen whose
+ * job is what still needs fulfilling.
  */
 export const POOL_QUERY_STATUSES = ['POOLED', 'HELD'] as const

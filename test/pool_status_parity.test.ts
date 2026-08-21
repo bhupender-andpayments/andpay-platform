@@ -15,10 +15,10 @@ import { POOL_STATUSES, POOL_QUERY_STATUSES } from '../apps/ops-portal/src/featu
 // test against, so there was no parity test, so nothing would have noticed a
 // fourth value appearing on one side only.
 //
-// That is not hypothetical: a fourth value HAS since appeared. CANCELLED is
+// That is not hypothetical: a fourth value HAS since appeared. CANCELLED was
 // granted by the database CHECK constraint for the damage cancel flow
-// (DAMAGE.md) and no code writes it yet, which is exactly the situation where a
-// silent divergence starts.
+// (DAMAGE.md) a day before any code wrote it, which is exactly the window where
+// a silent divergence starts. The cancel projector writes it now.
 //
 // Reads the service SOURCE as text, because the whole point is that no import
 // links the two files.
@@ -45,9 +45,9 @@ describe('pool status parity between services/fulfillment and apps/ops-portal', 
   })
 
   // The pool screen queries a SUBSET, and that subset must be real statuses.
-  // BATCHED entries have left the pool by definition and CANCELLED is not
-  // implemented, so neither is queried; what matters here is that the two it
-  // does query are spelled the way the server spells them.
+  // BATCHED entries have left the pool by definition and CANCELLED entries have
+  // left it by withdrawal, so neither is queried; what matters here is that the
+  // two it does query are spelled the way the server spells them.
   it('every status the pool screen queries is one the service actually names', () => {
     for (const s of POOL_QUERY_STATUSES) {
       expect(serviceValues('POOL_STATUSES')).toContain(s)
