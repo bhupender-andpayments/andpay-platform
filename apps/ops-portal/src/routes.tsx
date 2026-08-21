@@ -23,6 +23,7 @@ import { MerchantsPage } from './features/merchants/MerchantsPage.js'
 import { MerchantDetailPage } from './features/merchants/MerchantDetailPage.js'
 import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
 import { PoolPage } from './features/fulfillment/PoolPage.js'
+import { RequestsPage } from './features/requests/RequestsPage.js'
 import { BatchGeneratePage } from './features/fulfillment/generate/BatchGeneratePage.js'
 
 // Router-agnostic route tree (no <BrowserRouter> here) so tests can wrap it
@@ -77,6 +78,13 @@ export function AppRoutes() {
               waiting to be batched is a different job from working the batches
               already formed, and one page could not honestly describe both. */}
           <Route path="/pool" element={<PoolPage />} />
+          {/* REQUESTS (DAMAGE.md, 21 Aug 2026): the grain above a dispatch. A
+              bank row is one request that can mint two parcels, and until now
+              every screen was per-parcel, so nothing answered "which dispatches
+              belong together". Beside /pool because they are the same
+              relationship at two moments: the pool is what is waiting, this is
+              everything ever asked for. */}
+          <Route path="/requests" element={<RequestsPage />} />
           <Route path="/batches" element={<FulfillmentPage />} />
           {/* ONE batch page (13 Aug 2026). The collateral generator IS the batch
               page: an operator opening a batch is there to see the cards, print

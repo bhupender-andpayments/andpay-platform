@@ -2217,6 +2217,45 @@ export function markActivatedBulk(c: Client, dispatchIds: string[], idempotencyK
 // is gone. Activation is a one-time toggle now, with no earlier state to
 // record. It already had no caller in this file before this deletion.
 
+/**
+ * One leg of a merchant request (DAMAGE.md). Flat rows; the Requests page groups
+ * them by sourceEventId, which IS the request identity (both legs of one
+ * bank-file row share it, and the pool has always grouped by it).
+ */
+export interface RequestLegRow {
+  sourceEventId: string
+  asgnId: string
+  dispatchGroup: string
+  merchantDisplayName: string
+  bankReferenceCode: string
+  bankDisplayName: string
+  branchCode: string | null
+  vpaValue: string
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  billable: boolean
+  demandState: string
+  caseStatus: string | null
+  replacementOfAsgnId: string | null
+  activatedAt: string | null
+  createdAt: string
+}
+
+export function getRequestLegs(c: Client) {
+  return c.request<RequestLegRow[]>({ method: 'GET', path: '/ops/requests' })
+}
+
+/** Undo an activation (ACTIVATION.md): clears activatedAt and activatedBy. */
+export function deactivateAssignment(c: Client, dispatchId: string, idempotencyKey: string) {
+  return c.request<{ deactivated: boolean }>({
+    method: 'POST',
+    path: '/ops/assignments/deactivate',
+    body: { dispatchId },
+    idempotencyKey,
+  })
+}
+
 export function getBatchJourney(c: Client, btchId: string) {
   return c.request<BatchJourneyView>({
     method: 'GET',

@@ -262,6 +262,98 @@ export async function searchDispatchesByVpa(db: TmsDb, vpa: string): Promise<Vpa
   }))
 }
 
+// THE MERCHANT REQUEST, which the platform has always had and never shown
+// (DAMAGE.md, 21 Aug 2026).
+//
+// source_event_id IS the request identity: both legs of one bank-file row carry
+// it, the pool groups by it, and the minimum-lot batching gate counts DISTINCT
+// values of it. There is no `request` table and there does not need to be; the
+// key is the relationship. What was missing was any screen that asked the
+// question the key answers, so an operator holding a merchant's complaint had
+// to work backwards from a dispatch and guess which siblings belonged with it.
+//
+// FLAT ROWS, ONE PER LEG, grouped by the caller. Not a GROUP BY: the curated
+// read modules are row-level only by construction (architecture.test.ts check 7),
+// and the pool page already groups by this exact key client-side, so the shape
+// is the established one rather than a new pattern.
+//
+// Newest first, capped, because an operator arrives with a recent complaint and
+// an unbounded scan of every assignment ever minted is not a page.
+export interface RequestLegRow {
+  sourceEventId: string
+  asgnId: string
+  dispatchGroup: string
+  merchantDisplayName: string
+  bankReferenceCode: string
+  bankDisplayName: string
+  branchCode: string | null
+  vpaValue: string
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  billable: boolean
+  demandState: string
+  caseStatus: string | null
+  /** The dispatch this leg replaces, when it is a replacement. */
+  replacementOfAsgnId: string | null
+  activatedAt: string | null
+  createdAt: string
+}
+
+export async function listRequestLegsOps(db: TmsDb, limit = 500): Promise<RequestLegRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<
+      {
+        source_event_id: string
+        id: string
+        dispatch_group: string
+        merchant_display_name: string
+        bank_reference_code: string
+        bank_display_name: string
+        branch_code: string | null
+        vpa_value: string
+        soundbox: boolean
+        standee_count: number
+        sticker_count: number
+        billable: boolean
+        demand_state: string
+        case_status: string | null
+        replacement_of: string | null
+        activated_at: Date | null
+        created_at: Date
+      }[]
+    >`
+      SELECT source_event_id, id, dispatch_group, merchant_display_name,
+             bank_reference_code, bank_display_name, branch_code, vpa_value,
+             soundbox, standee_count, sticker_count, billable, demand_state,
+             case_status, replacement_of, activated_at, created_at
+      FROM assignment
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    `
+  })
+  return rows.map((r) => ({
+    sourceEventId: r.source_event_id,
+    asgnId: fromUuid('asgn', r.id),
+    dispatchGroup: r.dispatch_group,
+    merchantDisplayName: r.merchant_display_name,
+    bankReferenceCode: r.bank_reference_code,
+    bankDisplayName: r.bank_display_name,
+    branchCode: r.branch_code,
+    vpaValue: r.vpa_value,
+    soundbox: r.soundbox,
+    standeeCount: r.standee_count,
+    stickerCount: r.sticker_count,
+    billable: r.billable,
+    demandState: r.demand_state,
+    caseStatus: r.case_status,
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
+    activatedAt: r.activated_at === null ? null : r.activated_at.toISOString(),
+    createdAt: r.created_at.toISOString(),
+  }))
+}
+
 // D-31 (DP-7): the damage-case tile numbers, per status, over every
 // replacement (replacement_of IS NOT NULL). This reads tms and not analytics,
 // because case_status is deliberately never projected into analytics (the

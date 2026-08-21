@@ -298,6 +298,54 @@ export async function projectActivationToUnits(
   return { advanced }
 }
 
+/**
+ * The inverse of markUnitsActivatedForAssignment: clear the activation.
+ *
+ * NO TERMINAL GUARD, unlike the activation it undoes. That guard exists so a
+ * stale activation cannot resurrect a device already written off as DAMAGED.
+ * Clearing runs the other way: a damaged device wrongly marked live should have
+ * that mark removed, and refusing would strand exactly the row that needs
+ * correcting.
+ *
+ * Guarded on activated_at IS NOT NULL, so a redelivered fact clears nothing
+ * twice and the return value stays an honest count of what moved.
+ */
+export async function clearUnitsActivatedForAssignment(tx: Tx, asgnUuid: string): Promise<number> {
+  const moved = await tx.$queryRaw<{ id: string }[]>`
+    UPDATE unit SET activated_at = NULL, activated_by = NULL, updated_at = now()
+    WHERE asgn_id = ${asgnUuid}::uuid AND activated_at IS NOT NULL
+    RETURNING id::text AS id
+  `
+  return moved.length
+}
+
+export interface DeactivatedFactView {
+  asgnId: string
+}
+
+/**
+ * fct.tms.assignment.deactivated.v1: the activation was withdrawn.
+ *
+ * The mirror of projectActivationToUnits, and the reason that fact exists at
+ * all: without it a deactivation reached the tms row only, and this device went
+ * on reporting itself live.
+ */
+export async function projectDeactivationToUnits(
+  db: FulfillmentDb,
+  env: Envelope<DeactivatedFactView>,
+): Promise<{ cleared: number }> {
+  let cleared = 0
+  await db.$transaction(async (tx) => {
+    // Role FIRST, before onceWithin's inbox INSERT, so no statement runs as the
+    // table owner. unit is PLATFORM-ONLY, so there is no program scope to set.
+    await enterWriteRole(tx as unknown as Tx, 'fulfillment_write')
+    await onceWithin(tx as unknown as Tx, CONSUMER, `${env.dedupKey}|unit_deactivated`, async () => {
+      cleared = await clearUnitsActivatedForAssignment(tx as unknown as Tx, toUuid(env.payload.asgnId))
+    })
+  })
+  return { cleared }
+}
+
 export interface ReplacementRaisedFactView {
   // the CHILD, the replacement the flag minted. Not the damaged device's
   // assignment; reading this field here was REVIEW_REPORT.md F4.

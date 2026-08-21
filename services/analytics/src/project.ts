@@ -22,6 +22,7 @@ const T = {
   SHIP_TO_AMENDED: 'fct.tms.assignment.ship_to_amended.v1',
   REPLACEMENT: 'fct.tms.assignment.replacement_raised.v1',
   ACTIVATED: 'fct.tms.assignment.activated.v1',
+  DEACTIVATED: 'fct.tms.assignment.deactivated.v1',
   UNIT: 'fct.fulfillment.unit.v1',
   PRINT_FOR: 'fct.fulfillment.unit.print_for.v1',
   BATCH: 'fct.fulfillment.batch.v1',
@@ -228,6 +229,21 @@ export function applyFact(
       // D-16 (T4.3): NO pipeline_state advance. Activation is the other axis,
       // and writing it here is what used to let an early activation mask a
       // later delivery. The columns set just above are the whole record of it.
+      return s
+    }
+    case T.DEACTIVATED: {
+      // ACTIVATION.md (21 Aug 2026): the activation was withdrawn, so the three
+      // columns the ACTIVATED case sets go back to where they started. Without
+      // this the report kept reporting a dispatch live after an operator had
+      // taken that back, which is the whole reason the fact was added.
+      //
+      // Back to null rather than to some 'DEACTIVATED' token: the axis records
+      // whether the dispatch IS live, and a withdrawn activation is
+      // indistinguishable from one that never happened. The audit ledger is
+      // where "somebody undid this" lives.
+      s.activationStatus = null
+      s.simActivationStatus = null
+      s.activationDate = null
       return s
     }
     case T.UNIT:

@@ -12,6 +12,7 @@ export const ANALYTICS_TOPICS: string[] = [
   'fct.tms.assignment.ship_to_amended.v1',
   'fct.tms.assignment.replacement_raised.v1',
   'fct.tms.assignment.activated.v1',
+  'fct.tms.assignment.deactivated.v1',
   'fct.fulfillment.unit.v1',
   'fct.fulfillment.unit.print_for.v1',
   'fct.fulfillment.batch.v1',

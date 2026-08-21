@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Boxes, Check, Copy } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { getDevices, type UnitInventoryRow } from '../../api/endpoints.js'
+import { getDevices, deactivateAssignment, type UnitInventoryRow } from '../../api/endpoints.js'
+import { newIdempotencyKey } from '../../api/idempotency.js'
 import { BackLink } from '../../ui/DetailFacts.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { Card, CardHeader, ErrorNote, StatusPill } from '../../ui/primitives.js'
@@ -27,6 +28,9 @@ export function ActivationBatchDevicesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [busyAsgnId, setBusyAsgnId] = useState<string | null>(null)
+
+
 
   const load = useCallback(async (): Promise<void> => {
     if (btchId === undefined) return
@@ -45,6 +49,29 @@ export function ActivationBatchDevicesPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  /**
+   * Withdraw an activation (ACTIVATION.md). Reloads rather than patching the row
+   * locally: clearing the assignment also clears the DEVICE, via
+   * fct.tms.assignment.deactivated.v1 and the fulfillment projector, and that
+   * round trip is what this list is showing. Patching state here would claim the
+   * device was cleared before the consumer had done it.
+   */
+  const deactivate = useCallback(
+    async (asgnId: string): Promise<void> => {
+      setBusyAsgnId(asgnId)
+      setError(null)
+      try {
+        await deactivateAssignment(client, asgnId, newIdempotencyKey())
+        await load()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not undo this activation.')
+      } finally {
+        setBusyAsgnId(null)
+      }
+    },
+    [client, load],
+  )
 
   if (btchId === undefined) return null
 
@@ -85,7 +112,29 @@ export function ActivationBatchDevicesPage() {
         r.activatedAt === null ? (
           <span className="text-muted-foreground">not activated</span>
         ) : (
-          <StatusPill value="ACTIVATED" />
+          <span className="flex items-center gap-2">
+            <StatusPill value="ACTIVATED" />
+            {/* UNDO, on the value it undoes (ACTIVATION.md, 21 Aug 2026).
+                Activation is a toggle now rather than a rung on a forward-only
+                ladder, so withdrawing it is an ordinary correction and belongs
+                next to the thing it corrects, exactly where the device page
+                puts "Change status".
+
+                Acts on the DISPATCH, because that is the grain activation has
+                always been written at (the CWD confirms a merchant's device
+                against its assignment). Hidden when the device is not paired to
+                one, since there is then nothing to address. */}
+            {r.asgnId !== null && (
+              <button
+                type="button"
+                className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50"
+                disabled={busyAsgnId !== null}
+                onClick={() => void deactivate(r.asgnId!)}
+              >
+                {busyAsgnId === r.asgnId ? 'Undoing...' : 'Undo'}
+              </button>
+            )}
+          </span>
         ),
       sortValue: (r) => (r.activatedAt === null ? 0 : new Date(r.activatedAt).getTime()),
     },

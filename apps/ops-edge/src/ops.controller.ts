@@ -72,6 +72,7 @@ import {
   deactivateDamageReasonOps,
   updateDamageCaseStatusOps,
   activateAssignmentOps,
+  deactivateAssignmentOps,
   ManualDevicePort,
   type BankRequestRow,
   type BankPreviewResult,
@@ -1101,6 +1102,32 @@ export class OpsController {
   // ruled there is no useful "request sent to CWD" window worth tracking.
   // Activation is a one-time toggle now (activateAssignmentRoute above), with
   // no earlier state to record.
+
+  // The toggle's other direction (ACTIVATION.md). An operator who marked the
+  // wrong dispatch activated needs a way back, and with activation off the
+  // ordered ladder there is nothing contradictory about clearing it.
+  //
+  // NO DISPATCH-GROUP GATE HERE, unlike activate above. That gate exists
+  // because paper cannot be activated, so activating a COLLATERAL leg is
+  // nonsense; clearing an activation that should never have existed is exactly
+  // the correction an operator needs, so refusing it would strand the very row
+  // that most needs fixing. TMS resolves the row and its program server-side
+  // (D99) and 404s an unknown id.
+  @Post('assignments/deactivate')
+  @HttpCode(200)
+  async deactivateAssignmentRoute(
+    @Req() req: EdgeRequest,
+    @Body() body: ActivateAssignmentBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deactivated: boolean }> {
+    const g = await this.gate(req, 'ops:deactivate', idem, [body.dispatchId])
+    return deactivateAssignmentOps(this.deps.tmsDb, {
+      asgnId: body.dispatchId,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
 
   // D-19 (T5.4, 13 Aug 2026): mark SEVERAL dispatches activated in one action.
   //

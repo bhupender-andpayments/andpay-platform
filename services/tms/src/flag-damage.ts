@@ -64,6 +64,8 @@ interface ParentRow {
   mobile: string | null
   branch_code: string | null
   dispatch_group: DispatchGroup
+  /** The merchant-request identity this leg belongs to; the child derives from it. */
+  source_event_id: string
 }
 
 function requireItemCount(value: number | undefined, name: string): void {
@@ -94,10 +96,6 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
   requireItemCount(args.stickerCount, 'stickerCount')
   const parentUuid = toUuid(args.asgnId)
 
-  // DP-4: the child's correlation id. The column is a correlation id, not a
-  // UUID (file rows used fileId|rowNo); the client key makes a retry land on
-  // the same (source_event_id, dispatch_group) unique row.
-  const sourceEventId = `ops-flag|${args.clientKey}`
 
   return db.$transaction(async (tx: Tx) => {
     await enterWriteRole(tx, 'tms_write')
@@ -107,13 +105,49 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
     const parents = await tx.$queryRaw<ParentRow[]>`
       SELECT id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
              bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value,
-             contact_name, mobile, branch_code, dispatch_group
+             contact_name, mobile, branch_code, dispatch_group, source_event_id
       FROM assignment WHERE id = ${parentUuid}::uuid
     `
     if (parents.length !== 1) {
       throw new OpsClientError('not-found', 'no such dispatch')
     }
     const parent = parents[0]!
+
+    // THE CHILD'S REQUEST KEY IS DERIVED FROM THE PARENT'S (DAMAGE.md).
+    //
+    // source_event_id is the platform's merchant-request identity: both legs of
+    // one bank-file row share it, the pool GROUPS BY it, and the minimum-lot
+    // batching gate counts DISTINCT values of it. A replacement used to get a
+    // fresh random key (`ops-flag|<clientKey>`), which broke all three at once.
+    // Flagging a merchant's soundbox and their standee produced two unrelated
+    // request rows in the pool for what was one request, and counted 2 toward a
+    // gate the original counted 1 for.
+    //
+    // Deriving it from the parent's key puts both replacement legs back in one
+    // request, exactly like the original.
+    //
+    // THE GENERATION SUFFIX IS NOT DECORATION. Without it a second round of
+    // damage on the same leg would reuse the same (source_event_id,
+    // dispatch_group) pair and be swallowed silently by the ON CONFLICT DO
+    // NOTHING below, so the operator would get a success and no replacement.
+    // The generation is the depth of the chain the parent already sits on.
+    const depth = await tx.$queryRaw<{ n: bigint }[]>`
+      WITH RECURSIVE up AS (
+        SELECT id, replacement_of FROM assignment WHERE id = ${parentUuid}::uuid
+        UNION ALL
+        SELECT a.id, a.replacement_of FROM assignment a JOIN up u ON a.id = u.replacement_of
+      )
+      SELECT count(*) AS n FROM up
+    `
+    // The parent itself is row 1, so its first replacement is generation 1.
+    const generation = Number(depth[0]?.n ?? 1n)
+    // The ROOT request's key, never the parent's own derived one, so a third
+    // generation reads `...|g3` rather than `...|g2|g3`.
+    const rootKey = parent.source_event_id.replace(/^ops-flag\|/, '').replace(/\|g\d+$/, '')
+    const sourceEventId = `ops-flag|${rootKey}|g${String(generation)}`
+
+
+
 
     // DP-2: the leg decides the product columns. A SOUNDBOX leg is quantity
     // one by definition (D-27 and D-6), so any count input is a caller error
@@ -148,22 +182,70 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
       throw new OpsClientError('invalid', 'reasonCode must name an active damage reason')
     }
 
-    // DP-3: one live case per dispatch. A child of this parent whose case is
-    // not Closed blocks a new flag; after it closes, a new flag is allowed
-    // (repeat damage is real). The child THIS client key minted is excluded so
-    // a replay of the same request stays idempotent instead of colliding with
-    // its own earlier success.
-    const live = await tx.$queryRaw<{ id: string }[]>`
-      SELECT id FROM assignment
-      WHERE replacement_of = ${parentUuid}::uuid
-        AND case_status IS DISTINCT FROM 'Closed'
-        AND source_event_id <> ${sourceEventId}
-    `
-    if (live.length > 0) {
-      throw new OpsClientError('conflict', 'this dispatch already has a live damage case')
-    }
+    // DP-3's one-live-case guard USED TO BE HERE and is now unreachable: the
+    // tip gate above is strictly stronger, refusing a parent with ANY child
+    // rather than only one whose case is still open. Kept as a note instead of
+    // as dead code, because DP-3 said the opposite (re-flagging a parent was
+    // allowed once its case closed) and the change is deliberate: after a
+    // replacement exists, the merchant's working device IS the replacement, so
+    // the next round of damage belongs to it.
+    //
+    // The partial unique index assignment_one_live_case (migration
+    // 20260816210000) still backs the rule at the database, which is what makes
+    // a concurrent double-flag safe rather than racy; the catch below maps its
+    // 23505 to the same conflict.
 
     await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:flag-damage'), async () => {
+    // ONLY THE CHAIN TIP CAN BE FLAGGED (DAMAGE.md, 21 Aug 2026).
+    //
+    // Damage used to be flaggable on any dispatch whose case had closed, which
+    // meant a second round of damage landed on the ORIGINAL rather than on the
+    // replacement the merchant is actually holding. That produced two sibling
+    // replacements of one parent instead of a chain, and neither knew about the
+    // other.
+    //
+    // A dispatch with ANY replacement child is therefore no longer flaggable,
+    // open case or closed. The refusal names the tip so the caller can go
+    // straight there rather than guessing which of the chain is current.
+    // INSIDE THE onceWithin, unlike every validation above it, and that
+    // placement is the whole reason this works. A replay of the same
+    // Idempotency-Key never reaches here: onceWithin's inbox row short-circuits
+    // the body, so the retry returns its original answer instead of tripping
+    // over the child it already created.
+    //
+    // An exclusion by source_event_id was tried instead and cannot work: the
+    // child's key is derived from the PARENT now, so a genuine second attempt
+    // computes the same key as the first and would exclude the very row it
+    // needs to see. The client key is the only thing that separates a retry
+    // from a new request, and the inbox is where the client key lives.
+    //
+    // A state conflict consuming the idempotency key is correct, unlike the
+    // input validations above: the caller's request was well formed and the
+    // answer is stable, so replaying it should keep returning that answer.
+    const existingReplacement = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id::text AS id FROM assignment
+      WHERE replacement_of = ${parentUuid}::uuid
+      ORDER BY created_at DESC
+      LIMIT 1
+    `
+    if (existingReplacement.length > 0) {
+      // Walk to the newest descendant, not just the immediate one: after two
+      // rounds the caller needs the END of the chain, and replacement_of is a
+      // one-level pointer so the walk has to be explicit.
+      const tip = await tx.$queryRaw<{ id: string }[]>`
+        WITH RECURSIVE chain AS (
+          SELECT id, created_at FROM assignment WHERE id = ${parentUuid}::uuid
+          UNION ALL
+          SELECT a.id, a.created_at FROM assignment a JOIN chain c ON a.replacement_of = c.id
+        )
+        SELECT id::text AS id FROM chain ORDER BY created_at DESC LIMIT 1
+      `
+      throw new OpsClientError(
+        'conflict',
+        `this dispatch has already been replaced; flag the current one instead (${fromUuid('asgn', tip[0]!.id)})`,
+      )
+    }
+
       // enterWriteScope is deliberately INSIDE onceWithin (same reasoning as
       // updateDamageCaseStatusOps): the inbox INSERT is not program-gated, and
       // binding the scope here keeps the WITH-CHECK program next to the writes

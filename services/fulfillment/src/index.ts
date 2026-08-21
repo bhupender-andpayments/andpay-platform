@@ -33,6 +33,7 @@ export {
   type UnitTerminalStatus,
   type AnyUnitStatus,
   projectActivationToUnits,
+  projectDeactivationToUnits,
   projectReplacementToUnits,
   type ActivatedFactView,
   type ReplacementRaisedFactView,

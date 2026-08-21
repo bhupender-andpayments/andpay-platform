@@ -75,6 +75,7 @@ const SECTIONS: readonly Section[] = [
   { to: '/command-center', label: 'Command Center', icon: IconDashboard },
   { to: '/merchants', label: 'Merchants', icon: IconMerchants },
   { to: '/inventory', label: 'Inventory', icon: IconMasterData },
+  { to: '/requests', label: 'Requests', icon: IconUploads },
   { to: '/pool', label: 'Pool', icon: IconQueues },
   { to: '/batches', label: 'Batches', icon: IconFulfillment },
   { to: '/activation', label: 'Activation', icon: IconCheck },
@@ -104,7 +105,9 @@ const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = 
   // Array position here IS render order in the sidebar, and this order is the
   // order the work happens in: merchants ask, stock is held, a batch forms,
   // parcels move, devices go live.
-  { title: 'Pipeline', routes: ['/merchants', '/inventory', '/pool', '/batches', '/dispatches', '/shipments', '/activation'] },
+  // Requests before Pool: the bank asks first, and what is waiting to be
+  // batched is the next moment in the same story.
+  { title: 'Pipeline', routes: ['/merchants', '/inventory', '/requests', '/pool', '/batches', '/dispatches', '/shipments', '/activation'] },
   // Uploads FIRST in Operations: it is the front door and the landing route, so
   // the eye should find it without reading the group. Damage cases sit beside
   // Queues because both are work an operator picks up and moves along, as

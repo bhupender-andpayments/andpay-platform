@@ -10,6 +10,11 @@ export const TMS_ASSIGNMENT_TOPIC = 'fct.tms.assignment.v1'
 export const TMS_SHIP_TO_AMENDED_TOPIC = 'fct.tms.assignment.ship_to_amended.v1'
 export const TMS_REPLACEMENT_RAISED_TOPIC = 'fct.tms.assignment.replacement_raised.v1'
 export const TMS_ACTIVATED_TOPIC = 'fct.tms.assignment.activated.v1'
+// ACTIVATION.md (21 Aug 2026): the toggle's other direction. Its OWN topic
+// rather than an activated fact carrying a null timestamp, because a consumer
+// switching on "is this field null" is a consumer that silently does nothing
+// when the field is merely absent, and the two facts ask for opposite writes.
+export const TMS_DEACTIVATED_TOPIC = 'fct.tms.assignment.deactivated.v1'
 
 // The demand-assignment fact Fulfillment consumes (S20, C5, O1). Flat fields
 // (v1) mirror the identity fact style. Carries the QR/VPA value (D117 handoff:
@@ -109,6 +114,28 @@ export function replacementRaisedFactEnvelope(
 ): Envelope<ReplacementRaisedFactPayload> {
   return newEnvelope({
     type: TMS_REPLACEMENT_RAISED_TOPIC,
+    version: 1,
+    subject: input.payload.asgnId,
+    dedupKey: input.dedupKey,
+    traceId: input.traceId,
+    payload: input.payload,
+  })
+}
+
+export interface DeactivatedFactPayload {
+  asgnId: string
+}
+
+/**
+ * The activation was withdrawn. Carries the assignment only: there is no
+ * instant to report, because the fact is the ABSENCE of one from now on, and a
+ * "deactivated at" would be platform time masquerading as reported time (S22).
+ */
+export function deactivatedFactEnvelope(
+  input: FactInput<DeactivatedFactPayload>,
+): Envelope<DeactivatedFactPayload> {
+  return newEnvelope({
+    type: TMS_DEACTIVATED_TOPIC,
     version: 1,
     subject: input.payload.asgnId,
     dedupKey: input.dedupKey,

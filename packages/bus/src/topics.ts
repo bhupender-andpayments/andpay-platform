@@ -40,6 +40,10 @@ export const SOUNDBOX_TOPICS: TopicSpec[] = [
   { name: 'fct.tms.assignment.ship_to_amended.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.tms.assignment.replacement_raised.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.tms.assignment.activated.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  // ACTIVATION.md (21 Aug 2026): activation became a toggle, so its withdrawal
+  // needs a channel too. Without it a deactivation reached the tms row only,
+  // and the device and the analytics row went on reporting the dispatch live.
+  { name: 'fct.tms.assignment.deactivated.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.batch.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.unit.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.dispatch.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },

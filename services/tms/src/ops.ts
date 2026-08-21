@@ -1,6 +1,6 @@
 import { onceWithin, enqueue } from '@andpay/outbox'
 import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
-import { instanceKey } from '@andpay/keys'
+import { instanceKey, eventKey } from '@andpay/keys'
 import { toUuid } from '@andpay/ids'
 // D-8: DETECTION only. The same rule fulfillment corrects with, so the count
 // TMS reports is exactly what gets rewritten downstream. See the package.
@@ -19,6 +19,7 @@ import {
   type DuplicateVpaOriginal,
 } from './ingest.js'
 import { CASE_STATUS_VALUES, normalizeCaseStatus } from './damage-case.js'
+import { TMS_DEACTIVATED_TOPIC, deactivatedFactEnvelope } from './events.js'
 
 // The cap on an operator's case note, matching the trigger-note and hold-reason
 // caps elsewhere: long enough for a real explanation, short enough that the
@@ -553,6 +554,93 @@ export async function closeQuarantineRow(
     })
   })
   return { deduped: !ran, closed }
+}
+
+/**
+ * Undo an activation (ACTIVATION.md, 21 Aug 2026).
+ *
+ * WHY THIS CAN EXIST AT ALL. Activation used to be the top rung of an ordered
+ * status, and undoing a rung on a forward-only ladder is a contradiction. It is
+ * a parallel toggle now, so clearing it is an ordinary write rather than a
+ * reversal of history: activated_at and activated_by go back to null together,
+ * which is precisely the state a never-activated dispatch is already in.
+ *
+ * demand_state IS DELIBERATELY LEFT ALONE. It was set to 'activated' by the
+ * activation, and there is no honest value to put back: the row's real position
+ * is whatever fulfillment says about its parcel, which this context cannot read
+ * (C4). Reverting it to 'pooled-for-fulfillment' would be inventing a past. The
+ * activation axis is the one this clears, and the axis separation is exactly
+ * what makes that safe.
+ *
+ * NO FACT IS EMITTED, and that is a gap worth naming rather than hiding. The
+ * activation fact (fct.tms.assignment.activated.v1) told fulfillment to stamp
+ * the device's activated_at; nothing tells it to clear it, so a deactivated
+ * dispatch leaves its unit still marked activated until a deactivation fact
+ * exists. Adding one is a topic plus a consumer plus a projector, which is the
+ * same shape as the damage cancel flow and belongs with it (DAMAGE.md). Until
+ * then this corrects the ASSIGNMENT only.
+ *
+ * Idempotent on the business key, like activateAssignmentOps: deactivating an
+ * already-inactive dispatch is a no-op that still audits the authorized action.
+ */
+export async function deactivateAssignmentOps(
+  db: TmsDb,
+  args: { asgnId: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deactivated: boolean }> {
+  const asgnUuid = toUuid(args.asgnId)
+  let deactivated = false
+  await db.$transaction(async (tx: Tx) => {
+    // The program is resolved SERVER-SIDE from the target row (D99), never from
+    // the caller, exactly as the activate path does it.
+    const target = await tx.$queryRaw<{ program_id: string }[]>`
+      SELECT program_id::text AS program_id FROM assignment WHERE id = ${asgnUuid}::uuid
+    `
+    if (target.length === 0) throw new OpsClientError('not-found', 'no such dispatch')
+    await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
+
+    await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:deactivate'), async () => {
+      const cleared = await tx.$queryRaw<{ id: string }[]>`
+        UPDATE assignment
+        SET activated_at = NULL, activated_by = NULL, updated_at = now()
+        WHERE id = ${asgnUuid}::uuid AND activated_at IS NOT NULL
+        RETURNING id::text AS id
+      `
+      deactivated = cleared.length > 0
+      // The fact, so the device and the analytics row learn it too. Emitted
+      // only when a row actually cleared: an at-least-once redelivery of a
+      // no-op deactivation would tell two other contexts to clear something
+      // that was already clear, which is harmless but dishonest history.
+      if (deactivated) {
+        await enqueue(tx, {
+          aggregateType: 'assignment',
+          aggregateId: args.asgnId,
+          eventType: TMS_DEACTIVATED_TOPIC,
+          partitionKey: args.asgnId,
+          payload: deactivatedFactEnvelope({
+            payload: { asgnId: args.asgnId },
+            dedupKey: eventKey(instanceKey(args.clientKey, 'ops:deactivate'), 'tms.assignment.deactivated'),
+            traceId: args.traceId,
+          }),
+        })
+      }
+      // The 6e ALLOW co-commits in the SAME tx (spec 10c CC-1), and
+      // unconditionally inside the client-key callback: the audit records the
+      // authorized action, not whether a row happened to be in the state to
+      // change, which is the rule recordRelease already follows.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:deactivate',
+            principalId: args.actorId,
+            resourceIds: [args.asgnId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+  return { deactivated }
 }
 
 // requestActivationOps DELETED (ACTIVATION.md, 21 Aug 2026): the

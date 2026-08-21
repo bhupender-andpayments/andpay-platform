@@ -12,6 +12,7 @@ import {
   projectDemandFact,
   onDemandAccrued,
   projectActivationToUnits,
+  projectDeactivationToUnits,
   projectReplacementToUnits,
   consumeBatchFact,
   type AssetStore,
@@ -195,6 +196,7 @@ export function fulfillmentRoutes(db: FulfillmentClient, assetStore: AssetStore)
     topics: [
       'fct.tms.assignment.v1',
       'fct.tms.assignment.activated.v1',
+      'fct.tms.assignment.deactivated.v1',
       'fct.tms.assignment.replacement_raised.v1',
       'fct.fulfillment.batch.v1',
     ],
@@ -217,6 +219,9 @@ export function fulfillmentRoutes(db: FulfillmentClient, assetStore: AssetStore)
         }
         case 'fct.tms.assignment.activated.v1':
           await projectActivationToUnits(db, envelope as Parameters<typeof projectActivationToUnits>[1])
+          return
+        case 'fct.tms.assignment.deactivated.v1':
+          await projectDeactivationToUnits(db, envelope as Parameters<typeof projectDeactivationToUnits>[1])
           return
         case 'fct.tms.assignment.replacement_raised.v1':
           await projectReplacementToUnits(db, envelope as Parameters<typeof projectReplacementToUnits>[1])

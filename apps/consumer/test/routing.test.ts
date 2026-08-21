@@ -47,6 +47,10 @@ describe('the routing table matches the pump table it was copied from', () => {
     expect([...ROUTES.fulfillment.topics].sort()).toEqual([
       'fct.fulfillment.batch.v1',
       'fct.tms.assignment.activated.v1',
+      // ACTIVATION.md (21 Aug 2026): activation became a toggle, so fulfillment
+      // has to hear the withdrawal too. Without this topic a deactivation
+      // reached the tms row only and the DEVICE went on reporting itself live.
+      'fct.tms.assignment.deactivated.v1',
       'fct.tms.assignment.replacement_raised.v1',
       'fct.tms.assignment.v1',
     ])

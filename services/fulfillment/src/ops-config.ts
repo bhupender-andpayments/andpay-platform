@@ -116,13 +116,20 @@ const OPS_PERMISSIONS = [
   // exception, T6). No list permission is needed (no new list route is added
   // by this task).
   'ops:mark-activated',
-  // D-16 (T4.1b, 13 Aug 2026): the OTHER half of the activation branch. This
-  // records that the activation request has LEFT US for the CWD, which is the
-  // window an operator chases and which nothing could express before. Its own
-  // operation string rather than a flag on mark-activated, for the same reason
-  // close-quarantine has one: "I sent this to the CWD" and "the CWD confirmed
-  // it" are different claims, and the co-committed 6e carries the operation.
-  'ops:request-activation',
+  // ACTIVATION.md (21 Aug 2026): the reverse. An operator who marked the wrong
+  // dispatch activated needs a way back, and activation is a toggle now rather
+  // than a one-way rung, so undoing it is a real action instead of a
+  // contradiction.
+  //
+  // ITS OWN OPERATION STRING, not a flag on mark-activated, for the reason
+  // close-quarantine has one: the co-committed 6e carries the operation, and
+  // "I marked this live" and "I took that back" are different claims about the
+  // same device. Same ops tier, because whoever may activate may correct it.
+  //
+  // This REPLACES 'ops:request-activation', deleted in the same pass: the
+  // two-step REQUEST_SENT_TO_CWD status it guarded is gone, so the permission
+  // guarded a route that no longer exists.
+  'ops:deactivate',
   // D-17 (T5.1, 13 Aug 2026): the courier emails its morning status file and an
   // operator uploads it. Its own permission rather than reuse of
   // ops:upload-device-inventory, because the two uploads move different things

@@ -44,6 +44,7 @@ import {
 } from '@andpay/fulfillment-service'
 import {
   readQuarantineQueue,
+  listRequestLegsOps,
   listDamageReasons,
   readDamageCases,
   listMerchants,
@@ -54,6 +55,7 @@ import {
   type DamageCaseView,
   type MerchantRow,
   type VpaDispatchRow,
+  type RequestLegRow,
   type DamageCaseSummary,
 } from '@andpay/tms-service'
 import { listBankMasters, type BankMasterRow } from '@andpay/identity-service'
@@ -236,6 +238,17 @@ export class OpsReadController {
       throw new BadRequestException('vpa query parameter is required')
     }
     return { rows: await searchDispatchesByVpa(this.deps.tmsDb, vpa) }
+  }
+
+  // MERCHANT REQUESTS (DAMAGE.md): the legs, flat, newest first. The caller
+  // groups by sourceEventId, which is how the pool page has always presented
+  // this same relationship. Guard-only like every other read here: it exposes
+  // nothing about a dispatch a class-3 operator cannot already reach, it just
+  // finally answers "which dispatches belong to one merchant request".
+  @Get('requests')
+  @HttpCode(200)
+  async requests(): Promise<RequestLegRow[]> {
+    return listRequestLegsOps(this.deps.tmsDb)
   }
 
   // The device inventory. Guard-only, like the other reads on this controller:
