@@ -44,6 +44,7 @@ import {
   resolveAssignmentsByDeviceSerial,
   previewOpsDeviceInventory,
   correctUnitStatus,
+  correctDispatchState,
   previewOpsUnitStatus,
   ingestOpsUnitStatus,
   parseReturnWorkbook,
@@ -110,6 +111,13 @@ interface UnitStatusBody {
   status: string
 }
 const KNOWN_UNIT_STATUSES: readonly string[] = [...UNIT_STATUS_ORDER, ...UNIT_TERMINAL_STATUSES]
+// The manual dispatch_state correction body (22 Aug 2026): a target state only,
+// the UnitStatusBody shape. The two correctable states; QR_GENERATED is set by
+// batching itself and the service refuses it as a target.
+interface DispatchStateBody {
+  state: string
+}
+const KNOWN_DISPATCH_STATES: readonly string[] = ['SENT_TO_VENDOR', 'DISPATCHED_BY_VENDOR']
 interface OverrideBody {
   status: string
   courierTimestamp: string
@@ -803,6 +811,7 @@ export class OpsController {
       courierTimestamp: new Date(body.courierTimestamp),
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result
@@ -825,6 +834,7 @@ export class OpsController {
       batchId: id,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -849,6 +859,32 @@ export class OpsController {
       status: body.status,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
+      traceId: g.traceId,
+    })
+  }
+
+  // The dispatch-axis sibling of the unit correction above (22 Aug 2026,
+  // STAGES end-to-end): forward-only along the dispatch_state ladder, for a
+  // vendor handover done off a phone call or a return sheet that never came.
+  // Same tier and the same shape of limit: the rank guard in
+  // correctDispatchState bounds it, not the role.
+  @Post('dispatches/:asgnId/state')
+  @HttpCode(200)
+  async correctDispatch(
+    @Req() req: EdgeRequest,
+    @Param('asgnId') asgnId: string,
+    @Body() body: DispatchStateBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; advanced: boolean }> {
+    const g = await this.gate(req, 'ops:correct-dispatch-state', idem, [asgnId])
+    if (!KNOWN_DISPATCH_STATES.includes(body.state)) throw new BadRequestException('unknown dispatch state')
+    return correctDispatchState(this.deps.fulfillmentDb, {
+      asgnId,
+      state: body.state,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -877,6 +913,7 @@ export class OpsController {
       overrideReason: body.overrideReason,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
       ...(req.claim.acr !== undefined ? { acr: req.claim.acr } : {}),
       ...(req.claim.auth_time !== undefined ? { authTime: req.claim.auth_time } : {}),
@@ -927,6 +964,7 @@ export class OpsController {
       reason,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result
@@ -961,6 +999,7 @@ export class OpsController {
       asgnId,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result
@@ -989,6 +1028,7 @@ export class OpsController {
       ...(typeof body.opsRemarks === 'string' ? { opsRemarks: body.opsRemarks } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -1044,6 +1084,7 @@ export class OpsController {
       ...(body.stickerCount !== undefined ? { stickerCount: body.stickerCount } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -1129,6 +1170,7 @@ export class OpsController {
       remarks,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -1336,6 +1378,7 @@ export class OpsController {
       reason,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result
@@ -1364,6 +1407,7 @@ export class OpsController {
       btchId,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -1388,6 +1432,7 @@ export class OpsController {
       btchId,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return { deduped: result.deduped, closed: result.closed }
@@ -1612,6 +1657,7 @@ export class OpsController {
       courierTimestamp: new Date(body.courierTimestamp),
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result

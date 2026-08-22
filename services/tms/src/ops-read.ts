@@ -471,6 +471,60 @@ export async function listRequestLegsOps(db: TmsDb, limit = 500): Promise<Reques
 // replacement (replacement_of IS NOT NULL). This reads tms and not analytics,
 // because case_status is deliberately never projected into analytics (the
 // frozen damagedReplacementOpen tile stays frozen).
+/**
+ * One damage case's status history, oldest first (22 Aug 2026, DAMAGE
+ * end-to-end). The trail table existed and was written for a day before
+ * anything could READ it, which meant the case lifecycle the damage page was
+ * asked to show had its data recorded and unreachable.
+ *
+ * Keyed by the replacement's asgn id, same as every other case surface. Same
+ * ordering rule as fulfillment's trails: occurred_at then created_at, so two
+ * transitions in the same reported instant read back in the order the platform
+ * learned them.
+ */
+export interface CaseTrailRow {
+  status: string
+  occurredAt: Date
+  statusSource: string
+  actorId: string | null
+  /** Operator login handle snapshot (LeanClaim.hdl), display only. */
+  actorDisplay: string | null
+  /** Operator words, present on Cancelled rows (the mandatory cancel reason). */
+  remarks: string | null
+  recordedAt: Date
+}
+
+export async function readCaseTrailOps(db: TmsDb, asgnId: string): Promise<CaseTrailRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<
+      {
+        status: string
+        occurred_at: Date
+        status_source: string
+        actor_id: string | null
+        actor_display: string | null
+        remarks: string | null
+        created_at: Date
+      }[]
+    >`
+      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, actor_display, remarks, created_at
+      FROM damage_case_status_event
+      WHERE asgn_id = ${toUuid(asgnId)}::uuid
+      ORDER BY occurred_at ASC, created_at ASC
+    `
+  })
+  return rows.map((r) => ({
+    status: r.status,
+    occurredAt: r.occurred_at,
+    statusSource: r.status_source,
+    actorId: r.actor_id,
+    actorDisplay: r.actor_display,
+    remarks: r.remarks,
+    recordedAt: r.created_at,
+  }))
+}
+
 export interface DamageCaseSummary {
   open: number
   inProgress: number

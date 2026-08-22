@@ -5,11 +5,22 @@ import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   getDamageCases,
   getDamageCaseSummary,
+  getCaseTrail,
   searchDispatchesByVpa,
   updateDamageCaseStatus,
+  type CaseTrailEntry,
   type DamageCaseView,
   type VpaDispatchRow,
 } from '../../api/endpoints.js'
+import { LifecycleTimeline, type TimelineStage } from '../../ui/LifecycleTimeline.js'
+import { sourceLabelOf } from '../../ui/statusRail.js'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog'
 // PlainTable, not the grid: kept from when these rows held a focused note
 // input, which the grid's TanStack re-render remounts mid-typing. See
 // DataTable.tsx. The note now lives in the confirmation dialog, so the reason
@@ -180,9 +191,34 @@ export function DamageCasesPage() {
   const [moveNote, setMoveNote] = useState('')
   // Withdrawing a request is confirmed like a move, but its note is MANDATORY
   // rather than optional, so it gets its own state and its own dialog.
+  // THE CASE LIFECYCLE VIEWER (22 Aug 2026): the trail table was written from
+  // day one and nothing could read it, so "when did this case move" had its
+  // answer recorded and unreachable. Row-scoped dialog rather than a page: a
+  // case's history is a question asked about ONE case mid-scan of the list.
+  const [trailFor, setTrailFor] = useState<DamageCaseView | null>(null)
+  const [trail, setTrail] = useState<CaseTrailEntry[] | null>(null)
+  const [trailError, setTrailError] = useState<string | null>(null)
+
   const [pendingCancel, setPendingCancel] = useState<DamageCaseView | null>(null)
   const [cancelRemarks, setCancelRemarks] = useState('')
   const [cancelBusy, setCancelBusy] = useState(false)
+
+  useEffect(() => {
+    if (trailFor === null) return
+    let stale = false
+    setTrail(null)
+    setTrailError(null)
+    getCaseTrail(client, trailFor.asgnId)
+      .then((rows) => {
+        if (!stale) setTrail(Array.isArray(rows) ? rows : [])
+      })
+      .catch((err: unknown) => {
+        if (!stale) setTrailError(err instanceof Error ? err.message : 'Could not load the case history.')
+      })
+    return () => {
+      stale = true
+    }
+  }, [client, trailFor])
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -449,6 +485,15 @@ export function DamageCasesPage() {
               <MoreVertical className="size-4" aria-hidden="true" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {/* Read-only, so it sits above the moves: looking is not acting. */}
+              <DropdownMenuItem
+                onSelect={() => {
+                  setTrailFor(r)
+                }}
+              >
+                View lifecycle
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               {moves.map((m) => (
                 <DropdownMenuItem
                   key={m.wire}
@@ -702,6 +747,54 @@ export function DamageCasesPage() {
             />
           </Field>
         </ConfirmDialog>
+      )}
+
+      {/* THE CASE LIFECYCLE. Vertical and event-grained, not a rail: a case's
+          history carries prose (who moved it, through which door, the
+          mandatory cancel reason), and that is the timeline's grammar. Every
+          row renders 'reached': these are events that happened, not a ladder
+          with rungs still ahead, and the trail's own order is the story. */}
+      {trailFor !== null && (
+        <Dialog
+          open
+          onOpenChange={(next) => {
+            if (!next) {
+              setTrailFor(null)
+              setTrail(null)
+              setTrailError(null)
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Case lifecycle</DialogTitle>
+              <DialogDescription>
+                {trailFor.merchantDisplayName}. Replacement {trailFor.asgnId}.
+              </DialogDescription>
+            </DialogHeader>
+            {trailError !== null && <ErrorNote>{trailError}</ErrorNote>}
+            {trailError === null && trail === null && (
+              <p className="text-[13px] text-muted-foreground">Loading…</p>
+            )}
+            {trail !== null && (
+              <LifecycleTimeline
+                stages={trail.map(
+                  (e, i): TimelineStage => ({
+                    key: `${String(i)}-${e.status}`,
+                    label: statusLabelOf(e.status),
+                    state: i === trail.length - 1 ? 'current' : 'reached',
+                    at: e.occurredAt,
+                    source: sourceLabelOf(e.statusSource),
+                    actor: e.actorDisplay,
+                    note: e.remarks !== null && e.remarks !== '' ? e.remarks : undefined,
+                  }),
+                )}
+                emptyTitle="No recorded history"
+                emptyMessage="This case predates the trail, so its transitions were never recorded."
+              />
+            )}
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   )

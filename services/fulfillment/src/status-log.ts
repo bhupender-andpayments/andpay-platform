@@ -46,6 +46,7 @@ export type StatusLogSource =
   | 'ops:close-batch'
   | 'ops:correct-unit-status'
   | 'ops:correct-shipment-status'
+  | 'ops:correct-dispatch-state' // manual forward-only dispatch_state move
   | 'replacement-raised' // the damage flag marked the parent's devices
   // DAMAGE.md: the flag was withdrawn. The ONE source that moves a device
   // backwards off a terminal branch, which is why it is named rather than
@@ -67,6 +68,12 @@ export interface StatusLogArgs {
   statusSource: StatusLogSource
   /** Null when no human was behind it (a fact, a timer, a file). */
   actorId?: string | null
+  /**
+   * The operator's login handle from the verified JWT (LeanClaim.hdl),
+   * snapshotted because C4 forbids resolving actorId across contexts at read
+   * time. Null exactly when actorId is null. Display only.
+   */
+  actorDisplay?: string | null
   traceId: string
 }
 
@@ -80,10 +87,10 @@ export interface StatusLogArgs {
 export async function logUnitStatus(tx: Tx, unitUuid: string, args: StatusLogArgs): Promise<void> {
   await tx.$executeRaw`
     INSERT INTO unit_status_event
-      (unit_id, status, occurred_at, status_source, actor_id, trace_id)
+      (unit_id, status, occurred_at, status_source, actor_id, actor_display, trace_id)
     VALUES (
       ${unitUuid}::uuid, ${args.status}, ${args.occurredAt}::timestamptz,
-      ${args.statusSource}, ${args.actorId ?? null}::uuid, ${args.traceId}
+      ${args.statusSource}, ${args.actorId ?? null}::uuid, ${args.actorDisplay ?? null}, ${args.traceId}
     )
   `
 }
@@ -102,9 +109,9 @@ export async function logUnitStatuses(
   if (unitUuids.length === 0) return
   await tx.$executeRaw`
     INSERT INTO unit_status_event
-      (unit_id, status, occurred_at, status_source, actor_id, trace_id)
+      (unit_id, status, occurred_at, status_source, actor_id, actor_display, trace_id)
     SELECT u, ${args.status}, ${args.occurredAt}::timestamptz,
-           ${args.statusSource}, ${args.actorId ?? null}::uuid, ${args.traceId}
+           ${args.statusSource}, ${args.actorId ?? null}::uuid, ${args.actorDisplay ?? null}, ${args.traceId}
     FROM unnest(${[...unitUuids]}::uuid[]) AS u
   `
 }
@@ -128,11 +135,11 @@ export async function logPoolEntryStatus(
 ): Promise<void> {
   await tx.$executeRaw`
     INSERT INTO pool_entry_status_event
-      (pool_entry_id, program_id, status, occurred_at, status_source, actor_id, trace_id)
+      (pool_entry_id, program_id, status, occurred_at, status_source, actor_id, actor_display, trace_id)
     VALUES (
       ${poolEntryUuid}::uuid, ${programUuid}::uuid, ${args.status},
       ${args.occurredAt}::timestamptz, ${args.statusSource},
-      ${args.actorId ?? null}::uuid, ${args.traceId}
+      ${args.actorId ?? null}::uuid, ${args.actorDisplay ?? null}, ${args.traceId}
     )
   `
 }
@@ -150,9 +157,9 @@ export async function logPoolEntryStatusesForBatch(
 ): Promise<void> {
   await tx.$executeRaw`
     INSERT INTO pool_entry_status_event
-      (pool_entry_id, program_id, status, occurred_at, status_source, actor_id, trace_id)
+      (pool_entry_id, program_id, status, occurred_at, status_source, actor_id, actor_display, trace_id)
     SELECT p.id, p.program_id, ${args.status}, ${args.occurredAt}::timestamptz,
-           ${args.statusSource}, ${args.actorId ?? null}::uuid, ${args.traceId}
+           ${args.statusSource}, ${args.actorId ?? null}::uuid, ${args.actorDisplay ?? null}, ${args.traceId}
     FROM pending_pool_entry p
     WHERE p.batch = ${btchUuid}::uuid
   `
@@ -172,11 +179,11 @@ export async function logBatchStatus(
 ): Promise<void> {
   await tx.$executeRaw`
     INSERT INTO batch_status_event
-      (batch_id, program_id, status, occurred_at, status_source, actor_id, trace_id)
+      (batch_id, program_id, status, occurred_at, status_source, actor_id, actor_display, trace_id)
     VALUES (
       ${btchUuid}::uuid, ${programUuid}::uuid, ${args.status},
       ${args.occurredAt}::timestamptz, ${args.statusSource},
-      ${args.actorId ?? null}::uuid, ${args.traceId}
+      ${args.actorId ?? null}::uuid, ${args.actorDisplay ?? null}, ${args.traceId}
     )
   `
 }

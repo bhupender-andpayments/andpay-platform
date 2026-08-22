@@ -54,6 +54,39 @@ describe('pool status parity between services/fulfillment and apps/ops-portal', 
     }
   })
 
+  // The manual correction (22 Aug 2026) gave this axis a portal-facing door,
+  // so the vocabulary now has THREE holders: the service constant, the portal's
+  // dispatch ladder, and the edge's accepted-targets list. This is the check
+  // that they cannot drift: every dispatch_state the service names appears on
+  // the portal ladder in the service's order, and the edge accepts only
+  // service values (QR_GENERATED excluded there on purpose: batching is its
+  // only writer).
+  it('the portal dispatch ladder carries the service dispatch states, in order', () => {
+    const ladderText = readFileSync(
+      join(root, 'apps', 'ops-portal', 'src', 'features', 'dispatches', 'dispatchStatus.ts'),
+      'utf8',
+    )
+    const start = ladderText.indexOf('export const DISPATCH_LADDER')
+    const end = ladderText.indexOf('] as const', start)
+    const ladderKeys = [...ladderText.slice(start, end).matchAll(/key: '([A-Z_]+)'/g)].map((m) => m[1]!)
+    const states = serviceValues('DISPATCH_STATES')
+    const onLadder = ladderKeys.filter((k) => states.includes(k))
+    expect(onLadder).toEqual(states)
+  })
+
+  it('the edge accepts exactly the correctable service states', () => {
+    const edgeText = readFileSync(join(root, 'apps', 'ops-edge', 'src', 'ops.controller.ts'), 'utf8')
+    const start = edgeText.indexOf('const KNOWN_DISPATCH_STATES')
+    expect(start).toBeGreaterThan(-1)
+    // The declaration's own `string[]` carries a ']' before the literal does,
+    // so the scan starts at the '=' rather than at the name.
+    const eq = edgeText.indexOf('=', start)
+    const end = edgeText.indexOf(']', eq)
+    const accepted = [...edgeText.slice(eq, end).matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]!)
+    expect(accepted).toEqual(['SENT_TO_VENDOR', 'DISPATCHED_BY_VENDOR'])
+    for (const s of accepted) expect(serviceValues('DISPATCH_STATES')).toContain(s)
+  })
+
   // The second axis on the same row. Named at the same time and for the same
   // reason, and pinned here rather than in its own file because it is the same
   // table's vocabulary and the same failure mode.

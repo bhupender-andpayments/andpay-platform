@@ -44,6 +44,66 @@ import type { StatusTrailEntry } from '../api/endpoints.js'
 // stock and printing entirely, which trades one false claim for another. The
 // timestamp is where the distinction belongs, so that is where it lives.
 
+/**
+ * The friendly name of a status_source token, for the "who moved it" line
+ * under a rail stage (22 Aug 2026). Tokens are the service's own enum
+ * (status-log.ts StatusLogSource plus the tms case sources); anything unknown
+ * falls back to nothing rather than echoing a raw token at an operator.
+ */
+const SOURCE_LABEL: Record<string, string> = {
+  'intake': 'Manufacturer intake',
+  'pool:projection': 'Bank request',
+  'batching:lot-size': 'Automatic (lot size)',
+  'batching:max-wait': 'Automatic (max wait)',
+  'batching:manual': 'Manual batch',
+  'batching:hold': 'Hold',
+  'dispatch:qr-generated': 'QR generation',
+  'dispatch:sent-to-vendor': 'Print vendor handover',
+  'return-sheet': 'Return sheet',
+  'courier-file': 'Courier file',
+  'ops:release-hold': 'Operator',
+  'ops:send-to-vendor': 'Operator',
+  'ops:close-batch': 'Operator',
+  'ops:correct-unit-status': 'Operator correction',
+  'ops:correct-shipment-status': 'Operator correction',
+  'ops:correct-dispatch-state': 'Operator correction',
+  'ops:update-damage-case': 'Operator',
+  'ops:flag-damage': 'Operator',
+  'ops:cancel-damage': 'Operator',
+  'replacement-raised': 'Damage flag',
+  'replacement-cancelled': 'Damage flag withdrawn',
+  'activation': 'Activation',
+  // The tms case automation's own tokens (damage-case.ts, assignment.ts):
+  // batch movement, delivery, and the two-halves close.
+  'activation:delivered+activated': 'Automatic (activated)',
+  'dispatch:qr_generated': 'Automatic (batched)',
+  'dispatch:sent_to_vendor': 'Automatic (vendor handover)',
+  'dispatch:dispatched_by_vendor': 'Automatic (vendor dispatch)',
+  'shipment:delivered': 'Automatic (delivered)',
+  'shipment:delivered+activated': 'Automatic (delivered)',
+  'backfill': '',
+}
+
+/**
+ * WHO or WHAT to show under a stage: the operator's own handle when the trail
+ * recorded one (the hdl snapshot), else the reporting channel's friendly name.
+ * Backfill rows return nothing at all: "Backfill" under a historical stage
+ * answers no operator question.
+ */
+/** The friendly channel name alone, for surfaces that show actor separately. */
+export function sourceLabelOf(statusSource: string): string | null {
+  const label = SOURCE_LABEL[statusSource]
+  if (label === undefined || label === '') return null
+  return label
+}
+
+export function stageAttribution(e: { actorDisplay?: string | null; statusSource: string }): string | null {
+  if (typeof e.actorDisplay === 'string' && e.actorDisplay !== '') return e.actorDisplay
+  const label = SOURCE_LABEL[e.statusSource]
+  if (label === undefined) return null
+  return label === '' ? null : label
+}
+
 export interface RailFromTrailArgs {
   /** The happy-path ladder, in order. */
   spine: readonly string[]
@@ -70,10 +130,10 @@ export interface RailFromTrailArgs {
  * belongs to the timeline component, which lists every event rather than one
  * rung per status.
  */
-function firstSeen(trail: readonly StatusTrailEntry[]): Map<string, string> {
-  const seen = new Map<string, string>()
+function firstSeen(trail: readonly StatusTrailEntry[]): Map<string, StatusTrailEntry> {
+  const seen = new Map<string, StatusTrailEntry>()
   for (const e of trail) {
-    if (!seen.has(e.status)) seen.set(e.status, e.occurredAt)
+    if (!seen.has(e.status)) seen.set(e.status, e)
   }
   return seen
 }
@@ -118,22 +178,26 @@ export function buildRailFromTrail({
     // trail recorded this specific rung: a rung the entity passed without an
     // event of its own is reached but undated, which is exactly what we know.
     const isHead = i === lastReachedIdx && terminalStatus === null
+    const entry = at.get(key)
     stages.push({
       key,
       label: label(key),
       icon: icon(key),
       state: isHead ? 'current' : 'reached',
-      at: at.get(key) ?? null,
+      at: entry?.occurredAt ?? null,
+      by: entry !== undefined ? stageAttribution(entry) : null,
     })
   })
 
   if (terminalStatus !== null) {
+    const entry = at.get(terminalStatus)
     stages.push({
       key: terminalStatus,
       label: label(terminalStatus),
       icon: icon(terminalStatus),
       state: 'current',
-      at: at.get(terminalStatus) ?? null,
+      at: entry?.occurredAt ?? null,
+      by: entry !== undefined ? stageAttribution(entry) : null,
       terminal: true,
     })
   }

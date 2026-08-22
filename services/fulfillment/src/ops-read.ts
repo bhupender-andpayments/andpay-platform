@@ -592,6 +592,14 @@ export interface BatchSettlement {
   total: number
   delivered: number
   returned: number
+  /**
+   * Dispatches whose device was flagged DAMAGED (22 Aug 2026 ruling,
+   * supersedes DEC-10's replacement condition): a damaged dispatch is settled
+   * for close purposes, full stop. The merchant keeping a broken device must
+   * not hold a batch open forever, and the replacement's own journey belongs
+   * to the replacement's dispatch, not to this batch.
+   */
+  damaged: number
   pending: number
   /** Every dispatch settled, so the batch may be closed. False on an empty batch. */
   settled: boolean
@@ -604,7 +612,7 @@ export interface BatchSettlement {
    * than discarded, so the batch's dispatch table can mark each row and the
    * counts can never disagree with the marks: they are computed once.
    */
-  perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'PENDING'>
+  perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'DAMAGED' | 'PENDING'>
 }
 
 // Terminal courier states: a shipment that reached either has stopped moving.
@@ -630,17 +638,22 @@ export async function readBatchSettlementWithinTx(tx: Tx, btchUuid: string): Pro
     FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
   `
   if (entries.length === 0) {
-    return { total: 0, delivered: 0, returned: 0, pending: 0, settled: false, perDispatch: {} }
+    return { total: 0, delivered: 0, returned: 0, damaged: 0, pending: 0, settled: false, perDispatch: {} }
   }
 
   const asgnUuids = entries.map((e) => e.asgn_id)
-  // The kit shipment hangs off the DEVICE (unit.shipment), which is the only
-  // thing wanted from `unit` here. It used to read `status` too, for a damage
-  // rung that has been removed: see the note on BatchSettlement.
-  const units = await tx.$queryRaw<{ asgn_id: string; shipment: string | null }[]>`
-    SELECT asgn_id::text AS asgn_id, shipment::text AS shipment
+  // The kit shipment hangs off the DEVICE (unit.shipment); status is read
+  // back too since the 22 Aug 2026 ruling, because DAMAGED now settles the
+  // dispatch (see the note on BatchSettlement.damaged). Fulfillment-local on
+  // purpose: the damage CASE lives in tms and C4 forbids reading it here, but
+  // the flag also marks the device, which is this context's own fact.
+  const units = await tx.$queryRaw<{ asgn_id: string; shipment: string | null; status: string }[]>`
+    SELECT asgn_id::text AS asgn_id, shipment::text AS shipment, status
     FROM unit WHERE asgn_id = ANY(${asgnUuids}::uuid[])
   `
+
+  const damagedAsgns = new Set<string>()
+  for (const u of units) if (u.status === 'DAMAGED') damagedAsgns.add(u.asgn_id)
 
   const shipmentIds = new Set<string>()
   for (const e of entries) if (e.collateral_shipment !== null) shipmentIds.add(e.collateral_shipment)
@@ -667,9 +680,20 @@ export async function readBatchSettlementWithinTx(tx: Tx, btchUuid: string): Pro
 
   let delivered = 0
   let returned = 0
+  let damaged = 0
   let pending = 0
-  const perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'PENDING'> = {}
+  const perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'DAMAGED' | 'PENDING'> = {}
   for (const e of entries) {
+    // DAMAGED wins first (22 Aug 2026 ruling): a flagged device settles its
+    // dispatch even while its parcel is still nominally in flight, which is
+    // exactly the case that used to block a close forever. It also outranks a
+    // later DELIVERED scan for the LABEL only: both count as settled, and the
+    // damaged mark is the one an operator needs to see on the row.
+    if (damagedAsgns.has(e.asgn_id)) {
+      damaged += 1
+      perDispatch[fromUuid('asgn', e.asgn_id)] = 'DAMAGED'
+      continue
+    }
     const states = (shipmentsByAsgn.get(e.asgn_id) ?? []).map((id) => statusOf.get(id) ?? null)
     // No shipment yet means the vendor has not returned this row, so it cannot
     // have settled however long ago the batch formed.
@@ -691,6 +715,7 @@ export async function readBatchSettlementWithinTx(tx: Tx, btchUuid: string): Pro
     total: entries.length,
     delivered,
     returned,
+    damaged,
     pending,
     settled: pending === 0,
     perDispatch,
@@ -1092,6 +1117,33 @@ export async function listDeviceInventory(
 // PLATFORM-ONLY entry (no program to bind), like every other read in this file.
 // AWB and carrier status only, which is what the table carries: no recipient
 // PII reaches this row.
+/**
+ * Which of these dispatches are REPLACEMENTS (22 Aug 2026, replacement badge
+ * sweep). Keyed by wire asgn ids, returns a map of asgnId to the PARENT's wire
+ * asgn id, rows with replacement_of only.
+ *
+ * Lives here rather than on the tms side because the dispatches list is an
+ * analytics report enriched at the edge from FULFILLMENT (mergeHoldState's
+ * precedent), and pending_pool_entry.replacement_of is this context's own
+ * projected copy, carried on the demand fact for exactly this kind of display.
+ */
+export async function readReplacementMarksOps(
+  db: FulfillmentDb,
+  asgnIds: readonly string[],
+): Promise<Map<string, string>> {
+  if (asgnIds.length === 0) return new Map()
+  const uuids = asgnIds.map((id) => toUuid(id))
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<{ asgn_id: string; replacement_of: string }[]>`
+      SELECT asgn_id::text AS asgn_id, replacement_of::text AS replacement_of
+      FROM pending_pool_entry
+      WHERE asgn_id = ANY(${uuids}::uuid[]) AND replacement_of IS NOT NULL
+    `
+  })
+  return new Map(rows.map((r) => [fromUuid('asgn', r.asgn_id), fromUuid('asgn', r.replacement_of)]))
+}
+
 export interface DispatchStatusEventRow {
   status: string
   courierTimestamp: Date
@@ -1099,6 +1151,8 @@ export interface DispatchStatusEventRow {
   sourceRef: string
   receivedAt: Date
   overrideReason: string | null
+  /** Operator login handle snapshot (LeanClaim.hdl), ops doors only. */
+  actorDisplay: string | null
 }
 
 export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): Promise<DispatchStatusEventRow[]> {
@@ -1111,8 +1165,9 @@ export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): P
       source_ref: string
       received_at: Date
       override_reason: string | null
+      actor_display: string | null
     }[]>`
-      SELECT status, courier_timestamp, status_source, source_ref, received_at, override_reason
+      SELECT status, courier_timestamp, status_source, source_ref, received_at, override_reason, actor_display
       FROM shpt_status_event
       WHERE shpt_id = ${toUuid(shptId)}::uuid
       ORDER BY courier_timestamp ASC, received_at ASC
@@ -1125,6 +1180,7 @@ export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): P
     sourceRef: r.source_ref,
     receivedAt: r.received_at,
     overrideReason: r.override_reason,
+    actorDisplay: r.actor_display,
   }))
 }
 
@@ -1139,12 +1195,16 @@ export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): P
 //
 // tms_ops_read's counterpart, fulfillment_ops_read, is cross-tenant by
 // construction, which is what an ops operator is. IDs, enum tokens and
-// timestamps only.
+// timestamps only, PLUS the one ruled exception: actorDisplay, the operator's
+// own login handle snapshotted at write time (LeanClaim.hdl's ruling), because
+// resolving actorId to a name would need a cross-context read (C4) and a bare
+// UUID under a lifecycle stage answers nothing an operator asked.
 export interface StatusTrailRow {
   status: string
   occurredAt: Date
   statusSource: string
   actorId: string | null
+  actorDisplay: string | null
   recordedAt: Date
 }
 
@@ -1153,6 +1213,7 @@ interface StatusTrailDbRow {
   occurred_at: Date
   status_source: string
   actor_id: string | null
+  actor_display: string | null
   created_at: Date
 }
 
@@ -1162,6 +1223,7 @@ function toStatusTrail(rows: StatusTrailDbRow[]): StatusTrailRow[] {
     occurredAt: r.occurred_at,
     statusSource: r.status_source,
     actorId: r.actor_id,
+    actorDisplay: r.actor_display,
     recordedAt: r.created_at,
   }))
 }
@@ -1171,7 +1233,7 @@ export async function readUnitTrailOps(db: FulfillmentDb, unitId: string): Promi
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     return tx.$queryRaw<StatusTrailDbRow[]>`
-      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, created_at
+      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, actor_display, created_at
       FROM unit_status_event
       WHERE unit_id = ${toUuid(unitId)}::uuid
       ORDER BY occurred_at ASC, created_at ASC
@@ -1192,7 +1254,7 @@ export async function readPoolEntryTrailOps(db: FulfillmentDb, asgnId: string): 
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     return tx.$queryRaw<StatusTrailDbRow[]>`
-      SELECT e.status, e.occurred_at, e.status_source, e.actor_id::text AS actor_id, e.created_at
+      SELECT e.status, e.occurred_at, e.status_source, e.actor_id::text AS actor_id, e.actor_display, e.created_at
       FROM pool_entry_status_event e
       JOIN pending_pool_entry p ON p.id = e.pool_entry_id
       WHERE p.asgn_id = ${toUuid(asgnId)}::uuid
@@ -1208,7 +1270,7 @@ export async function readBatchTrailOps(db: FulfillmentDb, btchId: string): Prom
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     return tx.$queryRaw<StatusTrailDbRow[]>`
-      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, created_at
+      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, actor_display, created_at
       FROM batch_status_event
       WHERE batch_id = ${toUuid(btchId)}::uuid
       ORDER BY occurred_at ASC, created_at ASC

@@ -1057,20 +1057,19 @@ export function BatchGeneratePage() {
                 not interchangeable: a returned dispatch settles the batch without
                 the merchant ever receiving anything.
 
-                NO DAMAGED ROW (19 Aug 2026, at the user's direction). There was
-                one, counted off `unit.status`, and it read a different axis from
-                everything else on this page: the table's State column renders
-                dispatch_state, which has no damaged value, so the dialog reported
-                "1 damaged" over a list of identical Dispatched by vendor rows and
-                the operator could not find the row it meant. This breakdown is
-                about DISPATCHES now, top to bottom, and its numbers can be
-                located in the table below it. */}
-            <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-xl border bg-muted/30 px-4 py-3 text-[12.5px] sm:grid-cols-4">
+                THE DAMAGED ROW IS BACK (22 Aug 2026 ruling), and legitimately
+                this time. A 19 Aug version was cut because it read a different
+                axis from the table below and its "1 damaged" could not be
+                located. It is a DISPATCH verdict now: settlement.perDispatch
+                marks the exact row, and a damaged dispatch SETTLES the batch,
+                so the number both locates and explains. */}
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-xl border bg-muted/30 px-4 py-3 text-[12.5px] sm:grid-cols-5">
               {(
                 [
                   ['Dispatches', settlement.total],
                   ['Delivered', settlement.delivered],
                   ['Returned', settlement.returned],
+                  ['Damaged', settlement.damaged ?? 0],
                   ['Still in flight', settlement.pending],
                 ] as ReadonlyArray<[string, number]>
               ).map(([label, value]) => (
@@ -1082,9 +1081,9 @@ export function BatchGeneratePage() {
             </dl>
             {!canClose && (
               <InfoNote>
-                A dispatch settles when its parcel reaches DELIVERED or RETURNED. Flagging a device damaged raises a
-                replacement and does not settle anything: the original parcel is still with the courier. The unsettled
-                ones are the rows in the dispatch table below that have not reached a courier terminal state.
+                A dispatch settles when its parcel reaches DELIVERED or RETURNED, or when its device is flagged
+                DAMAGED (the replacement travels on its own dispatch, in its own batch). The unsettled ones are the
+                rows in the dispatch table below that have done none of those three.
               </InfoNote>
             )}
           </div>

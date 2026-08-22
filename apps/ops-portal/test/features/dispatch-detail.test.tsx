@@ -444,7 +444,7 @@ describe('DispatchDetailPage: Change status', () => {
     cleanup()
   })
 
-  it('at QR generated, offers only the print vendor and says the whole batch moves', async () => {
+  it('at QR generated, offers the print vendor and says the whole batch moves', async () => {
     stubStaged('QR_GENERATED', NOT_SHIPPED)
     renderPage()
     await screen.findByText('Dispatch lifecycle')
@@ -453,11 +453,13 @@ describe('DispatchDetailPage: Change status', () => {
     })
 
     const { enabled, disabled } = await openStatusPicker()
-    // The only rung with a reachable writer from here.
-    expect(enabled).toEqual(['Sent to print vendor'])
+    // Two reachable writers now (22 Aug 2026): the batch send, and the manual
+    // dispatch-state correction that can record a vendor handover even before
+    // any AWB exists. Everything past the handover still needs the shipment.
+    expect(enabled).toEqual(['Sent to print vendor', 'Dispatched by vendor'])
     // The ladder still reads whole, rather than starting mid-way.
     expect(disabled).toContain('Received')
-    expect(disabled).toContain('Dispatched by vendor')
+    expect(disabled).toContain('Delivered')
     expect(screen.getByText(/sends the whole batch to the print vendor/i)).toBeTruthy()
   })
 
@@ -524,8 +526,10 @@ describe('DispatchDetailPage: Change status', () => {
   })
 
   it('a rung whose writer is unreachable says so instead of failing on submit', async () => {
-    // Sent to the vendor, no AWB yet: the courier rungs have no shipment to write
-    // to, and the batch has already been sent.
+    // Sent to the vendor, no AWB yet: the courier rungs past the handover have
+    // no shipment to write to. The handover itself is offerable since 22 Aug
+    // 2026 (the manual dispatch-state correction), which is exactly the
+    // return-sheet-never-came case this dispatch is in.
     stubStaged('SENT_TO_VENDOR', NOT_SHIPPED)
     renderPage()
     await screen.findByText('Dispatch lifecycle')
@@ -534,10 +538,29 @@ describe('DispatchDetailPage: Change status', () => {
     })
 
     const { enabled, disabled } = await openStatusPicker()
-    expect(enabled).toEqual([])
+    expect(enabled).toEqual(['Dispatched by vendor'])
     expect(disabled).toContain('Delivered')
-    // The reason is on the row, and the empty case explains itself.
+    // The reason is on the row for the rungs that stay locked.
     expect(screen.getAllByText(/needs the vendor awb/i).length).toBeGreaterThan(0)
+  })
+
+  it('saving the shipment-less handover posts the dispatch-state correction', async () => {
+    const calls = stubStaged('SENT_TO_VENDOR', NOT_SHIPPED)
+    renderPage()
+    await screen.findByText('Dispatch lifecycle')
+    await waitFor(() => {
+      expect(headerPill('Sent to print vendor')).toBeTruthy()
+    })
+    await userEvent.click(screen.getByRole('button', { name: /change status/i }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /^save$/i }))
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes(`/ops/dispatches/${DETAIL.dispatchId}/state`))).toBe(true)
+    })
+    const write = calls.find((c) => c.url.includes('/state'))!
+    const body = JSON.parse(String(write.init.body)) as Record<string, unknown>
+    expect(body.state).toBe('DISPATCHED_BY_VENDOR')
+    expect((write.init.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy()
   })
 })
 

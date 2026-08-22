@@ -38,6 +38,11 @@ export interface StatusUpdate {
   // external submission IS the origin. So the caller trace is used and chained
   // onto both the trail row and the emitted fact (S21).
   traceId: string
+  /**
+   * Operator login handle snapshot (LeanClaim.hdl), set only by the ops
+   * correction door. File and webhook doors have no human and leave it unset.
+   */
+  actorDisplay?: string | null
 }
 
 export type AdvanceOutcome = 'advanced' | 'trail_only' | 'deduped' | 'unknown_awb'
@@ -138,10 +143,10 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
     // correctly under the non-owner role.
     await tx.$executeRaw`
       INSERT INTO shpt_status_event
-        (shpt_id, program_id, status, courier_timestamp, status_source, source_ref, trace_id)
+        (shpt_id, program_id, status, courier_timestamp, status_source, source_ref, actor_display, trace_id)
       VALUES
         (${shptUuid}::uuid, ${programUuid}::uuid, ${u.status}, ${u.courierTimestamp},
-         ${u.source}, ${u.sourceRef}, ${u.traceId})
+         ${u.source}, ${u.sourceRef}, ${u.actorDisplay ?? null}, ${u.traceId})
     `
 
     // The ratified successor rule (D9). incomingIsLadder is true for the five
@@ -196,7 +201,16 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
     // The device trail records the COURIER's own instant, not ours: the
     // parcel's outcome and the devices' inherited outcome happened at the
     // same reported moment (S22's two clocks, same as shpt_status_event).
-    const unitLog = { statusSource: 'courier-file', occurredAt: u.courierTimestamp, traceId: u.traceId } as const
+    // statusSource stays 'courier-file' even for the ops correction door: the
+    // shpt_status_event row above already names OPS_MANUAL, and the unit moved
+    // because the PARCEL's outcome moved it. actorDisplay still travels so a
+    // manual correction's operator is visible on the device trail too.
+    const unitLog = {
+      statusSource: 'courier-file',
+      occurredAt: u.courierTimestamp,
+      traceId: u.traceId,
+      actorDisplay: u.actorDisplay ?? null,
+    } as const
     if (u.status === 'DELIVERED') await advanceUnitsForShipment(tx, shptUuid, 'DELIVERED', unitLog)
     else if (u.status === 'RETURNED') await advanceUnitsForShipment(tx, shptUuid, 'RETURNED', unitLog)
 

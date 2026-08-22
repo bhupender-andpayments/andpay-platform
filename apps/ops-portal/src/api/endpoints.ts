@@ -572,6 +572,12 @@ export interface BatchSettlement {
   total: number
   delivered: number
   returned: number
+  /**
+   * Dispatches settled by a DAMAGED device (22 Aug 2026 ruling): counted as
+   * settled for close, shown as their own bucket. Optional so an older server
+   * still parses.
+   */
+  damaged?: number
   pending: number
   settled: boolean
   /**
@@ -580,7 +586,7 @@ export interface BatchSettlement {
    * making an operator subtract one count from another. Optional so an older
    * server that predates the projection still parses.
    */
-  perDispatch?: Record<string, 'DELIVERED' | 'RETURNED' | 'PENDING'>
+  perDispatch?: Record<string, 'DELIVERED' | 'RETURNED' | 'DAMAGED' | 'PENDING'>
 }
 
 /** services/fulfillment/src/ops-read.ts BatchDetailView. */
@@ -773,7 +779,43 @@ export interface StatusTrailEntry {
   occurredAt: string
   statusSource: string
   actorId: string | null
+  /** Operator login handle snapshot (the JWT hdl), null on machine doors. */
+  actorDisplay: string | null
   recordedAt: string
+}
+
+/** One damage case's status history (22 Aug 2026), keyed by the replacement. */
+export interface CaseTrailEntry {
+  status: string
+  occurredAt: string
+  statusSource: string
+  actorId: string | null
+  actorDisplay: string | null
+  /** Present on Cancelled rows: the mandatory withdrawal reason. */
+  remarks: string | null
+  recordedAt: string
+}
+
+export function getCaseTrail(c: Client, asgnId: string) {
+  return c.request<CaseTrailEntry[]>({
+    method: 'GET',
+    path: `/ops/records/${encodeURIComponent(asgnId)}/case-trail`,
+  })
+}
+
+/**
+ * Manual dispatch_state correction (22 Aug 2026): forward-only along
+ * QR_GENERATED > SENT_TO_VENDOR > DISPATCHED_BY_VENDOR, for a move that
+ * physically happened and was never recorded. The server refuses backwards
+ * moves and rows batching has not QR'd.
+ */
+export function correctDispatchState(c: Client, asgnId: string, state: string, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; advanced: boolean }>({
+    method: 'POST',
+    path: `/ops/dispatches/${encodeURIComponent(asgnId)}/state`,
+    body: { state },
+    idempotencyKey,
+  })
 }
 
 export function getDeviceTrail(c: Client, unitId: string) {
@@ -2039,6 +2081,8 @@ export interface DeliveryTrailEntry {
   /** When the platform recorded it. */
   receivedAt: string
   overrideReason: string | null
+  /** Operator login handle snapshot, ops doors only; null on courier files. */
+  actorDisplay: string | null
 }
 
 // ActivationTrailEntry DELETED (ACTIVATION.md, 21 Aug 2026): activation has
@@ -2061,6 +2105,8 @@ export interface DispatchDetailView {
   activationStatus: string | null
   activationDate: string | null
   deliveryTrail: DeliveryTrailEntry[]
+  /** The parent this dispatch replaces, merged at the edge; null ordinarily. */
+  replacementOfAsgnId: string | null
   watermark: Watermark
 }
 

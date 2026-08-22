@@ -32,6 +32,7 @@ import {
 import { Card, CardBody, Button, ErrorNote, StatusPill, CodeChip, Spinner } from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
 import { buildRailFromTrail, deviceDisplayStatus } from '../../ui/statusRail.js'
+import { getDispatchDetail } from '../../api/endpoints.js'
 import type { StatusTrailEntry } from '../../api/endpoints.js'
 import { BackLink, FactRow, SectionHeading } from '../../ui/DetailFacts.js'
 import { fmtDateTime } from '../../ui/format.js'
@@ -193,6 +194,25 @@ export function DeviceDetailPage() {
     }
   }, [client, unitId, statusOpen])
 
+  // The replacement mark (22 Aug 2026, the badge sweep): a device printed for
+  // a replacement dispatch should say so here too. From the dispatch detail
+  // read, which the edge enriches with replacementOfAsgnId; silent on failure,
+  // a badge is a label, not the page.
+  const [replacesAsgnId, setReplacesAsgnId] = useState<string | null>(null)
+  useEffect(() => {
+    const asgnId = row?.asgnId ?? null
+    if (asgnId === null) return
+    let cancelled = false
+    getDispatchDetail(client, asgnId)
+      .then((d) => {
+        if (!cancelled) setReplacesAsgnId(d.replacementOfAsgnId)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [client, row?.asgnId])
+
   // Names for ids, silent on failure: a lookup that does not arrive costs a
   // label, not the page.
   useEffect(() => {
@@ -285,6 +305,14 @@ export function DeviceDetailPage() {
             delivered device, so it is stated in words below rather than
             dressed up as a status the platform does not store. */}
         <div className="ml-auto flex items-center gap-2">
+          {replacesAsgnId !== null && (
+            <span
+              className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+              title={`This device travels on a replacement dispatch. Replaces ${replacesAsgnId}`}
+            >
+              Replacement
+            </span>
+          )}
           {row.status === 'DELIVERED' && row.activatedAt === null && (
             <span className="text-[12px] text-muted-foreground">Not activated yet</span>
           )}

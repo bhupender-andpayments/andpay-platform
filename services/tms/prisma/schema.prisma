@@ -348,6 +348,10 @@ model DamageCaseStatusEvent {
   /// reason to cancel). Free text lives on the domain row, never on a fact or
   /// an audit record, the same posture as ops_remarks and batch.trigger_note.
   remarks      String?
+  /// Operator login handle snapshot (LeanClaim.hdl): C4 forbids resolving
+  /// actor_id across contexts at read time, so the display value travels with
+  /// the event. Null on fact-driven transitions. Display only.
+  actorDisplay String?  @map("actor_display")
   traceId      String   @map("trace_id")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 

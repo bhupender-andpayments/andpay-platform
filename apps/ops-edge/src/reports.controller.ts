@@ -28,6 +28,7 @@ import {
   readShipmentTrailOps,
   readUnitSimsBySerialsOps,
   listPoolEntries,
+  readReplacementMarksOps,
   type PoolEntryRow,
 } from '@andpay/fulfillment-service'
 import { OpsEdgeGuard } from './guard.js'
@@ -185,6 +186,25 @@ export class ReportsController {
     })
   }
 
+  /**
+   * Mark the rows that are REPLACEMENT dispatches (22 Aug 2026, the badge
+   * sweep). Same edge-composition rationale as mergeHoldState directly above:
+   * replacement identity is projected into fulfillment's pool row and the
+   * dispatches list is an analytics report, so without this merge the list
+   * could not tell a replacement from a fresh request. Absent rather than null
+   * on an ordinary row, the same CSV-noise rule as poolStatus.
+   */
+  private async mergeReplacementMarks(rows: ReportRow[]): Promise<ReportRow[]> {
+    const ids = rows.map((row) => (typeof row['dispatchId'] === 'string' ? row['dispatchId'] : '')).filter((s) => s !== '')
+    const marks = await readReplacementMarksOps(this.deps.fulfillmentDb, ids)
+    if (marks.size === 0) return rows
+    return rows.map((row) => {
+      const id = typeof row['dispatchId'] === 'string' ? row['dispatchId'] : ''
+      const parent = marks.get(id)
+      return parent === undefined ? row : { ...row, replacementOfAsgnId: parent }
+    })
+  }
+
   private async mergeActivationSims(rows: ReportRow[]): Promise<ReportRow[]> {
     const serials = new Set<string>()
     for (const row of rows) {
@@ -303,7 +323,11 @@ export class ReportsController {
     // analytics activationStatus/activatedAt fields fed by the unchanged
     // fct.tms.assignment.activated.v1 fact.
     res.setHeader('x-analytics-watermark', detail.watermark.asOf ?? 'none')
-    return { ...detail, deliveryTrail }
+    // The replacement mark, merged from fulfillment exactly as the list report
+    // is (mergeReplacementMarks): the detail page and the shipment page badge
+    // off this. Null on an ordinary dispatch.
+    const marks = await readReplacementMarksOps(this.deps.fulfillmentDb, [asgnId])
+    return { ...detail, deliveryTrail, replacementOfAsgnId: marks.get(asgnId) ?? null }
   }
 
   // GET /ops/reports/activation/batch/:btchId/xlsx: ONE batch's awaiting
@@ -435,6 +459,7 @@ export class ReportsController {
     // to find one dispatch, and a held one was invisible there (DAMAGE.md).
     if (name === 'dispatches') {
       result.rows = await this.mergeHoldState(result.rows)
+      result.rows = await this.mergeReplacementMarks(result.rows)
     }
 
     res.setHeader('x-analytics-watermark', result.watermark.asOf ?? 'none')

@@ -514,6 +514,11 @@ model ShptStatusEvent {
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   // Spec 10c: additive class-3 ops override reason (nullable, expand-contract).
   overrideReason   String?  @map("override_reason")
+  /// The operator's login handle, snapshotted at write time from the verified
+  /// JWT claim (LeanClaim.hdl). C4 forbids resolving actor UUIDs across
+  /// contexts at read time, so the display value travels with the event. Null
+  /// when a file or consumer wrote the row. Display only, never authorization.
+  actorDisplay     String?  @map("actor_display")
 
   @@index([shptId])
   @@map("shpt_status_event")
@@ -539,6 +544,8 @@ model PoolEntryStatusEvent {
   actorId      String?  @map("actor_id") @db.Uuid
   traceId      String   @map("trace_id")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Operator login handle snapshot (LeanClaim.hdl), see ShptStatusEvent.
+  actorDisplay String?  @map("actor_display")
 
   @@index([poolEntryId])
   @@map("pool_entry_status_event")
@@ -560,6 +567,8 @@ model UnitStatusEvent {
   actorId      String?  @map("actor_id") @db.Uuid
   traceId      String   @map("trace_id")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Operator login handle snapshot (LeanClaim.hdl), see ShptStatusEvent.
+  actorDisplay String?  @map("actor_display")
 
   @@index([unitId])
   @@map("unit_status_event")
@@ -579,6 +588,8 @@ model BatchStatusEvent {
   actorId      String?  @map("actor_id") @db.Uuid
   traceId      String   @map("trace_id")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Operator login handle snapshot (LeanClaim.hdl), see ShptStatusEvent.
+  actorDisplay String?  @map("actor_display")
 
   @@index([batchId])
   @@map("batch_status_event")

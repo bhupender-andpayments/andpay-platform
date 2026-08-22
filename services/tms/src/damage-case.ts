@@ -32,6 +32,14 @@ export type CaseStatus = (typeof CASE_STATUS_VALUES)[number]
  * whether that is a client error or a silent skip.
  */
 export function normalizeCaseStatus(raw: string): CaseStatus | undefined {
+  // Defensive on a non-string, found live 22 Aug 2026: the ops route reads
+  // `body.status` off an untyped JSON body, so a request that omits the field
+  // (or sends a number) reached `raw.trim()` and threw a TypeError, which the
+  // error filter could only map to a 500. The caller's intended answer for an
+  // unrecognised value is a 400, and "absent" is a kind of unrecognised. The
+  // route's declared body type is a compile-time claim about the wire, not a
+  // runtime guarantee.
+  if (typeof raw !== 'string') return undefined
   const norm = raw.trim().toLowerCase().replace(/\s+/g, '-')
   return CASE_STATUS_VALUES.find((v) => v.toLowerCase() === norm)
 }
@@ -79,14 +87,23 @@ export async function logCaseStatusWithinTx(
   tx: Tx,
   asgnUuid: string,
   programUuid: string,
-  args: { status: string; statusSource: string; actorId?: string | null; remarks?: string | null; traceId: string },
+  args: {
+    status: string
+    statusSource: string
+    actorId?: string | null
+    /** Operator login handle snapshot (LeanClaim.hdl), display only. */
+    actorDisplay?: string | null
+    remarks?: string | null
+    traceId: string
+  },
 ): Promise<void> {
   await tx.$executeRaw`
     INSERT INTO damage_case_status_event
-      (asgn_id, program_id, status, occurred_at, status_source, actor_id, remarks, trace_id)
+      (asgn_id, program_id, status, occurred_at, status_source, actor_id, actor_display, remarks, trace_id)
     VALUES (
       ${asgnUuid}::uuid, ${programUuid}::uuid, ${args.status}, now(),
-      ${args.statusSource}, ${args.actorId ?? null}::uuid, ${args.remarks ?? null}, ${args.traceId}
+      ${args.statusSource}, ${args.actorId ?? null}::uuid, ${args.actorDisplay ?? null},
+      ${args.remarks ?? null}, ${args.traceId}
     )
   `
 }
@@ -111,7 +128,7 @@ export async function advanceCaseStatusWithinTx(
   tx: Tx,
   asgnUuid: string,
   target: CaseStatus,
-  log?: { statusSource: string; actorId?: string | null; traceId: string },
+  log?: { statusSource: string; actorId?: string | null; actorDisplay?: string | null; traceId: string },
 ): Promise<boolean> {
   // Only the ranked statuses can be advanced INTO. Cancelled has no rank (see
   // its note above), so this returns false rather than silently doing nothing:
@@ -138,6 +155,7 @@ export async function advanceCaseStatusWithinTx(
       status: target,
       statusSource: log.statusSource,
       actorId: log.actorId ?? null,
+      actorDisplay: log.actorDisplay ?? null,
       traceId: log.traceId,
     })
   }

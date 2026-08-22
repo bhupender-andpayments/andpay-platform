@@ -46,6 +46,8 @@ import {
   readQuarantineQueue,
   listRequestLegsOps,
   readReplacementChainOps,
+  readCaseTrailOps,
+  type CaseTrailRow,
   listDamageReasons,
   readDamageCases,
   listMerchants,
@@ -314,6 +316,17 @@ export class OpsReadController {
   @HttpCode(200)
   async batchTrail(@Param('btchId') btchId: string): Promise<StatusTrailRow[]> {
     return readBatchTrailOps(this.deps.fulfillmentDb, btchId)
+  }
+
+  // The damage case's own trail (22 Aug 2026), tms-only, keyed like every
+  // other case surface by the REPLACEMENT's asgn id. Single-context, so it
+  // lives here beside its three siblings above rather than on the composing
+  // reports controller. An empty array means a case born before the trail
+  // existed, which the page renders as "no recorded history", not an error.
+  @Get('records/:asgnId/case-trail')
+  @HttpCode(200)
+  async caseTrail(@Param('asgnId') asgnId: string): Promise<CaseTrailRow[]> {
+    return readCaseTrailOps(this.deps.tmsDb, asgnId)
   }
 
   // 404 on an unknown batch rather than an empty-but-valid-looking detail, so

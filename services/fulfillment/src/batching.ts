@@ -209,6 +209,8 @@ export interface TriggerBatchOpts {
   firingTimerId?: string
   /** The class-3 actor for a MANUAL trigger (Task 10); recorded on batch.triggered_by_actor. */
   actorUuid?: string
+  /** Operator login handle snapshot for the trails (manual trigger only). */
+  actorDisplay?: string | null
   /**
    * The operator's free-text reason for a MANUAL trigger (BRD 5.3.4 force
    * dispatch); recorded on batch.trigger_note. Optional on this shape and
@@ -386,6 +388,7 @@ export async function triggerBatchWithinTx(
           occurredAt: batchedAt,
           statusSource: trailSource,
           actorId: opts.actorUuid ?? null,
+          actorDisplay: opts.actorDisplay ?? null,
           traceId: oldestTraceId,
         })
         // Each claimed entry's own move out of POOLED. Logged per entry rather
@@ -398,6 +401,7 @@ export async function triggerBatchWithinTx(
             occurredAt: batchedAt,
             statusSource: trailSource,
             actorId: opts.actorUuid ?? null,
+            actorDisplay: opts.actorDisplay ?? null,
             traceId: c.trace_id,
           })
         }
@@ -701,6 +705,7 @@ export async function manualTrigger(
   const res = await triggerBatch(db, tenantWire, programWire, 'MANUAL', {
     epoch: opsToken,
     actorUuid: actor.operatorId,
+    actorDisplay: actor.actorDisplay ?? null,
     traceId,
   })
   return res ? { btchId: res.btchId } : null
@@ -779,6 +784,7 @@ export async function holdEntryWithinTx(
       occurredAt: new Date(),
       statusSource: 'batching:hold',
       actorId: actor.operatorId,
+      actorDisplay: actor.actorDisplay ?? null,
       traceId: rows[0]!.trace_id,
     })
   }

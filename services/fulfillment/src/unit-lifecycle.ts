@@ -119,6 +119,8 @@ export function canAdvanceUnitStatus(from: string, to: AnyUnitStatus): boolean {
 export interface UnitStatusLogOpts {
   statusSource?: StatusLogSource
   actorId?: string | null
+  /** Operator login handle snapshot (LeanClaim.hdl), display only. */
+  actorDisplay?: string | null
   traceId?: string
   /** Reported time where a reporter exists (a courier file's own stamp). */
   occurredAt?: Date
@@ -148,6 +150,7 @@ async function appendUnitTrail(
       occurredAt: log?.occurredAt ?? new Date(),
       statusSource: log?.statusSource ?? 'unspecified',
       actorId: log?.actorId ?? null,
+      actorDisplay: log?.actorDisplay ?? null,
       traceId: log?.traceId ?? 'unit-lifecycle',
     },
   )

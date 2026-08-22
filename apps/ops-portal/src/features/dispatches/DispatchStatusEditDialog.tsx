@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { correctStatus, sendBatchToVendor } from '../../api/endpoints.js'
+import { correctStatus, sendBatchToVendor, correctDispatchState } from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { sendToVendorErrorMessage } from '../fulfillment/sendToVendorError.js'
 import { useToast } from '../../ui/Toast.js'
@@ -108,7 +108,14 @@ export function DispatchStatusEditDialog({
       if (key !== 'SENT_TO_VENDOR') return WHY_LOCKED.upstream
       return batchId === null ? WHY_LOCKED.needsBatch : null
     }
-    if (shptId === null) return WHY_LOCKED.needsAwb
+    if (shptId === null) {
+      // DISPATCHED_BY_VENDOR gained its own writer on 22 Aug 2026
+      // (POST /ops/dispatches/:asgnId/state): a vendor handover done off a
+      // phone call is real even when the return sheet never arrived, so it is
+      // offered without an AWB. Everything past it is still the courier's to
+      // say, and a courier needs a shipment.
+      return key === 'DISPATCHED_BY_VENDOR' ? null : WHY_LOCKED.needsAwb
+    }
     // Terminal stops carry no rung of their own and are reachable from any
     // in-flight position, which is the domain rule (D9, courier-status.ts).
     return idx <= courierRank ? WHY_LOCKED.upstream : null
@@ -156,6 +163,10 @@ export function DispatchStatusEditDialog({
       if (newStatus === 'SENT_TO_VENDOR') {
         if (batchId === null) return
         await sendBatchToVendor(client, batchId, newIdempotencyKey())
+      } else if (newStatus === 'DISPATCHED_BY_VENDOR' && shptId === null) {
+        // The dispatch-axis correction (22 Aug 2026): records the handover on
+        // pending_pool_entry.dispatch_state, forward-only, no shipment needed.
+        await correctDispatchState(client, asgnId, 'DISPATCHED_BY_VENDOR', newIdempotencyKey())
       } else {
         if (shptId === null) return
         // The instant is stamped at submit, never typed (2026-08-17 ruling, the

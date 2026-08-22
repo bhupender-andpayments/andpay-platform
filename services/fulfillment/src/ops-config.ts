@@ -150,6 +150,13 @@ const OPS_PERMISSIONS = [
   // from the device page. Same tier as every other ops mutation here; the
   // forward-only guard (unit-lifecycle.ts) is what limits this, not the role.
   'ops:unit-status-correction',
+  // 22 Aug 2026 (STAGES end-to-end): the dispatch_state sibling of the unit
+  // correction above, for when a vendor's return sheet or the send step never
+  // recorded a move that physically happened. Same tier, and the same shape of
+  // limit: the forward-only rank guard in correctDispatchState is what bounds
+  // it (QR_GENERATED > SENT_TO_VENDOR > DISPATCHED_BY_VENDOR, never backwards,
+  // never onto a row the batching step has not QR'd), not the role.
+  'ops:correct-dispatch-state',
   // The bulk sheet-upload sibling of the above: many devices, one file. Same
   // tier, same guard, per-row tolerant like every other upload in this bundle.
   'ops:upload-unit-status',

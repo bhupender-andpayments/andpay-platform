@@ -454,7 +454,24 @@ export function DispatchesPage() {
     {
       key: 'merchantDisplay',
       header: 'Merchant',
-      cell: (r) => <span className="font-medium text-foreground">{str(r, 'merchantDisplay') ?? '-'}</span>,
+      cell: (r) => (
+        <span className="flex items-center gap-2">
+          <span className="font-medium text-foreground">{str(r, 'merchantDisplay') ?? '-'}</span>
+          {/* A replacement dispatch reads as one at the list grain too (22 Aug
+              2026, the badge sweep): the same badge the pool, batch and
+              requests pages use, merged onto the report row at the edge. The
+              parent's id rides in the title, the same free-of-column rule the
+              Held badge follows. */}
+          {typeof str(r, 'replacementOfAsgnId') === 'string' && (
+            <span
+              className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+              title={`Replaces ${str(r, 'replacementOfAsgnId') ?? ''}`}
+            >
+              Replacement
+            </span>
+          )}
+        </span>
+      ),
       sortValue: (r) => str(r, 'merchantDisplay') ?? '',
     },
     {

@@ -190,6 +190,9 @@ export function ShipmentDetailPage() {
       at: e.courierTimestamp,
       atLabel: 'reported',
       source: `${e.statusSource}, recorded ${fmtDateTime(e.receivedAt)}`,
+      // WHO, when a human did it (22 Aug 2026): the trail's hdl snapshot. A
+      // courier file's row carries none and the line stays channel-only.
+      actor: e.actorDisplay,
       note: e.overrideReason === null ? undefined : 'operator override',
       sub: e.overrideReason === null ? undefined : `Override: ${e.overrideReason}`,
     }))
@@ -241,7 +244,18 @@ export function ShipmentDetailPage() {
             One AWB, one parcel. <CodeChip>{shipment.id}</CodeChip>
           </p>
         </div>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {/* The same replacement badge the list pages wear (22 Aug 2026): a
+              parcel carrying a replacement should say so wherever it appears,
+              and the joined dispatch is already fetched for the trail below. */}
+          {dispatch?.replacementOfAsgnId != null && (
+            <span
+              className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+              title={`Replaces ${dispatch.replacementOfAsgnId}`}
+            >
+              Replacement
+            </span>
+          )}
           <StatusPill value={shipment.status} />
         </div>
       </div>

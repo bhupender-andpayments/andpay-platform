@@ -18,7 +18,7 @@ import {
   type RequestRowRejectReason,
   type DuplicateVpaOriginal,
 } from './ingest.js'
-import { CASE_STATUS_VALUES, normalizeCaseStatus } from './damage-case.js'
+import { CASE_STATUS_VALUES, normalizeCaseStatus, logCaseStatusWithinTx } from './damage-case.js'
 import { TMS_DEACTIVATED_TOPIC, deactivatedFactEnvelope } from './events.js'
 
 // The cap on an operator's case note, matching the trigger-note and hold-reason
@@ -831,6 +831,7 @@ export async function updateDamageCaseStatusOps(
     opsRemarks?: string
     clientKey: string
     actorId: string
+    actorDisplay?: string | null
     traceId: string
   },
 ): Promise<{ deduped: boolean }> {
@@ -845,13 +846,14 @@ export async function updateDamageCaseStatusOps(
 
   const ran = await db.$transaction(async (tx: Tx) => {
     await enterWriteRole(tx, 'tms_write')
-    const rows = await tx.$queryRaw<{ program_id: string }[]>`
-      SELECT program_id FROM assignment WHERE id = ${asgnUuid}::uuid AND replacement_of IS NOT NULL
+    const rows = await tx.$queryRaw<{ program_id: string; case_status: string | null }[]>`
+      SELECT program_id, case_status FROM assignment WHERE id = ${asgnUuid}::uuid AND replacement_of IS NOT NULL
     `
     if (rows.length !== 1) {
       throw new OpsClientError('invalid', 'no such damage case (target must be a replacement assignment)')
     }
     const programId = rows[0]!.program_id
+    const priorStatus = rows[0]!.case_status
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:update-damage-case'), async () => {
       // enterWriteScope is deliberately INSIDE onceWithin (holdRecord scopes
       // before it): the onceWithin inbox INSERT runs with app.program_id unset,
@@ -870,6 +872,20 @@ export async function updateDamageCaseStatusOps(
             updated_at = now()
         WHERE id = ${asgnUuid}::uuid
       `
+      // The trail row this writer was MISSING until 22 Aug 2026: every
+      // automatic transition logged itself, and the one door where a human
+      // moves the case recorded nothing, so a manually-closed case had a trail
+      // that stopped at In-Progress. Logged only when the status actually
+      // changed: a remarks-only resend of the same status is not a transition.
+      if (priorStatus !== target) {
+        await logCaseStatusWithinTx(tx, asgnUuid, programId, {
+          status: target,
+          statusSource: 'ops:update-damage-case',
+          actorId: args.actorId,
+          actorDisplay: args.actorDisplay ?? null,
+          traceId: args.traceId,
+        })
+      }
       await enqueue(
         tx,
         buildAuthzAuditEvent(

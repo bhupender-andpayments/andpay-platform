@@ -44,6 +44,7 @@ export interface FlagDamageArgs {
   stickerCount?: number // COLLATERAL only, int 0..99
   clientKey: string // Idempotency-Key
   actorId: string // claim.sub, never a body field
+  actorDisplay?: string | null // claim.hdl snapshot, display only
   traceId: string
 }
 
@@ -332,6 +333,19 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
       }
       if (won.length === 0) return // the child already exists (idempotent net)
 
+      // The case trail's BIRTH row (22 Aug 2026): the INSERT above sets
+      // case_status='Open' and, until now, nothing recorded that as an event,
+      // so a fresh case's trail began at In-Progress. Same tx, same
+      // RETURNING-gated shape as every other trail writer: an idempotent
+      // replay returns above and appends nothing.
+      await logCaseStatusWithinTx(tx, childUuid, parent.program_id, {
+        status: 'Open',
+        statusSource: 'ops:flag-damage',
+        actorId: args.actorId,
+        actorDisplay: args.actorDisplay ?? null,
+        traceId: args.traceId,
+      })
+
       const childId = fromUuid('asgn', childUuid)
       // The linkage fact. damageReason carries the master CODE (DP-5) and
       // bankRemarks is honestly empty: no bank reported this damage, and the
@@ -435,6 +449,7 @@ export async function cancelReplacementOps(
     remarks: string
     clientKey: string
     actorId: string
+    actorDisplay?: string | null
     traceId: string
   },
 ): Promise<{ cancelled: boolean; parentAsgnId: string }> {
@@ -505,6 +520,7 @@ export async function cancelReplacementOps(
         status: 'Cancelled',
         statusSource: 'ops:cancel-damage',
         actorId: args.actorId,
+        actorDisplay: args.actorDisplay ?? null,
         remarks,
         traceId: args.traceId,
       })
@@ -512,11 +528,18 @@ export async function cancelReplacementOps(
       // 2. The PARENT goes back to being an ordinary dispatch, so it is
       // flaggable again (the tip-only rule keys off having a replacement child,
       // and this one no longer counts once the fact lands and its pool row is
-      // withdrawn). demand_state returns to the pooled state it held before the
-      // flag, which is where a delivered dispatch sits.
+      // withdrawn). demand_state returns to the state it held BEFORE the flag,
+      // and that state is DERIVED, not assumed (22 Aug 2026, closing the
+      // escalation doc's overwrite bug for the cancel path): the flag's own
+      // overwrite is unconditional, so an ACTIVATED parent that was flagged
+      // and then un-flagged used to land on 'pooled-for-fulfillment' and read
+      // as never activated, contradicting its own activated_at. activated_at
+      // survives the flag untouched, so it is the honest witness of which
+      // state to restore.
       await tx.$executeRaw`
         UPDATE assignment
-        SET demand_state = 'pooled-for-fulfillment', updated_at = now()
+        SET demand_state = CASE WHEN activated_at IS NOT NULL THEN 'activated' ELSE 'pooled-for-fulfillment' END,
+            updated_at = now()
         WHERE id = ${toUuid(parentAsgnId)}::uuid AND demand_state = 'replacement-raised'
       `
 

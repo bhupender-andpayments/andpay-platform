@@ -19,7 +19,14 @@ const src = join(import.meta.dirname, '..', '..', 'src')
 // The single sanctioned reader, relative to src.
 const RESOLVER = 'lib/env.ts'
 
-const ENV_BASE_READ = /import\.meta\.env\.VITE_(OPS|AUTH)_BASE/
+// The NAME of the variable, not the `import.meta.env.` property access it
+// used to be (22 Aug 2026): env.ts now reads through a locally-typed carrier
+// (`viteEnv()['VITE_OPS_BASE']`) because the root parity tests import this
+// module transitively and the root tsconfig has no vite ambient types, so the
+// property access form failed the whole gate's typecheck on a clean install.
+// Matching the bare name is also the STRONGER guard: any mention of these
+// variables in code, however accessed, marks the file as a reader.
+const ENV_BASE_READ = /VITE_(OPS|AUTH)_BASE/
 
 // Strip comments BEFORE matching. This guard failed on its own first run
 // against clean code, because env.ts QUOTES the broken expression in the
