@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Boxes, Check, CheckCircle2, Copy } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
-import { getDevices, deactivateAssignment, markActivatedBulk, type UnitInventoryRow } from '../../api/endpoints.js'
+import { getDevices, markActivatedBulk, type UnitInventoryRow } from '../../api/endpoints.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { BackLink } from '../../ui/DetailFacts.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
@@ -31,11 +31,10 @@ export function ActivationBatchDevicesPage() {
   const navigate = useNavigate()
   const { btchId } = useParams<{ btchId: string }>()
 
-  const [devices, setDevices] = useState<UnitInventoryRow[]>([])
+  const [rawDevices, setRawDevices] = useState<UnitInventoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const [busyAsgnId, setBusyAsgnId] = useState<string | null>(null)
 
   // THE MULTISELECT (activation, remaining small item, 22 Aug 2026). Keyed by
   // ASGN ID, not device id: activation is written per dispatch
@@ -52,46 +51,77 @@ export function ActivationBatchDevicesPage() {
 
 
 
-  const load = useCallback(async (): Promise<void> => {
-    if (btchId === undefined) return
-    setLoading(true)
-    setError(null)
-    try {
-      const rows = await getDevices(client)
-      setDevices(Array.isArray(rows) ? rows.filter((d) => d.batch === btchId) : [])
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load this batch\'s devices.')
-    } finally {
-      setLoading(false)
-    }
-  }, [client, btchId])
+  /**
+   * ACTIVATION IS WRITTEN ON tms.assignment; this list renders
+   * fulfillment.unit.activated_at, which follows via the activation fact and
+   * the fulfillment consumer. So a re-read taken the instant the write returns
+   * shows the OLD value, and the Activation column sat on "not activated" until
+   * the operator reloaded the page by hand (reported 23 Aug 2026).
+   *
+   * The fix is not a longer wait. TMS owns activation, so the bulk response
+   * already names exactly which dispatches flipped: that IS the new state, and
+   * it is applied to the rows immediately through `locallyActivated` below. The
+   * background pass then re-reads until the projection agrees, at which point
+   * the real row replaces the local one and the overlay entry is dropped.
+   *
+   * The overlay only ever reads FORWARD, never back: a fetch that still says
+   * not-activated is a lagging copy, so it prunes nothing. That asymmetry is
+   * the whole reason this is safe, and it is why the merge lives here rather
+   * than in a plain `setState` after the write.
+   */
+  const [locallyActivated, setLocallyActivated] = useState<ReadonlyMap<string, string>>(new Map())
+
+  const load = useCallback(
+    async (quiet = false): Promise<void> => {
+      if (btchId === undefined) return
+      // A background pass must not flash the grid's loading state.
+      if (!quiet) setLoading(true)
+      setError(null)
+      try {
+        const rows = await getDevices(client)
+        const mine = Array.isArray(rows) ? rows.filter((d) => d.batch === btchId) : []
+        setLocallyActivated((prev) => {
+          if (prev.size === 0) return prev
+          const next = new Map(prev)
+          for (const d of mine) {
+            if (d.activatedAt !== null && d.asgnId !== null) next.delete(d.asgnId)
+          }
+          return next.size === prev.size ? prev : next
+        })
+        setRawDevices(mine)
+      } catch (err) {
+        if (!quiet) setError(err instanceof Error ? err.message : 'Could not load this batch\'s devices.')
+      } finally {
+        if (!quiet) setLoading(false)
+      }
+    },
+    [client, btchId],
+  )
 
   useEffect(() => {
     void load()
   }, [load])
 
-  /**
-   * Withdraw an activation (ACTIVATION.md). Reloads rather than patching the row
-   * locally: clearing the assignment also clears the DEVICE, via
-   * fct.tms.assignment.deactivated.v1 and the fulfillment projector, and that
-   * round trip is what this list is showing. Patching state here would claim the
-   * device was cleared before the consumer had done it.
-   */
-  const deactivate = useCallback(
-    async (asgnId: string): Promise<void> => {
-      setBusyAsgnId(asgnId)
-      setError(null)
-      try {
-        await deactivateAssignment(client, asgnId, newIdempotencyKey())
-        await load()
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not undo this activation.')
-      } finally {
-        setBusyAsgnId(null)
-      }
-    },
-    [client, load],
+  /** The rows as the operator should see them: projected, plus what we just wrote. */
+  const devices = useMemo(
+    () =>
+      rawDevices.map((d) => {
+        if (d.activatedAt !== null || d.asgnId === null) return d
+        const at = locallyActivated.get(d.asgnId)
+        return at === undefined ? d : { ...d, activatedAt: at }
+      }),
+    [rawDevices, locallyActivated],
   )
+
+  // Same guard as the device page's toggle: the convergence pass outlives a
+  // fast navigation away, so it never writes into an unmounted component.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
 
   // Selectable means activatable: a serialized soundbox device (paper never
   // activates, W-5), paired to a dispatch, not activated already. An
@@ -131,11 +161,26 @@ export function ActivationBatchDevicesPage() {
     setActivateError(null)
     try {
       const { results } = await markActivatedBulk(client, [...selected], newIdempotencyKey())
-      const activated = results.filter((r) => r.activated).length
-      setActivatedResult({ activated })
+      const flipped = results.filter((r) => r.activated)
+      // Applied BEFORE any re-read, so the column moves with the click. The
+      // instant is the local one purely so the column can sort; nothing on this
+      // page prints it, and the projected value replaces it on convergence.
+      const at = new Date().toISOString()
+      setLocallyActivated((prev) => {
+        const next = new Map(prev)
+        for (const r of flipped) next.set(r.dispatchId, at)
+        return next
+      })
+      setActivatedResult({ activated: flipped.length })
       setSelected(new Set())
       setConfirmingActivate(false)
-      await load()
+      void (async () => {
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+          if (!mounted.current) return
+          await load(true)
+        }
+      })()
     } catch (err) {
       setActivateError(err instanceof Error ? err.message : 'Failed to activate the selected devices.')
     } finally {
@@ -210,29 +255,16 @@ export function ActivationBatchDevicesPage() {
         r.activatedAt === null ? (
           <span className="text-muted-foreground">not activated</span>
         ) : (
-          <span className="flex items-center gap-2">
-            <StatusPill value="ACTIVATED" />
-            {/* UNDO, on the value it undoes (ACTIVATION.md, 21 Aug 2026).
-                Activation is a toggle now rather than a rung on a forward-only
-                ladder, so withdrawing it is an ordinary correction and belongs
-                next to the thing it corrects, exactly where the device page
-                puts "Change status".
-
-                Acts on the DISPATCH, because that is the grain activation has
-                always been written at (the CWD confirms a merchant's device
-                against its assignment). Hidden when the device is not paired to
-                one, since there is then nothing to address. */}
-            {r.asgnId !== null && (
-              <button
-                type="button"
-                className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50"
-                disabled={busyAsgnId !== null}
-                onClick={() => void deactivate(r.asgnId!)}
-              >
-                {busyAsgnId === r.asgnId ? 'Undoing...' : 'Undo'}
-              </button>
-            )}
-          </span>
+          // NO UNDO HERE ANY MORE (23 Aug 2026, at the user's direction).
+          // The one that lived here had two real defects: its click also fired
+          // the row's own navigation (no stopPropagation), so the operator was
+          // thrown onto the device page mid-write; and its immediate reload
+          // re-read a fulfillment projection the TMS deactivation fact had not
+          // reached yet, so the row read as if nothing happened. Deactivation
+          // now lives on the device's own page, as the toggle beside the
+          // activation pill, with a confirm and a read that waits for the
+          // projection to catch up.
+          <StatusPill value="ACTIVATED" />
         ),
       sortValue: (r) => (r.activatedAt === null ? 0 : new Date(r.activatedAt).getTime()),
     },
@@ -278,7 +310,14 @@ export function ActivationBatchDevicesPage() {
       <Card>
         <CardHeader
           title="Devices"
-          subtitle="Click a device to open it in Inventory. Check one or more to activate."
+          // BOTH NUMBERS, on purpose (23 Aug 2026, at the user's correction).
+          // The Activation list counts AWAITING soundboxes; this page lists
+          // every device the batch ever shipped, activated ones included. The
+          // two totals legitimately differ, and a page that shows only its own
+          // total reads as disagreeing with the one the operator just left.
+          subtitle={`${String(devices.length)} device${devices.length === 1 ? '' : 's'} in this batch, ${String(
+            activatableAsgnIds.length,
+          )} awaiting activation. Click a device to open it in Inventory. Check one or more to activate.`}
           actions={
             someSelected ? (
               <span className="flex items-center gap-3">
@@ -323,7 +362,7 @@ export function ActivationBatchDevicesPage() {
             }
           }}
           title={`Activate ${countLabel(selected.size, 'dispatch', 'dispatches')}?`}
-          description="Records that the CWD confirmed these devices and their SIMs. This does not touch delivery or courier status, and can be undone from this page afterwards with Undo."
+          description="Records that the CWD confirmed these devices and their SIMs. This does not touch delivery or courier status. To withdraw one later, open that device's own page and use Deactivate."
           confirmLabel="Activate"
           busy={activating}
           error={activateError}

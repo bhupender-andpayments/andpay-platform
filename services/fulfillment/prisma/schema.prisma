@@ -243,6 +243,11 @@ model PendingPoolEntry {
   /// browser. Null on an original.
   replacementOf       String?  @map("replacement_of") @db.Uuid
 
+  /// A PARTIAL index on replacement_of (WHERE replacement_of IS NOT NULL) backs
+  /// the forward "which dispatch replaced this one" lookup, added 23 Aug 2026 in
+  /// migration 20260823060000_pool_entry_replacement_of_index. Prisma cannot
+  /// express a partial index, so it is migration-only and deliberately absent
+  /// here, exactly like assignment_one_live_case in the tms schema.
   @@map("pending_pool_entry")
 }
 

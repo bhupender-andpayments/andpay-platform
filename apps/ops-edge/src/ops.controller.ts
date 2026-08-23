@@ -828,7 +828,7 @@ export class OpsController {
     @Req() req: EdgeRequest,
     @Param('id') id: string,
     @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ delivered: number; skipped: number; failed: number }> {
+  ): Promise<{ delivered: number; skipped: number; failed: number; firstError?: string }> {
     const g = await this.gate(req, 'ops:status-correction', idem, [id])
     return bulkDeliverBatch(this.deps.fulfillmentDb, {
       batchId: id,
@@ -1275,9 +1275,9 @@ export class OpsController {
         actorId: g.actorId,
         traceId: g.traceId,
       })
-      // `activated: false` is the already-activated case: the business-key dedup
-      // refused a second mark. Not an error and not a success, so it is reported
-      // as neither.
+      // `activated: false` is the already-activated case: the write's own
+      // activated_at IS NULL guard flipped nothing. Not an error and not a
+      // success, so it is reported as neither.
       results.push({ dispatchId, activated: r.activated, reason: r.activated ? null : 'already-activated' })
     }
     return results
@@ -1416,9 +1416,13 @@ export class OpsController {
    * Close a batch whose dispatches have all settled (D5).
    *
    * No body: the operator supplies no facts, the domain checks them. A refusal
-   * comes back as a 409 whose message carries the settlement breakdown, so the
-   * portal can say what the batch is still waiting for rather than only that it
-   * cannot close.
+   * is a plain 409. The domain's message does name the pending count, but
+   * OpsErrorFilter deliberately never forwards messages to the wire (S4
+   * posture), so the portal cannot and does not read it from here: the close
+   * dialog computes the same breakdown from readBatchDetail's settlement and
+   * disables its confirm until settled. This comment previously claimed the
+   * 409 carried the breakdown; it never did on the wire (corrected 23 Aug
+   * 2026).
    */
   @Post('batches/:btchId/close')
   @HttpCode(200)

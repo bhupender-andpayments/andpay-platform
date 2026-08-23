@@ -421,20 +421,20 @@ describe('DispatchDetailPage: the Damage card only exists once the parcel has sh
 // uses for the rungs a device has already passed.
 // ---------------------------------------------------------------------- //
 
-/** The labels the open picker offers, split by whether they can be chosen. */
-async function openStatusPicker(): Promise<{ enabled: string[]; disabled: string[] }> {
-  await userEvent.click(await screen.findByRole('button', { name: /change status/i }))
-  await userEvent.click(screen.getByLabelText(/new status/i))
-  const listbox = await screen.findByRole('listbox')
-  const rows = within(listbox).getAllByRole('option')
-  const label = (o: HTMLElement) => o.querySelector('span')?.textContent?.trim() ?? ''
-  return {
-    enabled: rows.filter((o) => o.getAttribute('aria-disabled') !== 'true').map(label),
-    disabled: rows.filter((o) => o.getAttribute('aria-disabled') === 'true').map(label),
-  }
-}
-
-describe('DispatchDetailPage: Change status', () => {
+// THE PAGE HAS NO STATUS CONTROL, as of 23 Aug 2026 (at the user's direction).
+//
+// This block replaces one that spent the day narrowing a Change status dialog:
+// first the courier rungs came off it, then SENT_TO_VENDOR, then it was
+// disabled unless a dispatch sat at exactly SENT_TO_VENDOR and unheld. The
+// conclusion the narrowing kept pointing at is that a DISPATCH HAS NO COURIER
+// WRITER OF ITS OWN. One parcel carries several dispatches, and the shipment
+// moves all of them (and their devices) together; a per-dispatch control could
+// only ever mark one leg delivered while its parcel-mates disagreed.
+//
+// So these are absence guards. The button has been placed, re-placed and
+// re-scoped four times, so its return should fail a test rather than reach a
+// demo.
+describe('DispatchDetailPage: the lifecycle rail is a READ', () => {
   beforeEach(() => {
     clearAccessToken()
     setAccessToken('tok-1')
@@ -444,123 +444,66 @@ describe('DispatchDetailPage: Change status', () => {
     cleanup()
   })
 
-  it('at QR generated, offers the print vendor and says the whole batch moves', async () => {
-    stubStaged('QR_GENERATED', NOT_SHIPPED)
-    renderPage()
-    await screen.findByText('Dispatch lifecycle')
-    await waitFor(() => {
-      expect(headerPill('QR generated')).toBeTruthy()
+  // Every stage the old control cared about, including the one window it was
+  // ever enabled in (SENT_TO_VENDOR, unheld) and the held case.
+  for (const [name, state, overrides] of [
+    ['at QR generated', 'QR_GENERATED', NOT_SHIPPED],
+    ['at sent to print vendor', 'SENT_TO_VENDOR', NOT_SHIPPED],
+    ['once the courier has the parcel', 'DISPATCHED_BY_VENDOR', {}],
+  ] as const) {
+    it(`offers no status control ${name}`, async () => {
+      stubStaged(state, overrides)
+      renderPage()
+      await screen.findByText('Dispatch lifecycle')
+
+      expect(screen.queryByRole('button', { name: /change status/i })).toBeNull()
+      // Nor the courier control that was removed before it (decision D11).
+      expect(screen.queryByRole('button', { name: /record a courier update/i })).toBeNull()
+      expect(screen.queryByRole('dialog')).toBeNull()
     })
+  }
 
-    const { enabled, disabled } = await openStatusPicker()
-    // Two reachable writers now (22 Aug 2026): the batch send, and the manual
-    // dispatch-state correction that can record a vendor handover even before
-    // any AWB exists. Everything past the handover still needs the shipment.
-    expect(enabled).toEqual(['Sent to print vendor', 'Dispatched by vendor'])
-    // The ladder still reads whole, rather than starting mid-way.
-    expect(disabled).toContain('Received')
-    expect(disabled).toContain('Delivered')
-    expect(screen.getByText(/sends the whole batch to the print vendor/i)).toBeTruthy()
-  })
-
-  it('saving that choice posts the batch send-to-vendor action', async () => {
-    const calls = stubStaged('QR_GENERATED', NOT_SHIPPED)
-    renderPage()
-    await screen.findByText('Dispatch lifecycle')
-    await waitFor(() => {
-      expect(headerPill('QR generated')).toBeTruthy()
-    })
-
-    await userEvent.click(screen.getByRole('button', { name: /change status/i }))
-    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
-
-    await waitFor(() => {
-      expect(calls.some((c) => c.url.includes('/ops/batches/btch_1/send-to-vendor'))).toBe(true)
-    })
-    const write = calls.find((c) => c.url.includes('/send-to-vendor'))!
-    expect((write.init.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy()
-  })
-
-  it('once a parcel exists, the courier rungs open and Save corrects the SHIPMENT', async () => {
-    // DETAIL is IN_TRANSIT with a shipment, so Delivered is the next rung and the
-    // two off-ladder stops are reachable from an in-flight parcel (D9).
-    const calls = stubStaged('DISPATCHED_BY_VENDOR', {})
-    renderPage()
-    await screen.findByText('Dispatch lifecycle')
-
-    const { enabled } = await openStatusPicker()
-    expect(enabled).toEqual(['Delivered', 'Failed attempt', 'Returned to origin'])
-
-    await userEvent.keyboard('{Escape}')
-    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
-
-    await waitFor(() => {
-      expect(calls.some((c) => c.url.includes('/ops/shipments/shpt_1/correct'))).toBe(true)
-    })
-    const write = calls.find((c) => c.url.includes('/correct'))!
-    const body = JSON.parse(String(write.init.body)) as Record<string, unknown>
-    // The status chosen, and an instant stamped here rather than typed.
-    expect(body.status).toBe('DELIVERED')
-    expect(typeof body.courierTimestamp).toBe('string')
-    expect((write.init.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy()
-  })
-
-  // 19 Aug 2026: this page offers ONE status control, and the courier axis is
-  // reached by clicking the AWB. Record courier update was here too (decision
-  // D11), which meant one page wrote the same courier status from two controls,
-  // the second an unlabelled pencil in the Fulfilment card. Asserted because the
-  // control has already been placed and re-placed twice, so a third attempt
-  // should fail a test rather than reach a demo.
-  it('offers no second courier-update control beside Change status', async () => {
+  it('points at the AWB instead, which is the surface that owns delivery', async () => {
     stubStaged('DISPATCHED_BY_VENDOR', {})
     renderPage()
     await screen.findByText('Dispatch lifecycle')
 
-    expect(screen.getByRole('button', { name: /change status/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /record a courier update/i })).toBeNull()
-    expect(screen.queryByText('Record courier update')).toBeNull()
-    // The AWB is the way through to the shipment that owns that axis.
     expect(screen.getByRole('link', { name: DETAIL.awb }).getAttribute('href')).toBe(
       `/shipments/${DETAIL.shptId}`,
     )
+    expect(screen.getByText(/delivery is the courier's/i)).toBeTruthy()
   })
 
-  it('a rung whose writer is unreachable says so instead of failing on submit', async () => {
-    // Sent to the vendor, no AWB yet: the courier rungs past the handover have
-    // no shipment to write to. The handover itself is offerable since 22 Aug
-    // 2026 (the manual dispatch-state correction), which is exactly the
-    // return-sheet-never-came case this dispatch is in.
-    stubStaged('SENT_TO_VENDOR', NOT_SHIPPED)
+  it('keeps the two actions this page DOES own: Flag damage and Release hold', async () => {
+    // Damage, on a shipped dispatch with no case yet.
+    stubStaged('DISPATCHED_BY_VENDOR', {})
     renderPage()
-    await screen.findByText('Dispatch lifecycle')
-    await waitFor(() => {
-      expect(headerPill('Sent to print vendor')).toBeTruthy()
-    })
+    expect(await screen.findByRole('button', { name: /flag damage/i })).toBeTruthy()
+    cleanup()
 
-    const { enabled, disabled } = await openStatusPicker()
-    expect(enabled).toEqual(['Dispatched by vendor'])
-    expect(disabled).toContain('Delivered')
-    // The reason is on the row for the rungs that stay locked.
-    expect(screen.getAllByText(/needs the vendor awb/i).length).toBeGreaterThan(0)
-  })
-
-  it('saving the shipment-less handover posts the dispatch-state correction', async () => {
-    const calls = stubStaged('SENT_TO_VENDOR', NOT_SHIPPED)
+    // Hold, on an unbatched held one.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/pool'))
+          return jsonResponse([
+            {
+              asgnId: ASGN, merchantDisplayName: 'ALPHA', merchantLegalName: 'ALPHA LLP',
+              bankReferenceCode: '3', bankDisplayName: 'GSCB', branchCode: '30', soundbox: true,
+              standeeCount: 1, stickerCount: 2, poolStatus: 'HELD', holdReason: 'bank asked to pause',
+              dispatchState: null, shipToSuperseded: false, dispatchGroup: 'SOUNDBOX', batch: null,
+              createdAt: '2026-08-12T08:00:00.000Z', tenantId: 'tnnt_1', programId: 'prog_1',
+              replacementOfAsgnId: null,
+            },
+          ])
+        if (url.includes('/ops/devices')) return jsonResponse([])
+        return jsonResponse({ ...DETAIL, batchId: null, awb: null, shptId: null, courierStatus: null })
+      }),
+    )
     renderPage()
-    await screen.findByText('Dispatch lifecycle')
-    await waitFor(() => {
-      expect(headerPill('Sent to print vendor')).toBeTruthy()
-    })
-    await userEvent.click(screen.getByRole('button', { name: /change status/i }))
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.click(within(dialog).getByRole('button', { name: /^save$/i }))
-    await waitFor(() => {
-      expect(calls.some((c) => c.url.includes(`/ops/dispatches/${DETAIL.dispatchId}/state`))).toBe(true)
-    })
-    const write = calls.find((c) => c.url.includes('/state'))!
-    const body = JSON.parse(String(write.init.body)) as Record<string, unknown>
-    expect(body.state).toBe('DISPATCHED_BY_VENDOR')
-    expect((write.init.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy()
+    expect(await screen.findByText(/held out of batching/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /release hold/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /change status/i })).toBeNull()
   })
 })
 
@@ -583,7 +526,15 @@ interface FlagCall {
   init: RequestInit
 }
 
-function stubFlag(detail: unknown, flagStatus = 201, flagBody: unknown = { childAsgnId: 'asgn_child1', caseStatus: 'Open' }): FlagCall[] {
+function stubFlag(
+  detail: unknown,
+  flagStatus = 201,
+  flagBody: unknown = { childAsgnId: 'asgn_child1', caseStatus: 'Open' },
+  // The batch detail read, which is where the dialog gets the ORIGINAL request
+  // counts it caps the inputs at (23 Aug 2026). Omitted, `entry` stays null and
+  // the fields fall back to 99, the pre-load state.
+  batchDetail?: unknown,
+): FlagCall[] {
   const calls: FlagCall[] = []
   vi.stubGlobal(
     'fetch',
@@ -591,16 +542,51 @@ function stubFlag(detail: unknown, flagStatus = 201, flagBody: unknown = { child
       calls.push({ url, init })
       if (url.includes('/ops/damage-reasons')) return jsonResponse(REASONS)
       if (url.includes('/flag-damage')) return jsonResponse(flagBody, flagStatus)
+      if (batchDetail !== undefined && url.includes('/ops/batches/')) return jsonResponse(batchDetail)
       return jsonResponse(detail)
     }),
   )
   return calls
 }
 
+/** A batch detail carrying one entry with the counts this dispatch was sent with. */
+function batchWith(standeeCount: number, stickerCount: number): unknown {
+  return {
+    batch: { id: 'btch_1', status: 'SENT_TO_PRINT_VENDOR', triggerReason: 'MANUAL', unitCount: 1, printVndr: null, triggeredByActor: null, createdAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:00:00.000Z' },
+    entries: [
+      {
+        asgnId: ASGN,
+        merchantDisplayName: 'ALPHA',
+        merchantLegalName: 'ALPHA LLP',
+        bankReferenceCode: '3',
+        bankDisplayName: 'GSCB',
+        branchCode: '30',
+        soundbox: false,
+        standeeCount,
+        stickerCount,
+        poolStatus: 'BATCHED',
+        dispatchState: 'SENT_TO_VENDOR',
+        shipToSuperseded: false,
+        dispatchGroup: 'COLLATERAL',
+      },
+    ],
+    artifacts: [],
+    printLayout: 'ONE_PER_PAGE',
+  }
+}
+
 async function openFlagDialog(): Promise<void> {
   await userEvent.click(await screen.findByRole('button', { name: /flag damage/i }))
-  // The reason master loads when the dialog opens; wait for the real option.
-  await screen.findByRole('option', { name: 'Battery issue' })
+  // The reason dropdown is the shared SearchSelect now (23 Aug 2026), so its
+  // options exist only while the popover is open, unlike the native select
+  // this replaced.
+  await screen.findByLabelText(/reason/i)
+}
+
+/** Pick the reason through the shared picker. */
+async function pickReason(label = 'Battery issue'): Promise<void> {
+  await userEvent.click(screen.getByLabelText(/reason/i))
+  await userEvent.click(await screen.findByRole('option', { name: label }))
 }
 
 describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
@@ -620,7 +606,8 @@ describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
 
     expect(screen.getByRole('dialog')).toBeTruthy()
     // Active row offered by LABEL; the inactive master row is not offered.
-    expect(screen.getByRole('option', { name: 'Battery issue' })).toBeTruthy()
+    await userEvent.click(screen.getByLabelText(/reason/i))
+    expect(await screen.findByRole('option', { name: 'Battery issue' })).toBeTruthy()
     expect(screen.queryByRole('option', { name: 'Retired reason' })).toBeNull()
   })
 
@@ -631,7 +618,7 @@ describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
 
     expect(screen.queryByRole('spinbutton')).toBeNull()
     expect(screen.queryByLabelText(/standees/i)).toBeNull()
-    expect(screen.getByText(/one replacement soundbox is raised, fixed per d-27/i)).toBeTruthy()
+    expect(screen.getByText(/one replacement soundbox is raised/i)).toBeTruthy()
   })
 
   it('a COLLATERAL dispatch requires a total of at least one item before submit unlocks', async () => {
@@ -639,7 +626,7 @@ describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
     renderPage()
     await openFlagDialog()
 
-    await userEvent.selectOptions(screen.getByLabelText(/reason/i), 'battery_issue')
+    await pickReason()
     await userEvent.type(screen.getByLabelText(/remarks/i), 'standee torn in transit')
 
     // Counts default to 0 + 0: a replacement carrying nothing is not a
@@ -658,7 +645,7 @@ describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
     renderPage()
     await openFlagDialog()
 
-    await userEvent.selectOptions(screen.getByLabelText(/reason/i), 'battery_issue')
+    await pickReason()
     await userEvent.type(screen.getByLabelText(/remarks/i), '  standee torn in transit  ')
     const standee = screen.getByLabelText(/standees/i)
     await userEvent.clear(standee)
@@ -681,12 +668,52 @@ describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
     expect(link.getAttribute('href')).toBe('/dispatches/asgn_child1')
   })
 
+  // THE REPORTED DEFECT (23 Aug 2026): flagging showed only a one-line note,
+  // and the Replacement history card appeared only after a manual page reload,
+  // because the chain was fetched on mount and never again. The submit now
+  // re-runs the chain read, so the full card is on screen before the operator
+  // moves.
+  it('the Replacement history card appears immediately after flagging, with no reload', async () => {
+    // The chain is EMPTY until the flag lands, then two members: exactly what
+    // the server would answer before and after.
+    let flagged = false
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit = {}) => {
+        if (url.includes('/ops/damage-reasons')) return jsonResponse(REASONS)
+        if (url.includes('/flag-damage')) {
+          flagged = true
+          return jsonResponse({ childAsgnId: CHILD_ASGN, caseStatus: 'Open' }, 201)
+        }
+        if (url.includes('/chain')) return jsonResponse(flagged ? chainOf('Open') : [])
+        if (url.includes('/ops/damage-cases')) return jsonResponse([])
+        void init
+        return jsonResponse(DETAIL)
+      }),
+    )
+    renderPage()
+    await openFlagDialog()
+    expect(screen.queryByText('Replacement history')).toBeNull()
+
+    await pickReason()
+    await userEvent.type(screen.getByLabelText(/remarks/i), 'flat battery')
+    await userEvent.click(screen.getByRole('button', { name: /open damage case/i }))
+
+    // The whole card, chain and arrow included, straight from the submit.
+    expect(await screen.findByText('Replacement history')).toBeTruthy()
+    expect(await screen.findByText(/replaced by/i)).toBeTruthy()
+    const link = screen.getByRole('link', { name: CHILD_ASGN })
+    expect(link.getAttribute('href')).toBe(`/dispatches/${CHILD_ASGN}`)
+    // And the old duplicate surfaces stayed gone.
+    expect(screen.queryByText(/damage case opened/i)).toBeNull()
+  })
+
   it('a SOUNDBOX submit sends NO counts at all', async () => {
     const calls = stubFlag(DETAIL)
     renderPage()
     await openFlagDialog()
 
-    await userEvent.selectOptions(screen.getByLabelText(/reason/i), 'battery_issue')
+    await pickReason()
     await userEvent.type(screen.getByLabelText(/remarks/i), 'no sound on delivery')
     await userEvent.click(screen.getByRole('button', { name: /open damage case/i }))
 
@@ -698,12 +725,57 @@ describe('DispatchDetailPage: the Flag damage dialog (D-26, B7)', () => {
     expect(body).toEqual({ reasonCode: 'battery_issue', remarks: 'no sound on delivery' })
   })
 
+  // THE ORIGINAL REQUEST IS THE CEILING (23 Aug 2026, at the user's direction).
+  // The inputs used to accept 0 to 99 whatever the dispatch actually carried,
+  // so an operator could flag 99 standees on a parcel that shipped one.
+  it('caps the counts at what the dispatch was sent with, and seeds them to it', async () => {
+    stubFlag(
+      { ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null },
+      201,
+      { childAsgnId: 'asgn_child1', caseStatus: 'Open' },
+      batchWith(1, 2),
+    )
+    renderPage()
+    await openFlagDialog()
+
+    const standee = await screen.findByLabelText(/standees/i)
+    const sticker = screen.getByLabelText(/stickers/i)
+    // Seeded with the whole parcel, the common case.
+    expect((standee as HTMLInputElement).value).toBe('1')
+    expect((sticker as HTMLInputElement).value).toBe('2')
+    // And capped there.
+    expect(standee.getAttribute('max')).toBe('1')
+    expect(sticker.getAttribute('max')).toBe('2')
+    expect(screen.getByText(/1 standee and 2 stickers/i)).toBeTruthy()
+  })
+
+  it('locks submit when a count exceeds what was sent', async () => {
+    stubFlag(
+      { ...DETAIL, dispatchGroup: 'COLLATERAL', activationStatus: null, activationDate: null },
+      201,
+      { childAsgnId: 'asgn_child1', caseStatus: 'Open' },
+      batchWith(1, 2),
+    )
+    renderPage()
+    await openFlagDialog()
+    await pickReason()
+    await userEvent.type(screen.getByLabelText(/remarks/i), 'both standees torn')
+
+    const standee = await screen.findByLabelText(/standees/i)
+    const confirm = () => screen.getByRole('button', { name: /open damage case/i }) as HTMLButtonElement
+    expect(confirm().disabled).toBe(false)
+
+    await userEvent.clear(standee)
+    await userEvent.type(standee, '5') // the parcel carried 1
+    expect(confirm().disabled).toBe(true)
+  })
+
   it('a 409 reads as the DP-3 rule in words: a live case already exists', async () => {
     stubFlag(DETAIL, 409, { code: 'conflict' })
     renderPage()
     await openFlagDialog()
 
-    await userEvent.selectOptions(screen.getByLabelText(/reason/i), 'battery_issue')
+    await pickReason()
     await userEvent.type(screen.getByLabelText(/remarks/i), 'no sound on delivery')
     await userEvent.click(screen.getByRole('button', { name: /open damage case/i }))
 
@@ -758,6 +830,37 @@ function stubWithDamageCases(detail: unknown, cases: unknown[]): void {
   )
 }
 
+/** A two-member chain, original -> replacement, as /chain returns it. */
+function chainOf(caseStatus: string): unknown[] {
+  return [
+    {
+      asgnId: ASGN, replacementOfAsgnId: null, dispatchGroup: 'COLLATERAL', caseStatus: null,
+      demandState: 'pooled-for-fulfillment', damageReason: null, billable: true,
+      activatedAt: null, deliveredAt: '2026-08-18T00:00:00.000Z',
+      createdAt: '2026-08-12T08:00:00.000Z', generation: 0,
+    },
+    {
+      asgnId: CHILD_ASGN, replacementOfAsgnId: ASGN, dispatchGroup: 'COLLATERAL', caseStatus,
+      demandState: 'pooled-for-fulfillment', damageReason: 'battery_issue', billable: false,
+      activatedAt: null, deliveredAt: null,
+      createdAt: '2026-08-19T00:00:00.000Z', generation: 1,
+    },
+  ]
+}
+
+/** Like stubWithDamageCases, plus a real /chain answer. */
+function stubWithChain(detail: unknown, chain: unknown[]): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.includes('/chain')) return jsonResponse(chain)
+      if (url.includes('/ops/damage-cases')) return jsonResponse([])
+      if (url.includes('/ops/damage-reasons')) return jsonResponse(REASONS)
+      return jsonResponse(detail)
+    }),
+  )
+}
+
 function renderPageFor(asgn: string) {
   return render(
     <MemoryRouter initialEntries={[`/dispatches/${asgn}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -791,6 +894,43 @@ describe('DispatchDetailPage: the damage overlay survives a reload (19 Aug 2026)
     expect(screen.queryByRole('button', { name: /flag damage/i })).toBeNull()
   })
 
+  // ITS OWN PILL IN THE HEADER (24 Aug 2026), beside the stage rather than
+  // replacing it, the way the device page carries activation separately. The
+  // stage stays true (the parcel did arrive); the pill says the kit did not
+  // survive, which is the fact an operator scanning the page needs first.
+  it('the ORIGINAL carries a DAMAGED pill in the header, beside its stage', async () => {
+    stubWithDamageCases(DETAIL, [openDamageCase()])
+    renderPage()
+
+    await screen.findByText('Dispatch lifecycle')
+    const damaged = await vi.waitFor(() => {
+      const hit = screen.getAllByText('Damaged').find((el) => el.className.includes('pill'))
+      expect(hit).toBeTruthy()
+      return hit!
+    })
+    expect(damaged).toBeTruthy()
+    // Both, not one instead of the other.
+    expect(headerPill('In transit')).toBeTruthy()
+  })
+
+  it('a PERMANENT identity: the pill survives the case closing', async () => {
+    stubWithDamageCases(DETAIL, [openDamageCase({ caseStatus: 'Closed' })])
+    renderPage()
+
+    await screen.findByText('Dispatch lifecycle')
+    await vi.waitFor(() => {
+      expect(screen.getAllByText('Damaged').some((el) => el.className.includes('pill'))).toBe(true)
+    })
+  })
+
+  it('an ordinary dispatch carries no DAMAGED pill', async () => {
+    stubWithDamageCases(DETAIL, [])
+    renderPage()
+
+    await screen.findByText('Dispatch lifecycle')
+    expect(screen.queryByText('Damaged')).toBeNull()
+  })
+
   it('the ORIGINAL still offers Flag damage when the only case on record is Closed', async () => {
     stubWithDamageCases(DETAIL, [openDamageCase({ caseStatus: 'Closed' })])
     renderPage()
@@ -799,22 +939,133 @@ describe('DispatchDetailPage: the damage overlay survives a reload (19 Aug 2026)
     expect(screen.queryByText(/damage case opened/i)).toBeNull()
   })
 
-  it('the REPLACEMENT dispatch names what it replaces, on its own page', async () => {
-    stubWithDamageCases({ ...DETAIL, dispatchId: CHILD_ASGN }, [openDamageCase()])
+  // 23 Aug 2026 (at the user's direction): the amber Replacement card these two
+  // tests asserted is GONE. The Replacement history chain is now the page's one
+  // damage surface, so the replacement's own identity (what it replaced, the
+  // reason, not billable, case status) is asserted on the chain instead.
+  it('the REPLACEMENT dispatch shows the chain naming what it replaces, on its own page', async () => {
+    stubWithChain({ ...DETAIL, dispatchId: CHILD_ASGN }, chainOf('Open'))
     renderPageFor(CHILD_ASGN)
 
-    expect(await screen.findByText('Replacement')).toBeTruthy()
-    expect(screen.getByText(/non-billable replacement for/i)).toBeTruthy()
+    expect(await screen.findByText('Replacement history')).toBeTruthy()
+    // The arrow connector says which way the kit moved.
+    expect(screen.getByText(/replaced by/i)).toBeTruthy()
+    // EVERY member is a link, the original included.
     const link = screen.getByRole('link', { name: ASGN })
     expect(link.getAttribute('href')).toBe(`/dispatches/${ASGN}`)
     expect(screen.getByText(/battery_issue/)).toBeTruthy()
+    expect(screen.getByText(/not billable/i)).toBeTruthy()
+    // And exactly ONE surface: no amber card, no "damage case opened" note.
+    expect(screen.queryByText(/non-billable replacement for/i)).toBeNull()
+    expect(screen.queryByText(/damage case opened/i)).toBeNull()
   })
 
-  it('the REPLACEMENT card survives its case closing: being a replacement is permanent', async () => {
-    stubWithDamageCases({ ...DETAIL, dispatchId: CHILD_ASGN }, [openDamageCase({ caseStatus: 'Closed' })])
+  it('the chain survives its case closing: being a replacement is permanent', async () => {
+    stubWithChain({ ...DETAIL, dispatchId: CHILD_ASGN }, chainOf('Closed'))
     renderPageFor(CHILD_ASGN)
 
-    expect(await screen.findByText('Replacement')).toBeTruthy()
-    expect(screen.getByText(/case closed/i)).toBeTruthy()
+    expect(await screen.findByText('Replacement history')).toBeTruthy()
+    expect(screen.getByRole('link', { name: ASGN })).toBeTruthy()
+  })
+})
+
+// HOLD, ON THE DISPATCH ITSELF (23 Aug 2026).
+//
+// This page could not say a dispatch was held, could not release one, and its
+// rail dropped the HELD trail event outright, so a parcel an operator had
+// deliberately parked looked entirely ordinary here. The hold lives on
+// fulfillment's pool entry, which the page already fetches for the kit
+// contents; only the reading of it is new.
+describe('DispatchDetailPage: hold', () => {
+  beforeEach(() => {
+    clearAccessToken()
+    setAccessToken('t')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+    clearAccessToken()
+  })
+
+  const poolRow = (over: Record<string, unknown> = {}) => ({
+    asgnId: ASGN,
+    merchantDisplayName: 'ALPHA',
+    merchantLegalName: 'ALPHA LLP',
+    bankReferenceCode: '3',
+    bankDisplayName: 'GSCB',
+    branchCode: '30',
+    soundbox: true,
+    standeeCount: 1,
+    stickerCount: 2,
+    poolStatus: 'HELD',
+    holdReason: 'awaiting bank confirmation',
+    dispatchState: null,
+    shipToSuperseded: false,
+    dispatchGroup: 'SOUNDBOX',
+    batch: null,
+    createdAt: '2026-08-12T08:00:00.000Z',
+    tenantId: 'tnnt_1',
+    programId: 'prog_1',
+    replacementOfAsgnId: null,
+    ...over,
+  })
+
+  /** An UNBATCHED dispatch, which is the only state in which a hold can exist. */
+  function stubPool(pool: unknown[]): { url: string; init?: RequestInit }[] {
+    const calls: { url: string; init?: RequestInit }[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, init })
+        if (url.includes('/ops/pool')) return jsonResponse(pool)
+        if (url.includes('/ops/devices')) return jsonResponse([])
+        return jsonResponse({ ...DETAIL, batchId: null, awb: null, shptId: null, courierStatus: null })
+      }),
+    )
+    return calls
+  }
+
+  it('states that the dispatch is held, and why', async () => {
+    stubPool([poolRow()])
+    renderPage()
+
+    expect(await screen.findByText(/held out of batching/i)).toBeTruthy()
+    expect(screen.getByText(/awaiting bank confirmation/)).toBeTruthy()
+  })
+
+  it('says so honestly when a hold carries no reason', async () => {
+    stubPool([poolRow({ holdReason: null })])
+    renderPage()
+
+    expect(await screen.findByText(/held out of batching/i)).toBeTruthy()
+    expect(screen.getByText(/no reason was recorded/i)).toBeTruthy()
+  })
+
+  it('shows nothing about hold on an ordinary pooled dispatch', async () => {
+    stubPool([poolRow({ poolStatus: 'POOLED', holdReason: null })])
+    renderPage()
+
+    await screen.findByText('Dispatch lifecycle')
+    expect(screen.queryByText(/held out of batching/i)).toBeNull()
+  })
+
+  // Release is consequential: the parcel rejoins the pool and the next batch
+  // trigger can sweep it to the print vendor, which is what the hold prevented.
+  it('asks before releasing, then posts the release', async () => {
+    const calls = stubPool([poolRow()])
+    renderPage()
+    await screen.findByText(/held out of batching/i)
+
+    await userEvent.click(screen.getByRole('button', { name: /release hold/i }))
+    expect(await screen.findByText(/release this hold\?/i)).toBeTruthy()
+    // Nothing has been written merely by opening the dialog.
+    expect(calls.some((c) => c.url.includes('/release'))).toBe(false)
+
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /release hold/i }))
+
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes(`/ops/records/${ASGN}/release`) && c.init?.method === 'POST')).toBe(true)
+    })
   })
 })

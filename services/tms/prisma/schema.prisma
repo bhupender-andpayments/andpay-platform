@@ -83,6 +83,20 @@ model Assignment {
   // fact field is optional under D120 FULL compat); ingest makes it mandatory
   // per row, exactly like contact_name/mobile.
   branchCode          String?   @map("branch_code")
+  // BRD 5.1b, 22 Aug 2026: the four bank-file columns the Annexure B profile
+  // read and then discarded (City/State/Pincode were folded into
+  // ship_to_address and the parts dropped; Email ID and QR Type were never
+  // read at all). Kept as parts ALONGSIDE ship_to_address, which stays the
+  // string the dispatch label prints. Nullable and never a row-level
+  // rejection: Email ID and QR Type are Optional in the BRD and blank in the
+  // real bank file, and City/State/Pincode ride the mandatory
+  // registered_address check instead. TMS-local snapshot data on the same
+  // footing as contact_name and branch_code: none of it reaches a fact.
+  email               String?   @map("email")
+  city                String?   @map("city")
+  state               String?   @map("state")
+  pincode             String?   @map("pincode")
+  qrType              String?   @map("qr_type")
   qrValue             String    @map("qr_value")
   vpaValue            String    @map("vpa_value")
   soundbox            Boolean
@@ -187,6 +201,14 @@ model PendingRow {
   // Phase 3 Task 4: mandatory bank-file Branch Code parsed at ingest (BRD 5.1b),
   // carried into the assignment snapshot at creation. Nullable at the DB; ingest-mandatory.
   branchCode      String?  @map("branch_code")
+  // BRD 5.1b, 22 Aug 2026: parsed at ingest and carried into the assignment
+  // snapshot at creation, mirroring contact_name/mobile/branch_code above.
+  // See the Assignment block for why all five are nullable and optional.
+  email           String?  @map("email")
+  city            String?  @map("city")
+  state           String?  @map("state")
+  pincode         String?  @map("pincode")
+  qrType          String?  @map("qr_type")
   status          String // awaiting-identity | consumed
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -201,6 +223,12 @@ model MerchantProjection {
   legalName   String   @map("legal_name")
   mcc         String
   status      String   // ACTIVE | SUSPENDED
+  /// When this merchant was first projected here. Added 22 Aug 2026 because
+  /// the merchants list had no created date to show at all. DB-defaulted and
+  /// never written by projectMerchantFact: the insert takes the default and
+  /// the amend branch must keep not touching it, or an amended merchant would
+  /// look newly created.
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("merchant_projection")

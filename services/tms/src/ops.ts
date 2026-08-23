@@ -1,6 +1,6 @@
 import { onceWithin, enqueue } from '@andpay/outbox'
 import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
-import { instanceKey, eventKey } from '@andpay/keys'
+import { instanceKey, eventKey, childKey } from '@andpay/keys'
 import { toUuid } from '@andpay/ids'
 // D-8: DETECTION only. The same rule fulfillment corrects with, so the count
 // TMS reports is exactly what gets rewritten downstream. See the package.
@@ -908,12 +908,19 @@ export async function updateDamageCaseStatusOps(
 // only, section 2 of the grounding). Unlike updateDamageCaseStatusOps this
 // does NOT duplicate the write body: it reuses activateAssignmentWithinTx
 // (assignment.ts) and passes an onAudit callback so the 6e ALLOW co-commits
-// INSIDE the same onceWithin as the UPDATE+fact. A redelivered/duplicate
-// activation (already-activated assignment) is therefore a no-op for BOTH the
-// domain effect and the audit, exactly like holdRecord; idempotency is the
-// business key `${asgnId}|activate` (activateAssignmentWithinTx), NOT the
-// caller's clientKey, so a double-activation is impossible regardless of the
-// Idempotency-Key used.
+// INSIDE the same onceWithin as the UPDATE+fact.
+//
+// IDEMPOTENCY CHANGED ON 23 Aug 2026 (with the write itself; the full story is
+// on activateAssignmentWithinTx). It was the business key `${asgnId}|activate`,
+// which made activation a one-way door: once deactivation existed, no dispatch
+// could ever be activated a SECOND time, and the portal's bulk and single
+// activate both reported "already-activated" for a dispatch that was live-off.
+// The key is now PER ATTEMPT, clientKey + dispatch (the dispatch segment
+// matters: the bulk route sends ONE client key for the whole list, and without
+// it only the first row of every bulk would ever run). A replayed request is
+// still a no-op with a single audit; a fresh attempt on a deactivated dispatch
+// flips it back on. Double-activation stays impossible, but by the write's own
+// `activated_at IS NULL` guard rather than by a forever inbox row.
 //
 // The DELIVERED gate is enforced by the CALLER (ops-edge, which holds the
 // analyticsDb local projection, D-H.1's binding decision): this function
@@ -930,6 +937,8 @@ export async function activateAssignmentOps(
   const result = await args.port.activate({ asgnId: args.asgnId, deviceRef: args.asgnId })
   return db.$transaction((tx: Tx) =>
     activateAssignmentWithinTx(tx, args.asgnId, result.activatedAt, args.traceId, {
+      // Rule 1 then rule 2 of the 06.A grammar: {Kc}|ops:mark-activated|{asgn}.
+      attemptKey: childKey(instanceKey(args.clientKey, 'ops:mark-activated'), args.asgnId),
       // ACTIVATION.md: this door HAS an operator behind it, so activated_by
       // names them rather than staying null (the port-only default).
       actorId: args.actorId,

@@ -13,6 +13,12 @@ const ANNEXURE_B_HEADER =
 const ANNEXURE_B_ROW =
   'BRILLIANT PERFUME,BRILLIANT PERFUME,9537908017,,5977,BRILLIANT PERFUME,SHOP NO 31 3 NAVJYOTI CO OP H SOCIETY,LAXMI NARAYAN COLONY ROAD,OPP JIVAN VIHAR MANI NAGAR EAST,AHMEDABAD,Gujarat,380008,3,30,,w7dgo921gdqa@gscb,upi://pay?ver=01&amp;mode=01&pa=w7dgo921gdqa@gscb&pn=BRILLIANT PERFUME&mc=5977&qrMedium=06,N,1,2'
 
+// The same layout with the five columns the BRD marks present but the real
+// export leaves blank actually filled in. Used to prove they are carried, not
+// merely tolerated.
+const ANNEXURE_B_ROW_FILLED =
+  'CHAI POINT,Asha Rao,9876543210,asha@chaipoint.example,5812,CHAI POINT LLP,12 MG ROAD,NEAR STATION,WARD 4,PUNE,Maharashtra,411001,3,37,Static,chaipoint@gscb,upi://pay?ver=01&mode=01&pa=chaipoint@gscb&pn=CHAI POINT&mc=5812&qrMedium=06,Y,1,2'
+
 function csv(...lines: string[]): Uint8Array {
   return new TextEncoder().encode(lines.join('\n') + '\n')
 }
@@ -175,5 +181,42 @@ describe('parseBankRequestFile backward compatibility', () => {
       const res = await parseBankRequestFile(csv(header, row), 'canonical.csv', 'file-1')
       expect(res.errors).toEqual([])
     })
+  })
+})
+
+// BRD 5.1b, 22 Aug 2026. Email ID, City, State, Pincode and QR Type were all
+// read by the profile and then dropped: the address parts were composed into
+// one string and the parts discarded, and the other two were never read at all.
+describe('ANNEXURE_B_PROFILE: the five BRD columns that used to be discarded', () => {
+  it('carries email, city, state, pincode and QR type through to the row', async () => {
+    const res = await parseBankRequestFile(csv(ANNEXURE_B_HEADER, ANNEXURE_B_ROW_FILLED), 'gscb.csv', 'file-brd-1')
+    expect(res.errors).toEqual([])
+    const row = res.rows[0]!
+    expect(row.email).toBe('asha@chaipoint.example')
+    expect(row.city).toBe('PUNE')
+    expect(row.state).toBe('Maharashtra')
+    expect(row.pincode).toBe('411001')
+    expect(row.qrType).toBe('Static')
+  })
+
+  // The composed address is UNCHANGED by keeping the parts. It is what the
+  // dispatch label prints, so the parts are additive and never a replacement.
+  it('still composes the same single address string', async () => {
+    const res = await parseBankRequestFile(csv(ANNEXURE_B_HEADER, ANNEXURE_B_ROW_FILLED), 'gscb.csv', 'file-brd-2')
+    expect(res.errors).toEqual([])
+    expect(res.rows[0]!.registeredAddress).toBe('12 MG ROAD, NEAR STATION, WARD 4, PUNE, Maharashtra, 411001')
+  })
+
+  // THE REAL FILE SHIPS ALL FIVE BLANK. If any of them became required, or a
+  // blank one became a rejection, every live upload would start failing. The
+  // verbatim row above is the guard against exactly that.
+  it('accepts the real export, which leaves all five blank', async () => {
+    const res = await parseBankRequestFile(csv(ANNEXURE_B_HEADER, ANNEXURE_B_ROW), 'gscb.csv', 'file-brd-3')
+    expect(res.errors).toEqual([])
+    const row = res.rows[0]!
+    // Absent rather than an empty string, the same shape vpaHint uses, so a
+    // blank cell never becomes a stored ''.
+    expect(row.email).toBeUndefined()
+    expect(row.qrType).toBeUndefined()
   })
 })

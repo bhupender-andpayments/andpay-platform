@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
-import { Boxes, CheckCircle2, PackageX, Send, Truck, Upload, Warehouse } from 'lucide-react'
+import { Boxes, CheckCircle2, PackageX, Repeat, Send, Truck, Upload, Warehouse } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { StatTiles, type StatTileDef } from '../../ui/StatTiles.js'
-import { SearchSelect, MultiSelect } from '../../components/Picker.js'
+import { SearchSelect } from '../../components/Picker.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import {
   getBankMasters,
@@ -26,8 +26,8 @@ import {
   StatusPill,
   CodeChip,
 } from '../../ui/primitives.js'
-import { fmtDateTime } from '../../ui/format.js'
-import { cn } from '@/lib/utils'
+import { fmtDateTime, statusMeta } from '../../ui/format.js'
+import { PIPELINE_STAGES, STAGE_FILTER_CANCELLED, STAGE_FILTER_DAMAGED, STAGE_FILTER_HELD } from './dispatchStatus.js'
 import { COURIER_STATUSES } from '../dashboards/courierStatuses.js'
 import { DispatchGroupBadge } from '../fulfillment/DispatchGroupBadge.js'
 
@@ -77,21 +77,36 @@ const OFF_LADDER = ['FAILED', 'RETURNED'] as const
 // (decision D12): the read it used carried no pipeline_state and admitted only
 // already-dispatched rows, so a dispatch was invisible until a courier had it.
 //
-// The tokens are the analytics rail's own PIPELINE_RANK vocabulary. The labels
-// are the operator's words for the same thing: RECEIVED means the request has
-// arrived and is waiting for a batch, which is what "pending batch" says.
-const LIFECYCLE_LABELS: Record<string, string> = {
-  RECEIVED: 'Pending batch',
-  BATCHED: 'Batched',
-  SENT_TO_VENDOR: 'At print vendor',
-  DISPATCHED: 'Dispatched',
-  DELIVERED: 'Delivered',
-}
-
-const LIFECYCLE_ORDER = ['RECEIVED', 'BATCHED', 'SENT_TO_VENDOR', 'DISPATCHED', 'DELIVERED'] as const
+// THE STAGE AXIS comes from dispatchStatus.ts now, and the LABELS come from
+// statusMeta, the same source the Stage column's pill uses.
+//
+// This page used to keep its own LIFECYCLE_LABELS map, which is how the filter
+// dropdown came to say "Pending batch" and "At print vendor" while the table
+// column beside it said "Received" and "Sent to print vendor" for the very same
+// value (found 23 Aug 2026). One value, one name, one place.
+const LIFECYCLE_ORDER = PIPELINE_STAGES
 
 function lifecycleOf(row: ReportRow): string {
   return str(row, 'pipelineState') ?? 'RECEIVED'
+}
+
+/** Whether this dispatch is parked out of the pool. See STAGE_FILTER_HELD. */
+function isHeld(row: ReportRow): boolean {
+  return str(row, 'poolStatus') === 'HELD'
+}
+
+/** A withdrawn replacement: it left the pool CANCELLED and goes nowhere. */
+function isCancelled(row: ReportRow): boolean {
+  return str(row, 'poolStatus') === 'CANCELLED'
+}
+
+/**
+ * Whether damage was raised AGAINST this dispatch, i.e. a replacement was minted
+ * to take its place. See STAGE_FILTER_DAMAGED: this is the PARENT's marker, the
+ * one no list carried before; the child reads as a replacement already.
+ */
+function isDamaged(row: ReportRow): boolean {
+  return str(row, 'replacementStatus') !== null
 }
 
 /** Soundbox or collateral, the delivery group this leg belongs to. */
@@ -172,15 +187,25 @@ export function DispatchesPage() {
     [setSearchParams],
   )
 
-  const stageSel = useMemo(() => searchParams.get('stage')?.split(',').filter(Boolean) ?? [], [searchParams])
+  // ?held=1 IS STILL HONOURED, folded into the stage selection rather than kept
+  // as its own axis. The toggle that wrote it is gone (Held is a stage option
+  // now), but links an operator already shared read "the held ones" and should
+  // keep meaning that, so the old param is translated instead of dropped.
+  const stageSel = useMemo(() => {
+    const picked = searchParams.get('stage')?.split(',').filter(Boolean) ?? []
+    const legacyHeld = searchParams.get('held') === '1'
+    return legacyHeld && !picked.includes(STAGE_FILTER_HELD) ? [...picked, STAGE_FILTER_HELD] : picked
+  }, [searchParams])
   // ?view=shipments WAS the carrier tab on this page and is now its own section.
   // Links to it are in circulation, so it redirects rather than silently showing
   // the dispatch grid, which would look like the tab had been deleted.
   const legacyShipmentsView = searchParams.get('view') === 'shipments'
   const groupSel = searchParams.get('group') ?? ''
-  // ?held=1, in the URL like every other filter here, so an operator can send
-  // somebody "the held ones" as a link (DAMAGE.md).
-  const heldOnly = searchParams.get('held') === '1'
+  // BILLABLE (23 Aug 2026, ops-team ask). Its own axis, not a Category value:
+  // a dispatch is soundbox-or-collateral AND billable-or-not, and folding the
+  // second into the first dropdown would make the two mutually exclusive when
+  // they are independent. 'yes' | 'no' | '' (either).
+  const billableSel = searchParams.get('billable') ?? ''
 
   const anyFilter =
     q !== '' ||
@@ -190,8 +215,8 @@ export function DispatchesPage() {
     to !== '' ||
     statusSel.length > 0 ||
     stageSel.length > 0 ||
-    heldOnly ||
-    groupSel !== ''
+    groupSel !== '' ||
+    billableSel !== ''
 
   // The date window and the bank go to the SERVER, because they narrow the heavy
   // read. Status and text are applied here, because the tiles are the status
@@ -245,14 +270,27 @@ export function DispatchesPage() {
   // and then reading the tiles should describe THAT merchant's dispatches.
   const searched = useMemo(() => {
     const byGroup = groupSel === '' ? rows : rows.filter((r) => groupOf(r) === groupSel)
+    // Billable narrows alongside category, before the tiles, so the tiles read
+    // as "this slice's breakdown" exactly as they already do for batch and
+    // category. THE FIELD IS `billable`, not `billableFlag`: each report names
+    // its own columns and the dispatches projector (mediation.ts dispatchesRow)
+    // says `billable`, while `billableFlag` belongs to other reports. Reading
+    // the wrong name made this filter keep everything on "Billable" and empty
+    // the grid on "Not billable" (the 23 Aug defect). A row whose flag the
+    // report omitted is treated as billable, which is what an ordinary
+    // bank-raised dispatch is.
+    const byBillable =
+      billableSel === ''
+        ? byGroup
+        : byGroup.filter((r) => (r['billable'] !== false) === (billableSel === 'yes'))
     // Batch narrows BEFORE the text search and before the tiles, so the tiles
     // read as "this batch's status breakdown" rather than the whole report's.
     // Substring and case-insensitive, because the id is long enough that a
     // partial paste is the normal case.
     const byBatch =
       batch === ''
-        ? byGroup
-        : byGroup.filter((r) => (str(r, 'batchId') ?? '').toLowerCase().includes(batch.trim().toLowerCase()))
+        ? byBillable
+        : byBillable.filter((r) => (str(r, 'batchId') ?? '').toLowerCase().includes(batch.trim().toLowerCase()))
     if (q === '') return byBatch
     const needle = q.toLowerCase()
     // Batch id and device serial joined the searchable fields with the D12 read,
@@ -268,7 +306,7 @@ export function DispatchesPage() {
         ...simsOf(r),
       ].some((v) => v !== null && v !== undefined && v.toLowerCase().includes(needle)),
     )
-  }, [rows, q, groupSel, batch])
+  }, [rows, q, groupSel, batch, billableSel])
 
   // Stage 2: + status. These are the grid's rows; the tiles deliberately read
   // from `searched` so picking one status does not zero the other five.
@@ -276,15 +314,28 @@ export function DispatchesPage() {
     () =>
       searched
         .filter((r) => statusSel.length === 0 || statusSel.includes(str(r, 'courierStatus') ?? ''))
-        .filter((r) => stageSel.length === 0 || stageSel.includes(lifecycleOf(r)))
-        // HELD is not a courier status or a pipeline stage, so it filters on its
-        // own axis rather than joining either list (DAMAGE.md). The edge marks
-        // the row; see mergeHoldState in reports.controller.
-        .filter((r) => !heldOnly || str(r, 'poolStatus') === 'HELD'),
-    [searched, statusSel, stageSel, heldOnly],
+        // HELD RIDES THE STAGE FILTER (23 Aug 2026), replacing a separate Hold
+        // toggle. It is still not a pipeline stage and is still stored on a
+        // different table; what changed is that an operator should not have to
+        // learn that to find a held parcel. Selecting Held matches on the pool
+        // axis; selecting any real stage matches on the pipeline axis;
+        // pick both and a row matching either is kept, which is how MultiSelect
+        // already behaves for every other option.
+        .filter((r) => {
+          if (stageSel.length === 0) return true
+          if (stageSel.includes(STAGE_FILTER_HELD) && isHeld(r)) return true
+          if (stageSel.includes(STAGE_FILTER_DAMAGED) && isDamaged(r)) return true
+          if (stageSel.includes(STAGE_FILTER_CANCELLED) && isCancelled(r)) return true
+          return stageSel
+            .filter((k) => k !== STAGE_FILTER_HELD && k !== STAGE_FILTER_DAMAGED && k !== STAGE_FILTER_CANCELLED)
+            .includes(lifecycleOf(r))
+        }),
+    [searched, statusSel, stageSel],
   )
 
-  const heldCount = useMemo(() => searched.filter((r) => str(r, 'poolStatus') === 'HELD').length, [searched])
+  const heldCount = useMemo(() => searched.filter(isHeld).length, [searched])
+  const damagedCount = useMemo(() => searched.filter(isDamaged).length, [searched])
+  const cancelledCount = useMemo(() => searched.filter(isCancelled).length, [searched])
 
   const countOf = useCallback(
     (statuses: readonly string[]) => searched.filter((r) => statuses.includes(str(r, 'courierStatus') ?? '')).length,
@@ -312,7 +363,11 @@ export function DispatchesPage() {
       icon: Warehouse,
       tone: 'text-amber-600',
       chip: 'bg-amber-500/10',
-      value: searched.filter((r) => ['RECEIVED', 'BATCHED'].includes(lifecycleOf(r))).length,
+      // NOT the cancelled ones (24 Aug 2026): this tile means "waiting to go to
+      // the vendor", and a withdrawn replacement is waiting for nothing. It is
+      // the only stage tile a cancelled row can reach, since a case can only be
+      // withdrawn before its replacement is batched.
+      value: searched.filter((r) => !isCancelled(r) && ['RECEIVED', 'BATCHED'].includes(lifecycleOf(r))).length,
     },
     {
       key: 'atVendor',
@@ -351,6 +406,33 @@ export function DispatchesPage() {
       value: countOf(['DELIVERED']),
     },
     {
+      // REPLACEMENTS (23 Aug 2026, ops-team ask): damage-driven dispatches, the
+      // number the business watches. It filters the BILLABLE axis rather than
+      // inventing a third: every replacement is minted non-billable, so
+      // "not billable" and "replacement" are the same set on this report, and
+      // one param is better than two that can contradict each other.
+      key: 'replacements',
+      label: 'Replacements',
+      hint: 'raised from damage, not billable',
+      icon: Repeat,
+      tone: 'text-amber-600',
+      chip: 'bg-amber-500/10',
+      value: searched.filter((r) => typeof r['replacementOfAsgnId'] === 'string').length,
+    },
+    {
+      // DAMAGED (24 Aug 2026): the dispatches damage was raised AGAINST, which
+      // is the question an operator chasing a case asks and no list could
+      // answer. Filters the STAGE axis, where the overlay lives, so the tile
+      // and the Stage dropdown are the same control by two routes.
+      key: 'damaged',
+      label: 'Damaged',
+      hint: 'a replacement was raised for these',
+      icon: PackageX,
+      tone: 'text-rose-600',
+      chip: 'bg-rose-500/10',
+      value: damagedCount,
+    },
+    {
       key: 'exception',
       label: 'Failed or returned',
       hint: 'a failed attempt can still move on',
@@ -367,6 +449,8 @@ export function DispatchesPage() {
   const STATUSES_FOR: Record<string, readonly string[]> = {
     all: [],
     pending: [],
+    replacements: [],
+    damaged: [],
     atVendor: [],
     dispatched: ['DISPATCHED_BY_VENDOR'],
     transit: IN_FLIGHT,
@@ -378,10 +462,13 @@ export function DispatchesPage() {
   const STAGES_FOR: Record<string, readonly string[]> = {
     pending: ['RECEIVED', 'BATCHED'],
     atVendor: ['SENT_TO_VENDOR'],
+    // The overlay is a Stage value, so its tile goes through the same arm.
+    damaged: [STAGE_FILTER_DAMAGED],
   }
 
   function tileActive(tile: StatTileDef): boolean {
     if (tile.key === 'all') return !anyFilter
+    if (tile.key === 'replacements') return billableSel === 'no' && stageSel.length === 0 && statusSel.length === 0
     const stages = STAGES_FOR[tile.key]
     if (stages !== undefined) {
       return stages.length === stageSel.length && stages.every((s) => stageSel.includes(s))
@@ -396,17 +483,21 @@ export function DispatchesPage() {
       return
     }
     const active = tileActive(tile)
+    // ONE TILE AT A TIME (23 Aug 2026, at the user's correction): every tile
+    // click writes its own axis and clears the other two of {stage, status,
+    // billable}, so two tiles can never light together. Clicking the active
+    // tile clears it, so a tile is a toggle and never a trap.
+    if (tile.key === 'replacements') {
+      setParams({ billable: active ? '' : 'no', stage: '', status: '' })
+      return
+    }
     const stages = STAGES_FOR[tile.key]
-    // Clicking the tile that is already the filter clears it, so a tile is a
-    // toggle and never a trap. The two axes are mutually exclusive as filters:
-    // selecting a lifecycle stage clears any courier selection and the reverse,
-    // because a row before the vendor has no courier status to also match.
     if (stages !== undefined) {
-      setParams({ stage: active ? '' : stages.join(','), status: '' })
+      setParams({ stage: active ? '' : stages.join(','), status: '', billable: '' })
       return
     }
     const want = STATUSES_FOR[tile.key] ?? []
-    setParams({ status: active ? '' : want.join(','), stage: '' })
+    setParams({ status: active ? '' : want.join(','), stage: '', billable: '' })
   }
 
   function openDispatch(row: ReportRow): void {
@@ -479,9 +570,53 @@ export function DispatchesPage() {
       // after and never had.
       key: 'pipelineState',
       header: 'Stage',
-      cell: (r) => <StatusPill value={lifecycleOf(r)} />,
+      // TWO AXES, ONE CELL (23 Aug 2026).
+      //
+      // A held dispatch carries pool_status HELD on fulfillment's pool entry AND
+      // pipeline_state RECEIVED in analytics, at the same time, in two different
+      // tables. The hold used to be drawn in the COURIER STATUS cell, which it
+      // has nothing to do with, so on the axis an operator actually scans a held
+      // parcel read as an ordinary pending one.
+      //
+      // Held leads because it is the actionable fact; the real stage stays
+      // underneath because that is where the parcel resumes from once released,
+      // and showing only "Held" would lose it.
+      // DAMAGE RIDES ALONGSIDE THE STAGE, never instead of it (24 Aug 2026). A
+      // delivered dispatch whose kit was later damaged is BOTH: the parcel
+      // arrived, and a replacement is on its way. Collapsing that to one word
+      // would lose whichever half the reader needed.
+      // THE OVERLAY LEADS (24 Aug 2026, at the user's direction, same grammar
+      // as Held): a dispatch damage was raised against is done as a demand — a
+      // replacement carries it forward — so DAMAGED is the answer to "what
+      // state is this in", and the courier stage drops to the small line. That
+      // small line matters most on a collateral leg, where it is the only place
+      // the parcel's own fate shows. Held and Damaged cannot co-occur: damage
+      // is flaggable only from the courier rungs, a hold only before batching.
+      cell: (r) => (
+        <span className="flex flex-col items-start gap-0.5">
+          {isCancelled(r) ? (
+            <>
+              <StatusPill value="CANCELLED" />
+              <span className="text-[11px] text-muted-foreground">{statusMeta(lifecycleOf(r)).label}</span>
+            </>
+          ) : isDamaged(r) ? (
+            <>
+              <StatusPill value="DAMAGED" />
+              <span className="text-[11px] text-muted-foreground">{statusMeta(lifecycleOf(r)).label}</span>
+            </>
+          ) : isHeld(r) ? (
+            <>
+              <StatusPill value="HELD" />
+              <span className="text-[11px] text-muted-foreground">{statusMeta(lifecycleOf(r)).label}</span>
+            </>
+          ) : (
+            <StatusPill value={lifecycleOf(r)} />
+          )}
+        </span>
+      ),
       // Sorted by LADDER position, so sorting walks the lifecycle rather than
-      // the alphabet.
+      // the alphabet. A held row sorts with the stage it is parked at, not off
+      // the end: it IS at that stage, it is simply not moving.
       sortValue: (r) => {
         const at = LIFECYCLE_ORDER.indexOf(lifecycleOf(r) as (typeof LIFECYCLE_ORDER)[number])
         return at === -1 ? LIFECYCLE_ORDER.length : at
@@ -526,23 +661,12 @@ export function DispatchesPage() {
     {
       key: 'courierStatus',
       header: 'Courier status',
-      cell: (r) => (
-        <span className="flex items-center gap-1.5">
-          <StatusPill value={str(r, 'courierStatus') ?? ''} />
-          {/* The hold, beside the status rather than inside it: a held dispatch
-              still has whatever courier status it had, and overwriting the pill
-              would lose that. The reason rides in the title, because it is
-              operator free text and does not belong in a column. */}
-          {str(r, 'poolStatus') === 'HELD' && (
-            <span
-              className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
-              title={str(r, 'holdReason') ?? 'Held back from batching'}
-            >
-              Held
-            </span>
-          )}
-        </span>
-      ),
+      // THE HELD BADGE USED TO BE HERE and moved to the Stage cell (23 Aug
+      // 2026), where it belongs. A hold is not a courier status: a held parcel
+      // has not been batched, printed or handed over, so the courier has never
+      // seen it. Its courier status is empty, and pairing the two implied the
+      // courier was involved in the hold.
+      cell: (r) => <StatusPill value={str(r, 'courierStatus') ?? ''} />,
       sortValue: (r) => str(r, 'courierStatus') ?? '',
     },
     {
@@ -641,16 +765,50 @@ export function DispatchesPage() {
             />
           </Field>
           <Field label="Stage" htmlFor="dispStage" className="w-full sm:w-44">
-            <MultiSelect
+            {/* SINGLE-SELECT, closing on pick (23 Aug 2026, at the user's
+                correction): this was a MultiSelect, which stays open by design
+                for multi-picking, and on a page where every other dropdown
+                closes it read as broken. The `stage` param stays a comma list
+                (the tiles write pairs), so the composite "Before the vendor"
+                option carries the SAME value the tile writes and the trigger
+                renders its label rather than raw CSV. */}
+            <SearchSelect
               id="dispStage"
               placeholder="Any stage"
-              options={LIFECYCLE_ORDER.map((stage) => ({
-                value: stage,
-                label: LIFECYCLE_LABELS[stage] ?? stage,
-                count: searched.filter((r) => lifecycleOf(r) === stage).length,
-              }))}
-              selected={stageSel}
-              onChange={(next) => setParams({ stage: next.join(','), status: '' })}
+              // Labels from statusMeta, the same source the Stage COLUMN uses,
+              // so the dropdown and the table can no longer disagree about what
+              // a value is called. Held is a real option rather than a toggle
+              // of its own; see STAGE_FILTER_HELD.
+              options={[
+                { value: '', label: 'Any stage' },
+                {
+                  value: 'RECEIVED,BATCHED',
+                  label: 'Before the vendor',
+                  count: searched.filter((r) => ['RECEIVED', 'BATCHED'].includes(lifecycleOf(r))).length,
+                },
+                ...LIFECYCLE_ORDER.map((stage) => ({
+                  value: stage,
+                  label: statusMeta(stage).label,
+                  count: searched.filter((r) => lifecycleOf(r) === stage).length,
+                })),
+                {
+                  value: STAGE_FILTER_HELD,
+                  label: statusMeta(STAGE_FILTER_HELD).label,
+                  count: heldCount,
+                },
+                {
+                  value: STAGE_FILTER_DAMAGED,
+                  label: statusMeta(STAGE_FILTER_DAMAGED).label,
+                  count: damagedCount,
+                },
+                {
+                  value: STAGE_FILTER_CANCELLED,
+                  label: 'Cancelled',
+                  count: cancelledCount,
+                },
+              ]}
+              value={searchParams.get('stage') ?? ''}
+              onChange={(next) => setParams({ stage: next, status: '', billable: '' })}
             />
           </Field>
           <Field label="Category" htmlFor="dispGroup" className="w-full sm:w-40">
@@ -666,30 +824,24 @@ export function DispatchesPage() {
               ]}
             />
           </Field>
-          {/* HELD, on its own axis (DAMAGE.md). Not folded into the courier
-              status or the stage picker, because a hold is neither: it is a
-              decision somebody made about batching, and it used to be invisible
-              on this page entirely, so a dispatch held on the pool page could
-              not be found here at all. Rendered only when something IS held, so
-              the toolbar does not carry a permanently-zero control. */}
-          {(heldCount > 0 || heldOnly) && (
-            <Field label="Hold" htmlFor="dispHeld" className="w-full sm:w-32">
-              <button
-                id="dispHeld"
-                type="button"
-                aria-pressed={heldOnly}
-                onClick={() => setParam('held', heldOnly ? '' : '1')}
-                className={cn(
-                  'h-9 w-full rounded-lg border px-3 text-[13px] font-medium transition',
-                  heldOnly
-                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400'
-                    : 'text-muted-foreground hover:bg-accent',
-                )}
-              >
-                Held ({heldCount})
-              </button>
-            </Field>
-          )}
+          {/* THE SEPARATE HOLD TOGGLE IS GONE (23 Aug 2026). It lived here
+              because a hold is neither a courier status nor a pipeline stage,
+              which is true of the STORAGE but was the wrong conclusion for the
+              SCREEN: it made an operator learn the platform's table layout to
+              find a held parcel. Held is an option in the Stage picker now. */}
+          <Field label="Billable" htmlFor="dispBillable" className="w-full sm:w-40">
+            <SearchSelect
+              id="dispBillable"
+              placeholder="Any"
+              value={billableSel}
+              onChange={(v) => setParam('billable', v)}
+              options={[
+                { value: '', label: 'Any' },
+                { value: 'yes', label: 'Billable' },
+                { value: 'no', label: 'Not billable' },
+              ]}
+            />
+          </Field>
           <Field label="Bank" htmlFor="dispBank" className="w-full sm:w-44">
             <SearchSelect
               id="dispBank"
@@ -703,16 +855,32 @@ export function DispatchesPage() {
             />
           </Field>
           <Field label="Courier status" htmlFor="dispStatus" className="w-full sm:w-48">
-            <MultiSelect
+            {/* Single-select for the same reason as Stage above. The two
+                composite options carry the exact values the In transit and
+                Failed-or-returned tiles write, so tile and dropdown mirror. */}
+            <SearchSelect
               id="dispStatus"
               placeholder="All statuses"
-              options={COURIER_STATUSES.map((s) => ({
-                value: s,
-                label: s,
-                count: searched.filter((r) => str(r, 'courierStatus') === s).length,
-              }))}
-              selected={statusSel}
-              onChange={(next) => setParam('status', next.join(','))}
+              options={[
+                { value: '', label: 'All statuses' },
+                {
+                  value: IN_FLIGHT.join(','),
+                  label: 'In flight',
+                  count: searched.filter((r) => (IN_FLIGHT as readonly string[]).includes(str(r, 'courierStatus') ?? '')).length,
+                },
+                {
+                  value: OFF_LADDER.join(','),
+                  label: 'Failed or returned',
+                  count: searched.filter((r) => (OFF_LADDER as readonly string[]).includes(str(r, 'courierStatus') ?? '')).length,
+                },
+                ...COURIER_STATUSES.map((s) => ({
+                  value: s,
+                  label: s,
+                  count: searched.filter((r) => str(r, 'courierStatus') === s).length,
+                })),
+              ]}
+              value={searchParams.get('status') ?? ''}
+              onChange={(next) => setParams({ status: next, stage: '', billable: '' })}
             />
           </Field>
           <Field label="Dispatched from" htmlFor="dispFrom" className="w-full sm:w-40">

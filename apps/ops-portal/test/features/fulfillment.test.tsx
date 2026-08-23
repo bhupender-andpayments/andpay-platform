@@ -99,6 +99,23 @@ describe('FulfillmentPage', () => {
     expect(screen.queryByRole('button', { name: /create trigger/i })).toBeNull()
   })
 
+  // REGRESSION (23 Aug 2026, at the user's correction): the bare URL used to
+  // default to the in-flight pair, hiding every CLOSED batch while the All
+  // batches tile sat highlighted claiming otherwise. Arrival now shows
+  // everything, the same grammar Inventory and Requests use.
+  it('shows a CLOSED batch on arrival, with no status param in the URL', async () => {
+    stubFetch((url) =>
+      jsonResponse(
+        url.includes('/ops/batches')
+          ? [BATCH_ROW, { ...BATCH_ROW, id: 'btch_closed', status: 'CLOSED' }]
+          : [],
+      ),
+    )
+    renderFulfillment()
+    expect(await screen.findByText('btch_closed')).toBeTruthy()
+    expect(screen.getByText('btch_abc')).toBeTruthy()
+  })
+
   it('the batches region calls GET /ops/batches and shows the stored unit count', async () => {
     const calls = stubFetch((url) => jsonResponse(url.includes('/ops/batches') ? [BATCH_ROW] : [POOL_ROW]))
     renderFulfillment()
@@ -248,7 +265,17 @@ describe('Batches: the status is a real lifecycle now', () => {
         </AuthProvider>
       </MemoryRouter>,
     )
-    expect(await screen.findByText(/^Formed$/i)).toBeTruthy()
+    // 23 Aug 2026: "Formed" is no longer its own labelled fact; it rides in
+    // the Status summary card's hint ("MANUAL trigger, formed ..."), one of
+    // the facts strip's three fields folded into the new StatFacts band.
+    // The point pinned here is unchanged: a real formed-at timestamp, never
+    // the literal word "BORN" a since-fixed typo once left on screen.
+    // Renders twice on purpose now: the Status card's own hint ("MANUAL
+    // trigger, formed ...") and the lifecycle rail's description both say
+    // "formed", which is fine — the point pinned is that a real timestamp
+    // exists somewhere, never the literal word "BORN".
+    await screen.findByText('btch_abc')
+    expect(screen.getAllByText(/formed/i).length).toBeGreaterThan(0)
     expect(screen.queryByText(/BORN/)).toBeNull()
   })
 })

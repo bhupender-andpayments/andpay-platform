@@ -24,6 +24,7 @@ import { MerchantDetailPage } from './features/merchants/MerchantDetailPage.js'
 import { FulfillmentPage } from './features/fulfillment/FulfillmentPage.js'
 import { PoolPage } from './features/fulfillment/PoolPage.js'
 import { RequestsPage } from './features/requests/RequestsPage.js'
+import { RequestDetailPage } from './features/requests/RequestDetailPage.js'
 import { BatchGeneratePage } from './features/fulfillment/generate/BatchGeneratePage.js'
 
 // Router-agnostic route tree (no <BrowserRouter> here) so tests can wrap it
@@ -85,6 +86,9 @@ export function AppRoutes() {
               relationship at two moments: the pool is what is waiting, this is
               everything ever asked for. */}
           <Route path="/requests" element={<RequestsPage />} />
+          {/* Nested the same way /dispatches/:asgnId sits under /dispatches:
+              one object's list and its own detail, no extra layout. */}
+          <Route path="/requests/:sourceEventId" element={<RequestDetailPage />} />
           <Route path="/batches" element={<FulfillmentPage />} />
           {/* ONE batch page (13 Aug 2026). The collateral generator IS the batch
               page: an operator opening a batch is there to see the cards, print

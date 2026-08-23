@@ -26,6 +26,7 @@ import {
   listDispatches,
   listDeviceInventory,
   readDeviceDetail,
+  readDeviceReplacementChain,
   readUnitTrailOps,
   readPoolEntryTrailOps,
   readBatchTrailOps,
@@ -35,6 +36,7 @@ import {
   type DispatchRow,
   type UnitInventoryRow,
   type UnitDetailView,
+  type UnitReplacementChain,
   type StatusTrailRow,
   type VendorRow,
   type IntakeExceptionView,
@@ -62,7 +64,7 @@ import {
   type ChainMemberRow,
   type DamageCaseSummary,
 } from '@andpay/tms-service'
-import { listBankMasters, type BankMasterRow } from '@andpay/identity-service'
+import { listBankMasters, readMerchantContacts, type BankMasterRow } from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 import { requireUnrestrictedRead } from './read-restriction.js'
@@ -201,15 +203,63 @@ export class OpsReadController {
   }
 
   // Redesign step 7 (ruling 1b): the merchant list the entity-first nav was
-  // missing. Guard-only like every read here, and served from the TMS db
-  // (merchant_projection), not identity, so no context boundary is crossed.
-  // Unlike the four fulfillment reads above this one DID need a migration, a
-  // single GRANT SELECT to tms_ops_read (20260808190000). No D2 permission
-  // string was added.
+  // missing. Guard-only like every read here. Unlike the four fulfillment reads
+  // above this one DID need a migration, a single GRANT SELECT to tms_ops_read
+  // (20260808190000). No D2 permission string was added.
+  //
+  // TWO READS, COMPOSED HERE, 22 Aug 2026. The BRD 5.1b block is served from
+  // TMS, which snapshots it onto every assignment the bank file creates. A
+  // merchant created by hand has no assignment yet and carries that block in
+  // identity.merchant instead, which C4 forbids TMS from reading. So the edge
+  // holds both clients and joins them in memory, exactly as
+  // reports.controller.ts mergeHoldState and mergeReplacementMarks do. Neither
+  // service reads the other's schema and no fact was widened to arrange it.
+  //
+  // FILTERING IS THE PORTAL'S JOB and stays that way. This route takes no query
+  // params: the two filters the page offers are a free-text needle and a bank
+  // code, both cheap over an already-loaded array, and every other ops list
+  // here filters the same way. The BRD's 5,000-row figure bounds a bank FILE,
+  // not the merchant table. The ceiling to watch: once merchants pass low
+  // thousands the answer is server-side `?q=&bank=` plus keyset pagination, not
+  // a larger payload.
   @Get('merchants')
   @HttpCode(200)
   async merchants(): Promise<MerchantRow[]> {
-    return listMerchants(this.deps.tmsDb)
+    const rows = await listMerchants(this.deps.tmsDb)
+    return this.mergeMerchantContacts(rows)
+  }
+
+  /**
+   * Fill the BRD 5.1b block for merchants TMS knows nothing about yet.
+   *
+   * Only ever fills a null: a merchant with requests has an assignment
+   * snapshot, and that snapshot is what the bank actually sent for the most
+   * recent request, so it wins over identity's copy. `address` falls back to
+   * identity's composed registered_address, which is the same six-part string
+   * the bank file's ship-to is built from.
+   */
+  private async mergeMerchantContacts(rows: MerchantRow[]): Promise<MerchantRow[]> {
+    const missing = rows.filter((r) => r.contactName === null && r.mobile === null && r.address === null)
+    if (missing.length === 0) return rows
+    const contacts = await readMerchantContacts(
+      this.deps.identityDb,
+      missing.map((r) => r.mrchId),
+    )
+    if (contacts.size === 0) return rows
+    return rows.map((row) => {
+      const hit = contacts.get(row.mrchId)
+      if (hit === undefined) return row
+      return {
+        ...row,
+        contactName: row.contactName ?? hit.contactName,
+        mobile: row.mobile ?? hit.mobile,
+        email: row.email ?? hit.email,
+        address: row.address ?? hit.registeredAddress,
+        city: row.city ?? hit.city,
+        state: row.state ?? hit.state,
+        pincode: row.pincode ?? hit.pincode,
+      }
+    })
   }
 
   // `?poolStatus=POOLED|HELD|BATCHED` narrows the queue; omitted returns the
@@ -287,6 +337,22 @@ export class OpsReadController {
     const detail = await readDeviceDetail(this.deps.fulfillmentDb, unitId)
     if (detail === null) throw new NotFoundException('device not found')
     return detail
+  }
+
+  // One device's replacement chain, one hop each way (23 Aug 2026).
+  //
+  // A SEPARATE ROUTE from the detail above, on purpose. That one is the only
+  // surface serving the raw manufacturer QR payload, and the device page is
+  // guarded against calling it so that blob never reaches a screen which does
+  // not render it. Asking "what did this device replace, and what replaced it"
+  // should not cost that guard, so this route carries ids and serials only.
+  // Same guard-only posture and the same 404 on an unknown unit.
+  @Get('devices/:unitId/replacement-chain')
+  @HttpCode(200)
+  async deviceReplacementChain(@Param('unitId') unitId: string): Promise<UnitReplacementChain> {
+    const chain = await readDeviceReplacementChain(this.deps.fulfillmentDb, unitId)
+    if (chain === null) throw new NotFoundException('device not found')
+    return chain
   }
 
   // STATUS_STAGES.md (21 Aug 2026): the three status trails, the siblings of

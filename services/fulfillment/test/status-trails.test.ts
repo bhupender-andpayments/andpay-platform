@@ -315,3 +315,144 @@ describe('bulkDeliverBatch leaves damaged dispatches alone (22 Aug 2026 ruling)'
     expect(await statusFor(damaged)).toBe('IN_TRANSIT')
   })
 })
+
+// The COUNTING contract of the bulk shortcut (23 Aug 2026, closing the gap the
+// batch-page audit found: only delivered/failed had ever been asserted, in one
+// scenario). The three counts are what the deliver dialog reports verbatim, so
+// each has to mean what it says.
+describe('bulkDeliverBatch counting: delivered, skipped, and the absent', () => {
+  interface BulkFx {
+    btchWire: string
+    btchUuid: string
+    tenantUuid: string
+    programUuid: string
+  }
+
+  async function seedBulkBatch(): Promise<BulkFx> {
+    const btchUuid = toUuid(newId('btch'))
+    const tenantUuid = toUuid(newId('tnnt'))
+    const programUuid = toUuid(newId('prog'))
+    await db.$executeRaw`
+      INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, unit_count, updated_at)
+      VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'SENT_TO_PRINT_VENDOR', 'LOT_SIZE', 1, now())
+    `
+    return { btchWire: fromUuid('btch', btchUuid), btchUuid, tenantUuid, programUuid }
+  }
+
+  async function seedPoolRow(fx: BulkFx, over: { dispatchGroup?: string | null } = {}): Promise<string> {
+    const asgnWire = newId('asgn')
+    await db.$executeRaw`
+      INSERT INTO pending_pool_entry (
+        asgn_id, tenant_id, program_id, merchant_id, soundbox, standee_count, sticker_count, billable,
+        merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
+        ship_to_address, qr_value, vpa_value, pool_status, batch, dispatch_state, dispatch_group,
+        source_event_id, trace_id, updated_at
+      ) VALUES (
+        ${toUuid(asgnWire)}::uuid, ${fx.tenantUuid}::uuid, ${fx.programUuid}::uuid, ${toUuid(newId('mrch'))}::uuid,
+        true, 0, 0, true, 'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank',
+        '221B', 'upi://x', 'x@bank', 'BATCHED', ${fx.btchUuid}::uuid, 'DISPATCHED_BY_VENDOR',
+        ${over.dispatchGroup ?? 'SOUNDBOX'}, ${`seed|${asgnWire}`}, 'trace-bulk', now()
+      )
+    `
+    return asgnWire
+  }
+
+  async function seedShipment(fx: BulkFx, status: string): Promise<string> {
+    const shptUuid = toUuid(newId('shpt'))
+    await db.$executeRaw`
+      INSERT INTO shpt (id, awb, status, dispatch_date, tenant_id, program_id, updated_at)
+      VALUES (${shptUuid}::uuid, ${newId('shpt')}, ${status}, now(), ${fx.tenantUuid}::uuid, ${fx.programUuid}::uuid, now())
+    `
+    return shptUuid
+  }
+
+  async function pairDevice(fx: BulkFx, asgnWire: string, shptUuid: string): Promise<void> {
+    await db.$executeRaw`
+      INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, device_serial, asgn_id, shipment, updated_at)
+      VALUES (gen_random_uuid(), 'SERIALIZED', 'SOUNDBOX', ${MANUFACTURER}::uuid, 'DISPATCHED',
+              ${`SER-${crypto.randomUUID()}`}, ${toUuid(asgnWire)}::uuid, ${shptUuid}::uuid, now())
+    `
+  }
+
+  function runBulk(fx: BulkFx) {
+    return bulkDeliverBatch(db, {
+      batchId: fx.btchWire,
+      clientKey: crypto.randomUUID(),
+      actorId: ACTOR,
+      actorDisplay: HANDLE,
+      traceId: 't-bulk-count',
+    })
+  }
+
+  // Already-terminal shipments are excluded by the selection SQL itself, so
+  // they appear in NO count: the shortcut reports what it touched, not the
+  // history of the batch.
+  it('leaves an already-DELIVERED shipment out of every count', async () => {
+    const fx = await seedBulkBatch()
+    const done = await seedPoolRow(fx)
+    await pairDevice(fx, done, await seedShipment(fx, 'DELIVERED'))
+    const moving = await seedPoolRow(fx)
+    await pairDevice(fx, moving, await seedShipment(fx, 'IN_TRANSIT'))
+
+    const res = await runBulk(fx)
+    expect(res).toEqual({ delivered: 1, skipped: 0, failed: 0 })
+  })
+
+  // A collateral leg has no device: its shipment hangs off
+  // pending_pool_entry.collateral_shipment, the second arm of the selection
+  // UNION, and must deliver exactly like a device leg.
+  it('delivers a collateral-only leg via collateral_shipment', async () => {
+    const fx = await seedBulkBatch()
+    const asgnWire = await seedPoolRow(fx, { dispatchGroup: 'COLLATERAL' })
+    const shptUuid = await seedShipment(fx, 'IN_TRANSIT')
+    await db.$executeRaw`
+      UPDATE pending_pool_entry SET collateral_shipment = ${shptUuid}::uuid
+      WHERE asgn_id = ${toUuid(asgnWire)}::uuid
+    `
+
+    const res = await runBulk(fx)
+    expect(res).toEqual({ delivered: 1, skipped: 0, failed: 0 })
+    const rows = await db.$queryRaw<{ status: string }[]>`
+      SELECT status FROM shpt WHERE id = ${shptUuid}::uuid
+    `
+    expect(rows[0]!.status).toBe('DELIVERED')
+  })
+
+  // A leg the return sheet has not mapped yet has NO shipment: nothing exists
+  // to deliver, so it is absent from all three counts rather than reported as
+  // skipped or failed. The batch page's Mapped cards are what make this
+  // visible to the operator.
+  it('reports an unmapped leg in no count at all', async () => {
+    const fx = await seedBulkBatch()
+    await seedPoolRow(fx) // pooled row, no unit, no shipment
+
+    const res = await runBulk(fx)
+    expect(res).toEqual({ delivered: 0, skipped: 0, failed: 0 })
+  })
+
+  // A replay of the WHOLE bulk call finds nothing: the first call delivered
+  // the shipment, and the selection SQL excludes terminal shipments before the
+  // per-shipment dedup keys are ever consulted. All-zero counts, one delivery,
+  // one trail event: never delivered twice.
+  it('reports nothing on a same-client-key replay, and never delivers twice', async () => {
+    const fx = await seedBulkBatch()
+    const asgnWire = await seedPoolRow(fx)
+    await pairDevice(fx, asgnWire, await seedShipment(fx, 'IN_TRANSIT'))
+
+    const clientKey = crypto.randomUUID()
+    const call = () =>
+      bulkDeliverBatch(db, {
+        batchId: fx.btchWire,
+        clientKey,
+        actorId: ACTOR,
+        actorDisplay: HANDLE,
+        traceId: 't-bulk-replay',
+      })
+    expect(await call()).toEqual({ delivered: 1, skipped: 0, failed: 0 })
+    expect(await call()).toEqual({ delivered: 0, skipped: 0, failed: 0 })
+    const events = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM shpt_status_event WHERE status = 'DELIVERED'
+    `
+    expect(Number(events[0]!.n)).toBe(1)
+  })
+})

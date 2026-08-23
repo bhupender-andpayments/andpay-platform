@@ -123,3 +123,91 @@ describe('buildRailFromTrail attribution', () => {
     expect(stages.some((s) => s.key === 'DELIVERED')).toBe(false)
   })
 })
+
+// A CANCELLED DAMAGE FLAG MUST NOT END THE RAIL (23 Aug 2026).
+//
+// Found on a real device (serial 9159361604004): unit.status was DELIVERED, but
+// the rail drew Damaged as the terminal end. Its trail was exactly the sequence
+// below, twenty seconds apart: an operator flagged damage and cancelled it, and
+// the cancellation correctly reverted the device. The rail searched BACKWARDS
+// for the latest terminal, found the reverted DAMAGED, and never looked at the
+// DELIVERED that came after it. The page said the device was destroyed when it
+// was sitting with the merchant.
+const SPINE = ['IN_STOCK', 'PRINTED', 'DISPATCHED', 'DELIVERED']
+const TERMINALS = ['DAMAGED', 'RETURNED']
+
+function railOf(trail: StatusTrailEntry[], currentStatus?: string) {
+  return buildRailFromTrail({
+    spine: SPINE,
+    terminals: TERMINALS,
+    trail,
+    label: (x) => x,
+    icon: () => icon,
+    ...(currentStatus !== undefined ? { currentStatus } : {}),
+  })
+}
+
+describe('buildRailFromTrail terminal detection', () => {
+  const REVERTED: StatusTrailEntry[] = [
+    entry({ status: 'DELIVERED', occurredAt: '2026-08-19T06:32:19.000Z', statusSource: 'backfill' }),
+    entry({ status: 'DAMAGED', occurredAt: '2026-08-21T05:52:16.000Z', statusSource: 'replacement-raised' }),
+    entry({ status: 'DELIVERED', occurredAt: '2026-08-21T05:52:36.000Z', statusSource: 'replacement-cancelled' }),
+  ]
+
+  it('does not end on a damage that was cancelled, when the live status says delivered', () => {
+    const stages = railOf(REVERTED, 'DELIVERED')
+    expect(stages.some((x) => x.key === 'DAMAGED')).toBe(false)
+    expect(stages.some((x) => x.terminal === true)).toBe(false)
+    const delivered = stages.find((x) => x.key === 'DELIVERED')
+    expect(delivered?.state).toBe('current')
+  })
+
+  // The same trail with no currentStatus passed: the LAST entry is DELIVERED,
+  // so the fallback rule has to reach the same answer on its own.
+  it('reaches the same answer from the trail alone, with no live status', () => {
+    const stages = railOf(REVERTED)
+    expect(stages.some((x) => x.key === 'DAMAGED')).toBe(false)
+    expect(stages.find((x) => x.key === 'DELIVERED')?.state).toBe('current')
+  })
+
+  it('DOES end on a damage that still stands', () => {
+    const stages = railOf(
+      [
+        entry({ status: 'DELIVERED', occurredAt: '2026-08-19T06:32:19.000Z' }),
+        entry({ status: 'DAMAGED', occurredAt: '2026-08-21T05:52:16.000Z', statusSource: 'replacement-raised' }),
+      ],
+      'DAMAGED',
+    )
+    const damaged = stages.find((x) => x.key === 'DAMAGED')
+    expect(damaged?.terminal).toBe(true)
+    expect(damaged?.state).toBe('current')
+  })
+
+  // The case the ORIGINAL comment was written for, and which the old rule did
+  // get right. The new rule must not regress it.
+  it('ends on the SECOND damage when a device is damaged, corrected, and damaged again', () => {
+    const stages = railOf(
+      [
+        entry({ status: 'DELIVERED', occurredAt: '2026-08-19T06:00:00.000Z' }),
+        entry({ status: 'DAMAGED', occurredAt: '2026-08-20T06:00:00.000Z' }),
+        entry({ status: 'DELIVERED', occurredAt: '2026-08-21T06:00:00.000Z', statusSource: 'replacement-cancelled' }),
+        entry({ status: 'DAMAGED', occurredAt: '2026-08-22T06:00:00.000Z' }),
+      ],
+      'DAMAGED',
+    )
+    expect(stages.find((x) => x.key === 'DAMAGED')?.terminal).toBe(true)
+  })
+
+  // The live column outranks the trail: an incomplete trail (older rows that
+  // predate these tables) must not be able to invent a terminal.
+  it('lets the live status overrule a trail whose last entry is a stale terminal', () => {
+    const stages = railOf(
+      [
+        entry({ status: 'DELIVERED', occurredAt: '2026-08-19T06:00:00.000Z' }),
+        entry({ status: 'DAMAGED', occurredAt: '2026-08-20T06:00:00.000Z' }),
+      ],
+      'DELIVERED',
+    )
+    expect(stages.some((x) => x.terminal === true)).toBe(false)
+  })
+})

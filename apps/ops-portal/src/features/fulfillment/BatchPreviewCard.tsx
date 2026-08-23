@@ -1,6 +1,8 @@
+import { Repeat } from 'lucide-react'
 import { Card } from '../../ui/primitives.js'
 import { fmtNumber } from '../../ui/format.js'
 import type { PoolEntryRow } from '../../api/endpoints.js'
+import { deviceShortfall } from './BatchablePools.js'
 import { IconCheck } from '../../ui/icons.js'
 
 // What the next batch would contain, summarised beside the pool it summarises.
@@ -39,6 +41,16 @@ export interface PoolSummary {
   soundboxes: number
   standees: number
   stickers: number
+  /**
+   * THE REPLACEMENT SLICE of the same pool (23 Aug 2026, ops-team ask): how
+   * much of the next batch exists because something got damaged, not because a
+   * bank asked for more. Same derivation posture as everything above: counted
+   * from replacementOfAsgnId, which rides every pool row natively.
+   */
+  replacementRequests: number
+  replacementSoundboxes: number
+  replacementStandees: number
+  replacementStickers: number
 }
 
 export function summarisePool(rows: readonly PoolEntryRow[]): PoolSummary {
@@ -57,6 +69,16 @@ export function summarisePool(rows: readonly PoolEntryRow[]): PoolSummary {
     soundboxes: rows.filter((r) => r.soundbox).length,
     standees: rows.reduce((n, r) => n + r.standeeCount, 0),
     stickers: rows.reduce((n, r) => n + r.stickerCount, 0),
+    replacementRequests: new Set(
+      rows.filter((r) => (r.replacementOfAsgnId ?? null) !== null).map((r) => r.sourceEventId ?? r.asgnId),
+    ).size,
+    replacementSoundboxes: rows.filter((r) => (r.replacementOfAsgnId ?? null) !== null && r.soundbox).length,
+    replacementStandees: rows
+      .filter((r) => (r.replacementOfAsgnId ?? null) !== null)
+      .reduce((n, r) => n + r.standeeCount, 0),
+    replacementStickers: rows
+      .filter((r) => (r.replacementOfAsgnId ?? null) !== null)
+      .reduce((n, r) => n + r.stickerCount, 0),
   }
 }
 
@@ -72,13 +94,22 @@ function Line({ label, value }: { label: string; value: string }) {
 export function BatchPreviewCard({
   rows,
   minLotSize,
+  inStock,
 }: {
   rows: readonly PoolEntryRow[]
   /** The SAME resolved rule the Auto-trigger card below prints, so the two
    *  cannot disagree about the threshold on one screen. */
   minLotSize: number | null
+  /**
+   * Serialized devices in the warehouse, or null when the level could not be
+   * read. Passed in rather than fetched here so this card and the trigger
+   * strip beside it read one number (PoolPage owns the fetch); null renders
+   * nothing at all, because an unknown stock level must never show as zero.
+   */
+  inStock?: number | null
 }) {
   const s = summarisePool(rows)
+  const shortfall = deviceShortfall(s.soundboxes, inStock ?? null)
   const meets = minLotSize !== null && s.requests >= minLotSize
   // Clamped at both ends: a pool past its lot size must not overflow the track,
   // and a pool with a single record must not round down to an empty bar and
@@ -103,9 +134,50 @@ export function BatchPreviewCard({
         <Line label="Merchants" value={fmtNumber(s.merchants)} />
         <Line label={s.banks === 1 ? 'Bank' : 'Banks'} value={fmtNumber(s.banks)} />
         <Line label="Soundboxes" value={fmtNumber(s.soundboxes)} />
+        {/* STOCK, next to the demand it has to cover (23 Aug 2026, at the
+            user's request). Only when there IS a soundbox demand and a stock
+            level we actually read: a "0 in stock" beside a collateral-only pool
+            would be a warning about nothing. Red when it cannot cover, plain
+            when it can, so the eye gets the answer without reading. */}
+        {s.soundboxes > 0 && inStock !== null && inStock !== undefined && (
+          <div className="flex items-baseline justify-between gap-3 py-1">
+            <span className="text-[12.5px] text-muted-foreground">Devices in stock</span>
+            <span
+              className={`num text-[13px] font-semibold ${
+                shortfall === null ? 'text-foreground' : 'text-amber-700 dark:text-amber-400'
+              }`}
+            >
+              {fmtNumber(inStock)}
+              {shortfall !== null && <span className="font-medium"> (short {fmtNumber(shortfall.short)})</span>}
+            </span>
+          </div>
+        )}
         <Line label="Standees" value={fmtNumber(s.standees)} />
         <Line label="Stickers" value={fmtNumber(s.stickers)} />
       </div>
+
+      {/* THE REPLACEMENT SLICE, highlighted (23 Aug 2026, ops-team ask): the
+          operators want to see at a glance how much of the next batch is
+          damage-driven. AMBER, the same tone every REPLACEMENT pill on this
+          portal already wears, so the two read as one fact. Absent entirely
+          when the pool holds no replacements: a zero-row here would demote the
+          highlight to furniture on every ordinary day. */}
+      {s.replacementRequests > 0 && (
+        <div className="mt-3 rounded-xl border border-amber-300 bg-amber-500/[0.08] px-3 py-2.5 dark:border-amber-800 dark:bg-amber-500/10">
+          <div className="flex items-center gap-1.5">
+            <Repeat className="size-3.5 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+              Replacements
+            </span>
+          </div>
+          <div className="mt-1 divide-y divide-amber-500/15">
+            <Line label={s.replacementRequests === 1 ? 'Request' : 'Requests'} value={fmtNumber(s.replacementRequests)} />
+            {s.replacementSoundboxes > 0 && <Line label="Soundboxes" value={fmtNumber(s.replacementSoundboxes)} />}
+            {s.replacementStandees > 0 && <Line label="Standees" value={fmtNumber(s.replacementStandees)} />}
+            {s.replacementStickers > 0 && <Line label="Stickers" value={fmtNumber(s.replacementStickers)} />}
+          </div>
+        </div>
+      )}
 
       {/* The lot-size verdict, stated rather than left to be worked out from
           the two numbers. Silent when no lot size is configured: a tick or a

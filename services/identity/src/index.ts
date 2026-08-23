@@ -10,10 +10,12 @@ export {
   createMerchant,
   editBankMaster,
   listBankMasters,
+  readMerchantContacts,
   OpsClientError,
   type CreateMerchantInput,
   type CreateBankMasterInput,
   type EditBankMasterInput,
   type BankMasterAddressContact,
   type BankMasterRow,
+  type MerchantContactRow,
 } from './ops.js'

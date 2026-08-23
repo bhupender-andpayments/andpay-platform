@@ -249,7 +249,7 @@ export async function correctStatus(
 export async function bulkDeliverBatch(
   db: FulfillmentDb,
   args: { batchId: string; clientKey: string; actorId: string; actorDisplay?: string | null; traceId: string },
-): Promise<{ delivered: number; skipped: number; failed: number }> {
+): Promise<{ delivered: number; skipped: number; failed: number; firstError?: string }> {
   const batchUuid = toUuid(args.batchId)
   const rows = await db.$queryRaw<{ shpt_id: string }[]>`
     SELECT DISTINCT s.shpt_id::text AS shpt_id
@@ -282,6 +282,15 @@ export async function bulkDeliverBatch(
   let delivered = 0
   let skipped = 0
   let failed = 0
+  // The first failure's message, kept so a failed count is diagnosable
+  // (23 Aug 2026). The bare catch below used to swallow EVERYTHING: a broken
+  // write scope or a down database reported as `failed: N` inside an HTTP
+  // 200, indistinguishable from a business no-op. The loop still continues
+  // past a failure on purpose (one bad shipment must not strand the rest),
+  // but the caller now gets one honest sentence about what went wrong. No
+  // reason free-text or PII rides here: correctStatus's own errors are
+  // machine messages.
+  let firstError: string | undefined
   const now = new Date()
   for (const r of rows) {
     try {
@@ -300,11 +309,12 @@ export async function bulkDeliverBatch(
       })
       if (!deduped && outcome === 'advanced') delivered++
       else skipped++
-    } catch {
+    } catch (err) {
       failed++
+      firstError ??= err instanceof Error ? err.message : String(err)
     }
   }
-  return { delivered, skipped, failed }
+  return firstError === undefined ? { delivered, skipped, failed } : { delivered, skipped, failed, firstError }
 }
 
 /**

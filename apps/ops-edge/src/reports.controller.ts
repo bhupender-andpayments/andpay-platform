@@ -174,15 +174,27 @@ export class ReportsController {
    * but the lesson holds: put it on the row before it reaches the page.
    */
   private async mergeHoldState(rows: ReportRow[]): Promise<ReportRow[]> {
-    const held = await listPoolEntries(this.deps.fulfillmentDb, { poolStatus: 'HELD' })
-    if (held.length === 0) return rows
-    const byAsgn = new Map<string, PoolEntryRow>(held.map((h) => [h.asgnId, h]))
+    // CANCELLED joined HELD on 24 Aug 2026, same overlay for the same reason:
+    // both are pool-axis facts analytics deliberately never stores (HELD is
+    // reversible, CANCELLED is a withdrawal - neither may touch the monotone
+    // pipeline_state), and both are exactly what an operator scanning the list
+    // needs to see composed onto the stage. Two indexed reads over small
+    // working sets; the merge stays keyed on asgnId, which is exact.
+    const [held, cancelled] = await Promise.all([
+      listPoolEntries(this.deps.fulfillmentDb, { poolStatus: 'HELD' }),
+      listPoolEntries(this.deps.fulfillmentDb, { poolStatus: 'CANCELLED' }),
+    ])
+    if (held.length === 0 && cancelled.length === 0) return rows
+    const heldByAsgn = new Map<string, PoolEntryRow>(held.map((h) => [h.asgnId, h]))
+    const cancelledByAsgn = new Set<string>(cancelled.map((c) => c.asgnId))
     return rows.map((row) => {
       const id = typeof row['dispatchId'] === 'string' ? row['dispatchId'] : ''
-      const hit = byAsgn.get(id)
-      // Absent rather than false on an unheld row: the field means "this is held
-      // and here is why", and a false on every row is noise in a CSV export.
-      return hit === undefined ? row : { ...row, poolStatus: 'HELD', holdReason: hit.holdReason ?? null }
+      const hit = heldByAsgn.get(id)
+      // Absent rather than false on an ordinary row: the field means "this is
+      // held and here is why", and a false on every row is noise in a CSV export.
+      if (hit !== undefined) return { ...row, poolStatus: 'HELD', holdReason: hit.holdReason ?? null }
+      if (cancelledByAsgn.has(id)) return { ...row, poolStatus: 'CANCELLED' }
+      return row
     })
   }
 

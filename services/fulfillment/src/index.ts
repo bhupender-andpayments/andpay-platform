@@ -242,6 +242,7 @@ export {
   listDispatches,
   listDeviceInventory,
   readDeviceDetail,
+  readDeviceReplacementChain,
   readShipmentTrailOps,
   readReplacementMarksOps,
   readUnitTrailOps,
@@ -256,6 +257,7 @@ export {
   type DispatchRow,
   type UnitInventoryRow,
   type UnitDetailView,
+  type UnitReplacementChain,
 } from './ops-read.js'
 export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
 export { InMemoryAssetStore } from './storage/dev-asset-store.js'

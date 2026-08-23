@@ -15,6 +15,10 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
+// The BRD 5.1b block (22 Aug 2026) is part of the row shape now. Kirana Corner
+// carries a full one, the way an ingested merchant does; Tea Stall Junction
+// carries nulls throughout, the way a hand-created merchant does before any
+// bank file mentions them. Both shapes have to render.
 const ROWS = [
   {
     mrchId: 'mrch_2a',
@@ -22,7 +26,29 @@ const ROWS = [
     legalName: 'KIRANA CORNER PRIVATE LIMITED',
     mcc: '5411',
     status: 'ACTIVE',
+    createdAt: '2026-07-20T10:00:00.000Z',
     updatedAt: '2026-08-01T10:00:00.000Z',
+    hasAdditionalRequests: false,
+    vpa: 'kirana01@gscb',
+    qrType: null,
+    contactName: 'Priya Menon',
+    mobile: '9224148401',
+    email: 'priya@kirana.example',
+    address: 'SHOP NO 14 TEMPLE ROAD, AHMEDABAD, Gujarat, 380008',
+    city: 'AHMEDABAD',
+    state: 'Gujarat',
+    pincode: '380008',
+    // bankDisplayName and bankReferenceCode are DELIBERATELY DIFFERENT strings
+    // here, mirroring the real divergence that caused a live bug (23 Aug
+    // 2026): bankReferenceCode is the bank FILE's own aggregator code (here
+    // '3'), never the Bank Master's code, so a filter or count keyed on it
+    // instead of bankDisplayName silently matches nothing. See the comment on
+    // bankOptions in MerchantsPage.tsx for the full trace.
+    bankDisplayName: 'Gujarat State Co-op Bank',
+    bankReferenceCode: '3',
+    branchCode: '30',
+    latestRequestOrigin: 'INITIAL',
+    latestRequestAt: '2026-07-20T10:00:00.000Z',
   },
   {
     mrchId: 'mrch_2b',
@@ -30,14 +56,33 @@ const ROWS = [
     legalName: 'TEA STALL JUNCTION LLP',
     mcc: '5812',
     status: 'SUSPENDED',
+    createdAt: '2026-08-02T10:00:00.000Z',
     updatedAt: '2026-08-02T10:00:00.000Z',
+    hasAdditionalRequests: false,
+    vpa: null,
+    qrType: null,
+    contactName: null,
+    mobile: null,
+    email: null,
+    address: null,
+    city: null,
+    state: null,
+    pincode: null,
+    bankDisplayName: null,
+    bankReferenceCode: null,
+    branchCode: null,
+    latestRequestOrigin: null,
+    latestRequestAt: null,
   },
 ]
 
 // Shapes copied from services/identity/src/ops.ts BankMasterRow. Only the two
 // fields the picker reads are needed here.
 const BANKS = [
-  { tnntId: 'tnnt_gscb', displayName: 'GSCB', bankReferenceCode: 'GSCB', status: 'ACTIVE' },
+  // The Bank Master's OWN bankReferenceCode ('GSCB') is unrelated to the
+  // assignment's aggregator code above ('3') on purpose: two different
+  // namespaces, per the note on ROWS[0].
+  { tnntId: 'tnnt_gscb', displayName: 'Gujarat State Co-op Bank', bankReferenceCode: 'GSCB', status: 'ACTIVE' },
   { tnntId: 'tnnt_hdfc', displayName: 'HDFC Bank', bankReferenceCode: 'HDFC', status: 'ACTIVE' },
 ]
 
@@ -134,7 +179,7 @@ describe('MerchantsPage', () => {
 
     // The one search surface is the URL-backed Toolbar (2026-08-14), the same
     // filter idiom as Inventory; the grid's own search row is off.
-    await userEvent.type(screen.getByPlaceholderText(/name, legal name/i), 'tea')
+    await userEvent.type(screen.getByPlaceholderText(/name, vpa, mobile/i), 'tea')
     expect(screen.queryByText('Kirana Corner')).toBeNull()
     expect(screen.getByText('Tea Stall Junction')).toBeTruthy()
   })
@@ -195,8 +240,17 @@ describe('MerchantsPage', () => {
       await userEvent.type(screen.getByLabelText(label), value)
     }
     // The bank comes from master data, so it is SELECTED, never typed.
-    await screen.findByRole('option', { name: 'GSCB' })
-    await userEvent.selectOptions(screen.getByLabelText(/bank/i), 'tnnt_gscb')
+    //
+    // SCOPED TO THE DIALOG since 22 Aug 2026: the page behind it now carries a
+    // Bank filter of its own, so a bare /bank/i label lookup matches two
+    // controls. The dialog's is the native <select>, the filter's is a popover
+    // button, and this test is about the form.
+    await screen.findByRole('option', { name: 'Gujarat State Co-op Bank' })
+    const bankSelect = screen
+      .getAllByLabelText(/bank/i)
+      .find((el): el is HTMLSelectElement => el instanceof HTMLSelectElement)
+    if (bankSelect === undefined) throw new Error('the Add merchant dialog has no bank select')
+    await userEvent.selectOptions(bankSelect, 'tnnt_gscb')
 
     await type(/business name/i, 'Chai Point')
     await type(/legal name/i, 'CHAI POINT LLP')
@@ -285,6 +339,140 @@ describe('MerchantsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /add merchant/i }))
 
     expect(screen.queryByText(/one merchant per vpa/i)).toBeNull()
+  })
+
+  // ------------------------------------------------------------------
+  // BRD 5.1b alignment, 22 Aug 2026.
+  // ------------------------------------------------------------------
+
+  it('shows the BRD block: VPA, contact, mobile, email, address parts, bank and branch', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+
+    for (const value of [
+      'kirana01@gscb',
+      'Priya Menon',
+      '9224148401',
+      'priya@kirana.example',
+      'AHMEDABAD',
+      'Gujarat',
+      '380008',
+      '30',
+    ]) {
+      expect(screen.getAllByText(value).length).toBeGreaterThan(0)
+    }
+  })
+
+  // A merchant no bank file has carried yet must still be findable. Blank cells
+  // rather than a missing row, and never a crash on the null.
+  it('renders a merchant with no bank request as dashes, not as an absent row', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    expect(await screen.findByText('Tea Stall Junction')).toBeTruthy()
+  })
+
+  it('searches on VPA, mobile and bank code, not only the name', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+    const search = screen.getByLabelText('Search')
+
+    for (const needle of ['kirana01@gscb', '9224148401', 'Priya']) {
+      await userEvent.clear(search)
+      await userEvent.type(search, needle)
+      expect(screen.getByText('Kirana Corner')).toBeTruthy()
+      expect(screen.queryByText('Tea Stall Junction')).toBeNull()
+    }
+  })
+
+  // The status filter is gone because nothing can ever write a second status.
+  // The status COLUMN stays, so assert on the control and not on the word.
+  it('offers a Bank filter and no status filter', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+
+    expect(screen.getByLabelText('Bank')).toBeTruthy()
+    expect(screen.queryByLabelText('Status')).toBeNull()
+  })
+
+  it('narrows to one bank when the Bank filter is used', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+
+    await userEvent.click(screen.getByLabelText('Bank'))
+    await userEvent.click(await screen.findByRole('option', { name: /Gujarat State Co-op Bank/ }))
+
+    expect(screen.getByText('Kirana Corner')).toBeTruthy()
+    // Tea Stall Junction has no bank yet, so a bank filter must exclude it.
+    expect(screen.queryByText('Tea Stall Junction')).toBeNull()
+  })
+
+  // REGRESSION (23 Aug 2026): the filter used to key on bankReferenceCode,
+  // which is not the Bank Master's code (see the ROWS/BANKS fixture comments).
+  // That bug's exact symptom was a real bank in the dropdown with a count of
+  // ZERO, which is what this asserts against directly.
+  it('counts the merchant against its bank by display name, not by reference code', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse(BANKS)
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    await screen.findByText('Kirana Corner')
+
+    await userEvent.click(screen.getByLabelText('Bank'))
+    const option = await screen.findByRole('option', { name: /Gujarat State Co-op Bank/ })
+    expect(option.textContent).not.toMatch(/\b0\b/)
+  })
+
+  // The bank list is a convenience. Losing it must cost the filter its options
+  // and nothing else: the merchants themselves have already loaded.
+  it('still lists merchants when the bank master read fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/ops/bank-masters')) return jsonResponse({ message: 'nope' }, 500)
+        return jsonResponse(ROWS)
+      }),
+    )
+    renderPage()
+    expect(await screen.findByText('Kirana Corner')).toBeTruthy()
+    expect(screen.queryByText(/failed to load merchants/i)).toBeNull()
   })
 })
 

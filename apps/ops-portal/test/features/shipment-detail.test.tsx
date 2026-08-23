@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { ShipmentDetailPage } from '../../src/features/dispatches/ShipmentDetailPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
+import { legalCorrectionsFrom } from '../../src/features/dispatches/ShipmentActionDialogs.js'
 
 // One AWB's own page. The carrier axis is the only lifecycle in this platform
 // with a genuine append-only trail, so unlike a dispatch's early rungs every row
@@ -248,22 +249,40 @@ describe('ShipmentDetailPage', () => {
     expect(await screen.findByText(/no such shipment/i)).toBeTruthy()
   })
 
-  // One button by default. The routine write (forward-only, same ladder as the
-  // file) is always offered; the guard-bypassing Override appears ONLY when the
-  // parcel sits at a terminal status, the one situation the routine tool
-  // cannot act on.
-  it('offers Record courier update, and hides Override while the parcel is mid-ladder', async () => {
+  // ONE BUTTON AT A TIME (23 Aug 2026, at the user's correction). Mid-ladder,
+  // the routine forward-only correction is the only tool that can act, so it is
+  // the only one offered. At a terminal the correction has NO legal move (the
+  // domain guard refuses everything), so it disappears and the reasoned,
+  // step-up-gated Override takes its place. Offering both at a terminal is how
+  // an operator picked DELIVERED -> FAILED in the routine dialog, was toasted
+  // success over a zero-row update, and left the rail and the history
+  // disagreeing on screen.
+  it('offers only Record courier update while the parcel is mid-ladder', async () => {
     stub()
     renderPage()
     expect(await screen.findByRole('button', { name: /record courier update/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /override/i })).toBeNull()
   })
 
-  it('shows Override once the parcel is at a terminal status', async () => {
+  // DELIVERED IS FINAL (23 Aug 2026, at the user's direction). The red
+  // "Override" button that used to appear here, driving the step-up-gated C3
+  // bypass, is gone from the product: a finished parcel's status does not
+  // change, and a second door offering to un-finish it was a confusing
+  // duplicate with a TOTP prompt attached. The one button stays on screen,
+  // disabled, so the reason is visible rather than an absence.
+  it('disables the update button once the parcel is delivered, and offers no override', async () => {
     stub([{ ...SHIPMENT, status: 'DELIVERED' }])
     renderPage()
-    expect(await screen.findByRole('button', { name: /override/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /record courier update/i })).toBeTruthy()
+    const update = await screen.findByRole('button', { name: /record courier update/i })
+    expect(update.hasAttribute('disabled')).toBe(true)
+    expect(screen.queryByRole('button', { name: /override/i })).toBeNull()
+  })
+
+  it('disables the update button on a returned parcel too', async () => {
+    stub([{ ...SHIPMENT, status: 'RETURNED' }])
+    renderPage()
+    const update = await screen.findByRole('button', { name: /record courier update/i })
+    expect(update.hasAttribute('disabled')).toBe(true)
   })
 
   // THE 18 Aug 2026 CORRECTION. Shpt carries no foreign key back to a
@@ -350,5 +369,29 @@ describe('ShipmentDetailPage', () => {
     renderPage()
 
     expect(await screen.findByText('Returned to origin')).toBeTruthy()
+  })
+})
+
+// The correction dialog offers only what advanceShipmentStatus would actually
+// apply (23 Aug 2026): the dialog used to list all seven statuses, and the
+// illegal picks were refused server-side as zero-row updates that still wrote
+// a trail event, which is the exact recipe for a rail that says Delivered over
+// a history that says Failed.
+describe('legalCorrectionsFrom mirrors the forward-only guard', () => {
+  it('offers only higher rungs plus the off-ladder pair from a ladder rung', () => {
+    expect(legalCorrectionsFrom('IN_TRANSIT')).toEqual(['OUT_FOR_DELIVERY', 'DELIVERED', 'FAILED', 'RETURNED'])
+  })
+
+  it('offers everything except itself from FAILED, which is off-ladder but not terminal', () => {
+    const from = legalCorrectionsFrom('FAILED')
+    expect(from).toContain('DELIVERED')
+    expect(from).toContain('RETURNED')
+    expect(from).toContain('PICKED_UP')
+    expect(from).not.toContain('FAILED')
+  })
+
+  it('offers nothing from a terminal: Override is the only door out', () => {
+    expect(legalCorrectionsFrom('DELIVERED')).toEqual([])
+    expect(legalCorrectionsFrom('RETURNED')).toEqual([])
   })
 })

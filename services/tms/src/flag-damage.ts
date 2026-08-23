@@ -70,6 +70,15 @@ interface ParentRow {
   contact_name: string | null
   mobile: string | null
   branch_code: string | null
+  // BRD 5.1b, 22 Aug 2026: inherited by the replacement alongside the contact
+  // block. Without this a merchant whose newest request is a replacement would
+  // show blank city/email on the merchants list even though its original
+  // carried them.
+  email: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  qr_type: string | null
   dispatch_group: DispatchGroup
   /** The merchant-request identity this leg belongs to; the child derives from it. */
   source_event_id: string
@@ -115,7 +124,8 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
     const parents = await tx.$queryRaw<ParentRow[]>`
       SELECT id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
              bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value,
-             contact_name, mobile, branch_code, dispatch_group, source_event_id,
+             contact_name, mobile, branch_code, email, city, state, pincode, qr_type,
+             dispatch_group, source_event_id,
              standee_count, sticker_count
       FROM assignment WHERE id = ${parentUuid}::uuid
     `
@@ -308,14 +318,16 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
           bank_reference_code, bank_display_name, ship_to_address,
           qr_value, vpa_value, soundbox, standee_count, sticker_count,
           billable, replacement_of, damage_reason, ops_remarks, flagged_by, case_status,
-          demand_state, origin, source_event_id, contact_name, mobile, branch_code, dispatch_group, updated_at
+          demand_state, origin, source_event_id, contact_name, mobile, branch_code,
+          email, city, state, pincode, qr_type, dispatch_group, updated_at
         ) VALUES (
           ${childUuid}::uuid, ${parent.merchant_id}::uuid, ${parent.program_id}::uuid, ${parent.tenant_id}::uuid,
           ${parent.merchant_display_name}, ${parent.merchant_legal_name}, ${parent.merchant_mcc},
           ${parent.bank_reference_code}, ${parent.bank_display_name}, ${parent.ship_to_address},
           ${parent.qr_value}, ${parent.vpa_value}, ${soundbox}, ${standeeCount}, ${stickerCount},
           ${false}, ${parent.id}::uuid, ${args.reasonCode}, ${remarks}, ${args.actorId}, ${'Open'},
-          ${'received'}, ${'ADDITIONAL'}, ${sourceEventId}, ${parent.contact_name}, ${parent.mobile}, ${parent.branch_code}, ${parent.dispatch_group}, now()
+          ${'received'}, ${'ADDITIONAL'}, ${sourceEventId}, ${parent.contact_name}, ${parent.mobile}, ${parent.branch_code},
+          ${parent.email}, ${parent.city}, ${parent.state}, ${parent.pincode}, ${parent.qr_type}, ${parent.dispatch_group}, now()
         )
         ON CONFLICT (source_event_id, dispatch_group) DO NOTHING
         RETURNING id

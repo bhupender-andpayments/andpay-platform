@@ -301,6 +301,14 @@ export interface BankRequestRow {
   mobile: string
   branchCode: string
   vpaHint?: string
+  // BRD 5.1b, 22 Aug 2026. Optional for the same reason the service type has
+  // them optional: the real bank file ships all five blank, and Email ID and
+  // QR Type are Optional in the BRD outright.
+  email?: string
+  city?: string
+  state?: string
+  pincode?: string
+  qrType?: string
 }
 
 // services/fulfillment/src/intake.ts IntakeRow (discriminated union) and
@@ -460,6 +468,12 @@ export function getVendors(c: Client) {
 // value is returned, so none of it can be rendered here. The ship-view lives
 // in the excel/:group download, which is the surface that documents that
 // entitlement. Do NOT "enrich" these rows client-side from another endpoint.
+//
+// SCOPE, since one list now differs: this paragraph governs the batch, pool,
+// dispatch and shipment projections in THIS block. GET /ops/merchants is a
+// ruled exception as of 22 Aug 2026 and says so at its own type, and even
+// there the enrichment happens on the SERVER (the ops edge composes two
+// context reads), never in the browser. The client-side rule is unchanged.
 // -----------------------------------------------------------------------
 
 /** services/fulfillment/src/ops-read.ts BatchRow. */
@@ -629,8 +643,18 @@ export function getBatches(c: Client) {
 }
 
 /**
- * services/tms/src/ops-read.ts MerchantRow (PII-free: the projection holds no
- * address, contact name or mobile at all).
+ * services/tms/src/ops-read.ts MerchantRow.
+ *
+ * THE ONE LIST THAT IS NOT PII-FREE, by a deliberate 22 Aug 2026 ruling
+ * (docs/plan/CORPUS_SUBMISSION_2026-08-22_MERCHANTS_LIST.md). The BRD's
+ * merchant record IS the bank-file field table (BRD 5.1b), so an ops merchant
+ * search has to be able to show a VPA, a mobile and an address. The
+ * default-exclude posture stated above this block still governs every other
+ * list; this is the carve-out, not a precedent for widening those.
+ *
+ * The BRD block is nullable because it comes from the merchant's most recent
+ * request. Null means TMS has not seen a bank file for them yet, and the ops
+ * edge composes identity's own copy over it for the hand-created case.
  */
 export interface MerchantRow {
   mrchId: string
@@ -638,11 +662,26 @@ export interface MerchantRow {
   legalName: string
   mcc: string
   status: string
+  createdAt: string
   updatedAt: string
   // D-2: this merchant has more than one soundbox request, so at least one was
   // an ADDITIONAL request rather than a first order. DERIVED on read from the
   // requests themselves, never stored, so it cannot drift from them.
   hasAdditionalRequests: boolean
+  vpa: string | null
+  qrType: string | null
+  contactName: string | null
+  mobile: string | null
+  email: string | null
+  address: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  bankDisplayName: string | null
+  bankReferenceCode: string | null
+  branchCode: string | null
+  latestRequestOrigin: string | null
+  latestRequestAt: string | null
 }
 
 // Redesign step 7 (ruling 1b). Every merchant, not only those with something in
@@ -743,6 +782,15 @@ export interface UnitInventoryRow {
   simNo: string | null
   createdAt: string
   updatedAt: string
+  /**
+   * The dispatch that THIS device's dispatch replaces, or null. Server-provided
+   * since 23 Aug 2026, replacing a client-side join against every damage case.
+   *
+   * A dispatch, not a device: a replacement device is a brand-new one out of
+   * stock, so nothing about the hardware is a replacement. What is replaced is
+   * the dispatch.
+   */
+  replacementOfAsgnId: string | null
 }
 
 // The device inventory list. The manufacturer QR payload is absent from THIS
@@ -756,6 +804,34 @@ export function getDevices(c: Client, status?: string) {
 // payload. 404 when the device does not exist.
 export interface UnitDetailRow extends UnitInventoryRow {
   deviceQr: unknown
+}
+
+/**
+ * services/fulfillment/src/ops-read.ts UnitReplacementChain: one device's
+ * chain, one hop each way.
+ *
+ * ITS OWN ROUTE rather than part of getDeviceDetail, because that one serves
+ * the raw manufacturer QR payload and the device page is guarded against
+ * calling it. Ids and serials only.
+ *
+ * Null on any field is a REAL answer, not a gap: a collateral-only replacement
+ * carries no device at all, and a successor still at the print vendor has no
+ * serial paired yet.
+ */
+export interface UnitReplacementChain {
+  replacementOfAsgnId: string | null
+  replacedByAsgnId: string | null
+  parentDeviceId: string | null
+  parentDeviceSerial: string | null
+  successorDeviceId: string | null
+  successorDeviceSerial: string | null
+}
+
+export function getDeviceReplacementChain(c: Client, unitId: string) {
+  return c.request<UnitReplacementChain>({
+    method: 'GET',
+    path: `/ops/devices/${encodeURIComponent(unitId)}/replacement-chain`,
+  })
 }
 
 export function getDeviceDetail(c: Client, unitId: string) {
@@ -1753,7 +1829,9 @@ export function correctStatus(c: Client, id: string, body: StatusCorrectionBody,
 // call, POST /ops/batches/:id/deliver-all, corrects every shipment in the
 // batch to DELIVERED; the summary names how many actually moved.
 export function bulkDeliverBatch(c: Client, batchId: string, idempotencyKey: string) {
-  return c.request<{ delivered: number; skipped: number; failed: number }>({
+  // firstError arrives only when failed > 0: one honest sentence about the
+  // first thing that went wrong, so a failed count is diagnosable.
+  return c.request<{ delivered: number; skipped: number; failed: number; firstError?: string }>({
     method: 'POST',
     path: `/ops/batches/${batchId}/deliver-all`,
     idempotencyKey,
@@ -2306,6 +2384,15 @@ export interface RequestLegRow {
   replacementOfAsgnId: string | null
   activatedAt: string | null
   createdAt: string
+  /** Recipient contact and address snapshot (BRD 5.1b), for the request detail page. */
+  contactName: string | null
+  mobile: string | null
+  email: string | null
+  shipToAddress: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  qrType: string | null
 }
 
 /**

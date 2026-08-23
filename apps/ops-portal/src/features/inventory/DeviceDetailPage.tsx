@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -12,6 +12,7 @@ import {
   PackageCheck,
   Printer,
   QrCode,
+  Repeat,
   Smartphone,
   Store,
   Truck,
@@ -31,18 +32,19 @@ import {
 } from '../../api/endpoints.js'
 import { Card, CardBody, Button, ErrorNote, StatusPill, CodeChip, Spinner } from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
-import { buildRailFromTrail, deviceDisplayStatus } from '../../ui/statusRail.js'
-import { getDispatchDetail } from '../../api/endpoints.js'
+import { buildRailFromTrail } from '../../ui/statusRail.js'
+import { getDeviceReplacementChain, type UnitReplacementChain } from '../../api/endpoints.js'
 import type { StatusTrailEntry } from '../../api/endpoints.js'
 import { BackLink, FactRow, SectionHeading } from '../../ui/DetailFacts.js'
 import { fmtDateTime } from '../../ui/format.js'
 import { useToast } from '../../ui/Toast.js'
-import { UnitStatusEditDialog } from './UnitStatusEditDialog.js'
+import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import { newIdempotencyKey } from '../../api/idempotency.js'
+import { markActivated, deactivateAssignment } from '../../api/endpoints.js'
 import {
   UNIT_SPINE,
   UNIT_TERMINAL,
   STAGE_COPY,
-  legalNextStatuses,
   statusLabel,
 } from './unitStatus.js'
 
@@ -107,11 +109,15 @@ const STAGE_ICON: Record<string, RailStage['icon']> = {
 // moved since the trails were created has only its backfilled starting rung.
 // The rail then shows that rung and the rest of the spine greyed ahead of it,
 // which is exactly right.
-function buildRail(trail: readonly StatusTrailEntry[]): RailStage[] {
+function buildRail(trail: readonly StatusTrailEntry[], currentStatus: string): RailStage[] {
   return buildRailFromTrail({
     spine: UNIT_SPINE,
     terminals: UNIT_TERMINAL,
     trail,
+    // unit.status is the authority on whether this device is ACTUALLY on a
+    // terminal branch. Without it the rail read a cancelled damage flag still
+    // in the trail as the device's end state (23 Aug 2026).
+    currentStatus,
     label: (k) => STAGE_COPY[k]?.label ?? k,
     icon: (k) => STAGE_ICON[k] ?? Box,
   })
@@ -134,7 +140,83 @@ export function DeviceDetailPage() {
   const [vendors, setVendors] = useState<readonly VendorRow[]>([])
   const [copied, setCopied] = useState(false)
 
-  const [statusOpen, setStatusOpen] = useState(false)
+
+  // THE ACTIVATION TOGGLE (23 Aug 2026, at the user's direction). Activate and
+  // Deactivate both live HERE, on the device's own page beside the pill that
+  // shows the value, each behind a confirm. The Undo that used to sit on the
+  // activation batch list is gone: its click also fired the row's navigation,
+  // and its instant reload re-read a projection the fact had not reached.
+  //
+  // THE WRITE AND THE READ ARE IN DIFFERENT CONTEXTS, so the handler WAITS.
+  // Activation is written on tms.assignment; this page renders
+  // fulfillment.unit.activated_at, which follows via the activated/deactivated
+  // fact and the fulfillment consumer. An immediate re-read shows the OLD value
+  // and reads as "nothing happened" (the exact complaint that killed the old
+  // Undo).
+  //
+  // THE WRITE'S ANSWER IS APPLIED DIRECTLY (23 Aug 2026). This used to block on
+  // a poll: sleep 700ms, re-read the device list, repeat up to eight times. It
+  // was correct and it FELT BROKEN, reported as "that API is slow, it takes
+  // more time" - the 700ms was mine, not the platform's; the domain write
+  // itself measures ~2ms. Nothing was being waited FOR, either: TMS is the
+  // system of record for activation, so a 200 from the write already IS the
+  // new state, and reading fulfillment back was asking a slower copy to
+  // confirm what the owner had already said.
+  //
+  // So the row flips the moment the write returns, and a convergence pass runs
+  // in the BACKGROUND to swap the local value for the projected one once it
+  // lands. That pass may only ever move the row TOWARDS agreement: a read that
+  // still shows the old value is a lagging copy, never a reason to un-flip
+  // what TMS has committed.
+  const [activationOpen, setActivationOpen] = useState(false)
+  const [activationBusy, setActivationBusy] = useState(false)
+  const [activationError, setActivationError] = useState<string | null>(null)
+  // The convergence pass outlives a fast navigation away, so it checks this
+  // before touching state rather than writing into an unmounted component.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  async function toggleActivation(): Promise<void> {
+    if (row === null || row.asgnId === null) return
+    const deactivating = row.activatedAt !== null
+    setActivationBusy(true)
+    setActivationError(null)
+    try {
+      if (deactivating) await deactivateAssignment(client, row.asgnId, newIdempotencyKey())
+      else await markActivated(client, row.asgnId, newIdempotencyKey())
+    } catch (err) {
+      setActivationError(err instanceof Error ? err.message : 'Could not update the activation.')
+      setActivationBusy(false)
+      return
+    }
+    // Committed. Show it, close, and stop spinning: everything past this point
+    // is the slower copy catching up, and the operator should not be made to
+    // watch it happen.
+    setRow((prev) => (prev === null ? prev : { ...prev, activatedAt: deactivating ? null : new Date().toISOString() }))
+    setActivationOpen(false)
+    setActivationBusy(false)
+    toast(deactivating ? 'Activation withdrawn.' : 'Device activated.')
+
+    void (async () => {
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        if (!mounted.current) return
+        const list = await getDevices(client).catch(() => null)
+        const hit = Array.isArray(list) ? (list.find((d) => d.id === unitId) ?? null) : null
+        // Only when it AGREES. Adopting a row that still disagrees is exactly
+        // how the old code made a committed write look undone.
+        if (hit !== null && (hit.activatedAt !== null) !== deactivating) {
+          if (mounted.current) setRow(hit)
+          return
+        }
+      }
+    })()
+  }
 
   // The device's status trail, which the rail is built from. Silent on failure
   // like the other supporting reads on this page: a trail that does not arrive
@@ -192,26 +274,40 @@ export function DeviceDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [client, unitId, statusOpen])
+    // `statusOpen` used to be a dependency here so the trail re-read when the
+    // status dialog closed. That dialog is gone (the rail is a read now), so
+    // the trail follows the device id alone.
+  }, [client, unitId])
 
-  // The replacement mark (22 Aug 2026, the badge sweep): a device printed for
-  // a replacement dispatch should say so here too. From the dispatch detail
-  // read, which the edge enriches with replacementOfAsgnId; silent on failure,
-  // a badge is a label, not the page.
-  const [replacesAsgnId, setReplacesAsgnId] = useState<string | null>(null)
+  // BOTH ENDS OF THE REPLACEMENT CHAIN (23 Aug 2026), from this device's own
+  // detail read.
+  //
+  // It used to ask the DISPATCH endpoint for one direction and render the
+  // parent id in a `title` tooltip, so the answer was invisible unless you
+  // happened to hover, and the forward direction ("this one was damaged, what
+  // went out instead") had no answer anywhere on the page.
+  //
+  // A NARROW route of its own, NOT getDeviceDetail: that one serves the raw
+  // manufacturer QR payload and this page is guarded against calling it (see
+  // device-detail.test.tsx). The chain read carries ids and serials only, so
+  // the guard stands.
+  //
+  // Silent on failure: the chain enriches the page, it does not gate it.
+  const [links, setLinks] = useState<UnitReplacementChain | null>(null)
   useEffect(() => {
-    const asgnId = row?.asgnId ?? null
-    if (asgnId === null) return
+    if (unitId === undefined) return
     let cancelled = false
-    getDispatchDetail(client, asgnId)
+    getDeviceReplacementChain(client, unitId)
       .then((d) => {
-        if (!cancelled) setReplacesAsgnId(d.replacementOfAsgnId)
+        if (!cancelled) setLinks(d)
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
-  }, [client, row?.asgnId])
+  }, [client, unitId])
+
+  const replacesAsgnId = links?.replacementOfAsgnId ?? null
 
   // Names for ids, silent on failure: a lookup that does not arrive costs a
   // label, not the page.
@@ -235,7 +331,7 @@ export function DeviceDetailPage() {
   }, [client])
 
   const vendorNames = useMemo(() => new Map(vendors.map((v) => [v.id, v.displayName])), [vendors])
-  const rail = useMemo(() => (row === null ? null : buildRail(trail)), [row, trail])
+  const rail = useMemo(() => (row === null ? null : buildRail(trail, row.status)), [row, trail])
 
   async function copySerial(serial: string): Promise<void> {
     try {
@@ -268,7 +364,6 @@ export function DeviceDetailPage() {
   const mfrName = row.manufacturerVndr !== null ? (vendorNames.get(row.manufacturerVndr) ?? row.manufacturerVndr) : null
   const merchantName =
     row.printedForMerchant !== null ? (merchantNames.get(row.printedForMerchant) ?? row.printedForMerchant) : null
-  const canMove = legalNextStatuses(row.status).length > 0
 
   return (
     <div className="space-y-4">
@@ -294,16 +389,18 @@ export function DeviceDetailPage() {
           </h1>
           <p className="text-sm text-muted-foreground">{row.productType.toLowerCase()} device</p>
         </div>
-        {/* ONE COMPOSED PILL (STATUS_STAGES.md, 21 Aug 2026), not two.
-            The two axes stay separate in storage for the reason buildRail
-            records, but the team ruled the SCREEN should read as one
-            lifecycle, so deviceDisplayStatus composes them: COMPLETED means
-            delivered and live, and a terminal outcome outranks both.
+        {/* TWO PILLS, ONE PER AXIS (23 Aug 2026 ruling), reverting the single
+            composed COMPLETED pill this header carried since 21 Aug.
 
-            This also retires a `NOT_ACTIVATED` pill that was never a backend
-            value at all. The absence it existed to surface still matters on a
-            delivered device, so it is stated in words below rather than
-            dressed up as a status the platform does not store. */}
+            The composition was not wrong about the domain, but it was wrong on
+            this screen: COMPLETED is a word the platform stores nowhere, and it
+            replaced the two values an operator is actually reconciling against
+            the CWD and the courier. The inventory list has always shown them as
+            two separate columns; the detail page now agrees with the list
+            instead of inventing a third vocabulary for the same device.
+
+            Order matches the list's column order: activation, then delivery.
+            deviceDisplayStatus itself is retained, see its own note. */}
         <div className="ml-auto flex items-center gap-2">
           {replacesAsgnId !== null && (
             <span
@@ -313,40 +410,117 @@ export function DeviceDetailPage() {
               Replacement
             </span>
           )}
-          {row.status === 'DELIVERED' && row.activatedAt === null && (
-            <span className="text-[12px] text-muted-foreground">Not activated yet</span>
+          {row.activatedAt === null ? (
+            <span className="text-[12px] text-muted-foreground">Not activated</span>
+          ) : (
+            <StatusPill value="ACTIVATED" />
           )}
-          <StatusPill
-            value={deviceDisplayStatus({
-              status: row.status,
-              activatedAt: row.activatedAt,
-              terminals: UNIT_TERMINAL,
-            })}
-          />
+          {/* THE ACTIVATION TOGGLE (23 Aug 2026, at the user's direction),
+              beside the pill whose value it flips. Activation is not a rung on
+              the forward-only status rail (a device can be activated while its
+              delivery is still outstanding), so it is not one of the moves
+              "Change status" offers: it is its own axis with its own control.
+              Offered only on a device paired to a dispatch, because the write
+              is addressed to the dispatch. */}
+          {row.asgnId !== null && (
+            <Button variant="secondary" size="sm" onClick={() => setActivationOpen(true)}>
+              {row.activatedAt === null ? 'Activate' : 'Deactivate'}
+            </Button>
+          )}
+          <StatusPill value={row.status} />
         </div>
       </div>
 
       {loadError !== null && <ErrorNote>{loadError}</ErrorNote>}
 
+      {/* THE REPLACEMENT CHAIN, one hop in each direction (23 Aug 2026).
+          One hop and not the whole tree on purpose: the dispatch page already
+          renders every generation through ReplacementChain, and a second chain
+          component here would be the same idea implemented twice, free to drift.
+          This answers the two questions asked OF A DEVICE ("what did this one
+          replace", "what replaced this one") and links out for the rest.
+
+          A missing device with a present dispatch is a REAL state, not a gap: a
+          collateral-only replacement carries no soundbox, and a successor still
+          at the print vendor has no serial paired yet. Both say so in words
+          rather than rendering an empty link. */}
+      {links !== null && (links.replacementOfAsgnId !== null || links.replacedByAsgnId !== null) && (
+        <Card className="border-amber-300 bg-amber-500/[0.06] dark:border-amber-800 dark:bg-amber-500/10">
+          <CardBody>
+            <div className="flex items-start gap-2.5">
+              <Repeat className="mt-0.5 size-4 shrink-0 text-amber-700" aria-hidden="true" />
+              <div className="min-w-0 flex-1 space-y-1.5 text-sm">
+                <p className="font-medium text-foreground">Replacement chain</p>
+                {links.replacementOfAsgnId !== null && (
+                  <p className="text-muted-foreground">
+                    This device went out to replace dispatch{' '}
+                    <Link to={`/dispatches/${links.replacementOfAsgnId}`} className="underline underline-offset-2">
+                      <CodeChip>{links.replacementOfAsgnId}</CodeChip>
+                    </Link>
+                    {links.parentDeviceId !== null ? (
+                      <>
+                        , whose device was{' '}
+                        <Link to={`/inventory/device/${links.parentDeviceId}`} className="underline underline-offset-2">
+                          <CodeChip>{links.parentDeviceSerial ?? links.parentDeviceId}</CodeChip>
+                        </Link>
+                        .
+                      </>
+                    ) : (
+                      <>. That dispatch carried no device of its own (collateral only).</>
+                    )}
+                  </p>
+                )}
+                {links.replacedByAsgnId !== null && (
+                  <p className="text-muted-foreground">
+                    This device was replaced by dispatch{' '}
+                    <Link to={`/dispatches/${links.replacedByAsgnId}`} className="underline underline-offset-2">
+                      <CodeChip>{links.replacedByAsgnId}</CodeChip>
+                    </Link>
+                    {links.successorDeviceId !== null ? (
+                      <>
+                        , now carrying{' '}
+                        <Link
+                          to={`/inventory/device/${links.successorDeviceId}`}
+                          className="underline underline-offset-2"
+                        >
+                          <CodeChip>{links.successorDeviceSerial ?? links.successorDeviceId}</CodeChip>
+                        </Link>
+                        .
+                      </>
+                    ) : (
+                      <>. No device is paired to it yet.</>
+                    )}
+                  </p>
+                )}
+                {row.asgnId !== null && (
+                  <p>
+                    <Link to={`/dispatches/${row.asgnId}`} className="text-xs underline underline-offset-2">
+                      View the full chain on the dispatch
+                    </Link>
+                  </p>
+                )}
+              </div>
+            </div>
+          </CardBody>
+        </Card>
+      )}
+
       <Card>
         <CardBody>
-          <div className="flex flex-wrap items-center justify-between gap-3 pb-5">
-            <div>
-              <h2 className="text-base font-medium">Device lifecycle</h2>
-              <p className="text-[12.5px] text-muted-foreground">
-                A device only moves forward. Once it is marked damaged, it cannot be reverted.
-              </p>
-            </div>
-            {/* The status action lives HERE, on the thing it changes. */}
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setStatusOpen(true)}
-              disabled={!canMove}
-              title={canMove ? undefined : 'This device cannot be reverted'}
-            >
-              Change status
-            </Button>
+          {/* NO STATUS ACTION (24 Aug 2026, at the user's direction). THE RAIL
+              IS A READ. Every rung is written by the flow that owns it: In
+              stock by the manufacturer intake, At print vendor by the batch's
+              send, Dispatched by the vendor's return sheet, Delivered and
+              Returned by the SHIPMENT (one parcel moves all its devices in one
+              transaction), and Damaged by the dispatch's Flag damage, which
+              also opens the case and raises the replacement. Nothing is left
+              for this page to set, so it sets nothing. Activation is the one
+              device-level write and keeps its own toggle in the header. */}
+          <div className="pb-5">
+            <h2 className="text-base font-medium">Device lifecycle</h2>
+            <p className="text-[12.5px] text-muted-foreground">
+              Where this device has reached. Delivery follows its parcel; damage is raised on its dispatch.
+            </p>
           </div>
           {rail !== null && <LifecycleRail stages={rail} />}
         </CardBody>
@@ -438,12 +612,26 @@ export function DeviceDetailPage() {
         </Card>
       </div>
 
-      <UnitStatusEditDialog
-        unit={row}
-        open={statusOpen}
-        onOpenChange={setStatusOpen}
-        onSaved={(status) => setRow({ ...row, status })}
+      <ConfirmDialog
+        open={activationOpen}
+        title={row.activatedAt === null ? 'Activate this device' : 'Withdraw this activation'}
+        description={
+          row.activatedAt === null
+            ? 'Records that the CWD confirmed this device and its SIM. Delivery and courier status are untouched.'
+            : 'Clears the activation record for this device. Delivery and courier status are untouched, and it can be activated again.'
+        }
+        confirmLabel={row.activatedAt === null ? 'Activate' : 'Deactivate'}
+        busy={activationBusy}
+        error={activationError}
+        onConfirm={() => void toggleActivation()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setActivationOpen(false)
+            setActivationError(null)
+          }
+        }}
       />
+
     </div>
   )
 }

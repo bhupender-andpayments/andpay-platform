@@ -119,6 +119,13 @@ export interface RailFromTrailArgs {
    * when the trail (fetched via the owning dispatch) has not arrived.
    */
   extraReached?: readonly string[]
+  /**
+   * The entity's OWN live status (`unit.status`, `shpt.status`, ...), when the
+   * caller has it. It is the authority on whether the lifecycle actually ended
+   * on a terminal, and passing it is strongly preferred: see the terminal note
+   * inside buildRailFromTrail for the bug that made it necessary.
+   */
+  currentStatus?: string
 }
 
 /**
@@ -145,14 +152,35 @@ export function buildRailFromTrail({
   label,
   icon,
   extraReached,
+  currentStatus,
 }: RailFromTrailArgs): RailStage[] {
   const at = firstSeen(trail)
 
-  // The terminal that ended this lifecycle, if any. Taken from the LAST such
-  // entry in the trail: a device damaged, corrected back, and damaged again
-  // ends on the second one, and the trail's order is the authority on which
-  // came last.
-  const terminalStatus = [...trail].reverse().find((e) => terminals.includes(e.status))?.status ?? null
+  // The terminal this lifecycle ENDED on, if any.
+  //
+  // THIS USED TO BE "the last terminal anywhere in the trail", and that was a
+  // real bug, found 23 Aug 2026 on a delivered device that the rail drew as
+  // Damaged. Its trail read DELIVERED, DAMAGED, then DELIVERED again twenty
+  // seconds later: an operator flagged damage and cancelled it, and the
+  // cancellation correctly reverted the device. Searching backwards for the
+  // latest TERMINAL found the reverted DAMAGED, ignored the DELIVERED that came
+  // after it, and ended the rail on a branch the device had already left. The
+  // same code draws the shipment, pool and batch rails, so all four were wrong.
+  //
+  // Two rules now, in order of authority:
+  //
+  //  1. `currentStatus`, when the caller passes it. It is the entity's own live
+  //     column, so it cannot be out-argued by anything in the trail: a reverted
+  //     terminal loses, and an incomplete trail (older rows predating these
+  //     tables) cannot invent one.
+  //  2. Otherwise the trail's LAST entry, and only if that entry is itself a
+  //     terminal. Still strictly better than the old rule, which any historical
+  //     terminal could win. A device damaged, corrected back, and damaged again
+  //     ends on the second damage under both rules, which is the case the
+  //     previous comment was written for and is still right about.
+  const lastEntry = trail.length > 0 ? trail[trail.length - 1] : undefined
+  const endedOn = currentStatus ?? lastEntry?.status
+  const terminalStatus = endedOn !== undefined && terminals.includes(endedOn) ? endedOn : null
 
   // The furthest spine rung anything proves. `extraReached` lets a caller add
   // evidence the trail does not hold (a shipment row's own current status, for
@@ -218,6 +246,14 @@ export function buildRailFromTrail({
 //
 // COMPLETED is derived and stored nowhere. It is the ruled meaning of
 // "delivered AND activated": the device reached the merchant and it is live.
+//
+// NO CALLER AS OF 23 AUG 2026, and that is deliberate rather than rot. The
+// device detail header was its only user and has reverted to two pills, one per
+// axis, so that the detail page and the inventory list say the same thing about
+// the same device. The composition itself was ruled to stand as the platform's
+// meaning of "done", so it is kept here for the surfaces that will want one
+// word rather than two (a tile, a report column). Do not re-adopt it on the
+// device pages without reopening that ruling, and do not delete it as dead.
 export const DEVICE_COMPLETED = 'COMPLETED'
 
 export function deviceDisplayStatus(args: {

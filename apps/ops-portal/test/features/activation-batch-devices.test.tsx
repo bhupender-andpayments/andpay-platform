@@ -29,6 +29,9 @@ function device(over: Partial<UnitInventoryRow> = {}): UnitInventoryRow {
     simNo: '89910000000000000001',
     createdAt: '2026-08-01T00:00:00.000Z',
     updatedAt: '2026-08-01T00:00:00.000Z',
+    // Fresh dispatch by default (23 Aug 2026). Override to a parent asgn id for
+    // a device travelling on a replacement.
+    replacementOfAsgnId: null,
     ...over,
   }
 }
@@ -235,5 +238,43 @@ describe('ActivationBatchDevicesPage: multiselect activation', () => {
     // asgn_2 was never checked, so it is not in the write, even though it is
     // activatable and appears in the same batch.
     expect(await screen.findByText('1 device activated')).toBeTruthy()
+  })
+
+  // THE REPORTED DEFECT (23 Aug 2026): "it is getting activated, but it is not
+  // showing by default, I have to refresh the page." The list renders
+  // fulfillment's unit.activated_at, which the activation fact only reaches a
+  // moment later, so the re-read taken right after the write returned the OLD
+  // rows and the Activation column stayed on "not activated".
+  it('flips the Activation column on the rows the write confirmed, with no reload and no fresh read', async () => {
+    // The device list NEVER changes in this stub: activatedAt stays null on
+    // every fetch, exactly like a projection that has not caught up. So the
+    // column can only move if the write's own answer is what moved it.
+    const calls = stubDevicesAndActivate(
+      [
+        device({ id: 'unit_1', deviceSerial: 'DEV-1', asgnId: 'asgn_1' }),
+        device({ id: 'unit_2', deviceSerial: 'DEV-2', asgnId: 'asgn_2' }),
+      ],
+      (url) =>
+        url.includes('/activate-bulk')
+          ? jsonResponse({ results: [{ dispatchId: 'asgn_1', activated: true, reason: null }] })
+          : undefined,
+    )
+    renderAt('btch_alpha')
+    await screen.findByText('DEV-1')
+    // Both rows start un-activated.
+    expect(screen.getAllByText('not activated')).toHaveLength(2)
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /select dev-1/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /activate selected/i }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /^activate$/i }))
+
+    // DEV-1 reads Activated straight away; DEV-2, which was not in the write,
+    // is untouched. Before the fix both still read "not activated" here.
+    expect(await screen.findByText('Activated')).toBeTruthy()
+    expect(screen.getAllByText('not activated')).toHaveLength(1)
+    // And the header count follows, because it is derived from the same rows.
+    expect(screen.getByText(/2 devices in this batch, 1 awaiting activation/i)).toBeTruthy()
+    expect(calls.filter((c) => c.url.includes('/activate-bulk'))).toHaveLength(1)
   })
 })

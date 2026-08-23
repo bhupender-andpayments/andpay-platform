@@ -26,6 +26,12 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   // pipeline
   RECEIVED: { variant: 'neutral', label: 'Received' },
   POOLED: { variant: 'neutral', label: 'Pooled' },
+  // HELD is pending, not negative: an operator deliberately parked this parcel
+  // and will release it. It is a pool_status value, NOT a pipeline stage, and
+  // it deliberately never enters the pipeline ladder, because that ladder only
+  // moves forward and a hold is reversible. The Dispatches page composes the
+  // two axes in one cell; see its Stage column.
+  HELD: { variant: 'pending', label: 'Held' },
   // PENDING_BATCH is a rung of the BRD 6.2 ladder that no column stores: it is
   // the position "exists, not batched yet", which the dispatch page derives.
   // It is here because that page's header pill renders the SAME value its rail

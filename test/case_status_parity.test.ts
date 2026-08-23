@@ -18,6 +18,14 @@ import { join } from 'node:path'
 // (assignment_case_status_check), and both portal lists use it. This test is
 // what keeps that true.
 //
+// THE MOVE LIST IS GONE (24 Aug 2026, at the user's direction). Every forward
+// transition is automatic: a case opens on the flag, goes In-Progress when its
+// replacement is batched, and closes when that replacement activates or is
+// delivered. `CASE_MOVES` became `CASE_STATUSES`, a LABEL and TILE vocabulary
+// rather than a list of doors, and Cancelled joined it because a withdrawn case
+// needs a name and a tile. The parity question is unchanged and still worth
+// asking: does the portal ever spell a value the service does not write.
+//
 // Both sides are read as TEXT here, the service because no import may link it to
 // the portal, and the portal because its constants live inside a .tsx page
 // component that would drag React into a node-project test.
@@ -55,46 +63,47 @@ describe('damage case status parity between services/tms and apps/ops-portal', (
     expect(serviceStatuses()).not.toContain('In Progress')
   })
 
-  // THE FILTERS ARE A SUBSET NOW, not an equality, and the difference is
-  // deliberate. Cancelled is a real case status (a withdrawn request), but it is
-  // reached by its own action rather than by moving a case along, and a
-  // dashboard tile that counts cancellations is not something anybody asked
-  // for. What matters is that the portal never invents a value the service does
-  // not have, which is the drift this file exists to catch.
+  // The portal must never invent a value the service does not write, which is
+  // the drift this file exists to catch. Since 24 Aug the two sets match
+  // exactly: every status the service knows has a filter and a tile.
   it("every ?status= filter the portal offers is a value the service actually writes", () => {
     for (const f of portalList('const STATUS_FILTERS =')) {
       expect(serviceStatuses()).toContain(f)
     }
   })
 
-  // THE REGRESSION THIS FILE EXISTS FOR. The move list's `wire` values are what
-  // the portal SENDS, so a spelling here that the filters do not share is the
-  // exact divergence that produced the bug described at the top.
+  // THE REGRESSION THIS FILE EXISTS FOR: one vocabulary, one spelling. The
+  // labels and filters are compared against each other below for the same
+  // reason, because a mismatch between them is what produced the original bug.
   it('the portal offers no second spelling of the middle value', () => {
-    const moves = portalList('const CASE_MOVES =')
-    expect(moves).toContain('In-Progress')
-    expect(moves).not.toContain('In Progress')
+    const statuses = portalList('const CASE_STATUSES =')
+    expect(statuses).toContain('In-Progress')
+    expect(statuses).not.toContain('In Progress')
   })
 
-  it('the move list and the filter list agree, so a comparison between them cannot silently fail', () => {
-    // CASE_MOVES interleaves wire and label strings, so compare as a set
+  it('the status list and the filter list agree, so a comparison between them cannot silently fail', () => {
+    // CASE_STATUSES interleaves wire and label strings, so compare as a set
     // containment rather than position for position.
-    const moves = portalList('const CASE_MOVES =')
+    const statuses = portalList('const CASE_STATUSES =')
     for (const s of portalList('const STATUS_FILTERS =')) {
-      expect(moves).toContain(s)
+      expect(statuses).toContain(s)
     }
   })
 
-  // Cancelled LANDED on 21 Aug 2026, and this assertion flipped with it: the
-  // previous version recorded that neither side knew the value yet and stood as
-  // the reminder that both would have to learn it together. The service knows it
-  // now, and the portal offers it as an ACTION (the cancel dialog) rather than as
-  // a status to move to, which is why it is absent from the move list below.
-  it('the service knows Cancelled, and the portal reaches it by action not by a move', () => {
+  // Cancelled LANDED on 21 Aug 2026 and became a FIRST-CLASS status on 24 Aug:
+  // the service writes it, the portal labels it, filters it and gives it a tile.
+  it('the service and the portal agree that Cancelled is a real status', () => {
     expect(serviceStatuses()).toContain('Cancelled')
-    // Not a "move": cancelling carries a mandatory reason and reverses the
-    // parent and its devices, so offering it among the ordinary status changes
-    // would make a destructive correction one click from a routine one.
-    expect(portalList('const CASE_MOVES =')).not.toContain('Cancelled')
+    expect(portalList('const CASE_STATUSES =')).toContain('Cancelled')
+    expect(portalList('const STATUS_FILTERS =')).toContain('Cancelled')
+  })
+
+  // THE STRONGER GUARD THAT REPLACED "Cancelled is not a move" (24 Aug 2026).
+  // There are no moves at all now, so rather than pin one value out of a list
+  // that no longer exists, pin the rule: this page must not call the status
+  // write. Every forward transition is the automation's, and a hand-made move
+  // would only be overruled by the next fact.
+  it('the page never calls the case-status write: transitions are the automation\'s', () => {
+    expect(portalText()).not.toContain('updateDamageCaseStatus')
   })
 })

@@ -1035,12 +1035,45 @@ export interface UnitInventoryRow {
   simNo: string | null
   createdAt: Date
   updatedAt: Date
+  /**
+   * The dispatch that THIS device's dispatch replaces, or null.
+   *
+   * Names a dispatch and not a device on purpose. A replacement device is a
+   * brand-new one out of stock; nothing about the hardware is a replacement, so
+   * "this device replaces that device" would be a claim the domain does not
+   * make. What is replaced is the DISPATCH, and the parent's own device (if it
+   * had one at all, a collateral-only leg has none) is reached from there.
+   */
+  replacementOfAsgnId: string | null
 }
 
 // The per-device detail: the list row PLUS the on-demand device_qr payload.
 // Served one device at a time, never as a list.
 export interface UnitDetailView extends UnitInventoryRow {
   deviceQr: unknown
+}
+
+/**
+ * BOTH ENDS OF ONE DEVICE'S REPLACEMENT CHAIN, one hop each way.
+ *
+ * ITS OWN READ, and not folded into readDeviceDetail, deliberately. That read
+ * is the only one that serves the raw manufacturer `device_qr` blob, and the
+ * device page is guarded (device-detail.test.tsx) against calling it precisely
+ * so that payload never reaches a screen that does not render it. Answering
+ * "what did this replace" should not cost that guard, so it is a separate,
+ * narrow read carrying ids and serials only.
+ */
+export interface UnitReplacementChain {
+  /** The dispatch THIS device's dispatch replaces. */
+  replacementOfAsgnId: string | null
+  /** The dispatch that replaced THIS device's dispatch, once one exists. */
+  replacedByAsgnId: string | null
+  /** The parent dispatch's own device, when it had one at all. */
+  parentDeviceId: string | null
+  parentDeviceSerial: string | null
+  /** The successor dispatch's own device, once the vendor has paired one. */
+  successorDeviceId: string | null
+  successorDeviceSerial: string | null
 }
 
 interface UnitInventoryDbRow {
@@ -1058,6 +1091,7 @@ interface UnitInventoryDbRow {
   sim_no: string | null
   created_at: Date
   updated_at: Date
+  replacement_of: string | null
 }
 
 function toUnitInventoryDto(r: UnitInventoryDbRow): UnitInventoryRow {
@@ -1076,9 +1110,22 @@ function toUnitInventoryDto(r: UnitInventoryDbRow): UnitInventoryRow {
     simNo: r.sim_no,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
   }
 }
 
+// The dispatch this device's own dispatch REPLACES, reached through the pool
+// entry (23 Aug 2026). Shared by the list and the detail read so the two cannot
+// disagree, which they previously did: the list joined every damage case in the
+// BROWSER and the detail page asked the dispatch endpoint, two mechanisms and
+// two answers for one question.
+//
+// LEFT JOIN so an unpaired device (asgn_id null, which is every device still in
+// stock) keeps its row. LIMIT 1 keeps it row-level, which this file must stay:
+// see the guard note on the batch read above for what may not be written here,
+// in SQL or in prose. Written out at each call site rather than shared as a
+// string: a tagged template cannot interpolate a raw fragment without dropping
+// to Unsafe, and that trade is not worth one repeated clause.
 export async function listDeviceInventory(
   db: FulfillmentDb,
   { status }: { status?: string } = {},
@@ -1087,21 +1134,30 @@ export async function listDeviceInventory(
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     if (status !== undefined) {
       return tx.$queryRaw<UnitInventoryDbRow[]>`
-        SELECT id::text AS id, device_serial, status, activated_at, product_type,
-               manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
-               shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
-               asgn_id::text AS asgn_id, location, sim_no, created_at, updated_at
-        FROM unit WHERE status = ${status}
-        ORDER BY device_serial
+        SELECT u.id::text AS id, u.device_serial, u.status, u.activated_at, u.product_type,
+               u.manufacturer_vndr::text AS manufacturer_vndr, u.batch::text AS batch,
+               u.shipment::text AS shipment, u.printed_for_merchant::text AS printed_for_merchant,
+               u.asgn_id::text AS asgn_id, u.location, u.sim_no, u.created_at, u.updated_at,
+               rep.replacement_of::text AS replacement_of
+        FROM unit u
+        LEFT JOIN LATERAL (
+          SELECT p.replacement_of FROM pending_pool_entry p WHERE p.asgn_id = u.asgn_id LIMIT 1
+        ) rep ON true
+        WHERE u.status = ${status}
+        ORDER BY u.device_serial
       `
     }
     return tx.$queryRaw<UnitInventoryDbRow[]>`
-      SELECT id::text AS id, device_serial, status, activated_at, product_type,
-               manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
-               shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
-               asgn_id::text AS asgn_id, location, sim_no, created_at, updated_at
-      FROM unit
-      ORDER BY device_serial
+      SELECT u.id::text AS id, u.device_serial, u.status, u.activated_at, u.product_type,
+             u.manufacturer_vndr::text AS manufacturer_vndr, u.batch::text AS batch,
+             u.shipment::text AS shipment, u.printed_for_merchant::text AS printed_for_merchant,
+             u.asgn_id::text AS asgn_id, u.location, u.sim_no, u.created_at, u.updated_at,
+             rep.replacement_of::text AS replacement_of
+      FROM unit u
+      LEFT JOIN LATERAL (
+        SELECT p.replacement_of FROM pending_pool_entry p WHERE p.asgn_id = u.asgn_id LIMIT 1
+      ) rep ON true
+      ORDER BY u.device_serial
     `
   })
   return rows.map(toUnitInventoryDto)
@@ -1347,15 +1403,100 @@ export async function readDeviceDetail(db: FulfillmentDb, unitId: string): Promi
   const unitUuid = toUuid(unitId)
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    // `activated_at` is in this SELECT now. It was missing while the DTO mapper
+    // read it, so this read returned activatedAt undefined while the list read
+    // beside it returned the real instant. Harmless only for as long as nothing
+    // called it, which is not a property worth relying on.
     return tx.$queryRaw<(UnitInventoryDbRow & { device_qr: unknown })[]>`
-      SELECT id::text AS id, device_serial, status, product_type,
-             manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
-             shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
-             asgn_id::text AS asgn_id, location, sim_no, device_qr, created_at, updated_at
-      FROM unit WHERE id = ${unitUuid}::uuid
+      SELECT u.id::text AS id, u.device_serial, u.status, u.activated_at, u.product_type,
+             u.manufacturer_vndr::text AS manufacturer_vndr, u.batch::text AS batch,
+             u.shipment::text AS shipment, u.printed_for_merchant::text AS printed_for_merchant,
+             u.asgn_id::text AS asgn_id, u.location, u.sim_no, u.device_qr, u.created_at, u.updated_at,
+             rep.replacement_of::text AS replacement_of
+      FROM unit u
+      LEFT JOIN LATERAL (
+        SELECT p.replacement_of FROM pending_pool_entry p WHERE p.asgn_id = u.asgn_id LIMIT 1
+      ) rep ON true
+      WHERE u.id = ${unitUuid}::uuid
     `
   })
   const r = rows[0]
   if (r === undefined) return null
   return { ...toUnitInventoryDto(r), deviceQr: r.device_qr }
+}
+
+/**
+ * One device's replacement chain, one hop in each direction. Null when the id
+ * decodes but no such unit exists.
+ *
+ * THERE IS NO DEVICE-TO-DEVICE EDGE in this schema and there should not be. The
+ * relationship holds between DISPATCHES; a device is merely attached to one. So
+ * each direction is two hops: this device -> its dispatch -> the other dispatch
+ * -> that dispatch's own device.
+ *
+ *   rep  = the dispatch THIS one replaces        (backward, the parent)
+ *   succ = the dispatch that replaced THIS one   (forward, the successor)
+ *
+ * Every join is LEFT and each may legitimately miss. A collateral-only
+ * replacement (standee or sticker, no soundbox) has no device at all, and a
+ * successor still at the print vendor has no serial paired yet. Absent is a
+ * real answer here, not a failure, and the caller renders it in words.
+ *
+ * Row-level with LIMIT 1 throughout, which this file must stay: see the guard
+ * note on the batch read for what may not be written here, in SQL or in prose.
+ */
+export async function readDeviceReplacementChain(
+  db: FulfillmentDb,
+  unitId: string,
+): Promise<UnitReplacementChain | null> {
+  const unitUuid = toUuid(unitId)
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<
+      {
+        replacement_of: string | null
+        replaced_by: string | null
+        parent_device_id: string | null
+        parent_device_serial: string | null
+        successor_device_id: string | null
+        successor_device_serial: string | null
+      }[]
+    >`
+      SELECT rep.replacement_of::text AS replacement_of,
+             succ.asgn_id::text AS replaced_by,
+             pu.id::text AS parent_device_id, pu.device_serial AS parent_device_serial,
+             su.id::text AS successor_device_id, su.device_serial AS successor_device_serial
+      FROM unit u
+      LEFT JOIN LATERAL (
+        SELECT p.replacement_of FROM pending_pool_entry p WHERE p.asgn_id = u.asgn_id LIMIT 1
+      ) rep ON true
+      LEFT JOIN LATERAL (
+        -- NOT A CANCELLED ONE (24 Aug 2026, found live). A withdrawn damage
+        -- request leaves its pool row at CANCELLED, and without this predicate
+        -- the device page went on announcing "this device was replaced by
+        -- dispatch X" for a replacement that had been called off, with the
+        -- cancelled dispatch as a live link. The withdrawal means the damage
+        -- never happened, so there is no successor to name.
+        SELECT p.asgn_id FROM pending_pool_entry p
+         WHERE p.replacement_of = u.asgn_id AND p.pool_status <> 'CANCELLED' LIMIT 1
+      ) succ ON true
+      LEFT JOIN LATERAL (
+        SELECT x.id, x.device_serial FROM unit x WHERE x.asgn_id = rep.replacement_of LIMIT 1
+      ) pu ON true
+      LEFT JOIN LATERAL (
+        SELECT x.id, x.device_serial FROM unit x WHERE x.asgn_id = succ.asgn_id LIMIT 1
+      ) su ON true
+      WHERE u.id = ${unitUuid}::uuid
+    `
+  })
+  const r = rows[0]
+  if (r === undefined) return null
+  return {
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
+    replacedByAsgnId: r.replaced_by === null ? null : fromUuid('asgn', r.replaced_by),
+    parentDeviceId: r.parent_device_id === null ? null : fromUuid('unit', r.parent_device_id),
+    parentDeviceSerial: r.parent_device_serial,
+    successorDeviceId: r.successor_device_id === null ? null : fromUuid('unit', r.successor_device_id),
+    successorDeviceSerial: r.successor_device_serial,
+  }
 }

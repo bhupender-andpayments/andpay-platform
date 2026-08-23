@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { Boxes, Check, CheckCircle2, Copy, Download, Eye, ExternalLink, FileSpreadsheet, Loader2, PackageCheck, Send, Upload } from 'lucide-react'
+import { Boxes, Check, CheckCircle2, Compass, Copy, Download, Eye, ExternalLink, FileSpreadsheet, Loader2, Package, PackageCheck, QrCode, Repeat, Send, Smartphone, Tag, Upload } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CodeChip, ErrorNote, InfoNote, EmptyState, Spinner, StatusPill } from '../../../ui/primitives.js'
@@ -44,6 +44,7 @@ const BATCH_RAIL_ICON: Record<string, RailStage['icon']> = {
   CLOSED: CheckCircle2,
 }
 import { BackLink } from '../../../ui/DetailFacts.js'
+import { StatFacts, type StatFactDef } from '../../../ui/StatTiles.js'
 import { DataGrid, type GridColumn } from '../../../ui/DataGrid.js'
 import { fmtDateTime } from '../../../ui/format.js'
 import { useToast } from '../../../ui/Toast.js'
@@ -132,7 +133,7 @@ export function BatchGeneratePage() {
   const [deliverOpen, setDeliverOpen] = useState(false)
   const [deliverBusy, setDeliverBusy] = useState(false)
   const [deliverError, setDeliverError] = useState<string | null>(null)
-  const [deliverResult, setDeliverResult] = useState<{ delivered: number; skipped: number; failed: number } | null>(
+  const [deliverResult, setDeliverResult] = useState<{ delivered: number; skipped: number; failed: number; firstError?: string } | null>(
     null,
   )
 
@@ -242,8 +243,13 @@ export function BatchGeneratePage() {
       // visible at all is here: surfaced as a real error, not folded quietly
       // into the neutral description text beside the other two counts.
       if (result.failed > 0) {
+        // firstError is the server's one honest sentence about the first
+        // failure (23 Aug 2026): without it, "N failed" inside an HTTP 200
+        // was undiagnosable from here.
         setDeliverError(
-          `${String(result.failed)} of ${String(result.delivered + result.skipped + result.failed)} shipments could not be marked delivered. ${String(result.delivered)} others in this batch went through. Try again, it only retries the ones still not delivered.`,
+          `${String(result.failed)} of ${String(result.delivered + result.skipped + result.failed)} shipments could not be marked delivered. ${String(result.delivered)} others in this batch went through. Try again, it only retries the ones still not delivered.${
+            result.firstError !== undefined ? ` First failure: ${result.firstError}` : ''
+          }`,
         )
       }
       await reload()
@@ -413,11 +419,16 @@ export function BatchGeneratePage() {
     detail === null || detail.batch.status === 'BATCHED'
       ? null
       : detail.entries.filter((e) => e.dispatchState === 'DISPATCHED_BY_VENDOR').length
-  // Gates "Mark all delivered" (19 Aug 2026, at the user's direction): every
-  // dispatch in the batch must have reached the vendor first, not just some
-  // of them. dispatchState only ever reaches DISPATCHED_BY_VENDOR (courier
-  // progress past that lives on shpt.status, not here), so this is the same
-  // count the "N of M dispatched" pill above already renders from.
+  // The readiness condition for "Mark all delivered": every dispatch in the
+  // batch must have reached the vendor first, not just some of them.
+  // dispatchState only ever reaches DISPATCHED_BY_VENDOR (courier progress
+  // past that lives on shpt.status, not here).
+  //
+  // 23 Aug 2026: this no longer DISABLES the button, at the user's direction.
+  // The button always opens its dialog, and the dialog is where the condition
+  // is stated with its numbers, the same way Close batch already worked; only
+  // the confirm inside is gated. A faded button with a title attribute put
+  // the reason somewhere an operator has to hover to find.
   const allDispatchedByVendor = dispatchedCount !== null && detail !== null && dispatchedCount === detail.entries.length
   const settlement = detail.settlement
   // An ABSENT settlement read is not permission to close. It means this server
@@ -425,6 +436,108 @@ export function BatchGeneratePage() {
   // honest answer is "cannot tell from here" and the close stays blocked rather
   // than sending a write the server would 409 anyway.
   const canClose = settlement?.settled === true
+
+  // HOW MUCH OF THE RUN THE PRINT VENDOR HAS MAPPED BACK (23 Aug 2026, at the
+  // user's direction). "Mapped" is a shipment existing for the leg, which is
+  // exactly what a non-null courierStatus proves: readBatchDetail COALESCEs
+  // unit.shipment (a soundbox leg whose device the return sheet paired) with
+  // pending_pool_entry.collateral_shipment (a collateral leg whose AWB it
+  // linked). NOT dispatchState: that only advances for a sheet arriving after
+  // the dispatch PM ran, and never for a legacy combined row, so it
+  // undercounts what has actually come back.
+  const soundboxLegs = detail.entries.filter((e) => e.dispatchGroup === 'SOUNDBOX')
+  const collateralLegs = detail.entries.filter((e) => e.dispatchGroup === 'COLLATERAL')
+  const mappedOf = (rows: readonly BatchEntryRow[]): number =>
+    rows.filter((e) => (e.courierStatus ?? null) !== null).length
+  const mappedTotal = mappedOf(detail.entries)
+  const mappedSoundbox = mappedOf(soundboxLegs)
+  const mappedCollateral = mappedOf(collateralLegs)
+  // THE REPLACEMENT SLICE (23 Aug 2026, ops-team ask): how much of this batch
+  // exists because something got damaged. Derived from replacementOfAsgnId,
+  // which rides every entry natively; no extra read.
+  const replacementLegs = detail.entries.filter((e) => (e.replacementOfAsgnId ?? null) !== null)
+  const replacementSoundbox = replacementLegs.filter((e) => e.dispatchGroup === 'SOUNDBOX').length
+  const replacementCollateral = replacementLegs.filter((e) => e.dispatchGroup === 'COLLATERAL').length
+  const replacementStandees = replacementLegs.reduce((n, e) => n + e.standeeCount, 0)
+  const replacementStickers = replacementLegs.reduce((n, e) => n + e.stickerCount, 0)
+
+  // ONE SENTENCE OF GUIDANCE, keyed to where the batch is. The buttons say
+  // what CAN be done; this says what should happen NEXT, which is the question
+  // an operator new to the flow actually has on this page.
+  const nextStep = (() => {
+    if (detail.batch.status === 'BATCHED') {
+      return 'Next: generate the print PDFs and the vendor Excel below, then send this batch to the print vendor.'
+    }
+    if (detail.batch.status === 'SENT_TO_PRINT_VENDOR') {
+      if (canClose) return 'Every dispatch has settled. This batch can be closed.'
+      if (mappedTotal < detail.entries.length) {
+        return `Next: the print vendor prints and ships the run. Upload their return sheet to map devices and AWBs back to these dispatches. ${String(mappedTotal)} of ${String(detail.entries.length)} mapped so far.`
+      }
+      return 'Every dispatch is mapped. Waiting for deliveries to settle: Mark all delivered records them at once, and the batch can close when every dispatch is delivered or returned.'
+    }
+    return 'This batch is closed; every dispatch settled.'
+  })()
+
+  const summaryFacts: StatFactDef[] = [
+    {
+      key: 'status',
+      label: 'Status',
+      hint: `${detail.batch.triggerReason} trigger, formed ${fmtDateTime(detail.batch.createdAt)}`,
+      icon: Package,
+      tone: 'text-primary',
+      chip: 'bg-primary/10',
+      value: (
+        <span className="inline-block pt-0.5">
+          <StatusPill value={detail.batch.status} />
+        </span>
+      ),
+    },
+    {
+      key: 'dispatches',
+      label: 'Dispatches',
+      hint: `${String(soundboxLegs.length)} soundbox, ${String(collateralLegs.length)} collateral legs`,
+      icon: Boxes,
+      tone: 'text-amber-600',
+      chip: 'bg-amber-500/10',
+      value: detail.entries.length,
+    },
+    {
+      key: 'cards',
+      label: 'QR cards',
+      hint: 'ready across the print bundles',
+      icon: QrCode,
+      tone: 'text-violet-600',
+      chip: 'bg-violet-500/10',
+      value: totalCards,
+    },
+    {
+      key: 'mapped',
+      label: 'Mapped by vendor',
+      hint: 'return sheet has come back for these',
+      icon: PackageCheck,
+      tone: 'text-emerald-600',
+      chip: 'bg-emerald-500/10',
+      value: `${String(mappedTotal)}/${String(detail.entries.length)}`,
+    },
+    {
+      key: 'mappedSoundbox',
+      label: 'Soundbox mapped',
+      hint: 'devices paired by the return sheet',
+      icon: Smartphone,
+      tone: 'text-indigo-600',
+      chip: 'bg-indigo-500/10',
+      value: `${String(mappedSoundbox)}/${String(soundboxLegs.length)}`,
+    },
+    {
+      key: 'mappedCollateral',
+      label: 'Collateral mapped',
+      hint: 'AWBs linked by the return sheet',
+      icon: Tag,
+      tone: 'text-sky-600',
+      chip: 'bg-sky-500/10',
+      value: `${String(mappedCollateral)}/${String(collateralLegs.length)}`,
+    },
+  ]
   // Which vendor workbooks this batch actually has, from its ENTRIES rather than
   // its artifacts: the Excel is a picking sheet for what was ordered, and a
   // collateral-only dispatch has a sheet without ever composing a card. Sharing
@@ -662,12 +775,6 @@ export function BatchGeneratePage() {
           {detail.batch.status === 'SENT_TO_PRINT_VENDOR' && (
             <Button
               variant="secondary"
-              disabled={!allDispatchedByVendor}
-              title={
-                allDispatchedByVendor
-                  ? undefined
-                  : `Only ${String(dispatchedCount)} of ${String(detail.entries.length)} dispatches have reached the vendor so far. Every dispatch must be dispatched by vendor before the batch can be marked delivered.`
-              }
               aria-label={`Mark every dispatch in batch ${detail.batch.id} delivered`}
               onClick={() => {
                 setDeliverError(null)
@@ -679,71 +786,69 @@ export function BatchGeneratePage() {
             </Button>
           )}
         </div>
-        {/* The deleted detail page's Summary tile, folded in. Its three facts
-            (records, trigger, print vendor) were the only thing that page
-            reported which this one did not, so they move here rather than being
-            dropped along with the page. */}
-        <dl className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border bg-muted/30 px-4 py-2.5 text-[12.5px]">
-          {/* Where this batch is in its lifecycle, first, because it decides
-              which of the actions below the operator can take. */}
-          <div>
-            <dt className="text-[11px] text-muted-foreground">Status</dt>
-            <dd className="font-semibold">
-              <StatusPill value={detail.batch.status} />
-            </dd>
-          </div>
-          <div>
-            <dt className="text-[11px] text-muted-foreground">Dispatches</dt>
-            <dd className="num font-semibold">{detail.entries.length}</dd>
-          </div>
-          {/* HOW MANY THE VENDOR HAS ACTUALLY SHIPPED (19 Aug 2026, at the user's
-              direction). The batch status alone says "sent to print vendor" from
-              the moment the operator sends it and keeps saying it until every
-              dispatch settles, which is most of a batch's life and tells nobody
-              how far through it is. A print vendor ships what is ready and sends
-              the rest later, and this is the only place that fact is visible: the
-              Activation worklist drops an unpaired dispatch entirely (no device,
-              nothing to activate), so an operator activating 4 of 5 gets no
-              signal anywhere that a 5th is still awaited. This pill is that
-              signal.
-
-              Shown only once the batch has been sent, because before that the
-              answer is always 0 of N and reads as a problem rather than a
-              not-yet. Counted off dispatch_state, the same column the State
-              column below renders per row, so the two cannot disagree. */}
-          {dispatchedCount !== null && (
-            <div>
-              <dt className="text-[11px] text-muted-foreground">Shipped by vendor</dt>
-              <dd className="font-semibold">
-                <span
-                  className={
-                    dispatchedCount === detail.entries.length
-                      ? 'pill pill-positive'
-                      : dispatchedCount === 0
-                        ? 'pill pill-pending'
-                        : 'pill pill-info'
-                  }
-                >
-                  <span className="num">{dispatchedCount}</span> of{' '}
-                  <span className="num">{detail.entries.length}</span> dispatched
-                </span>
-              </dd>
-            </div>
-          )}
-          <div>
-            <dt className="text-[11px] text-muted-foreground">Cards</dt>
-            <dd className="num font-semibold">{totalCards}</dd>
-          </div>
-          <div>
-            <dt className="text-[11px] text-muted-foreground">Trigger</dt>
-            <dd className="font-semibold">{detail.batch.triggerReason}</dd>
-          </div>
-          <div>
-            <dt className="text-[11px] text-muted-foreground">Formed</dt>
-            <dd className="font-semibold">{fmtDateTime(detail.batch.createdAt)}</dd>
-          </div>
-        </dl>
       </div>
+
+      {/* WHAT TO DO NEXT, in words (23 Aug 2026, at the user's direction). The
+          action buttons above say what is possible; this says what the flow
+          expects now, so an operator who has never run a batch is not left to
+          infer the order from which buttons happen to be enabled. Given its
+          own treatment rather than a plain InfoNote (the user's own
+          direction, 23 Aug 2026): a compass chip and a tinted, bordered card
+          so the one sentence that answers "what now" reads as the page's
+          focal point rather than another neutral aside. */}
+      <div className="flex items-start gap-3 rounded-xl border border-primary/25 bg-primary/[0.06] px-4 py-3 dark:bg-primary/10">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
+          <Compass className="size-4" aria-hidden="true" />
+        </span>
+        <div className="min-w-0 pt-0.5">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-primary/80">Next step</p>
+          <p className="mt-0.5 text-[13.5px] text-foreground">{nextStep}</p>
+        </div>
+      </div>
+
+      {/* THE RUN AT A GLANCE (23 Aug 2026), replacing the cramped facts strip
+          that used to sit beside the header. Status/Trigger/Formed keep their
+          home in the first card; the three Mapped cards answer the question
+          the strip never could: how much of the run has the print vendor
+          actually returned to us. Presentational on purpose (StatFacts, not
+          StatTiles): one batch's numbers filter nothing. The old
+          "Shipped by vendor" pill is folded into these rather than kept
+          alongside them, because it counted a slightly different axis
+          (dispatchState) and two near-identical counts on one screen is the
+          one-value-two-names trap the Dispatches page already fixed. */}
+      <StatFacts facts={summaryFacts} />
+
+      {/* THE REPLACEMENT STRIP, rendered ONLY when the batch carries any
+          (23 Aug 2026, ops-team ask). AMBER, the same tone as the REPLACEMENT
+          pill on the rows below and the slice in the pool's Batch preview, so
+          the three surfaces read as one fact. A batch with no replacements
+          shows nothing here: an always-on zero would demote the highlight to
+          furniture. */}
+      {replacementLegs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-2xl border border-amber-300 bg-amber-500/[0.08] px-4 py-3 dark:border-amber-800 dark:bg-amber-500/10">
+          <span className="flex items-center gap-1.5">
+            <Repeat className="size-4 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+              Replacements in this batch
+            </span>
+          </span>
+          <span className="num text-[13px] font-semibold text-foreground">
+            {replacementLegs.length === 1 ? '1 dispatch' : `${String(replacementLegs.length)} dispatches`}
+          </span>
+          <span className="text-[12.5px] text-muted-foreground">
+            {[
+              replacementSoundbox > 0 ? `${String(replacementSoundbox)} soundbox` : null,
+              replacementCollateral > 0
+                ? `${String(replacementCollateral)} collateral (${String(replacementStandees)} standee${
+                    replacementStandees === 1 ? '' : 's'
+                  }, ${String(replacementStickers)} sticker${replacementStickers === 1 ? '' : 's'})`
+                : null,
+            ]
+              .filter((part) => part !== null)
+              .join(', ')}
+          </span>
+        </div>
+      )}
 
       {/* THE BATCH'S OWN LIFECYCLE (18 Aug 2026, at the user's correction). The
           same shared rail the dispatch, shipment and device pages use, so all
@@ -1027,15 +1132,24 @@ export function BatchGeneratePage() {
         />
       )}
 
+      {/* CLOSE, and WHY NOT (redesigned 23 Aug 2026 at the user's direction).
+          The old body was a five-cell grid where "Delivered / Returned /
+          Damaged" and "Still in flight" sat side by side as peers, which is
+          exactly backwards: the first three ARE settled and the fourth is
+          what blocks the close. They are now two panels split by a rule, the
+          settled side summing to one number and the blocking side standing
+          alone, and the explainer is one short line with the three settling
+          words emphasised rather than a paragraph. */}
       <ConfirmDialog
         open={closeOpen}
+        wide
         title={canClose ? 'Close this batch' : 'This batch cannot be closed yet'}
         description={
           settlement === undefined
             ? `Close ${detail.batch.id}.`
             : canClose
-              ? `All ${String(settlement.total)} dispatches have settled. Closing retires the batch; its dispatches and devices are unaffected.`
-              : `A batch closes only once every one of its dispatches has finished travelling. ${String(settlement.pending)} of ${String(settlement.total)} in ${detail.batch.id} have not, so there is nothing to retire yet.`
+              ? 'Every dispatch has settled. Closing retires the batch; its dispatches and devices are unaffected.'
+              : `${String(settlement.pending)} of ${String(settlement.total)} dispatches are still travelling.`
         }
         confirmLabel="Close batch"
         confirmDisabled={!canClose}
@@ -1051,54 +1165,98 @@ export function BatchGeneratePage() {
       >
         {settlement !== undefined && (
           <div className="space-y-3">
-            {/* The arithmetic, so "why not" is answered with numbers rather than
-                a single count an operator has to subtract from the total
-                themselves. Delivered and Returned are separate because they are
-                not interchangeable: a returned dispatch settles the batch without
-                the merchant ever receiving anything.
-
-                THE DAMAGED ROW IS BACK (22 Aug 2026 ruling), and legitimately
-                this time. A 19 Aug version was cut because it read a different
-                axis from the table below and its "1 damaged" could not be
-                located. It is a DISPATCH verdict now: settlement.perDispatch
-                marks the exact row, and a damaged dispatch SETTLES the batch,
-                so the number both locates and explains. */}
-            <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-xl border bg-muted/30 px-4 py-3 text-[12.5px] sm:grid-cols-5">
-              {(
-                [
-                  ['Dispatches', settlement.total],
-                  ['Delivered', settlement.delivered],
-                  ['Returned', settlement.returned],
-                  ['Damaged', settlement.damaged ?? 0],
-                  ['Still in flight', settlement.pending],
-                ] as ReadonlyArray<[string, number]>
-              ).map(([label, value]) => (
-                <div key={label}>
-                  <dt className="text-[11px] text-muted-foreground">{label}</dt>
-                  <dd className="num font-semibold">{value}</dd>
+            <div className="grid gap-4 rounded-xl border bg-muted/20 p-4 sm:grid-cols-[1fr_auto_auto] sm:items-center">
+              {/* SETTLED: the three ways a dispatch stops travelling, and
+                  their sum. Delivered and Returned are not interchangeable (a
+                  returned dispatch settles without the merchant receiving
+                  anything), and DAMAGED is a dispatch verdict from
+                  settlement.perDispatch, so each number both locates and
+                  explains its rows in the table below. */}
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Settled</p>
+                <div className="mt-2 flex items-end gap-5">
+                  {(
+                    [
+                      ['Delivered', settlement.delivered, 'text-emerald-600'],
+                      ['Returned', settlement.returned, 'text-amber-600'],
+                      ['Damaged', settlement.damaged ?? 0, 'text-red-600'],
+                    ] as ReadonlyArray<[string, number, string]>
+                  ).map(([label, value, tone]) => (
+                    <div key={label}>
+                      <p className={`num text-[22px] font-bold leading-none ${value > 0 ? tone : 'text-muted-foreground/50'}`}>
+                        {value}
+                      </p>
+                      <p className="mt-1 text-[11.5px] text-muted-foreground">{label}</p>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </dl>
+              </div>
+
+              {/* The rule that makes the two sides read as different kinds of
+                  thing rather than five peers. */}
+              <div className="hidden h-14 w-px bg-border sm:block" aria-hidden="true" />
+
+              <div className="sm:pl-1">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Still in flight
+                </p>
+                <p
+                  className={`num mt-2 text-[32px] font-bold leading-none ${
+                    settlement.pending > 0 ? 'text-primary' : 'text-emerald-600'
+                  }`}
+                >
+                  {settlement.pending}
+                </p>
+                <p className="mt-1 text-[11.5px] text-muted-foreground">
+                  of {settlement.total} dispatches
+                </p>
+              </div>
+            </div>
+
             {!canClose && (
-              <InfoNote>
-                A dispatch settles when its parcel reaches DELIVERED or RETURNED, or when its device is flagged
-                DAMAGED (the replacement travels on its own dispatch, in its own batch). The unsettled ones are the
-                rows in the dispatch table below that have done none of those three.
-              </InfoNote>
+              <p className="text-[12.5px] text-muted-foreground">
+                A dispatch settles when it is{' '}
+                <span className="font-semibold text-emerald-600">Delivered</span>,{' '}
+                <span className="font-semibold text-amber-600">Returned</span>, or its device is flagged{' '}
+                <span className="font-semibold text-red-600">Damaged</span>. The unsettled ones are the rows in the
+                dispatch table that have done none of the three.
+              </p>
             )}
           </div>
         )}
       </ConfirmDialog>
 
+      {/* MARK ALL DELIVERED, and WHY NOT YET (redesigned 23 Aug 2026 at the
+          user's direction, same treatment Close batch already had). The button
+          used to be rendered disabled with its reason in a title attribute, so
+          the operator had to hover a faded control to learn anything. It is
+          always clickable now: the dialog states the condition with its own
+          numbers and only the confirm is gated, and the server re-checks
+          regardless. */}
       <ConfirmDialog
         open={deliverOpen}
-        title="Mark every dispatch in this batch delivered"
+        wide
+        title={
+          deliverResult !== null
+            ? 'Marked delivered'
+            : allDispatchedByVendor
+              ? 'Mark every dispatch in this batch delivered'
+              : 'Not every dispatch has reached the vendor yet'
+        }
         description={
           deliverResult !== null
-            ? `${String(deliverResult.delivered)} shipment(s) moved to delivered, ${String(deliverResult.skipped)} already settled or not yet paired, ${String(deliverResult.failed)} failed.`
-            : `Every shipment in ${detail.batch.id} still short of delivered is corrected to DELIVERED. A dispatch with no device paired yet has no shipment and is skipped, not failed.`
+            ? undefined
+            : allDispatchedByVendor
+              // SAYS WHAT IT ACTUALLY DOES (23 Aug 2026): the write targets
+              // SHIPMENTS, never dispatches or devices directly. Each parcel
+              // moving carries its own devices in the same transaction and
+              // announces its dispatches on one fact, which is why the sentence
+              // names the parcel as the thing being marked.
+              ? `Every parcel in ${detail.batch.id} still short of delivered is marked delivered. Their dispatches and devices follow.`
+              : `${String((dispatchedCount ?? 0))} of ${String(detail.entries.length)} dispatches have been shipped by the print vendor.`
         }
         confirmLabel={deliverResult !== null ? 'Done' : 'Mark all delivered'}
+        confirmDisabled={deliverResult === null && !allDispatchedByVendor}
         busy={deliverBusy}
         error={deliverError}
         onConfirm={() => {
@@ -1115,7 +1273,76 @@ export function BatchGeneratePage() {
             setDeliverResult(null)
           }
         }}
-      />
+      >
+        {deliverResult !== null ? (
+          // THE OUTCOME, as three numbers rather than one run-on sentence.
+          <div className="grid grid-cols-3 gap-4 rounded-xl border bg-muted/20 p-4">
+            {(
+              [
+                ['Delivered', deliverResult.delivered, 'text-emerald-600'],
+                ['Skipped', deliverResult.skipped, 'text-muted-foreground'],
+                ['Failed', deliverResult.failed, 'text-red-600'],
+              ] as ReadonlyArray<[string, number, string]>
+            ).map(([label, value, tone]) => (
+              <div key={label}>
+                <p className={`num text-[22px] font-bold leading-none ${value > 0 ? tone : 'text-muted-foreground/50'}`}>
+                  {value}
+                </p>
+                <p className="mt-1 text-[11.5px] text-muted-foreground">{label}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {/* THE CONDITION, stated as a checklist row with its own count, so
+                "why is the confirm greyed out" is answered in the dialog
+                rather than in a tooltip. */}
+            <div className="flex items-center gap-4 rounded-xl border bg-muted/20 p-4">
+              <span
+                className={`flex size-9 shrink-0 items-center justify-center rounded-lg ${
+                  allDispatchedByVendor ? 'bg-emerald-500/10 text-emerald-600' : 'bg-amber-500/10 text-amber-600'
+                }`}
+              >
+                {allDispatchedByVendor ? (
+                  <CheckCircle2 className="size-5" aria-hidden="true" />
+                ) : (
+                  <Loader2 className="size-5" aria-hidden="true" />
+                )}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium text-foreground">Every dispatch shipped by the print vendor</p>
+                <p className="text-[11.5px] text-muted-foreground">
+                  {allDispatchedByVendor
+                    ? 'Met. Each dispatch has a shipment to correct.'
+                    : 'Required before the whole batch can be marked delivered in one go.'}
+                </p>
+              </div>
+              <p
+                className={`num shrink-0 text-[20px] font-bold leading-none ${
+                  allDispatchedByVendor ? 'text-emerald-600' : 'text-amber-600'
+                }`}
+              >
+                {dispatchedCount ?? 0}/{detail.entries.length}
+              </p>
+            </div>
+
+            <p className="text-[12.5px] text-muted-foreground">
+              {allDispatchedByVendor ? (
+                <>
+                  A dispatch with <span className="font-semibold text-foreground">no device paired</span> yet has no
+                  shipment and is skipped, not failed.
+                </>
+              ) : (
+                <>
+                  Upload the print vendor's{' '}
+                  <span className="font-semibold text-foreground">return sheet</span> for the remaining dispatches
+                  first: it is what creates their shipments, and there is nothing to mark delivered until it has.
+                </>
+              )}
+            </p>
+          </div>
+        )}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={sendOpen}

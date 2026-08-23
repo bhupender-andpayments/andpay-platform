@@ -41,6 +41,36 @@ describe('tms schema (spec 06 sections 2, 5, 9)', () => {
     expect(pend, 'pending_row missing mobile').toContain('mobile')
   })
 
+  // BRD 5.1b, 22 Aug 2026.
+  it('assignment and pending_row carry the five BRD snapshot columns, all nullable', async () => {
+    for (const table of ['assignment', 'pending_row']) {
+      const cols = await columns(table)
+      for (const col of ['email', 'city', 'state', 'pincode', 'qr_type']) {
+        expect(cols, `${table} missing ${col}`).toContain(col)
+      }
+    }
+    // NULLABLE IS THE POINT, not an oversight. Both tables were BUILT-V1 with
+    // rows already in them, and Email ID and QR Type are Optional in the BRD
+    // and blank in the real bank file, so a NOT NULL here would fail both the
+    // backfill and every live upload.
+    const nullability = await db.$queryRaw<{ table_name: string; column_name: string; is_nullable: string }[]>`
+      SELECT table_name, column_name, is_nullable
+      FROM information_schema.columns
+      WHERE table_schema = 'tms'
+        AND table_name IN ('assignment', 'pending_row')
+        AND column_name IN ('email', 'city', 'state', 'pincode', 'qr_type')
+    `
+    expect(nullability).toHaveLength(10)
+    for (const row of nullability) {
+      expect(row.is_nullable, `${row.table_name}.${row.column_name} must be nullable`).toBe('YES')
+    }
+  })
+
+  // The merchants list had no created date to show at all before this.
+  it('merchant_projection carries created_at', async () => {
+    expect(await columns('merchant_projection')).toContain('created_at')
+  })
+
   it('the idempotency uniques exist', async () => {
     const idx = await db.$queryRaw<{ tablename: string; indexdef: string }[]>`
       SELECT tablename, indexdef FROM pg_indexes WHERE schemaname = 'tms'

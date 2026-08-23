@@ -238,3 +238,62 @@ describe('duplicateVpaVerdicts (ruling 2026-08-10): the pure file-order walk', (
     expect(verdicts.get(2)!.merchantDisplayName).toBeNull()
   })
 })
+
+// BRD 5.1b, 22 Aug 2026: the five columns the Annexure B profile used to
+// discard now reach pending_row, where the assignment snapshot picks them up.
+describe('request-file ingest: the BRD 5.1b columns reach pending_row', () => {
+  it('persists email, city, state, pincode and QR type', async () => {
+    const r = await ingestRequestRow(
+      db,
+      validRow({
+        email: 'jane@acme.example',
+        city: 'PUNE',
+        state: 'Maharashtra',
+        pincode: '411001',
+        qrType: 'Static',
+      }),
+      'trace-brd-1',
+    )
+    expect(r).toBe('accepted')
+
+    const pend = await db.$queryRaw<
+      { email: string | null; city: string | null; state: string | null; pincode: string | null; qr_type: string | null }[]
+    >`SELECT email, city, state, pincode, qr_type FROM pending_row`
+    expect(pend).toHaveLength(1)
+    expect(pend[0]!.email).toBe('jane@acme.example')
+    expect(pend[0]!.city).toBe('PUNE')
+    expect(pend[0]!.state).toBe('Maharashtra')
+    expect(pend[0]!.pincode).toBe('411001')
+    expect(pend[0]!.qr_type).toBe('Static')
+  })
+
+  // BRD marks Email ID and QR Type Optional and the real bank file ships them
+  // blank, so a row without them has to be ACCEPTED, not quarantined. Making
+  // either mandatory would fail every live upload.
+  it('accepts a row with none of them, storing nulls rather than rejecting', async () => {
+    const r = await ingestRequestRow(db, validRow(), 'trace-brd-2')
+    expect(r).toBe('accepted')
+
+    const pend = await db.$queryRaw<{ email: string | null; qr_type: string | null }[]>`
+      SELECT email, qr_type FROM pending_row
+    `
+    expect(pend).toHaveLength(1)
+    expect(pend[0]!.email).toBeNull()
+    expect(pend[0]!.qr_type).toBeNull()
+  })
+
+  // S7/S5: the row fact carries the identity slice only. The new columns are
+  // TMS-local snapshot data and must not have widened it.
+  it('leaves the row fact payload unchanged', async () => {
+    await ingestRequestRow(db, validRow({ email: 'jane@acme.example', city: 'PUNE' }), 'trace-brd-3')
+    const ob = await outboxRows()
+    expect(ob).toHaveLength(1)
+    const payload = ob[0]!.payload as { payload: Record<string, unknown> }
+    const fields = Object.keys(payload.payload)
+    expect(fields).not.toContain('email')
+    expect(fields).not.toContain('city')
+    expect(fields).not.toContain('state')
+    expect(fields).not.toContain('pincode')
+    expect(fields).not.toContain('qrType')
+  })
+})

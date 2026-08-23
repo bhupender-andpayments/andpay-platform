@@ -346,8 +346,10 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
     })
 
     it('a re-sent batch marks nothing twice, whatever idempotency key it carries', async () => {
-      // The underlying write dedups on the BUSINESS key, not the client key, so
-      // this holds even for an operator who generated a fresh key.
+      // Since 23 Aug 2026 the second call is refused by the write's own
+      // `activated_at IS NULL` guard, not by a forever business key. The EFFECT
+      // is still exactly once (one fact); the second authorized attempt is
+      // audited, which is the rule every other ops write already follows.
       const asgnId = newId('asgn')
       await seedTmsAssignment(asgnId)
       await seedDispatchRow(asgnId, true)
@@ -366,7 +368,90 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
       expect(first.body.results[0].activated).toBe(true)
       expect(second.body.results[0]).toEqual({ dispatchId: asgnId, activated: false, reason: 'already-activated' })
       expect(await tmsActivatedFactCount()).toBe(1)
-      expect(await tmsAuditRows()).toHaveLength(1)
+      expect(await tmsAuditRows()).toHaveLength(2)
+    })
+
+    // THE REPORTED DEFECT, at the route the portal actually calls (23 Aug
+    // 2026). Reported as: "3 devices were displaying, but only 2 got
+    // activated", and "clicking one by one from the activation page does not
+    // activate, it says 0 devices activated".
+    //
+    // Both were the same cause. Activation's dedup key was the FOREVER business
+    // key `${asgnId}|activate`, so once a dispatch had ever been activated its
+    // inbox row swallowed every later attempt, even after a deactivation had
+    // set activated_at back to null. Every previously-deactivated row in a
+    // selection came back activated:false / already-activated, so a bulk of
+    // three reported two, and a single re-activation reported zero.
+    it('re-activates rows that were deactivated, so a mixed selection activates ALL of them', async () => {
+      // Three delivered soundboxes. Two get activated then deactivated (the
+      // toggle an operator has on the device page); the third is untouched.
+      const recycled = [newId('asgn'), newId('asgn')]
+      const fresh = newId('asgn')
+      for (const id of [...recycled, fresh]) {
+        await seedTmsAssignment(id)
+        await seedDispatchRow(id, true)
+      }
+      const token = await mint()
+      const post = (path: string, body: object) =>
+        request(app.getHttpServer())
+          .post(path)
+          .set('Authorization', `Bearer ${token}`)
+          .set('Idempotency-Key', randomUUID())
+          .send(body)
+
+      for (const id of recycled) {
+        expect((await post('/ops/assignments/activate', { dispatchId: id })).body.activated).toBe(true)
+        expect((await post('/ops/assignments/deactivate', { dispatchId: id })).body.deactivated).toBe(true)
+      }
+
+      // The selection the operator checks in the portal: two recycled, one new.
+      const res = await post('/ops/assignments/activate-bulk', { dispatchIds: [...recycled, fresh] })
+
+      expect(res.status).toBe(200)
+      // ALL THREE. This is the assertion that failed: the two recycled rows
+      // came back { activated: false, reason: 'already-activated' }.
+      expect(res.body.results).toEqual([
+        { dispatchId: recycled[0], activated: true, reason: null },
+        { dispatchId: recycled[1], activated: true, reason: null },
+        { dispatchId: fresh, activated: true, reason: null },
+      ])
+
+      // And the rows really are live again in TMS, not merely reported so.
+      for (const id of [...recycled, fresh]) {
+        const row = await tmsDb.$queryRaw<{ activated_at: Date | null }[]>`
+          SELECT activated_at FROM assignment WHERE id = ${toUuid(id)}::uuid`
+        expect(row[0]!.activated_at).not.toBeNull()
+      }
+
+      // FIVE activation facts, all with distinct dedup keys: two first-time,
+      // two re-activations, one fresh. The distinctness is what lets
+      // fulfillment's projector re-stamp unit.activated_at, so the batch's
+      // device page agrees with the Activation tab instead of showing a device
+      // as not-activated forever.
+      const facts = await tmsDb.$queryRaw<{ payload: { dedupKey: string } }[]>`
+        SELECT payload FROM outbox WHERE event_type = 'fct.tms.assignment.activated.v1'`
+      expect(facts).toHaveLength(5)
+      expect(new Set(facts.map((f) => f.payload.dedupKey)).size).toBe(5)
+    })
+
+    // The single-dispatch route is what the inner batch page uses per row, and
+    // it went through the same door, so it gets its own guard.
+    it('the single activate route re-activates a deactivated dispatch', async () => {
+      const asgnId = newId('asgn')
+      await seedTmsAssignment(asgnId)
+      await seedDispatchRow(asgnId, true)
+      const token = await mint()
+      const post = (path: string) =>
+        request(app.getHttpServer())
+          .post(path)
+          .set('Authorization', `Bearer ${token}`)
+          .set('Idempotency-Key', randomUUID())
+          .send({ dispatchId: asgnId })
+
+      expect((await post('/ops/assignments/activate')).body.activated).toBe(true)
+      expect((await post('/ops/assignments/deactivate')).body.deactivated).toBe(true)
+      // Was false ("0 devices activated" in the portal). Must be a real flip.
+      expect((await post('/ops/assignments/activate')).body.activated).toBe(true)
     })
 
     it('an empty list is a 400 with no writes at all', async () => {

@@ -14,11 +14,17 @@ import { Link } from 'react-router-dom'
 export function FactRow({
   icon: Icon,
   label,
+  hint,
   children,
 }: {
   // Any lucide icon. Typed structurally so this module imports no specific one.
   icon: (props: { className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }) => ReactNode
   label: string
+  // A one-line explanation of what this fact IS, for a field a reader could
+  // otherwise mistake for something else (a system id versus a bank-issued
+  // one, a legal name versus a trade name). Optional: most facts are
+  // self-explanatory and do not need one.
+  hint?: ReactNode
   children: ReactNode
 }) {
   return (
@@ -27,6 +33,7 @@ export function FactRow({
       <div className="min-w-0 flex-1 text-sm">
         <span className="text-muted-foreground">{label}: </span>
         <span className="font-medium text-foreground">{children}</span>
+        {hint !== undefined && <p className="mt-0.5 text-xs text-muted-foreground/80">{hint}</p>}
       </div>
     </div>
   )

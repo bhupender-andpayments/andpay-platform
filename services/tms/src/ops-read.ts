@@ -411,6 +411,19 @@ export interface RequestLegRow {
   replacementOfAsgnId: string | null
   activatedAt: string | null
   createdAt: string
+  /**
+   * Recipient contact and address snapshot (BRD 5.1b), read here for the
+   * request detail page. Same columns the Merchants list widening already
+   * surfaces; nullable because they are additive to a BUILT-V1 table.
+   */
+  contactName: string | null
+  mobile: string | null
+  email: string | null
+  shipToAddress: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  qrType: string | null
 }
 
 export async function listRequestLegsOps(db: TmsDb, limit = 500): Promise<RequestLegRow[]> {
@@ -435,12 +448,22 @@ export async function listRequestLegsOps(db: TmsDb, limit = 500): Promise<Reques
         replacement_of: string | null
         activated_at: Date | null
         created_at: Date
+        contact_name: string | null
+        mobile: string | null
+        email: string | null
+        ship_to_address: string | null
+        city: string | null
+        state: string | null
+        pincode: string | null
+        qr_type: string | null
       }[]
     >`
       SELECT source_event_id, id, dispatch_group, merchant_display_name,
              bank_reference_code, bank_display_name, branch_code, vpa_value,
              soundbox, standee_count, sticker_count, billable, demand_state,
-             case_status, replacement_of, activated_at, created_at
+             case_status, replacement_of, activated_at, created_at,
+             contact_name, mobile, email, ship_to_address, city, state,
+             pincode, qr_type
       FROM assignment
       ORDER BY created_at DESC
       LIMIT ${limit}
@@ -464,6 +487,14 @@ export async function listRequestLegsOps(db: TmsDb, limit = 500): Promise<Reques
     replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
     activatedAt: r.activated_at === null ? null : r.activated_at.toISOString(),
     createdAt: r.created_at.toISOString(),
+    contactName: r.contact_name,
+    mobile: r.mobile,
+    email: r.email,
+    shipToAddress: r.ship_to_address,
+    city: r.city,
+    state: r.state,
+    pincode: r.pincode,
+    qrType: r.qr_type,
   }))
 }
 
@@ -566,10 +597,21 @@ export async function countDamageCasesByStatus(db: TmsDb): Promise<DamageCaseSum
 //
 // Emits the WIRE id (D-A: reads emit wire ids), never the raw uuid.
 //
-// PII-free by construction (D104 default-exclude), and not by filtering: the
-// table holds display_name, legal_name, mcc and status only. The recipient
-// address, contact name and mobile that the pool list guards against live on
-// the assignment and the pool entry, never here.
+// A DELIBERATE, NARROW D104 DISCLOSURE (22 Aug 2026, see
+// docs/plan/CORPUS_SUBMISSION_2026-08-22_MERCHANTS_LIST.md).
+//
+// This block used to read "PII-free by construction (D104 default-exclude)",
+// which was true of the projection but is no longer true of this read. The
+// merchants list now returns the recipient contact block and the raw VPA,
+// because the BRD's merchant record IS that field table (BRD 5.1b) and an ops
+// merchant search that cannot show a mobile or a VPA cannot answer the
+// question operators actually bring to it.
+//
+// The scope of the reversal is EXACTLY this list. The pool, batch, dispatch
+// and shipment projections below and in fulfillment's ops-read stay PII-free
+// by construction, and the rule that a worklist identifies a record rather
+// than addressing a parcel still governs them. A merchant page is not a
+// worklist.
 //
 // Rejected shape: deriving this from pending_pool_entry (option 1c). It shows
 // only in-flight merchants, so a search would silently omit settled ones and
@@ -581,6 +623,7 @@ export interface MerchantRow {
   legalName: string
   mcc: string
   status: string
+  createdAt: Date
   updatedAt: Date
   /**
    * D-2: this merchant has more than one soundbox request, so at least one was
@@ -589,6 +632,33 @@ export interface MerchantRow {
    * describes.
    */
   hasAdditionalRequests: boolean
+  /**
+   * THE BRD 5.1b BLOCK, snapshotted from this merchant's most recent request.
+   *
+   * Null on a merchant no bank file has carried yet: the hand-created one
+   * (ops Add merchant) has all of this in identity.merchant, which C4 forbids
+   * reading from here, so the ops edge composes it in afterwards the same way
+   * reports.controller.ts merges hold state. Null here therefore means "not
+   * yet known TO TMS", never "the merchant does not have one".
+   *
+   * `address` is the ship-to snapshot, which for every bank file to date is
+   * the same place as the registered address (the file ships one address).
+   */
+  vpa: string | null
+  qrType: string | null
+  contactName: string | null
+  mobile: string | null
+  email: string | null
+  address: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  bankDisplayName: string | null
+  bankReferenceCode: string | null
+  branchCode: string | null
+  /** INITIAL or ADDITIONAL, from that same most recent request. */
+  latestRequestOrigin: string | null
+  latestRequestAt: Date | null
 }
 
 interface MerchantDbRow {
@@ -597,8 +667,23 @@ interface MerchantDbRow {
   legal_name: string
   mcc: string
   status: string
+  created_at: Date
   updated_at: Date
   has_additional_requests: boolean
+  vpa_value: string | null
+  qr_type: string | null
+  contact_name: string | null
+  mobile: string | null
+  email: string | null
+  ship_to_address: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  bank_display_name: string | null
+  bank_reference_code: string | null
+  branch_code: string | null
+  origin: string | null
+  latest_request_at: Date | null
 }
 
 function toMerchantDto(r: MerchantDbRow): MerchantRow {
@@ -608,8 +693,23 @@ function toMerchantDto(r: MerchantDbRow): MerchantRow {
     legalName: r.legal_name,
     mcc: r.mcc,
     status: r.status,
+    createdAt: r.created_at,
     updatedAt: r.updated_at,
     hasAdditionalRequests: r.has_additional_requests,
+    vpa: r.vpa_value,
+    qrType: r.qr_type,
+    contactName: r.contact_name,
+    mobile: r.mobile,
+    email: r.email,
+    address: r.ship_to_address,
+    city: r.city,
+    state: r.state,
+    pincode: r.pincode,
+    bankDisplayName: r.bank_display_name,
+    bankReferenceCode: r.bank_reference_code,
+    branchCode: r.branch_code,
+    latestRequestOrigin: r.origin,
+    latestRequestAt: r.latest_request_at,
   }
 }
 
@@ -644,14 +744,43 @@ export async function listMerchants(db: TmsDb): Promise<MerchantRow[]> {
     // That guard also READS COMMENTS, so this note cannot spell the banned
     // function name even while explaining why it is avoided. It caught exactly
     // that on the first run here.
+    // THE BRD 5.1b BLOCK COMES FROM THE MERCHANT'S MOST RECENT REQUEST, via a
+    // LEFT JOIN LATERAL taking exactly one row.
+    //
+    // LEFT, not inner: a hand-created merchant has no assignment at all, and an
+    // inner join would delete them from the merchants list, which is the one
+    // page whose whole job is that they can be found.
+    //
+    // LIMIT 1 inside the lateral, not a set-returning shape, so this stays
+    // row-level and the architecture net over this file stays green. Same
+    // reason the note above avoids naming the banned SQL functions: that
+    // matcher reads comments too.
+    //
+    // ORDER BY created_at DESC, id DESC: the newest request wins, and the id
+    // tiebreak makes it deterministic when one bank-file row minted both a
+    // SOUNDBOX and a COLLATERAL leg in the same instant.
     return tx.$queryRaw<MerchantDbRow[]>`
-      SELECT m.id, m.display_name, m.legal_name, m.mcc, m.status, m.updated_at,
+      SELECT m.id, m.display_name, m.legal_name, m.mcc, m.status, m.created_at, m.updated_at,
              EXISTS (
                SELECT 1 FROM assignment a1
                JOIN assignment a2 ON a2.merchant_id = a1.merchant_id AND a2.id <> a1.id
                WHERE a1.merchant_id = m.id
-             ) AS has_additional_requests
+             ) AS has_additional_requests,
+             latest.vpa_value, latest.qr_type, latest.contact_name, latest.mobile, latest.email,
+             latest.ship_to_address, latest.city, latest.state, latest.pincode,
+             latest.bank_display_name, latest.bank_reference_code, latest.branch_code,
+             latest.origin, latest.created_at AS latest_request_at
       FROM merchant_projection m
+      LEFT JOIN LATERAL (
+        SELECT a.vpa_value, a.qr_type, a.contact_name, a.mobile, a.email,
+               a.ship_to_address, a.city, a.state, a.pincode,
+               a.bank_display_name, a.bank_reference_code, a.branch_code,
+               a.origin, a.created_at
+        FROM assignment a
+        WHERE a.merchant_id = m.id
+        ORDER BY a.created_at DESC, a.id DESC
+        LIMIT 1
+      ) latest ON true
       ORDER BY m.display_name, m.id
     `
   })

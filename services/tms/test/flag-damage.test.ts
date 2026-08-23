@@ -30,12 +30,14 @@ async function seedLeg(group: 'SOUNDBOX' | 'COLLATERAL', vpa = `flag-${randomUUI
   await db.$executeRaw`INSERT INTO assignment (
     id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
     bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count,
-    billable, demand_state, source_event_id, dispatch_group, contact_name, mobile, branch_code, updated_at
+    billable, demand_state, source_event_id, dispatch_group, contact_name, mobile, branch_code,
+    email, city, state, pincode, qr_type, updated_at
   ) VALUES (
     ${asgnUuid}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
     'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'Old Addr', 'upi://pay', ${vpa},
     ${group === 'SOUNDBOX'}, ${group === 'SOUNDBOX' ? 0 : 2}, ${group === 'SOUNDBOX' ? 0 : 3},
-    true, 'pooled-for-fulfillment', ${`flag-seed|${asgnUuid}`}, ${group}, 'Original Contact', '+91-8888888888', 'BR-ORIG', now()
+    true, 'pooled-for-fulfillment', ${`flag-seed|${asgnUuid}`}, ${group}, 'Original Contact', '+91-8888888888', 'BR-ORIG',
+    'original@acme.example', 'PUNE', 'Maharashtra', '411001', 'Static', now()
   )`
   return fromUuid('asgn', asgnUuid)
 }
@@ -87,10 +89,15 @@ describe('flagDamageOps happy path on a COLLATERAL leg (D-26, DP-2)', () => {
       demand_state: string
       contact_name: string | null
       branch_code: string | null
+      email: string | null
+      city: string | null
+      state: string | null
+      pincode: string | null
+      qr_type: string | null
     }[]>`
       SELECT id, replacement_of, dispatch_group, soundbox, standee_count, sticker_count, billable,
              damage_reason, ops_remarks, bank_remarks, flagged_by, case_status, origin, source_event_id,
-             demand_state, contact_name, branch_code
+             demand_state, contact_name, branch_code, email, city, state, pincode, qr_type
       FROM assignment WHERE replacement_of IS NOT NULL
     `
     expect(rows).toHaveLength(1)
@@ -124,6 +131,15 @@ describe('flagDamageOps happy path on a COLLATERAL leg (D-26, DP-2)', () => {
     // The recipient and branch snapshots carry forward from the parent.
     expect(child.contact_name).toBe('Original Contact')
     expect(child.branch_code).toBe('BR-ORIG')
+    // BRD 5.1b, 22 Aug 2026: so does the rest of the block. Without this a
+    // merchant whose newest request is a replacement would read as having no
+    // email or city on the merchants list, because the list takes its block
+    // from the LATEST request and that is what a replacement becomes.
+    expect(child.email).toBe('original@acme.example')
+    expect(child.city).toBe('PUNE')
+    expect(child.state).toBe('Maharashtra')
+    expect(child.pincode).toBe('411001')
+    expect(child.qr_type).toBe('Static')
 
     // Both facts are enqueued in the same transaction.
     const types = (await db.$queryRaw<{ event_type: string }[]>`SELECT event_type FROM outbox ORDER BY event_type`).map(

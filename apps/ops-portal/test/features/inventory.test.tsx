@@ -33,6 +33,10 @@ const DEVICE = {
   simNo: '89910000123456789',
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-02T00:00:00.000Z',
+  // Server-provided since 23 Aug 2026 (it used to be joined in the browser from
+  // every damage case). Non-null means this device travels on a dispatch that
+  // replaces an earlier one.
+  replacementOfAsgnId: 'asgn_parent',
 }
 const IN_STOCK = {
   ...DEVICE,
@@ -48,6 +52,21 @@ const IN_STOCK = {
   printedForMerchant: null,
   asgnId: null,
   simNo: null,
+  // No dispatch at all, so no replacement either: this is warehouse stock.
+  replacementOfAsgnId: null,
+}
+
+// THE THIRD STATE, and the reason there are three (23 Aug 2026). A device is
+// only linked to a dispatch once the print vendor's return sheet pairs it, so
+// IN_STOCK above has no dispatch and is neither fresh nor a replacement. "Fresh"
+// used to be computed as everything-minus-replacements, which counted stock as
+// though it had shipped. This is what a genuinely fresh dispatch looks like.
+const FRESH_DISPATCH = {
+  ...DEVICE,
+  id: 'unit_3',
+  deviceSerial: '9990000001003',
+  asgnId: 'asgn_3',
+  replacementOfAsgnId: null,
 }
 const MERCHANTS = [{ mrchId: 'mrch_1', displayName: 'Flow Alpha Store', legalName: 'FLOW ALPHA LLP', mcc: '5411', status: 'ACTIVE', updatedAt: '2026-08-01T00:00:00.000Z' }]
 const VENDORS = [
@@ -245,23 +264,37 @@ describe('InventoryPage', () => {
   // The Source facet (replacement vs fresh) that replaced the Replacements
   // card: a device whose asgn_id appears on a damage case IS the replacement
   // sent for a damaged kit; everything else is fresh billable stock.
-  it('the Source dropdown slices replacement stock from fresh, and clears back to all', async () => {
-    stub(
-      [DEVICE, IN_STOCK],
-      [{ caseId: 'case_1', asgnId: 'asgn_1' }],
-    )
+  // THREE STATES, and each one exclusive (23 Aug 2026). Fresh is no longer the
+  // complement of replacement: undispatched stock is its own answer, and the
+  // bug this replaces was that stock counted as a fresh DISPATCH.
+  // THE REQUESTS VOCABULARY (23 Aug 2026, at the user's correction): the filter
+  // is named Replacement and offers the same two options as the Requests page,
+  // so one idea has one wording everywhere. "Fresh only" is everything that is
+  // not a replacement, WAREHOUSE STOCK INCLUDED: a device is fresh until damage
+  // says otherwise. The old third option ("Not dispatched") is gone from the
+  // dropdown; the Dispatch type column still states all three states per row.
+  it('the Replacement filter splits the roster two ways, undispatched stock counting as fresh', async () => {
+    const pick = async (name: RegExp) => {
+      await userEvent.click(screen.getByLabelText(/replacement/i))
+      const listbox = await screen.findByRole('listbox')
+      await userEvent.click(within(listbox).getByRole('option', { name }))
+    }
+    stub([DEVICE, IN_STOCK, FRESH_DISPATCH])
     renderPage()
     await screen.findByText('9990000001001')
-    await userEvent.click(screen.getByLabelText(/source/i))
-    const listbox = await screen.findByRole('listbox')
-    await userEvent.click(within(listbox).getByRole('option', { name: /replacement/i }))
+
+    // The old header is gone with its third option.
+    expect(screen.queryByLabelText(/source/i)).toBeNull()
+
+    await pick(/replacement only/i)
     await vi.waitFor(() => expect(screen.queryByText('9990000001002')).toBeNull())
     expect(screen.getByText('9990000001001')).toBeTruthy()
-    // Fresh is the complement.
-    await userEvent.click(screen.getByLabelText(/source/i))
-    const listbox2 = await screen.findByRole('listbox')
-    await userEvent.click(within(listbox2).getByRole('option', { name: /fresh/i }))
-    expect(await screen.findByText('9990000001002')).toBeTruthy()
+    expect(screen.queryByText('9990000001003')).toBeNull()
+
+    await pick(/fresh only/i)
+    // The fresh dispatch AND the never-dispatched warehouse device.
+    expect(await screen.findByText('9990000001003')).toBeTruthy()
+    expect(screen.getByText('9990000001002')).toBeTruthy()
     expect(screen.queryByText('9990000001001')).toBeNull()
   })
 
