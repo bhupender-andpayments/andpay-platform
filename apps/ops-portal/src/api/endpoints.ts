@@ -1106,6 +1106,8 @@ export function getAggregatorLogoVersions(c: Client, aggrId: string) {
 export interface AggregatorLogoCurrent {
   master: BankLogoVersionRow | null
   derivative: BankLogoVersionRow | null
+  /** The co-brand header banner strip (standee-frame flow, 2026-08-24). */
+  banner: BankLogoVersionRow | null
 }
 
 export function getAggregatorLogoCurrent(c: Client, aggrId: string) {
@@ -1127,6 +1129,35 @@ export async function fetchAggregatorLogoDerivative(c: Client, aggrId: string): 
     return await c.request<Blob>({
       method: 'GET',
       path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo/derivative`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
+// The header banner upload: one PNG/JPG strip, same multipart client path as
+// the logo pair so it keeps the 401 refresh-and-retry.
+export function uploadAggregatorBanner(c: Client, aggrId: string, banner: File, idempotencyKey: string) {
+  const form = new FormData()
+  form.append('banner', banner)
+  return c.request<{ deduped: boolean; id: string | null; version: string | null }>({
+    method: 'POST',
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/banner`,
+    formBody: form,
+    idempotencyKey,
+  })
+}
+
+// The stored banner's bytes for the dialog preview; 404 (no banner yet) is a
+// real answer, surfaced as null. Routed through the blob client path, same as
+// the derivative above.
+export async function fetchAggregatorBanner(c: Client, aggrId: string): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/aggregators/${encodeURIComponent(aggrId)}/banner`,
       responseType: 'blob',
     })
   } catch (err) {

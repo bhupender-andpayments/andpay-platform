@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { newId } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { upsertBankCompositionConfig, setBankLogo, setBankLogoPair, OpsClientError } from '../src/ops.js'
+import { upsertBankCompositionConfig, setBankLogo, setBankLogoPair, setBankBanner, OpsClientError } from '../src/ops.js'
 import { InMemoryAssetStore } from '../src/storage/dev-asset-store.js'
 
 // Phase 3 Task 5b (BRD Annexure D.4): the bank/branch composition-config
@@ -39,6 +39,7 @@ async function readConfigRow(id: string): Promise<{
   image_templates: unknown
   logo_master_ref: string | null
   logo_derivative_ref: string | null
+  header_banner_ref: string | null
 }> {
   const rows = await db.$queryRaw<
     {
@@ -47,9 +48,10 @@ async function readConfigRow(id: string): Promise<{
       image_templates: unknown
       logo_master_ref: string | null
       logo_derivative_ref: string | null
+      header_banner_ref: string | null
     }[]
   >`
-    SELECT branch_code, branding_params, image_templates, logo_master_ref, logo_derivative_ref
+    SELECT branch_code, branding_params, image_templates, logo_master_ref, logo_derivative_ref, header_banner_ref
     FROM bank_composition_config WHERE id = ${id}::uuid
   `
   expect(rows).toHaveLength(1)
@@ -435,6 +437,77 @@ describe('setBankLogoPair (Task 4, bank master hierarchy: master plus rasterised
     const replay = await setBankLogoPair(db, store, args)
     expect(replay.deduped).toBe(true)
     expect((await store.listVersions('VSC')).length).toBe(1)
+  })
+})
+
+describe('setBankBanner (standee-frame flow, 2026-08-24)', () => {
+  it('stores the strip under "<code>:banner", sets header_banner_ref, and audits under ops:bank-logo-set', async () => {
+    const store = new InMemoryAssetStore()
+    const tenantWire = newId('tnnt')
+    const res = await setBankBanner(db, store, {
+      tenantWire,
+      bankCode: '1522',
+      banner: { bytes: new TextEncoder().encode('PNGBYTES'), contentType: 'image/png', filename: '1522.png' },
+      clientKey: randomUUID(),
+      actorId: 'actor-1',
+      traceId: 'trace-banner',
+    })
+    expect(res.deduped).toBe(false)
+    expect(res.version).not.toBeNull()
+
+    const row = await readConfigRow(res.id!)
+    expect(row.header_banner_ref).not.toBeNull()
+    const stored = await store.getCurrent('1522:banner')
+    expect(stored?.meta.filename).toBe('1522.png')
+    // The bare code key stays free for the logo master: no collision.
+    expect(await store.getCurrent('1522')).toBeNull()
+
+    const rows = await auditRowsFor('ops:bank-logo-set')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.resourceIds).toEqual([res.id, `banner-version:${res.version}`])
+  })
+
+  it('a banner upsert onto a row the logo pair created keeps both logo refs', async () => {
+    const store = new InMemoryAssetStore()
+    const tenantWire = newId('tnnt')
+    const pair = await setBankLogoPair(db, store, {
+      tenantWire,
+      bankCode: '18',
+      master: { bytes: new TextEncoder().encode('%AI'), contentType: 'application/postscript', filename: 'adc.ai' },
+      derivative: { bytes: new TextEncoder().encode('PNG'), contentType: 'image/png', filename: 'adc.png' },
+      clientKey: randomUUID(),
+      actorId: 'actor-1',
+      traceId: 'trace-pair-then-banner',
+    })
+    const res = await setBankBanner(db, store, {
+      tenantWire,
+      bankCode: '18',
+      banner: { bytes: new TextEncoder().encode('STRIP'), contentType: 'image/png', filename: '18.png' },
+      clientKey: randomUUID(),
+      actorId: 'actor-1',
+      traceId: 'trace-pair-then-banner-2',
+    })
+    expect(res.id).toBe(pair.id)
+    const row = await readConfigRow(res.id!)
+    expect(row.logo_master_ref).not.toBeNull()
+    expect(row.logo_derivative_ref).not.toBeNull()
+    expect(row.header_banner_ref).not.toBeNull()
+  })
+
+  it('a replay (same clientKey) is deduped and puts no second banner version', async () => {
+    const store = new InMemoryAssetStore()
+    const args = {
+      tenantWire: newId('tnnt'),
+      bankCode: '3',
+      banner: { bytes: new TextEncoder().encode('GSCB'), contentType: 'image/png', filename: '3.png' },
+      clientKey: randomUUID(),
+      actorId: 'actor-1',
+      traceId: 'trace-banner-replay',
+    }
+    await setBankBanner(db, store, args)
+    const replay = await setBankBanner(db, store, args)
+    expect(replay.deduped).toBe(true)
+    expect((await store.listVersions('3:banner')).length).toBe(1)
   })
 })
 

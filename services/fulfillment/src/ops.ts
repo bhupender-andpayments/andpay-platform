@@ -1671,6 +1671,75 @@ export async function setBankLogoPair(
   }
 }
 
+export interface SetBankBannerInput {
+  tenantWire: string
+  bankCode: string
+  banner: { bytes: Uint8Array; contentType: string; filename: string }
+  clientKey: string
+  actorId: string
+  traceId: string
+}
+
+/**
+ * Store the bank's co-brand HEADER BANNER strip (standee-frame flow,
+ * 2026-08-24): the finished "<bank lockup> | Powered By GSC BANK" PNG the
+ * product team ships per bank, drawn by the renderer into the shared frame's
+ * top band. A third slot beside the logo pair, mirroring setBankLogoPair's
+ * structure exactly: enterWriteRole first, the put() INSIDE the onceWithin
+ * effect, a single co-committed 6e under the same 'ops:bank-logo-set'
+ * operation (the banner is the same master-data surface as the logo pair,
+ * not a new authz operation).
+ *
+ * The asset key is "{bankCode}:banner": code-only, never tenantId/actorId/PII
+ * (S4), and the ":" suffix rule keeps it collision-free against both the bare
+ * master key and the "{bankCode}:derivative" key, exactly as documented on
+ * setBankLogoPair.
+ */
+export async function setBankBanner(
+  db: FulfillmentDb,
+  assetStore: AssetStore,
+  args: SetBankBannerInput,
+): Promise<{ deduped: boolean; id: string | null; version: string | null }> {
+  const tenantUuid = toUuid(args.tenantWire)
+  const bannerKey = `${args.bankCode}:banner`
+
+  let id: string | null = null
+  let version: string | null = null
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:bank-logo-set'), async () => {
+      const put = await assetStore.put(bannerKey, args.banner.bytes, {
+        contentType: args.banner.contentType,
+        filename: args.banner.filename,
+      })
+      version = put.version
+
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, header_banner_ref, branding_params, image_templates, updated_at)
+        VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${args.bankCode}, '', ${put.reference}, '{}'::jsonb, '{}'::jsonb, now())
+        ON CONFLICT (tenant_id, bank_code, branch_code)
+        DO UPDATE SET header_banner_ref = EXCLUDED.header_banner_ref, updated_at = now()
+        RETURNING id::text AS id
+      `
+      id = rows[0]!.id
+
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:bank-logo-set',
+            principalId: args.actorId,
+            resourceIds: [id, `banner-version:${put.version}`],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return { deduped: !ran, id: ran ? id : null, version: ran ? version : null }
+}
+
 export interface SetBankTemplateMasterInput {
   tenantWire: string
   bankCode: string

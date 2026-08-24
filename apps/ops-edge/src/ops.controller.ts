@@ -38,6 +38,7 @@ import {
   upsertBankCompositionConfig,
   setBankLogo,
   setBankLogoPair,
+  setBankBanner,
   setBankTemplateMaster,
   upsertBatchingConfig,
   setVendorPrintLayout,
@@ -1999,6 +2000,39 @@ export class OpsController {
       bankCode: target.bankCode,
       master: { bytes: master.buffer, contentType: master.mimetype, filename: master.originalname },
       derivative: { bytes: derivative.buffer, contentType: derivative.mimetype, filename: derivative.originalname },
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // The co-brand header banner strip (standee-frame flow, 2026-08-24): the
+  // finished "<bank lockup> | Powered By GSC BANK" PNG drawn into the shared
+  // frame's top band. Same master-data surface and same authz operation as
+  // the logo pair; one file, PNG or JPG only (the renderer embeds it as a
+  // raster and a vector strip has no supplier today).
+  @Post('aggregators/:aggrId/banner')
+  @UseInterceptors(
+    FileFieldsInterceptor([{ name: 'banner', maxCount: 1 }], { limits: { fileSize: MAX_ARTWORK_UPLOAD_BYTES } }),
+  )
+  @HttpCode(200)
+  async setAggregatorBannerRoute(
+    @Req() req: EdgeRequest,
+    @Param('aggrId') aggrId: string,
+    @UploadedFiles() files: { banner?: UploadedLogoFile[] },
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; id: string | null; version: string | null }> {
+    const g = await this.gate(req, 'ops:bank-logo-set', idem, [aggrId])
+    const banner = files.banner?.[0]
+    if (!banner) throw new BadRequestException('a banner file is required')
+    if (banner.mimetype !== 'image/png' && banner.mimetype !== 'image/jpeg') {
+      throw new BadRequestException('the banner must be a PNG or JPG image')
+    }
+    const target = await this.resolveAggregatorLogoTarget(aggrId)
+    return setBankBanner(this.deps.fulfillmentDb, this.deps.assetStore, {
+      tenantWire: target.tenantWire,
+      bankCode: target.bankCode,
+      banner: { bytes: banner.buffer, contentType: banner.mimetype, filename: banner.originalname },
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

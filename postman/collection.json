@@ -594,6 +594,33 @@
               }
             },
             {
+              "name": "GET /ops/aggregators/:aggrId/banner",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/aggregators/:aggrId/banner",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "aggregators",
+                    ":aggrId",
+                    "banner"
+                  ],
+                  "variable": [
+                    {
+                      "key": "aggrId",
+                      "value": "",
+                      "description": "Path parameter :aggrId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.aggregatorBanner (source order preserved).\nGuard: OpsEdgeGuard.\nPath parameters: aggrId."
+              }
+            },
+            {
               "name": "GET /ops/aggregators/:aggrId/logo/derivative",
               "request": {
                 "method": "GET",
@@ -2795,6 +2822,49 @@
                   ]
                 },
                 "description": "Handler: ops.setAggregatorLogoRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): master, derivative.\nPath parameters: aggrId."
+              }
+            },
+            {
+              "name": "POST /ops/aggregators/:aggrId/banner",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}",
+                    "description": "Required. OpsController.gate() rejects a missing or blank value with 400."
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "banner",
+                      "type": "file",
+                      "src": []
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{opsBase}}/ops/aggregators/:aggrId/banner",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "aggregators",
+                    ":aggrId",
+                    "banner"
+                  ],
+                  "variable": [
+                    {
+                      "key": "aggrId",
+                      "value": "",
+                      "description": "Path parameter :aggrId"
+                    }
+                  ]
+                },
+                "description": "Handler: ops.setAggregatorBannerRoute (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200.\nMultipart file field(s): banner.\nPath parameters: aggrId."
               }
             }
           ]

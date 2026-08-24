@@ -170,6 +170,8 @@ export {
   type SetBankLogoInput,
   setBankLogoPair,
   type SetBankLogoPairInput,
+  setBankBanner,
+  type SetBankBannerInput,
   setBankTemplateMaster,
   type SetBankTemplateMasterInput,
   upsertBatchingConfig,

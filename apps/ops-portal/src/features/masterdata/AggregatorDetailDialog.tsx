@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import {
   editAggregator,
   uploadAggregatorLogo,
+  uploadAggregatorBanner,
+  fetchAggregatorBanner,
   getAggregatorLogoVersions,
   getAggregatorLogoCurrent,
   fetchAggregatorLogoDerivative,
@@ -145,6 +147,15 @@ export function AggregatorDetailDialog({
   const [renderHint, setRenderHint] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [logoError, setLogoError] = useState<string | null>(null)
+  // The co-brand header banner strip (standee-frame flow, 2026-08-24): its
+  // stored preview, the picked replacement, and that upload's own lifecycle,
+  // deliberately separate from the logo pair's so one upload never blocks or
+  // clears the other.
+  const [bannerUrl, setBannerUrl] = useState<string | null>(null)
+  const [bannerFile, setBannerFile] = useState<File | null>(null)
+  const [bannerPendingUrl, setBannerPendingUrl] = useState<string | null>(null)
+  const [bannerUploading, setBannerUploading] = useState(false)
+  const [bannerError, setBannerError] = useState<string | null>(null)
   // The version-history preview: which token the operator clicked, and what
   // came back for it (a data: URL, 'loading', or 'none' for a 404).
   const [viewedVersion, setViewedVersion] = useState<string | null>(null)
@@ -172,6 +183,12 @@ export function AggregatorDetailDialog({
     getAggregatorLogoCurrent(client, aggregator.aggrId)
       .then(setStored)
       .catch(() => setStored(null))
+    fetchAggregatorBanner(client, aggregator.aggrId)
+      .then((blob) => {
+        if (blob === null) return
+        return blobToDataUrl(blob).then(setBannerUrl)
+      })
+      .catch(() => setBannerError('Failed to load the current header banner.'))
   }
 
   useEffect(() => {
@@ -233,6 +250,34 @@ export function AggregatorDetailDialog({
     if (file === null) return
     const url = await blobToDataUrl(file)
     if (pickSeq.current === token) setPendingUrl(url)
+  }
+
+  async function pickBanner(file: File | null): Promise<void> {
+    setBannerFile(file)
+    if (file === null) {
+      setBannerPendingUrl(null)
+      return
+    }
+    setBannerPendingUrl(await blobToDataUrl(file))
+  }
+
+  async function uploadBanner(): Promise<void> {
+    if (bannerFile === null) return
+    setBannerUploading(true)
+    setBannerError(null)
+    try {
+      await uploadAggregatorBanner(client, aggregator.aggrId, bannerFile, newIdempotencyKey())
+      toast(`${aggregator.displayName} header banner updated`)
+      setBannerFile(null)
+      setBannerPendingUrl(null)
+      setInputEpoch((n) => n + 1)
+      loadCurrent()
+      onSaved()
+    } catch (err) {
+      setBannerError(err instanceof Error ? err.message : 'Failed to upload the header banner.')
+    } finally {
+      setBannerUploading(false)
+    }
   }
 
   async function uploadLogo(): Promise<void> {
@@ -503,6 +548,77 @@ export function AggregatorDetailDialog({
                     </ul>
                   )}
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* -- Header banner (standee-frame flow, 2026-08-24) ----------- */}
+          <div className="space-y-3 border-t pt-4">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold">Header banner</h3>
+              <p className="truncate text-xs text-muted-foreground">
+                {stored?.banner != null ? (
+                  <>
+                    {stored.banner.filename} · {stored.banner.version}
+                    {stored.banner.lastModified != null && (
+                      <>
+                        {' '}
+                        ·{' '}
+                        <span title={fmtDateTime(stored.banner.lastModified)}>
+                          replaced {fmtAgo(stored.banner.lastModified)}
+                        </span>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  'The co-brand strip printed across the top of the standee frame. None uploaded yet.'
+                )}
+              </p>
+            </div>
+            {bannerError !== null && <ErrorNote>{bannerError}</ErrorNote>}
+            {bannerUrl !== null && (
+              <img
+                src={bannerUrl}
+                alt={`${aggregator.displayName} header banner`}
+                className="w-full rounded border border-border bg-white object-contain p-1"
+              />
+            )}
+            <div className="flex items-end gap-3">
+              <div className="min-w-0 flex-1">
+                <Field
+                  label={stored?.banner != null ? 'Replace banner (PNG or JPG)' : 'Banner (PNG or JPG)'}
+                  htmlFor="agg-banner-file"
+                  hint="A wide strip, roughly 7:1: the bank lockup beside the Powered By GSC BANK mark."
+                >
+                  <Input
+                    id="agg-banner-file"
+                    key={`banner-${inputEpoch}`}
+                    type="file"
+                    accept="image/png,image/jpeg"
+                    onChange={(e) => void pickBanner(e.target.files?.[0] ?? null)}
+                  />
+                </Field>
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => void uploadBanner()}
+                disabled={bannerFile === null}
+                loading={bannerUploading}
+              >
+                Upload banner
+              </Button>
+            </div>
+            {bannerPendingUrl !== null && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">
+                  New (not uploaded yet)
+                </p>
+                <img
+                  src={bannerPendingUrl}
+                  alt="Selected banner preview"
+                  className="w-full rounded border border-dashed border-border bg-white object-contain p-1"
+                />
               </div>
             )}
           </div>

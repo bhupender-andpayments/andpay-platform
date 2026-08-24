@@ -411,7 +411,7 @@ describe('aggregator logo over HTTP', () => {
       .get(`/ops/aggregators/${aggrId}/logo/current`)
       .set('Authorization', `Bearer ${tok}`)
       .expect(200)
-    expect(empty.body).toEqual({ master: null, derivative: null })
+    expect(empty.body).toEqual({ master: null, derivative: null, banner: null })
 
     for (const n of [1, 2]) {
       await request(app.getHttpServer())
@@ -442,7 +442,54 @@ describe('aggregator logo over HTTP', () => {
       .get('/ops/aggregators/aggr_00000000000000000000000000/logo/current')
       .set('Authorization', `Bearer ${tok}`)
       .expect(200)
-    expect(unknown.body).toEqual({ master: null, derivative: null })
+    expect(unknown.body).toEqual({ master: null, derivative: null, banner: null })
+  })
+
+  it('uploads the header banner, streams it back, and names it in logo/current (standee-frame flow)', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'BNR-T1' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    // No banner yet: 404 is the real answer, matching the derivative route.
+    await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/banner`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(404)
+
+    // A non-image upload is refused at the edge.
+    await request(app.getHttpServer())
+      .post(`/ops/aggregators/${aggrId}/banner`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('banner', Buffer.from('%PDF-1.4'), { filename: 'strip.pdf', contentType: 'application/pdf' })
+      .expect(400)
+
+    const upload = await request(app.getHttpServer())
+      .post(`/ops/aggregators/${aggrId}/banner`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('banner', Buffer.from('banner strip bytes'), { filename: 'strip.png', contentType: 'image/png' })
+      .expect(200)
+    expect(upload.body.version).not.toBeNull()
+
+    const stream = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/banner`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(stream.headers['content-type']).toContain('image/png')
+
+    const current = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/current`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(current.body.banner.filename).toBe('strip.png')
+    // The logo pair stays untouched by a banner upload.
+    expect(current.body.master).toBeNull()
+    expect(current.body.derivative).toBeNull()
   })
 
   it('streams the master bytes AT each listed version token, and 404s an unknown token', async () => {

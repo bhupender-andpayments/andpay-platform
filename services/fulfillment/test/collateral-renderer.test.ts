@@ -335,3 +335,61 @@ describe('template master background (track B)', () => {
     expect(Buffer.compare(Buffer.from(outOfRange), Buffer.from(clamped))).toBe(0)
   })
 })
+
+describe('header banner (standee-frame flow, 2026-08-24)', () => {
+  // A tiny valid PNG (1x1 white) so embedPng has real bytes to accept.
+  const PNG_1PX = Uint8Array.from(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  )
+
+  it('a banner changes the master render, and its yFrac moves it', async () => {
+    const master = { bytes: await testMaster() }
+    const banner = { bytes: PNG_1PX, contentType: 'image/png' }
+    const without = await renderCollateralPdf({ ...minimalInput('STANDEE_IMG'), templateMaster: master })
+    const withBanner = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      headerBanner: banner,
+    })
+    expect(Buffer.compare(Buffer.from(without), Buffer.from(withBanner))).not.toBe(0)
+    const moved = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      headerBanner: banner,
+      imageTemplate: { overlay: { banner: { yFrac: 0.5 } } },
+    })
+    expect(Buffer.compare(Buffer.from(withBanner), Buffer.from(moved))).not.toBe(0)
+  })
+
+  it('unembeddable banner bytes degrade to a banner-less render, never a throw', async () => {
+    const master = { bytes: await testMaster() }
+    const without = await renderCollateralPdf({ ...minimalInput('STANDEE_IMG'), templateMaster: master })
+    const corrupt = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      headerBanner: { bytes: new Uint8Array([1, 2, 3]), contentType: 'image/png' },
+    })
+    expect(Buffer.compare(Buffer.from(without), Buffer.from(corrupt))).toBe(0)
+  })
+
+  it('overlay colorHex overrides move the VPA and name off the template ink', async () => {
+    const master = { bytes: await testMaster() }
+    const inked = await renderCollateralPdf({ ...minimalInput('STANDEE_IMG'), templateMaster: master })
+    const recolored = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      imageTemplate: { overlay: { vpa: { colorHex: '#ffffff' }, name: { colorHex: '#144a96' } } },
+    })
+    expect(Buffer.compare(Buffer.from(inked), Buffer.from(recolored))).not.toBe(0)
+  })
+
+  it('the drawn (no-master) path ignores the banner: its own header already carries the lockup', async () => {
+    const banner = { bytes: PNG_1PX, contentType: 'image/png' }
+    const a = await renderCollateralPdf(minimalInput('STANDEE_IMG'))
+    const b = await renderCollateralPdf({ ...minimalInput('STANDEE_IMG'), headerBanner: banner })
+    expect(Buffer.compare(Buffer.from(a), Buffer.from(b))).toBe(0)
+  })
+})

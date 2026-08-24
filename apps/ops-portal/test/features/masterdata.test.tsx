@@ -674,8 +674,9 @@ describe('master data create dialogs', () => {
           if (url.includes('/edit')) return jsonResponse({ deduped: false, changedFields: ['displayName'] })
           return jsonResponse({ deduped: false, aggrId: 'aggr_c2' })
         }
+        if (url.includes('/banner')) return new Response(null, { status: 404 })
         if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
-        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null })
+        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null, banner: null })
         if (url.includes('/logo/versions')) return jsonResponse([])
         if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
         return jsonResponse([])
@@ -818,8 +819,9 @@ describe('master data create dialogs', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
+        if (url.includes('/banner')) return new Response(null, { status: 404 })
         if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
-        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null })
+        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null, banner: null })
         if (url.includes('/logo/versions')) {
           return jsonResponse([
             { version: 'v2', filename: 'gscb-v2.png', contentType: 'image/png' },
@@ -852,10 +854,11 @@ describe('master data create dialogs', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
+        if (url.includes('/banner')) return new Response(null, { status: 404 })
         if (url.includes('/logo/derivative')) {
           return new Response(pngBytes, { status: 200, headers: { 'content-type': 'image/png' } })
         }
-        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null })
+        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null, banner: null })
         if (url.includes('/logo/versions')) return jsonResponse([])
         if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
         return jsonResponse([])
@@ -875,11 +878,13 @@ describe('master data create dialogs', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
+        if (url.includes('/banner')) return new Response(null, { status: 404 })
         if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
         if (url.includes('/logo/current')) {
           return jsonResponse({
             master: { version: 'v2', filename: 'Godhara city.ai', contentType: 'application/postscript' },
             derivative: { version: 'v2', filename: 'Godhara city.png', contentType: 'image/png' },
+            banner: null,
           })
         }
         if (url.includes('/logo/versions')) return jsonResponse([])
@@ -905,11 +910,34 @@ describe('master data create dialogs', () => {
     expect(screen.getAllByText(/Currently stored:/).length).toBe(2)
   })
 
+  it('the dialog shows the Header banner section with an upload control (standee-frame flow)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/banner')) return new Response(null, { status: 404 })
+        if (url.includes('/logo/derivative')) return new Response(null, { status: 404 })
+        if (url.includes('/logo/current')) return jsonResponse({ master: null, derivative: null, banner: null })
+        if (url.includes('/logo/versions')) return jsonResponse([])
+        if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
+        return jsonResponse([])
+      }),
+    )
+    renderPage(<MasterDataPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
+    expect(await screen.findByText('Header banner')).toBeTruthy()
+    expect(screen.getByLabelText(/Banner \(PNG or JPG\)/)).toBeTruthy()
+    const upload = screen.getByRole('button', { name: 'Upload banner' }) as HTMLButtonElement
+    expect(upload.disabled).toBe(true)
+  })
+
   it('clicking the current logo opens an enlarged popup naming the stored derivative', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
+        if (url.includes('/banner')) return new Response(null, { status: 404 })
         if (url.includes('/logo/derivative')) {
           return new Response(pngBytes, { status: 200, headers: { 'content-type': 'image/png' } })
         }
@@ -917,6 +945,7 @@ describe('master data create dialogs', () => {
           return jsonResponse({
             master: { version: 'v2', filename: 'Godhara city.ai', contentType: 'application/postscript' },
             derivative: { version: 'v2', filename: 'Godhara city.png', contentType: 'image/png' },
+            banner: null,
           })
         }
         if (url.includes('/logo/versions')) return jsonResponse([])

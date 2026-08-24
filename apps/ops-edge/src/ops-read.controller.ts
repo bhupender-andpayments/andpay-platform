@@ -266,10 +266,11 @@ export class OpsReadController {
   async aggregatorLogoCurrent(@Param('aggrId') aggrId: string): Promise<{
     master: { version: string; filename: string; contentType: string; lastModified: string | null } | null
     derivative: { version: string; filename: string; contentType: string; lastModified: string | null } | null
+    banner: { version: string; filename: string; contentType: string; lastModified: string | null } | null
   }> {
     const rows = await listBankMasters(this.deps.identityDb)
     const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
-    if (agg === undefined) return { master: null, derivative: null }
+    if (agg === undefined) return { master: null, derivative: null, banner: null }
     const head = async (key: string) => {
       const versions = await this.deps.assetStore.listVersions(key)
       const newest = versions[0]
@@ -283,8 +284,27 @@ export class OpsReadController {
         lastModified: newest.meta.lastModified ?? null,
       }
     }
-    const [master, derivative] = await Promise.all([head(agg.aggregatorCode), head(`${agg.aggregatorCode}:derivative`)])
-    return { master, derivative }
+    const [master, derivative, banner] = await Promise.all([
+      head(agg.aggregatorCode),
+      head(`${agg.aggregatorCode}:derivative`),
+      head(`${agg.aggregatorCode}:banner`),
+    ])
+    return { master, derivative, banner }
+  }
+
+  // The stored co-brand header banner strip's bytes, for the dialog's
+  // preview. Same 404-as-answer posture as the derivative below.
+  @Get('aggregators/:aggrId/banner')
+  async aggregatorBanner(@Param('aggrId') aggrId: string, @Res() res: EdgeResponse): Promise<void> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    const rec = agg === undefined ? null : await this.deps.assetStore.getCurrent(`${agg.aggregatorCode}:banner`)
+    if (rec === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+    res.setHeader('Content-Type', rec.meta.contentType)
+    res.status(200).send(Buffer.from(rec.bytes))
   }
 
   @Get('aggregators/:aggrId/logo/derivative')
