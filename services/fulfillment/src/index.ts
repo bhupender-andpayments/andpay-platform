@@ -262,3 +262,4 @@ export {
   type ShipmentReadRow,
   type ShipmentStatusEventRow,
 } from './read.js'
+export { renderSampleCard, type RenderSampleCardInput } from './collateral/sample.js'

@@ -1998,6 +1998,9 @@ export class OpsController {
     return setBankLogoPair(this.deps.fulfillmentDb, this.deps.assetStore, {
       tenantWire: target.tenantWire,
       bankCode: target.bankCode,
+      // The store keys on the aggregator's immutable id, not its code (ruled
+      // 24 Aug 2026), so a later code correction never orphans the artwork.
+      assetKey: aggrId,
       master: { bytes: master.buffer, contentType: master.mimetype, filename: master.originalname },
       derivative: { bytes: derivative.buffer, contentType: derivative.mimetype, filename: derivative.originalname },
       clientKey: g.clientKey,
@@ -2032,6 +2035,7 @@ export class OpsController {
     return setBankBanner(this.deps.fulfillmentDb, this.deps.assetStore, {
       tenantWire: target.tenantWire,
       bankCode: target.bankCode,
+      assetKey: aggrId,
       banner: { bytes: banner.buffer, contentType: banner.mimetype, filename: banner.originalname },
       clientKey: g.clientKey,
       actorId: g.actorId,

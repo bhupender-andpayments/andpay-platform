@@ -1589,6 +1589,15 @@ export async function setBankLogo(
 export interface SetBankLogoPairInput {
   tenantWire: string
   bankCode: string
+  /**
+   * The asset-store key stem for this aggregator's artwork (ruled 24 Aug
+   * 2026): the aggregator's own WIRE `aggr_` id. The id never changes, so
+   * artwork survives a code correction without the key replay the 24 Aug
+   * renumbering needed; the config ROW stays keyed on bankCode because
+   * dispatch resolves it from the request row's code. Still IDs-only, never
+   * PII (S4).
+   */
+  assetKey: string
   master: { bytes: Uint8Array; contentType: string; filename: string }
   derivative: { bytes: Uint8Array; contentType: string; filename: string }
   clientKey: string
@@ -1605,10 +1614,11 @@ export interface SetBankLogoPairInput {
  * dispatch.ts's PDF embedder actually consumes (a .ai file cannot be embedded
  * directly, BRD D.2).
  *
- * Asset keys are code-only, never tenantId/actorId/PII (S4), same rule as
- * setBankLogo: the master keys on the bare bankCode, the derivative keys on
- * "{bankCode}:derivative" (the ":" cannot collide with the "bankCode/
- * branchCode" branch keys setBankLogo builds).
+ * Asset keys are the aggregator's immutable wire id (ruled 24 Aug 2026,
+ * after the code renumbering forced a full key replay): the master keys on
+ * the bare assetKey, the derivative on "{assetKey}:derivative" (the ":"
+ * cannot collide with the "bankCode/branchCode" branch keys setBankLogo
+ * builds). IDs only, never tenantId/actorId/PII (S4).
  *
  * Both put()s run INSIDE the onceWithin effect (after the client-key dedup
  * check): a replay of the same clientKey must never mint a second asset
@@ -1620,8 +1630,8 @@ export async function setBankLogoPair(
   args: SetBankLogoPairInput,
 ): Promise<{ deduped: boolean; id: string | null; masterVersion: string | null; derivativeVersion: string | null }> {
   const tenantUuid = toUuid(args.tenantWire)
-  const masterKey = args.bankCode
-  const derivativeKey = `${args.bankCode}:derivative`
+  const masterKey = args.assetKey
+  const derivativeKey = `${args.assetKey}:derivative`
 
   let id: string | null = null
   let masterVersion: string | null = null
@@ -1674,6 +1684,8 @@ export async function setBankLogoPair(
 export interface SetBankBannerInput {
   tenantWire: string
   bankCode: string
+  /** The aggregator's wire aggr_ id; see SetBankLogoPairInput.assetKey. */
+  assetKey: string
   banner: { bytes: Uint8Array; contentType: string; filename: string }
   clientKey: string
   actorId: string
@@ -1690,10 +1702,10 @@ export interface SetBankBannerInput {
  * operation (the banner is the same master-data surface as the logo pair,
  * not a new authz operation).
  *
- * The asset key is "{bankCode}:banner": code-only, never tenantId/actorId/PII
- * (S4), and the ":" suffix rule keeps it collision-free against both the bare
- * master key and the "{bankCode}:derivative" key, exactly as documented on
- * setBankLogoPair.
+ * The asset key is "{assetKey}:banner" (the aggregator's wire id, ruled 24
+ * Aug 2026): IDs only, never tenantId/actorId/PII (S4), and the ":" suffix
+ * rule keeps it collision-free against both the bare master key and the
+ * "{assetKey}:derivative" key, exactly as documented on setBankLogoPair.
  */
 export async function setBankBanner(
   db: FulfillmentDb,
@@ -1701,7 +1713,7 @@ export async function setBankBanner(
   args: SetBankBannerInput,
 ): Promise<{ deduped: boolean; id: string | null; version: string | null }> {
   const tenantUuid = toUuid(args.tenantWire)
-  const bannerKey = `${args.bankCode}:banner`
+  const bannerKey = `${args.assetKey}:banner`
 
   let id: string | null = null
   let version: string | null = null

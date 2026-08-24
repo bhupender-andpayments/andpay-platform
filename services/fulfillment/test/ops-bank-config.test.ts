@@ -360,6 +360,7 @@ describe('setBankLogo (Phase 3 Task 5b, BRD Annexure D.4, T3 AssetStore port)', 
     const pair = await setBankLogoPair(db, store, {
       tenantWire,
       bankCode: 'HDFC',
+      assetKey: 'aggr_hdfc_test_000000000000000',
       master: { bytes: new TextEncoder().encode('%AI'), contentType: 'application/postscript', filename: 'hdfc.ai' },
       derivative: { bytes: new TextEncoder().encode('PNG'), contentType: 'image/png', filename: 'hdfc.png' },
       clientKey: randomUUID(),
@@ -394,6 +395,7 @@ describe('setBankLogoPair (Task 4, bank master hierarchy: master plus rasterised
     const res = await setBankLogoPair(db, store, {
       tenantWire,
       bankCode: 'VSC',
+      assetKey: 'aggr_vsc_test_00000000000000000',
       master: { bytes: new TextEncoder().encode('%AI'), contentType: 'application/postscript', filename: 'vsc.ai' },
       derivative: { bytes: new TextEncoder().encode('PNG'), contentType: 'image/png', filename: 'vsc.png' },
       clientKey: randomUUID(),
@@ -408,8 +410,8 @@ describe('setBankLogoPair (Task 4, bank master hierarchy: master plus rasterised
     expect(row.logo_master_ref).not.toBeNull()
     expect(row.logo_derivative_ref).not.toBeNull()
 
-    const master = await store.getCurrent('VSC')
-    const derivative = await store.getCurrent('VSC:derivative')
+    const master = await store.getCurrent('aggr_vsc_test_00000000000000000')
+    const derivative = await store.getCurrent('aggr_vsc_test_00000000000000000:derivative')
     expect(master?.meta.filename).toBe('vsc.ai')
     expect(derivative?.meta.contentType).toBe('image/png')
 
@@ -427,6 +429,7 @@ describe('setBankLogoPair (Task 4, bank master hierarchy: master plus rasterised
     const args = {
       tenantWire,
       bankCode: 'VSC',
+      assetKey: 'aggr_vsc_test_00000000000000000',
       master: { bytes: new TextEncoder().encode('%AI'), contentType: 'application/postscript', filename: 'vsc.ai' },
       derivative: { bytes: new TextEncoder().encode('PNG'), contentType: 'image/png', filename: 'vsc.png' },
       clientKey,
@@ -436,17 +439,18 @@ describe('setBankLogoPair (Task 4, bank master hierarchy: master plus rasterised
     await setBankLogoPair(db, store, args)
     const replay = await setBankLogoPair(db, store, args)
     expect(replay.deduped).toBe(true)
-    expect((await store.listVersions('VSC')).length).toBe(1)
+    expect((await store.listVersions('aggr_vsc_test_00000000000000000')).length).toBe(1)
   })
 })
 
 describe('setBankBanner (standee-frame flow, 2026-08-24)', () => {
-  it('stores the strip under "<code>:banner", sets header_banner_ref, and audits under ops:bank-logo-set', async () => {
+  it('stores the strip under "<aggrId>:banner", sets header_banner_ref, and audits under ops:bank-logo-set', async () => {
     const store = new InMemoryAssetStore()
     const tenantWire = newId('tnnt')
     const res = await setBankBanner(db, store, {
       tenantWire,
       bankCode: '1522',
+      assetKey: 'aggr_1522_test_0000000000000000',
       banner: { bytes: new TextEncoder().encode('PNGBYTES'), contentType: 'image/png', filename: '1522.png' },
       clientKey: randomUUID(),
       actorId: 'actor-1',
@@ -457,10 +461,10 @@ describe('setBankBanner (standee-frame flow, 2026-08-24)', () => {
 
     const row = await readConfigRow(res.id!)
     expect(row.header_banner_ref).not.toBeNull()
-    const stored = await store.getCurrent('1522:banner')
+    const stored = await store.getCurrent('aggr_1522_test_0000000000000000:banner')
     expect(stored?.meta.filename).toBe('1522.png')
-    // The bare code key stays free for the logo master: no collision.
-    expect(await store.getCurrent('1522')).toBeNull()
+    // The bare id key stays free for the logo master: no collision.
+    expect(await store.getCurrent('aggr_1522_test_0000000000000000')).toBeNull()
 
     const rows = await auditRowsFor('ops:bank-logo-set')
     expect(rows).toHaveLength(1)
@@ -473,6 +477,7 @@ describe('setBankBanner (standee-frame flow, 2026-08-24)', () => {
     const pair = await setBankLogoPair(db, store, {
       tenantWire,
       bankCode: '18',
+      assetKey: 'aggr_18_test_000000000000000000',
       master: { bytes: new TextEncoder().encode('%AI'), contentType: 'application/postscript', filename: 'adc.ai' },
       derivative: { bytes: new TextEncoder().encode('PNG'), contentType: 'image/png', filename: 'adc.png' },
       clientKey: randomUUID(),
@@ -482,6 +487,7 @@ describe('setBankBanner (standee-frame flow, 2026-08-24)', () => {
     const res = await setBankBanner(db, store, {
       tenantWire,
       bankCode: '18',
+      assetKey: 'aggr_18_test_000000000000000000',
       banner: { bytes: new TextEncoder().encode('STRIP'), contentType: 'image/png', filename: '18.png' },
       clientKey: randomUUID(),
       actorId: 'actor-1',
@@ -499,6 +505,7 @@ describe('setBankBanner (standee-frame flow, 2026-08-24)', () => {
     const args = {
       tenantWire: newId('tnnt'),
       bankCode: '3',
+      assetKey: 'aggr_3_test_0000000000000000000',
       banner: { bytes: new TextEncoder().encode('GSCB'), contentType: 'image/png', filename: '3.png' },
       clientKey: randomUUID(),
       actorId: 'actor-1',
@@ -507,7 +514,7 @@ describe('setBankBanner (standee-frame flow, 2026-08-24)', () => {
     await setBankBanner(db, store, args)
     const replay = await setBankBanner(db, store, args)
     expect(replay.deduped).toBe(true)
-    expect((await store.listVersions('3:banner')).length).toBe(1)
+    expect((await store.listVersions('aggr_3_test_0000000000000000000:banner')).length).toBe(1)
   })
 })
 
