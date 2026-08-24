@@ -976,6 +976,46 @@ describe('master data create dialogs', () => {
     expect((posts[0]!.init.body as FormData).get('tenantWire')).toBe('tnnt_p1')
   })
 
+  it('the strips checkbox writes marks flags for all three product types via the config upsert (24 Aug 2026)', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit = { method: 'GET' }) => {
+        calls.push({ url, init })
+        if ((init.method ?? 'GET').toUpperCase() === 'POST') {
+          return jsonResponse({ deduped: false, id: 'cfg-1' })
+        }
+        if (url.includes('/banner')) return new Response(null, { status: 404 })
+        if (url.includes('/ops/bank-config?')) {
+          return jsonResponse([
+            { id: 'cfg-1', tenantId: 't-1', bankCode: '', branchCode: '', brandingParams: {}, imageTemplates: { STANDEE: { overlay: { qr: { yFrac: 0.4 } } } } },
+          ])
+        }
+        if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
+        return jsonResponse([])
+      }),
+    )
+    renderTenantPage()
+
+    const box = (await screen.findByLabelText('Print dispatch id and bank code beside the QR')) as HTMLInputElement
+    // Absent flags read as ON (the renderer's own default).
+    expect(box.checked).toBe(true)
+    await userEvent.click(box)
+
+    const post = calls.find(
+      (c) => (c.init.method ?? 'GET').toUpperCase() === 'POST' && c.url.endsWith('/ops/bank-config'),
+    )
+    expect(post).toBeTruthy()
+    const body = JSON.parse(post!.init.body as string)
+    expect(body.bankCode).toBe('')
+    expect(body.tenantWire).toBe('tnnt_p1')
+    for (const type of ['SOUNDBOX', 'STANDEE', 'STICKER']) {
+      expect(body.imageTemplates[type].overlay.marks).toEqual({ dispatchId: false, bankCode: false })
+    }
+    // Pre-existing overlay geometry on STANDEE survives the toggle.
+    expect(body.imageTemplates.STANDEE.overlay.qr).toEqual({ yFrac: 0.4 })
+  })
+
   it('the dialog shows the Header banner section with an upload control (standee-frame flow)', async () => {
     vi.stubGlobal(
       'fetch',

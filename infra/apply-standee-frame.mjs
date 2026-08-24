@@ -63,8 +63,10 @@ const FRAME = { widthPt: 271.2, heightPt: 501.12 }
 // OverlayConfig contract.
 const OVERLAY = {
   banner: { yFrac: 0.92, widthFrac: 0.86 },
-  name: { yFrac: 0.832, size: 15, colorHex: '#144a96' },
-  legal: { yFrac: 0.796, size: 8, colorHex: '#144a96' },
+  // name/legal raised 24 Aug 2026 (Rahul: the legal line sat too close to
+  // the frame's pre-printed SCAN & PAY).
+  name: { yFrac: 0.845, size: 15, colorHex: '#144a96' },
+  legal: { yFrac: 0.81, size: 8, colorHex: '#144a96' },
   qr: { yFrac: 0.395, sideFrac: 0.531 },
   vpa: { yFrac: 0.291, size: 14, colorHex: '#ffffff' },
 }
@@ -125,6 +127,7 @@ async function main() {
 
   const { createS3AssetStore, preRenderArtifacts } = await import('../services/fulfillment/dist/index.js')
   const { PrismaClient: FulfillmentClient } = await import('../services/fulfillment/generated/client/index.js')
+  const { fromUuid } = await import('../packages/ids/dist/index.js')
   const { PrismaClient: TmsClient } = await import('../services/tms/generated/client/index.js')
   const { PrismaClient: IdentityClient } = await import('../services/identity/generated/client/index.js')
 
@@ -306,7 +309,10 @@ async function main() {
       const prepared = await preRenderArtifacts(
         fdb,
         store,
-        { btchId: wire, tenantId: b.tenant_id, programId: b.program_id, triggerReason: 'FRAME', unitCount: 0, asgnIds: [] },
+        // The fact payload carries WIRE ids (batching.ts emits tenantWire), and
+        // preRenderArtifacts now converts tenantId via toUuid, so the raw column
+        // value must be wrapped first.
+        { btchId: wire, tenantId: fromUuid('tnnt', b.tenant_id), programId: b.program_id, triggerReason: 'FRAME', unitCount: 0, asgnIds: [] },
         b.btch_uuid,
         b.program_id,
       )

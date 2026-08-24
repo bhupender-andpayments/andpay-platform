@@ -13,6 +13,7 @@
 // A READ, not a write: no transaction beyond the scoped SELECT, no outbox, no
 // audit. The sample values are fixed constants so the render is deterministic
 // and cache-friendly, exactly like the renderer's own contract.
+import { toUuid } from '@andpay/ids'
 import type { Tx } from '../internal.js'
 import { bankConfigCandidateKeys } from '../config/bank-config-fallback.js'
 import type { AssetStore } from '../storage/asset-store.js'
@@ -44,6 +45,8 @@ const SAMPLE = {
 }
 
 export interface RenderSampleCardInput {
+  /** The owning tenant's wire tnnt_ id: config rows key on (tenant, bank, branch). */
+  tenantWire: string
   bankCode: string
   bankName: string
   artifactType: ArtifactType
@@ -59,12 +62,17 @@ export async function renderSampleCard(
   assetStore: AssetStore,
   input: RenderSampleCardInput,
 ): Promise<Uint8Array> {
+  const tenantUuid = toUuid(input.tenantWire)
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    // Tenant-scoped for the same reason dispatch.ts's bulk read is (24 Aug
+    // 2026): the table keys on (tenant, bank, branch), and an unscoped read
+    // lets another tenant's row collide on the bank-code map key.
     return tx.$queryRaw<ConfigRow[]>`
       SELECT bank_code, branch_code, branding_params, image_templates, logo_master_ref,
              logo_derivative_ref, soundbox_template_ref, collateral_template_ref, header_banner_ref
       FROM bank_composition_config
+      WHERE tenant_id = ${tenantUuid}::uuid
     `
   })
   const byKey = new Map<string, ConfigRow>(rows.map((r) => [`${r.bank_code}|${r.branch_code}`, r]))

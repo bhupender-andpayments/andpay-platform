@@ -315,6 +315,7 @@ export class OpsReadController {
     const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
     if (agg === undefined) throw new NotFoundException('aggregator not found')
     const pdf = await renderSampleCard(this.deps.fulfillmentDb, this.deps.assetStore, {
+      tenantWire: agg.tnntId,
       bankCode: agg.aggregatorCode,
       bankName: agg.displayName,
       artifactType,

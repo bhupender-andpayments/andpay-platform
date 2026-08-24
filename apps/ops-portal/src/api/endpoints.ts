@@ -1188,6 +1188,38 @@ export async function fetchAggregatorCardPreview(
   }
 }
 
+// The composition-config rows for one tenant (branding + image templates per
+// (bank, branch) key; refs never ride here). Used by the tenant page to read
+// and write the default row's overlay flags.
+export interface BankConfigRowView {
+  id: string
+  tenantId: string
+  bankCode: string
+  branchCode: string
+  brandingParams: unknown
+  imageTemplates: unknown
+}
+
+export function getBankConfigRows(c: Client, tenantWire: string) {
+  return c.request<BankConfigRowView[]>({
+    method: 'GET',
+    path: `/ops/bank-config?tenantWire=${encodeURIComponent(tenantWire)}`,
+  })
+}
+
+export function upsertBankConfig(
+  c: Client,
+  body: { tenantWire: string; bankCode: string; branchCode?: string; brandingParams: unknown; imageTemplates: unknown },
+  idempotencyKey: string,
+) {
+  return c.request<{ deduped: boolean; id: string | null }>({
+    method: 'POST',
+    path: '/ops/bank-config',
+    body,
+    idempotencyKey,
+  })
+}
+
 // What frame template is stored right now on the tenant default row, by name.
 export interface TemplateCurrent {
   collateral: BankLogoVersionRow | null

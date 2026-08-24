@@ -393,3 +393,41 @@ describe('header banner (standee-frame flow, 2026-08-24)', () => {
     expect(Buffer.compare(Buffer.from(a), Buffer.from(b))).toBe(0)
   })
 })
+
+describe('reconciliation strips are individually optional (24 Aug 2026)', () => {
+  it('overlay.marks flags remove the strips; default keeps both', async () => {
+    const master = { bytes: await testMaster() }
+    const both = await renderCollateralPdf({ ...minimalInput('STANDEE_IMG'), templateMaster: master })
+    const explicit = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      imageTemplate: { overlay: { marks: { dispatchId: true, bankCode: true } } },
+    })
+    // Default equals explicit-true: configs written before the key existed
+    // keep printing both strips.
+    expect(Buffer.compare(Buffer.from(both), Buffer.from(explicit))).toBe(0)
+
+    const noStrips = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      imageTemplate: { overlay: { marks: { dispatchId: false, bankCode: false } } },
+    })
+    expect(Buffer.compare(Buffer.from(both), Buffer.from(noStrips))).not.toBe(0)
+
+    const idOnly = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      templateMaster: master,
+      imageTemplate: { overlay: { marks: { bankCode: false } } },
+    })
+    expect(Buffer.compare(Buffer.from(idOnly), Buffer.from(noStrips))).not.toBe(0)
+    expect(Buffer.compare(Buffer.from(idOnly), Buffer.from(both))).not.toBe(0)
+
+    // The drawn (no-master) path honors the same flags.
+    const drawnBoth = await renderCollateralPdf(minimalInput('STANDEE_IMG'))
+    const drawnOff = await renderCollateralPdf({
+      ...minimalInput('STANDEE_IMG'),
+      imageTemplate: { overlay: { marks: { dispatchId: false, bankCode: false } } },
+    })
+    expect(Buffer.compare(Buffer.from(drawnBoth), Buffer.from(drawnOff))).not.toBe(0)
+  })
+})

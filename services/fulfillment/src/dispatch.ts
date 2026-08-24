@@ -202,10 +202,17 @@ export async function preRenderArtifacts(
              vpa_value, qr_value, bank_reference_code, branch_code, dispatch_group, soundbox, standee_count, sticker_count
       FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
     `
+    // TENANT-SCOPED (24 Aug 2026): the table keys on (tenant, bank, branch)
+    // and the in-transaction lookup below already filters by tenant, but this
+    // bulk read did not, so another tenant's row could collide with this
+    // batch's on the bank-code map key. Found live: an orphaned seed tenant's
+    // ('','') default row raced the real tenant's for the per-field template
+    // fallback, and which one won depended on row order.
     const cfgs = await tx.$queryRaw<BankConfigRow[]>`
       SELECT id::text AS id, bank_code, branch_code, branding_params, image_templates, logo_master_ref,
              logo_derivative_ref, soundbox_template_ref, collateral_template_ref, header_banner_ref
       FROM bank_composition_config
+      WHERE tenant_id = ${toUuid(p.tenantId)}::uuid
     `
     return { entries: rows, configs: cfgs }
   })

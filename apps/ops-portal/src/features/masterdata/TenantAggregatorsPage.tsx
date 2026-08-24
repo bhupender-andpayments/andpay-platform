@@ -14,11 +14,15 @@ import {
   getBankMasters,
   getTemplateCurrent,
   uploadBankTemplate,
+  getBankConfigRows,
+  upsertBankConfig,
   type BankMasterRow,
   type AggregatorRow,
   type TemplateCurrent,
+  type BankConfigRowView,
 } from '../../api/endpoints.js'
 import { PageHeader, Button, Card, ErrorNote, SkeletonRows, Input, Field } from '../../ui/primitives.js'
+import { newIdempotencyKey } from '../../api/idempotency.js'
 import { IconSearch } from '../../ui/icons.js'
 import { fmtAgo, fmtDateTime } from '../../ui/format.js'
 import {
@@ -47,6 +51,11 @@ export function TenantAggregatorsPage() {
   const [templateUploading, setTemplateUploading] = useState(false)
   const [templateError, setTemplateError] = useState<string | null>(null)
   const [templateEpoch, setTemplateEpoch] = useState(0)
+  // The tenant default config row: carries the overlay flags (the strips
+  // option, 24 Aug 2026). null until loaded or when no row exists yet.
+  const [defaultCfg, setDefaultCfg] = useState<BankConfigRowView | null>(null)
+  const [marksSaving, setMarksSaving] = useState(false)
+  const [marksError, setMarksError] = useState<string | null>(null)
 
   const load = useCallback(() => {
     getBankMasters(client)
@@ -60,7 +69,12 @@ export function TenantAggregatorsPage() {
     getTemplateCurrent(client)
       .then(setTemplate)
       .catch(() => setTemplate(null))
-  }, [client])
+    if (tnntId !== undefined) {
+      getBankConfigRows(client, tnntId)
+        .then((rows) => setDefaultCfg(rows.find((r) => r.bankCode === '' && r.branchCode === '') ?? null))
+        .catch(() => setDefaultCfg(null))
+    }
+  }, [client, tnntId])
 
   useEffect(() => {
     load()
@@ -77,6 +91,63 @@ export function TenantAggregatorsPage() {
   const pageCount = Math.max(1, Math.ceil(aggregators.length / MASTERDATA_PAGE_SIZE))
   const safePage = Math.min(page, pageCount - 1)
   const pageRows = aggregators.slice(safePage * MASTERDATA_PAGE_SIZE, safePage * MASTERDATA_PAGE_SIZE + MASTERDATA_PAGE_SIZE)
+
+  // The strips option (Rahul, 24 Aug 2026): whether every card prints the
+  // rotated dispatch id and the bank code beside the QR. One checkbox drives
+  // both flags across all three product types; the renderer defaults them ON,
+  // so an absent key reads as checked.
+  function marksEnabled(): boolean {
+    const t = defaultCfg?.imageTemplates
+    if (t === null || typeof t !== 'object' || t === undefined) return true
+    const standee = (t as Record<string, unknown>)['STANDEE']
+    if (standee === null || typeof standee !== 'object' || standee === undefined) return true
+    const overlay = (standee as Record<string, unknown>)['overlay']
+    if (overlay === null || typeof overlay !== 'object' || overlay === undefined) return true
+    const marks = (overlay as Record<string, unknown>)['marks']
+    if (marks === null || typeof marks !== 'object' || marks === undefined) return true
+    return (marks as Record<string, unknown>)['dispatchId'] !== false
+  }
+
+  async function toggleMarks(next: boolean): Promise<void> {
+    if (tenant === null || defaultCfg === null) return
+    setMarksSaving(true)
+    setMarksError(null)
+    try {
+      const current =
+        defaultCfg.imageTemplates !== null && typeof defaultCfg.imageTemplates === 'object'
+          ? (defaultCfg.imageTemplates as Record<string, unknown>)
+          : {}
+      const nextTemplates: Record<string, unknown> = { ...current }
+      for (const type of ['SOUNDBOX', 'STANDEE', 'STICKER']) {
+        const entry =
+          nextTemplates[type] !== null && typeof nextTemplates[type] === 'object'
+            ? { ...(nextTemplates[type] as Record<string, unknown>) }
+            : {}
+        const overlay =
+          entry['overlay'] !== null && typeof entry['overlay'] === 'object'
+            ? { ...(entry['overlay'] as Record<string, unknown>) }
+            : {}
+        overlay['marks'] = { dispatchId: next, bankCode: next }
+        entry['overlay'] = overlay
+        nextTemplates[type] = entry
+      }
+      await upsertBankConfig(
+        client,
+        {
+          tenantWire: tenant.tnntId,
+          bankCode: '',
+          brandingParams: defaultCfg.brandingParams ?? {},
+          imageTemplates: nextTemplates,
+        },
+        newIdempotencyKey(),
+      )
+      load()
+    } catch (err) {
+      setMarksError(err instanceof Error ? err.message : 'Failed to save the option.')
+    } finally {
+      setMarksSaving(false)
+    }
+  }
 
   async function submitTemplate(): Promise<void> {
     if (templateFile === null || tenant === null) return
@@ -186,6 +257,23 @@ export function TenantAggregatorsPage() {
               Upload template
             </Button>
           </div>
+          {marksError !== null && <ErrorNote>{marksError}</ErrorNote>}
+          <label className="flex items-center gap-2 border-t pt-3 text-sm">
+            <input
+              type="checkbox"
+              className="size-4 accent-primary"
+              checked={marksEnabled()}
+              disabled={marksSaving || defaultCfg === null}
+              onChange={(e) => void toggleMarks(e.target.checked)}
+              aria-label="Print dispatch id and bank code beside the QR"
+            />
+            <span>
+              Print the dispatch id and bank code beside the QR
+              <span className="block text-xs text-muted-foreground">
+                The print vendor uses these to reconcile a page in a merged PDF; turn off only if the bank asks.
+              </span>
+            </span>
+          </label>
         </div>
       </Card>
 

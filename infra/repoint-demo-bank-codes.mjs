@@ -92,6 +92,7 @@ async function main() {
 
   const { createS3AssetStore, preRenderArtifacts } = await import('../services/fulfillment/dist/index.js')
   const { PrismaClient: FulfillmentClient } = await import('../services/fulfillment/generated/client/index.js')
+  const { fromUuid } = await import('../packages/ids/dist/index.js')
   const { PrismaClient: TmsClient } = await import('../services/tms/generated/client/index.js')
   const { PrismaClient: IdentityClient } = await import('../services/identity/generated/client/index.js')
 
@@ -240,7 +241,10 @@ async function main() {
       const prepared = await preRenderArtifacts(
         fdb,
         store,
-        { btchId: wire, tenantId: b.tenant_id, programId: b.program_id, triggerReason: 'REPOINT', unitCount: 0, asgnIds: [] },
+        // The fact payload carries WIRE ids (batching.ts emits tenantWire), and
+        // preRenderArtifacts now converts tenantId via toUuid, so the raw column
+        // value must be wrapped first.
+        { btchId: wire, tenantId: fromUuid('tnnt', b.tenant_id), programId: b.program_id, triggerReason: 'REPOINT', unitCount: 0, asgnIds: [] },
         b.btch_uuid,
         b.program_id,
       )
