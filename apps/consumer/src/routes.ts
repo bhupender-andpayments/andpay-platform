@@ -12,7 +12,9 @@ import {
   projectDemandFact,
   onDemandAccrued,
   projectActivationToUnits,
+  projectDeactivationToUnits,
   projectReplacementToUnits,
+  projectReplacementCancelledToUnits,
   consumeBatchFact,
   type AssetStore,
   type PrismaClient as FulfillmentClient,
@@ -195,7 +197,9 @@ export function fulfillmentRoutes(db: FulfillmentClient, assetStore: AssetStore)
     topics: [
       'fct.tms.assignment.v1',
       'fct.tms.assignment.activated.v1',
+      'fct.tms.assignment.deactivated.v1',
       'fct.tms.assignment.replacement_raised.v1',
+      'fct.tms.assignment.replacement_cancelled.v1',
       'fct.fulfillment.batch.v1',
     ],
     handle: async (envelope: Envelope) => {
@@ -218,8 +222,17 @@ export function fulfillmentRoutes(db: FulfillmentClient, assetStore: AssetStore)
         case 'fct.tms.assignment.activated.v1':
           await projectActivationToUnits(db, envelope as Parameters<typeof projectActivationToUnits>[1])
           return
+        case 'fct.tms.assignment.deactivated.v1':
+          await projectDeactivationToUnits(db, envelope as Parameters<typeof projectDeactivationToUnits>[1])
+          return
         case 'fct.tms.assignment.replacement_raised.v1':
           await projectReplacementToUnits(db, envelope as Parameters<typeof projectReplacementToUnits>[1])
+          return
+        case 'fct.tms.assignment.replacement_cancelled.v1':
+          await projectReplacementCancelledToUnits(
+            db,
+            envelope as Parameters<typeof projectReplacementCancelledToUnits>[1],
+          )
           return
         case 'fct.fulfillment.batch.v1':
           await consumeBatchFact(db, envelope as Parameters<typeof consumeBatchFact>[1], assetStore)

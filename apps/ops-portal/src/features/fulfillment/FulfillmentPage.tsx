@@ -75,25 +75,23 @@ export function FulfillmentPage() {
   // Filters live in the URL, the idiom DispatchesPage and InventoryPage already
   // use: a filtered batches list is a thing operators send each other.
   //
-  // THE DEFAULT IS THE LIVE WORK: batched plus sent to print vendor, which is
-  // every batch still in flight. Closed batches are history and are one click
-  // away. Opening on BATCHED alone was tried and hid the runs already with the
-  // vendor, which are the ones an operator chases.
+  // THE DEFAULT IS EVERYTHING (23 Aug 2026, at the user's correction). It used
+  // to be the in-flight pair (batched plus sent), which hid every CLOSED batch
+  // on arrival while the All batches tile sat highlighted, so the page claimed
+  // to be showing everything and was not. An absent param now means no status
+  // filter at all, the same grammar Inventory and Requests use: the bare URL
+  // is the whole list, and the tiles and the dropdown narrow it.
   //
-  // Three shapes share one param, and the empty string cannot be one of them:
-  // an absent param means the default pair, so writing '' to mean "everything"
-  // would immediately read back as the default and the All batches tile could
-  // never be selected. Hence the explicit 'all' sentinel.
-  //
-  //   absent            the default pair (batched and sent)
-  //   'all'             no status filter at all
+  //   absent            no status filter: every batch
+  //   'active'          the in-flight pair, still one click away in the dropdown
+  //   'all'             legacy alias for absent, kept so old links still work
   //   'BATCHED', ...    exactly those, comma separated
   const statusParam = searchParams.get('status') ?? ''
   const selectedStatuses: readonly string[] =
-    statusParam === ''
-      ? ACTIVE_BATCH_STATUSES
-      : statusParam === 'all'
-        ? []
+    statusParam === '' || statusParam === 'all'
+      ? []
+      : statusParam === 'active'
+        ? ACTIVE_BATCH_STATUSES
         : statusParam.split(',').filter((s) => s !== '')
   const q = searchParams.get('q') ?? ''
   const from = searchParams.get('from') ?? ''
@@ -363,74 +361,78 @@ export function FulfillmentPage() {
           auto-trigger thresholds all live at /pool now, and this page is the
           batches and nothing else. */}
 
-      {/* Batches is the default second card: it is what the operator wants to
-          see after triggering, not another table of pending rows. */}
-      <div id="formed-batches" className="scroll-mt-4">
+      {/* Tiles and filters sit OUTSIDE any card now (23 Aug 2026, matching
+          Inventory and Requests): the Card wraps the table only, so it reads
+          as one summary-and-filter band above one table card, not a table
+          card that happens to have extra things stacked inside it. */}
+      <div id="formed-batches" className="scroll-mt-4 space-y-4">
+        <StatTiles
+          tiles={tiles}
+          // All batches lights up only on the explicit 'all'; a status tile
+          // only when it is the ONE status selected, so neither reads as
+          // active while the default pair is showing.
+          isActive={(t) =>
+            // All batches carries the highlight exactly when nothing narrows
+            // the list, which is now also the arrival state: the same role
+            // Total devices plays on Inventory.
+            t.key === 'all'
+              ? selectedStatuses.length === 0
+              : selectedStatuses.length === 1 && selectedStatuses[0] === t.key
+          }
+          onSelect={(t) => {
+            // Clicking All batches, or clicking the already-selected status,
+            // clears the status filter back to everything.
+            const only = selectedStatuses.length === 1 && selectedStatuses[0] === t.key
+            setParam('status', t.key === 'all' || only ? '' : t.key)
+          }}
+        />
+        <Toolbar>
+          <Field label="Search" htmlFor="batchSearch" className="w-full sm:w-56">
+            <Input
+              id="batchSearch"
+              value={q}
+              placeholder="Batch id, vendor or trigger"
+              onChange={(e) => setParam('q', e.target.value)}
+            />
+          </Field>
+          <Field label="Status" htmlFor="batchStatus">
+            <SearchSelect
+              value={statusParam}
+              placeholder="All statuses"
+              onChange={(v) => setParam('status', v)}
+              options={[
+                { value: '', label: 'All statuses', count: dateFiltered.length },
+                {
+                  value: 'active',
+                  label: 'Batched and sent',
+                  note: 'everything still in flight',
+                  count: dateFiltered.filter((b) => ACTIVE_BATCH_STATUSES.includes(b.status)).length,
+                },
+                ...BATCH_STATUSES.map((s) => ({
+                  value: s,
+                  label: statusMeta(s).label,
+                  count: countByStatus.get(s) ?? 0,
+                })),
+              ]}
+            />
+          </Field>
+          <Field label="Formed from" htmlFor="batchFrom">
+            <Input id="batchFrom" type="date" value={from} onChange={(e) => setParam('from', e.target.value)} />
+          </Field>
+          <Field label="To" htmlFor="batchTo">
+            <Input id="batchTo" type="date" value={to} onChange={(e) => setParam('to', e.target.value)} />
+          </Field>
+          {(q !== '' || from !== '' || to !== '' || statusParam !== '') && (
+            <Button variant="ghost" onClick={() => setSearchParams(new URLSearchParams(), { replace: true })}>
+              Clear filters
+            </Button>
+          )}
+        </Toolbar>
         <Card>
           <CardHeader
             title="Batches"
             subtitle="Newest first. Open a batch for its dispatches, the QR card previews, the print PDFs and the vendor Excel."
           />
-          <div className="px-5 pt-1">
-            <StatTiles
-              tiles={tiles}
-              // All batches lights up only on the explicit 'all'; a status tile
-              // only when it is the ONE status selected, so neither reads as
-              // active while the default pair is showing.
-              isActive={(t) =>
-                t.key === 'all'
-                  ? statusParam === 'all'
-                  : selectedStatuses.length === 1 && selectedStatuses[0] === t.key
-              }
-              onSelect={(t) => {
-                if (t.key === 'all') {
-                  setParam('status', statusParam === 'all' ? '' : 'all')
-                  return
-                }
-                // Clicking the already-selected status returns to the default
-                // pair rather than to nothing, which is the view worth landing on.
-                const only = selectedStatuses.length === 1 && selectedStatuses[0] === t.key
-                setParam('status', only ? '' : t.key)
-              }}
-            />
-          </div>
-          <Toolbar className="px-5 pb-1">
-            <Field label="Search" htmlFor="batchSearch" className="w-full sm:w-56">
-              <Input
-                id="batchSearch"
-                value={q}
-                placeholder="Batch id, vendor or trigger"
-                onChange={(e) => setParam('q', e.target.value)}
-              />
-            </Field>
-            <Field label="Status" htmlFor="batchStatus">
-              <SearchSelect
-                value={statusParam}
-                placeholder="Batched and sent"
-                onChange={(v) => setParam('status', v)}
-                options={[
-                  { value: '', label: 'Batched and sent', note: 'everything still in flight' },
-                  { value: 'all', label: 'All statuses', count: dateFiltered.length },
-                  ...BATCH_STATUSES.map((s) => ({
-                    value: s,
-                    label: statusMeta(s).label,
-                    count: countByStatus.get(s) ?? 0,
-                  })),
-                ]}
-              />
-            </Field>
-            <Field label="Formed from" htmlFor="batchFrom">
-              <Input id="batchFrom" type="date" value={from} onChange={(e) => setParam('from', e.target.value)} />
-            </Field>
-            <Field label="To" htmlFor="batchTo">
-              <Input id="batchTo" type="date" value={to} onChange={(e) => setParam('to', e.target.value)} />
-            </Field>
-            {(q !== '' || from !== '' || to !== '' || statusParam !== '') && (
-              <Button variant="ghost" onClick={() => setSearchParams(new URLSearchParams(), { replace: true })}>
-                Clear filters
-              </Button>
-            )}
-          </Toolbar>
           <DataGrid
             columns={batchColumns}
             rows={visibleBatches}
@@ -440,6 +442,8 @@ export function FulfillmentPage() {
             // The toolbar above owns searching, so the grid's own box would be a
             // second, disagreeing filter over the same rows.
             searchable={false}
+            maxBodyHeight="58vh"
+            stickyFirstColumn
             emptyTitle={batches.length === 0 ? 'No batches have formed yet' : 'No batches match these filters'}
             emptyMessage={
               batches.length === 0

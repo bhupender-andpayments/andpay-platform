@@ -78,6 +78,19 @@ export function legalNextStatuses(current: string): string[] {
   return [...UNIT_SPINE.slice(idx + 1), ...UNIT_TERMINAL]
 }
 
+// manualTargets DELETED (24 Aug 2026, at the user's direction). It existed to
+// answer "what may an operator set on a device by hand", and the answer became
+// nothing: the delivery spine is written by the batch's send, the vendor's
+// return sheet and the SHIPMENT; RETURNED by the shipment on an RTO; DAMAGED by
+// the dispatch's Flag damage, which also opens the case and raises the
+// replacement, and which marks this device on the way through
+// (projectReplacementToUnits -> advanceUnitsForAssignment). With no manual move
+// left, both the device page's control and the inventory list's pencil are gone
+// and the function had no caller.
+//
+// legalNextStatuses below stays: it still describes what the SERVER accepts
+// from any writer, which the rail and the domain both rely on.
+
 /**
  * The spine stages at or BEFORE the current one: where the device has already
  * been. Not legal targets (a device only moves forward), but the status editor

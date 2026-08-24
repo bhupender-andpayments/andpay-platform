@@ -179,7 +179,7 @@ beforeEach(async () => {
   // serials through unit.asgn_id, and a serial left behind by a previous test
   // would resolve to somebody else's assignment.
   await fulfillmentDb.$executeRawUnsafe('TRUNCATE unit, outbox, inbox CASCADE')
-  await tmsDb.$executeRawUnsafe('TRUNCATE assignment, assignment_activation_event, outbox, inbox CASCADE')
+  await tmsDb.$executeRawUnsafe('TRUNCATE assignment, outbox, inbox CASCADE')
   await analyticsDb.$executeRawUnsafe('TRUNCATE dispatch_row, outbox, inbox CASCADE')
 })
 
@@ -237,11 +237,11 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
     expect(res.status).toBe(200)
     expect(res.body.activated).toBe(true)
 
-    const row = await tmsDb.$queryRaw<{ activated_at: Date | null; demand_state: string; activation_status: string | null }[]>`
-      SELECT activated_at, demand_state, activation_status FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+    const row = await tmsDb.$queryRaw<{ activated_at: Date | null; demand_state: string; activated_by: string | null }[]>`
+      SELECT activated_at, demand_state, activated_by::text AS activated_by FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
     expect(row[0]!.activated_at).not.toBeNull()
     expect(row[0]!.demand_state).toBe('activated')
-    expect(row[0]!.activation_status).toBe('ACTIVATED')
+    expect(row[0]!.activated_by).not.toBeNull()
 
     expect(await tmsActivatedFactCount()).toBe(1)
     expect(await tmsAuditRows()).toHaveLength(1)
@@ -296,67 +296,9 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
     expect(await tmsAuditRows()).toHaveLength(0)
   })
 
-  // T4.1b (D-16): the OTHER activation door. Its own route, its own permission
-  // and its own operation string, because "I sent this to the CWD" and "the CWD
-  // confirmed it" are different claims.
-  describe('POST /ops/assignments/request-activation (T4.1b, D-16)', () => {
-    it('stamps REQUEST_SENT_TO_CWD across a send and reports what it could not resolve', async () => {
-      const known = newId('asgn')
-      await seedTmsAssignment(known)
-      const missing = newId('asgn')
-
-      const token = await mint()
-      const res = await request(app.getHttpServer())
-        .post('/ops/assignments/request-activation')
-        .set('Authorization', `Bearer ${token}`)
-        .set('Idempotency-Key', randomUUID())
-        .send({ dispatchIds: [known, missing] })
-
-      expect(res.status).toBe(200)
-      expect(res.body.recorded).toEqual([known])
-      expect(res.body.unknown).toEqual([missing])
-
-      const row = await tmsDb.$queryRaw<{ activation_status: string | null; activated_at: Date | null }[]>`
-        SELECT activation_status, activated_at FROM assignment WHERE id = ${toUuid(known)}::uuid`
-      expect(row[0]!.activation_status).toBe('REQUEST_SENT_TO_CWD')
-      // Sending the request is NOT activating it. The old scalar stays untouched.
-      expect(row[0]!.activated_at).toBeNull()
-
-      const audit = await tmsAuditRows()
-      expect(audit).toHaveLength(1)
-      expect(audit[0]!.operation).toBe('ops:request-activation')
-      expect(audit[0]!.decision).toBe('ALLOW')
-    })
-
-    it('an empty list is a 400 with no writes at all', async () => {
-      const token = await mint()
-      const res = await request(app.getHttpServer())
-        .post('/ops/assignments/request-activation')
-        .set('Authorization', `Bearer ${token}`)
-        .set('Idempotency-Key', randomUUID())
-        .send({ dispatchIds: [] })
-
-      expect(res.status).toBe(400)
-      expect(await tmsAuditRows()).toHaveLength(0)
-    })
-
-    it('a token whose role lacks the permission -> 403 with a DENY 6e, no domain effect', async () => {
-      const asgnId = newId('asgn')
-      await seedTmsAssignment(asgnId)
-
-      const token = await mint({ psr: 'role:nothing' })
-      const res = await request(app.getHttpServer())
-        .post('/ops/assignments/request-activation')
-        .set('Authorization', `Bearer ${token}`)
-        .set('Idempotency-Key', randomUUID())
-        .send({ dispatchIds: [asgnId] })
-
-      expect(res.status).toBe(403)
-      const row = await tmsDb.$queryRaw<{ activation_status: string | null }[]>`
-        SELECT activation_status FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
-      expect(row[0]!.activation_status).toBeNull()
-    })
-  })
+  // The request-activation describe block was DELETED (ACTIVATION.md,
+  // 21 Aug 2026) along with the route it covered: there is no
+  // REQUEST_SENT_TO_CWD state any more, so there is nothing to stamp.
 
   // D-19 (T5.4): the SERVER-SIDE bulk write, which exists to answer the recorded
   // objection to a Mark-all: a client-side loop failing halfway leaves an
@@ -390,9 +332,9 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
       ])
 
       // The one good row really landed; the two bad ones did not roll it back.
-      const row = await tmsDb.$queryRaw<{ activation_status: string | null }[]>`
-        SELECT activation_status FROM assignment WHERE id = ${toUuid(good)}::uuid`
-      expect(row[0]!.activation_status).toBe('ACTIVATED')
+      const row = await tmsDb.$queryRaw<{ activated_by: string | null }[]>`
+        SELECT activated_by::text AS activated_by FROM assignment WHERE id = ${toUuid(good)}::uuid`
+      expect(row[0]!.activated_by).not.toBeNull()
       const untouched = await tmsDb.$queryRaw<{ activated_at: Date | null }[]>`
         SELECT activated_at FROM assignment WHERE id = ${toUuid(collateral)}::uuid`
       expect(untouched[0]!.activated_at).toBeNull()
@@ -404,8 +346,10 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
     })
 
     it('a re-sent batch marks nothing twice, whatever idempotency key it carries', async () => {
-      // The underlying write dedups on the BUSINESS key, not the client key, so
-      // this holds even for an operator who generated a fresh key.
+      // Since 23 Aug 2026 the second call is refused by the write's own
+      // `activated_at IS NULL` guard, not by a forever business key. The EFFECT
+      // is still exactly once (one fact); the second authorized attempt is
+      // audited, which is the rule every other ops write already follows.
       const asgnId = newId('asgn')
       await seedTmsAssignment(asgnId)
       await seedDispatchRow(asgnId, true)
@@ -424,7 +368,90 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
       expect(first.body.results[0].activated).toBe(true)
       expect(second.body.results[0]).toEqual({ dispatchId: asgnId, activated: false, reason: 'already-activated' })
       expect(await tmsActivatedFactCount()).toBe(1)
-      expect(await tmsAuditRows()).toHaveLength(1)
+      expect(await tmsAuditRows()).toHaveLength(2)
+    })
+
+    // THE REPORTED DEFECT, at the route the portal actually calls (23 Aug
+    // 2026). Reported as: "3 devices were displaying, but only 2 got
+    // activated", and "clicking one by one from the activation page does not
+    // activate, it says 0 devices activated".
+    //
+    // Both were the same cause. Activation's dedup key was the FOREVER business
+    // key `${asgnId}|activate`, so once a dispatch had ever been activated its
+    // inbox row swallowed every later attempt, even after a deactivation had
+    // set activated_at back to null. Every previously-deactivated row in a
+    // selection came back activated:false / already-activated, so a bulk of
+    // three reported two, and a single re-activation reported zero.
+    it('re-activates rows that were deactivated, so a mixed selection activates ALL of them', async () => {
+      // Three delivered soundboxes. Two get activated then deactivated (the
+      // toggle an operator has on the device page); the third is untouched.
+      const recycled = [newId('asgn'), newId('asgn')]
+      const fresh = newId('asgn')
+      for (const id of [...recycled, fresh]) {
+        await seedTmsAssignment(id)
+        await seedDispatchRow(id, true)
+      }
+      const token = await mint()
+      const post = (path: string, body: object) =>
+        request(app.getHttpServer())
+          .post(path)
+          .set('Authorization', `Bearer ${token}`)
+          .set('Idempotency-Key', randomUUID())
+          .send(body)
+
+      for (const id of recycled) {
+        expect((await post('/ops/assignments/activate', { dispatchId: id })).body.activated).toBe(true)
+        expect((await post('/ops/assignments/deactivate', { dispatchId: id })).body.deactivated).toBe(true)
+      }
+
+      // The selection the operator checks in the portal: two recycled, one new.
+      const res = await post('/ops/assignments/activate-bulk', { dispatchIds: [...recycled, fresh] })
+
+      expect(res.status).toBe(200)
+      // ALL THREE. This is the assertion that failed: the two recycled rows
+      // came back { activated: false, reason: 'already-activated' }.
+      expect(res.body.results).toEqual([
+        { dispatchId: recycled[0], activated: true, reason: null },
+        { dispatchId: recycled[1], activated: true, reason: null },
+        { dispatchId: fresh, activated: true, reason: null },
+      ])
+
+      // And the rows really are live again in TMS, not merely reported so.
+      for (const id of [...recycled, fresh]) {
+        const row = await tmsDb.$queryRaw<{ activated_at: Date | null }[]>`
+          SELECT activated_at FROM assignment WHERE id = ${toUuid(id)}::uuid`
+        expect(row[0]!.activated_at).not.toBeNull()
+      }
+
+      // FIVE activation facts, all with distinct dedup keys: two first-time,
+      // two re-activations, one fresh. The distinctness is what lets
+      // fulfillment's projector re-stamp unit.activated_at, so the batch's
+      // device page agrees with the Activation tab instead of showing a device
+      // as not-activated forever.
+      const facts = await tmsDb.$queryRaw<{ payload: { dedupKey: string } }[]>`
+        SELECT payload FROM outbox WHERE event_type = 'fct.tms.assignment.activated.v1'`
+      expect(facts).toHaveLength(5)
+      expect(new Set(facts.map((f) => f.payload.dedupKey)).size).toBe(5)
+    })
+
+    // The single-dispatch route is what the inner batch page uses per row, and
+    // it went through the same door, so it gets its own guard.
+    it('the single activate route re-activates a deactivated dispatch', async () => {
+      const asgnId = newId('asgn')
+      await seedTmsAssignment(asgnId)
+      await seedDispatchRow(asgnId, true)
+      const token = await mint()
+      const post = (path: string) =>
+        request(app.getHttpServer())
+          .post(path)
+          .set('Authorization', `Bearer ${token}`)
+          .set('Idempotency-Key', randomUUID())
+          .send({ dispatchId: asgnId })
+
+      expect((await post('/ops/assignments/activate')).body.activated).toBe(true)
+      expect((await post('/ops/assignments/deactivate')).body.deactivated).toBe(true)
+      // Was false ("0 devices activated" in the portal). Must be a real flip.
+      expect((await post('/ops/assignments/activate')).body.activated).toBe(true)
     })
 
     it('an empty list is a 400 with no writes at all', async () => {
@@ -476,9 +503,9 @@ describe('POST /ops/assignments/activate (Phase 5 Task 2, D-H.1)', () => {
         reason: null,
       })
 
-      const row = await tmsDb.$queryRaw<{ activation_status: string | null }[]>`
-        SELECT activation_status FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
-      expect(row[0]!.activation_status).toBe('ACTIVATED')
+      const row = await tmsDb.$queryRaw<{ activated_by: string | null }[]>`
+        SELECT activated_by::text AS activated_by FROM assignment WHERE id = ${toUuid(asgnId)}::uuid`
+      expect(row[0]!.activated_by).not.toBeNull()
     })
 
     it('a serial the platform cannot place is REPORTED, never dropped', async () => {

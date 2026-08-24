@@ -534,6 +534,25 @@ function dispatchesRow(r: DispatchDbRow): ReportRow {
     dispatchDate: iso(r.dispatch_date),
     deliveryDate: iso(r.delivery_date),
     billable: r.billable_flag,
+    // THE DAMAGE OVERLAY (24 Aug 2026). A PROJECTION WIDENING ONLY: every one
+    // of these five columns is already SELECTed by scopedDispatchRead in both
+    // its branches and already declared on DispatchDbRow; this projector simply
+    // dropped them. So nothing here adds a query, a column grant, a role or a
+    // scope change, exactly as the activation report's batchId widening noted.
+    //
+    // WHY THE LIST NEEDED THEM. Damage is not a stage and never becomes one: a
+    // parcel that was delivered WAS delivered, and pipeline_state is a monotone
+    // maximum that must not be rewritten by something that happened to the kit
+    // afterwards. The two facts are separate axes, so the list composes them in
+    // one cell the same way it already composes HELD. Without these fields the
+    // page could badge a REPLACEMENT (the child) but had no way at all to show
+    // that damage had been raised ON a dispatch (the parent), and no filter for
+    // it, which is the question an operator chasing a damage case actually asks.
+    isReplacement: r.is_replacement,
+    originalDispatchId: r.original_dispatch_id,
+    damageReason: r.damage_reason,
+    replacementDispatchId: r.replacement_dispatch_id,
+    replacementStatus: r.replacement_status,
   }
 }
 

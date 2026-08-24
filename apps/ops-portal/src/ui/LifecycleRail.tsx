@@ -7,18 +7,26 @@ import { fmtDateTime } from './format.js'
 // lifecycle that is a single unbranched spine.
 //
 // WHY THIS EXISTS BESIDE LifecycleTimeline. The vertical timeline serves the
-// dispatch and shipment pages, where the lifecycle BRANCHES (delivery and
-// activation run independently) and each entry carries prose: which channel
-// reported it, which operator forced it, an override reason. None of that
-// compresses into an icon in a row. A device is the one thing here whose
-// lifecycle really is one ordered line, which is what makes a rail readable
-// for it and wrong for the others. Two components, each honest about its own
-// shape, beats one that bends for both.
+// shipment page's courier EVENT LIST, where statuses legitimately repeat and
+// each entry carries prose (which channel, which override reason, two clocks).
+// None of that compresses into an icon in a row. A rail answers a different
+// question: how far along its one ordered line is this thing, and who moved it.
 //
-// THE SAME HONESTY RULE APPLIES. A stage shows a time only when it HAS one.
-// `unit` keeps no per-stage history - only its current status and updated_at -
-// so past rungs render as reached, with no borrowed or invented timestamp
-// under them.
+// THE TICK RULE (22 Aug 2026, the meeting complaint). A stage that HAS
+// HAPPENED gets the green tick, INCLUDING the newest one. The old rendering
+// ticked only stages BEHIND the current one, so a batch just sent to the print
+// vendor showed "Sent to print vendor" un-ticked, and the customer read that as
+// "not done yet" when the operator had just done it. Done is done:
+//   - done (reached or current): filled icon, green corner tick.
+//   - the NEWEST done stage additionally carries the "you are here" ring, so
+//     position stays visible without stealing the tick.
+//   - waiting (future): hollow grey, clearly not started, never dated.
+//   - terminal (damaged/returned/failed): red, ticked never, and the rail ENDS
+//     there, because nothing is coming after it.
+//
+// THE HONESTY RULE survives unchanged: a timestamp or an actor renders only
+// when something actually recorded one. A rung inferred from monotonic order is
+// ticked but bare, which is exactly what we know about it.
 
 export interface RailStage {
   key: string
@@ -27,6 +35,12 @@ export interface RailStage {
   icon: (props: { className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }) => ReactNode
   /** Rendered only when something actually recorded this instant. */
   at?: string | null
+  /**
+   * WHO or WHAT moved it here: the operator's login handle when a human did it
+   * (the trail's actor_display), else a friendly source label ("Courier file",
+   * "Return sheet"). Rendered only when present, same honesty rule as `at`.
+   */
+  by?: string | null
   /** Marks a terminal stop (damaged, returned): reached, and the end. */
   terminal?: boolean
 }
@@ -44,8 +58,13 @@ export function LifecycleRail({ stages }: { stages: readonly RailStage[] }) {
     // whatever the stage count. The connectors are `li`s so the list stays
     // valid markup, and aria-hidden so a screen reader hears five stages, not
     // nine list items.
+    //
+    // A connector is FILLED (primary) only when the stage on its RIGHT is done
+    // too, so the coloured line runs exactly as far as the journey has: the
+    // Flipkart-style progress read, where the line itself answers "how far".
+    //
     // pt-1.5 is load-bearing: overflow-x-auto also clips VERTICAL overflow,
-    // and the reached-stage check badge sits at -top-1 above the icon, so
+    // and the done-stage check badge sits at -top-1 above the icon, so
     // without headroom inside the scroll container its top edge is cut off.
     // aria-label names the rail for a screen reader, which also gives a test a
     // way to ask about the RAIL's own rungs rather than any text that happens to
@@ -62,45 +81,62 @@ export function LifecycleRail({ stages }: { stages: readonly RailStage[] }) {
               key={`${stage.key}-gap`}
               aria-hidden="true"
               // mt-[21px] centres the line on the 44px icon above it.
-              className={cn('mt-[21px] h-0.5 min-w-6 flex-1 rounded-full', done ? 'bg-primary/40' : 'bg-border')}
+              className={cn(
+                'mt-[21px] h-0.5 min-w-6 flex-1 rounded-full',
+                isTerminal ? 'bg-red-500/50' : done ? 'bg-primary' : 'bg-border',
+              )}
             />
           ) : null,
-          <li key={stage.key} className="flex w-24 shrink-0 flex-col items-center gap-1.5">
+          <li key={stage.key} className="flex w-28 shrink-0 flex-col items-center gap-1.5">
             <span
               className={cn(
                 'relative flex size-11 items-center justify-center rounded-xl border transition-colors',
                 isTerminal
-                  ? 'border-red-500 bg-red-500 text-white'
+                  ? 'border-red-500 bg-red-500 text-white ring-4 ring-red-500/15'
                   : stage.state === 'current'
-                    ? 'border-primary bg-background text-primary ring-4 ring-primary/15'
+                    ? 'border-primary bg-primary text-primary-foreground ring-4 ring-primary/20'
                     : stage.state === 'reached'
                       ? 'border-primary bg-primary text-primary-foreground'
                       : 'border-border bg-muted/40 text-muted-foreground/50',
               )}
             >
               <stage.icon className="size-5" aria-hidden="true" />
-              {stage.state === 'reached' && !isTerminal && (
-                <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-emerald-500 text-white">
+              {/* DONE IS DONE: every non-terminal done stage gets the tick,
+                  the newest one included. See the tick rule above. */}
+              {done && !isTerminal && (
+                <span
+                  data-testid="stage-tick"
+                  className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-emerald-500 text-white"
+                >
                   <Check className="size-2.5" aria-hidden="true" />
                 </span>
               )}
             </span>
             <span
               className={cn(
-                'text-center text-[12.5px] font-medium leading-tight',
+                'text-center text-[12.5px] leading-tight',
                 isTerminal
-                  ? 'text-red-700 dark:text-red-400'
-                  : stage.state === 'future'
-                    ? 'text-muted-foreground'
-                    : 'text-foreground',
+                  ? 'font-semibold text-red-700 dark:text-red-400'
+                  : stage.state === 'current'
+                    ? 'font-semibold text-foreground'
+                    : stage.state === 'future'
+                      ? 'font-medium text-muted-foreground'
+                      : 'font-medium text-foreground',
               )}
             >
               {stage.label}
             </span>
             {/* Only where an instant genuinely exists. */}
             {typeof stage.at === 'string' && stage.at !== '' ? (
-              <span className="num text-center text-[11px] text-muted-foreground">
+              <span className="num text-center text-[11px] leading-tight text-muted-foreground">
                 {fmtDateTime(stage.at)}
+              </span>
+            ) : null}
+            {/* WHO moved it: the operator's handle, or the reporting channel.
+                Same only-when-recorded rule as the timestamp. */}
+            {typeof stage.by === 'string' && stage.by !== '' ? (
+              <span className="max-w-full truncate text-center text-[11px] leading-tight text-muted-foreground/80">
+                {stage.by}
               </span>
             ) : null}
           </li>,

@@ -63,11 +63,22 @@ export const DEFAULT_REQUEST_COLUMN_MAPPING: BankColumnMapping = Object.freeze({
   // data row, so inserting a field in the middle silently shifts every value
   // after it. Trailing optional fields keep that fixture aligned.
   tenantReference: 'tenantReference',
+  // BRD 5.1b, 22 Aug 2026. Appended AFTER tenantReference for the positional
+  // reason stated directly above: these are the newest trailing optionals, so
+  // the fixture's header and data row stay in step.
+  email: 'email',
+  city: 'city',
+  state: 'state',
+  pincode: 'pincode',
+  qrType: 'qrType',
 })
 
-// vpaHint and tenantReference are the OPTIONAL request fields (see ingest.ts);
-// every other canonical field on the row shape is required.
-const REQUEST_OPTIONAL_FIELDS = ['vpaHint', 'tenantReference']
+// The OPTIONAL request fields (see ingest.ts); every other canonical field on
+// the row shape is required. The five BRD 5.1b parts are optional because the
+// real bank file ships them blank: Email ID and QR Type are Optional in the
+// BRD outright, and City/State/Pincode are already covered by the mandatory
+// registeredAddress they were composed into.
+const REQUEST_OPTIONAL_FIELDS = ['vpaHint', 'tenantReference', 'email', 'city', 'state', 'pincode', 'qrType']
 const REQUEST_REQUIRED_FIELDS = Object.keys(DEFAULT_REQUEST_COLUMN_MAPPING).filter(
   (f) => !REQUEST_OPTIONAL_FIELDS.includes(f),
 )
@@ -281,7 +292,16 @@ function normalizeRequestRow(
   const tenantReference = get('tenantReference')
   const withTenant = tenantReference === '' ? row : { ...row, tenantReference }
   const vpaHint = get('vpaHint')
-  return vpaHint === '' ? withTenant : { ...withTenant, vpaHint }
+  const withHint = vpaHint === '' ? withTenant : { ...withTenant, vpaHint }
+  // BRD 5.1b, 22 Aug 2026. Key OMITTED when blank rather than set to '', the
+  // same shape tenantReference and vpaHint use above, so an absent column and
+  // an empty cell are one thing downstream and neither becomes a stored ''.
+  const parts: Partial<BankRequestRow> = {}
+  for (const field of ['email', 'city', 'state', 'pincode', 'qrType'] as const) {
+    const value = get(field)
+    if (value !== '') parts[field] = value
+  }
+  return { ...withHint, ...parts }
 }
 
 async function parseBankFile<T>(

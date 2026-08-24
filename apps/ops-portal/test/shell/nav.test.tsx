@@ -127,7 +127,7 @@ describe('ops-portal app shell + navigation', () => {
     expect(await screen.findByRole('heading', { name: /^queues$/i })).toBeTruthy()
   })
 
-  it('the nav lists exactly the 14 shown sections, no master-data admin/CRUD route', async () => {
+  it('the nav lists exactly the 15 shown sections, no master-data admin/CRUD route', async () => {
     await renderAuthed('/queues')
     const nav = screen.getByRole('navigation', { name: /main/i })
     const links = within(nav).getAllByRole('link')
@@ -165,7 +165,10 @@ describe('ops-portal app shell + navigation', () => {
       // AWB, so leaving it needs a list to return to.
       // Platform overview joined on 19 Aug 2026: the flow itself, explained, which
       // is the one thing the console had no page for.
-      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Platform overview', 'Pool', 'Queues', 'Reports', 'Shipments', 'Uploads'],
+      // Requests joined on 21 Aug 2026 (DAMAGE.md): the grain ABOVE a dispatch.
+      // A bank row is one request that can mint two parcels, and every screen
+      // was per-parcel, so nothing answered "which dispatches belong together".
+      ['Activation', 'Batches', 'Command Center', 'Damage cases', 'Dispatches', 'Inventory', 'Master Data', 'Merchants', 'Platform overview', 'Pool', 'Queues', 'Reports', 'Requests', 'Shipments', 'Uploads'],
     )
     expect(within(nav).queryByRole('link', { name: /edit|create|manage|admin/i })).toBeNull()
   })

@@ -53,21 +53,34 @@ async function removeMerchants(ids: string[]): Promise<void> {
 // fact-schema change and therefore a corpus decision, it is worked out here
 // from what TMS already stores: a merchant with more than one assignment has
 // had additional requests.
-async function seedAssignment(merchantUuid: string, vpa: string): Promise<string> {
+interface SeedAssignmentOpts {
+  origin?: string
+  contactName?: string
+  email?: string | null
+  city?: string | null
+  createdAt?: string
+}
+
+async function seedAssignment(merchantUuid: string, vpa: string, opts: SeedAssignmentOpts = {}): Promise<string> {
   const asgnUuid = toUuid(newId('asgn'))
+  const createdAt = opts.createdAt ?? '2026-01-01T00:00:00.000Z'
   await db.$executeRaw`
     INSERT INTO assignment (
       id, merchant_id, program_id, tenant_id,
       merchant_display_name, merchant_legal_name, merchant_mcc,
       bank_reference_code, bank_display_name, ship_to_address,
       qr_value, vpa_value, soundbox, standee_count, sticker_count,
-      billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, dispatch_group, updated_at
+      billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code,
+      email, city, state, pincode, qr_type, dispatch_group, created_at, updated_at
     ) VALUES (
       ${asgnUuid}::uuid, ${merchantUuid}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
       'Probe', 'Probe Pvt Ltd', '5411',
       '3', 'GSCB', 'Addr',
       ${'upi://pay?pa=' + vpa}, ${vpa}, ${true}, 1, 1,
-      ${true}, 'received', 'bank_file', ${'probe|' + vpa}, 'Contact', '9000000000', '30', 'SOUNDBOX', now()
+      ${true}, 'received', ${opts.origin ?? 'bank_file'}, ${'probe|' + vpa},
+      ${opts.contactName ?? 'Contact'}, '9000000000', '30',
+      ${opts.email ?? null}, ${opts.city ?? null}, 'Gujarat', '380008', null,
+      'SOUNDBOX', ${new Date(createdAt)}, now()
     )
   `
   return asgnUuid
@@ -183,32 +196,145 @@ describe('listMerchants: the ops Merchants list (redesign step 7)', () => {
     }
   })
 
-  it('carries the fields the screen needs and NOTHING else (D104 default-exclude)', async () => {
+  it('carries EXACTLY the ruled field set, so nothing else reaches the wire unnoticed', async () => {
     const m = await seedMerchant({ displayName: 'ZZ SHAPE PROBE', legalName: 'ZZ SHAPE LEGAL', mcc: '5812' })
     try {
       const row = (await listMerchants(db)).find((r) => r.mrchId === m.wire)
       expect(row).toBeDefined()
-      // An EXACT key set, not a subset check: a future column added to
-      // merchant_projection cannot reach the wire unnoticed.
+      // AN EXACT KEY SET, not a subset check. This guard is what forces every
+      // widening of this read to be a conscious decision rather than an
+      // incidental one, and it has now done that twice.
       //
-      // `hasAdditionalRequests` was added deliberately (D-2) and this guard is
-      // what forced the decision to be conscious rather than incidental. It is
-      // safe to expose: a DERIVED boolean answering "does this merchant have
-      // more than one request", carrying no merchant PII and no column of its
-      // own. The list still holds no address, contact name or mobile, which is
-      // what D104 default-exclude is actually protecting.
+      // It used to read "and NOTHING else (D104 default-exclude)". On
+      // 22 Aug 2026 that posture was reversed for THIS LIST ONLY: the BRD's
+      // merchant record is the bank-file field table, so the contact block and
+      // the VPA are now disclosed here on purpose
+      // (docs/plan/CORPUS_SUBMISSION_2026-08-22_MERCHANTS_LIST.md). The guard
+      // stays exact so the next widening is argued too, and so the reversal
+      // cannot quietly spread: the pool, batch and dispatch reads keep their
+      // own PII-free guards, which this change did not touch.
       expect(Object.keys(row ?? {}).sort()).toEqual([
+        'address',
+        'bankDisplayName',
+        'bankReferenceCode',
+        'branchCode',
+        'city',
+        'contactName',
+        'createdAt',
         'displayName',
+        'email',
         'hasAdditionalRequests',
+        'latestRequestAt',
+        'latestRequestOrigin',
         'legalName',
         'mcc',
+        'mobile',
         'mrchId',
+        'pincode',
+        'qrType',
+        'state',
         'status',
         'updatedAt',
+        'vpa',
       ])
       expect(row?.legalName).toBe('ZZ SHAPE LEGAL')
       expect(row?.mcc).toBe('5812')
     } finally {
+      await removeMerchants([m.uuid])
+    }
+  })
+})
+
+// The BRD 5.1b block, 22 Aug 2026. It is snapshotted onto every assignment, so
+// the list reaches it through a lateral join to the merchant's most recent one.
+describe('listMerchants: the BRD 5.1b block from the latest request', () => {
+  it('projects the bank-supplied block from the merchant\'s request', async () => {
+    const m = await seedMerchant({ displayName: 'ZZ BRD BLOCK' })
+    const asgns: string[] = []
+    try {
+      asgns.push(
+        await seedAssignment(m.uuid, 'brdblock@gscb', {
+          email: 'shop@brdblock.example',
+          city: 'AHMEDABAD',
+        }),
+      )
+      const row = (await listMerchants(db)).find((r) => r.mrchId === m.wire)
+      expect(row?.vpa).toBe('brdblock@gscb')
+      expect(row?.contactName).toBe('Contact')
+      expect(row?.mobile).toBe('9000000000')
+      expect(row?.email).toBe('shop@brdblock.example')
+      expect(row?.city).toBe('AHMEDABAD')
+      expect(row?.state).toBe('Gujarat')
+      expect(row?.pincode).toBe('380008')
+      expect(row?.address).toBe('Addr')
+      expect(row?.bankDisplayName).toBe('GSCB')
+      expect(row?.bankReferenceCode).toBe('3')
+      expect(row?.branchCode).toBe('30')
+    } finally {
+      await removeAssignments(asgns)
+      await removeMerchants([m.uuid])
+    }
+  })
+
+  // THE WHOLE REASON THE JOIN IS A LEFT JOIN. A merchant created by hand has no
+  // assignment at all, and an inner join would delete them from the one page
+  // whose entire job is that they can be found. Nulls, never an absent row.
+  it('keeps a merchant with no request at all, with the block null', async () => {
+    const m = await seedMerchant({ displayName: 'ZZ NO REQUEST YET' })
+    try {
+      const row = (await listMerchants(db)).find((r) => r.mrchId === m.wire)
+      expect(row, 'a merchant with no request must still be listed').toBeDefined()
+      expect(row?.vpa).toBeNull()
+      expect(row?.contactName).toBeNull()
+      expect(row?.bankDisplayName).toBeNull()
+      expect(row?.latestRequestOrigin).toBeNull()
+      expect(row?.latestRequestAt).toBeNull()
+      // The merchant's own columns are unaffected by the missing request.
+      expect(row?.displayName).toBe('ZZ NO REQUEST YET')
+    } finally {
+      await removeMerchants([m.uuid])
+    }
+  })
+
+  // LATEST, not arbitrary: a merchant who moved shop should read as where they
+  // are now, so the newest request wins.
+  it('takes the most recent request when a merchant has several', async () => {
+    const m = await seedMerchant({ displayName: 'ZZ LATEST WINS' })
+    const asgns: string[] = []
+    try {
+      asgns.push(
+        await seedAssignment(m.uuid, 'old@gscb', { city: 'OLD CITY', createdAt: '2026-01-01T00:00:00.000Z' }),
+      )
+      asgns.push(
+        await seedAssignment(m.uuid, 'new@gscb', {
+          city: 'NEW CITY',
+          origin: 'ADDITIONAL',
+          createdAt: '2026-06-01T00:00:00.000Z',
+        }),
+      )
+      const row = (await listMerchants(db)).find((r) => r.mrchId === m.wire)
+      expect(row?.city).toBe('NEW CITY')
+      expect(row?.vpa).toBe('new@gscb')
+      expect(row?.latestRequestOrigin).toBe('ADDITIONAL')
+    } finally {
+      await removeAssignments(asgns)
+      await removeMerchants([m.uuid])
+    }
+  })
+
+  // The lateral takes ONE row. If it ever stopped doing that, a merchant with
+  // two requests would appear twice and the page would show a duplicate.
+  it('returns one row per merchant however many requests they have', async () => {
+    const m = await seedMerchant({ displayName: 'ZZ NO DUPLICATES' })
+    const asgns: string[] = []
+    try {
+      asgns.push(await seedAssignment(m.uuid, 'dup1@gscb'))
+      asgns.push(await seedAssignment(m.uuid, 'dup2@gscb'))
+      asgns.push(await seedAssignment(m.uuid, 'dup3@gscb'))
+      const mine = (await listMerchants(db)).filter((r) => r.mrchId === m.wire)
+      expect(mine).toHaveLength(1)
+    } finally {
+      await removeAssignments(asgns)
       await removeMerchants([m.uuid])
     }
   })

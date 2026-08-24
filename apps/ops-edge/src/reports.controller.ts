@@ -24,8 +24,13 @@ import {
   type ReportFilters,
   type TileName,
 } from '@andpay/analytics-service'
-import { readShipmentTrailOps, readUnitSimsBySerialsOps } from '@andpay/fulfillment-service'
-import { readActivationTrailOps } from '@andpay/tms-service'
+import {
+  readShipmentTrailOps,
+  readUnitSimsBySerialsOps,
+  listPoolEntries,
+  readReplacementMarksOps,
+  type PoolEntryRow,
+} from '@andpay/fulfillment-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAnalyticsRead, emitOpsAnalyticsCrossTenant } from './audit.js'
@@ -148,6 +153,70 @@ export class ReportsController {
   // ONE round trip for the whole page, not one per row: the serials are
   // collected into a Set across every result row first, so a 500-row report is
   // still a single fulfillment read.
+/**
+   * Mark the rows whose dispatch is being HELD BACK from batching (DAMAGE.md).
+   *
+   * WHY THIS IS COMPOSED HERE. hold is fulfillment's state (pending_pool_entry
+   * .pool_status) and the dispatches list is an analytics report, so the two
+   * never met: an operator could hold a dispatch on the pool page and then find
+   * no trace of it on the dispatches page, which is where they go looking for a
+   * specific dispatch. Holding is also not a courier or pipeline stage, so it has
+   * no place on the analytics row's own axes.
+   *
+   * Edge composition is the sanctioned way to answer a question that spans two
+   * contexts (the same shape dispatch detail already uses for its three reads),
+   * and it is cheap here: held dispatches are a small working set by definition,
+   * one indexed read, no join.
+   *
+   * The alternative was a browser-side join, which this portal has been burned by
+   * once already (the bank-name lookup that rendered a bare "3", because the two
+   * sides keyed on different values). This one keys on asgnId, which is exact,
+   * but the lesson holds: put it on the row before it reaches the page.
+   */
+  private async mergeHoldState(rows: ReportRow[]): Promise<ReportRow[]> {
+    // CANCELLED joined HELD on 24 Aug 2026, same overlay for the same reason:
+    // both are pool-axis facts analytics deliberately never stores (HELD is
+    // reversible, CANCELLED is a withdrawal - neither may touch the monotone
+    // pipeline_state), and both are exactly what an operator scanning the list
+    // needs to see composed onto the stage. Two indexed reads over small
+    // working sets; the merge stays keyed on asgnId, which is exact.
+    const [held, cancelled] = await Promise.all([
+      listPoolEntries(this.deps.fulfillmentDb, { poolStatus: 'HELD' }),
+      listPoolEntries(this.deps.fulfillmentDb, { poolStatus: 'CANCELLED' }),
+    ])
+    if (held.length === 0 && cancelled.length === 0) return rows
+    const heldByAsgn = new Map<string, PoolEntryRow>(held.map((h) => [h.asgnId, h]))
+    const cancelledByAsgn = new Set<string>(cancelled.map((c) => c.asgnId))
+    return rows.map((row) => {
+      const id = typeof row['dispatchId'] === 'string' ? row['dispatchId'] : ''
+      const hit = heldByAsgn.get(id)
+      // Absent rather than false on an ordinary row: the field means "this is
+      // held and here is why", and a false on every row is noise in a CSV export.
+      if (hit !== undefined) return { ...row, poolStatus: 'HELD', holdReason: hit.holdReason ?? null }
+      if (cancelledByAsgn.has(id)) return { ...row, poolStatus: 'CANCELLED' }
+      return row
+    })
+  }
+
+  /**
+   * Mark the rows that are REPLACEMENT dispatches (22 Aug 2026, the badge
+   * sweep). Same edge-composition rationale as mergeHoldState directly above:
+   * replacement identity is projected into fulfillment's pool row and the
+   * dispatches list is an analytics report, so without this merge the list
+   * could not tell a replacement from a fresh request. Absent rather than null
+   * on an ordinary row, the same CSV-noise rule as poolStatus.
+   */
+  private async mergeReplacementMarks(rows: ReportRow[]): Promise<ReportRow[]> {
+    const ids = rows.map((row) => (typeof row['dispatchId'] === 'string' ? row['dispatchId'] : '')).filter((s) => s !== '')
+    const marks = await readReplacementMarksOps(this.deps.fulfillmentDb, ids)
+    if (marks.size === 0) return rows
+    return rows.map((row) => {
+      const id = typeof row['dispatchId'] === 'string' ? row['dispatchId'] : ''
+      const parent = marks.get(id)
+      return parent === undefined ? row : { ...row, replacementOfAsgnId: parent }
+    })
+  }
+
   private async mergeActivationSims(rows: ReportRow[]): Promise<ReportRow[]> {
     const serials = new Set<string>()
     for (const row of rows) {
@@ -261,9 +330,16 @@ export class ReportsController {
     // dispatched is a stage, not an error.
     const deliveryTrail =
       detail.shptId === null ? [] : await readShipmentTrailOps(this.deps.fulfillmentDb, detail.shptId)
-    const activationTrail = await readActivationTrailOps(this.deps.tmsDb, asgnId)
+    // activationTrail DELETED (ACTIVATION.md, 21 Aug 2026): activation has no
+    // trail any more, it is a parallel toggle. `detail` already carries the
+    // analytics activationStatus/activatedAt fields fed by the unchanged
+    // fct.tms.assignment.activated.v1 fact.
     res.setHeader('x-analytics-watermark', detail.watermark.asOf ?? 'none')
-    return { ...detail, deliveryTrail, activationTrail }
+    // The replacement mark, merged from fulfillment exactly as the list report
+    // is (mergeReplacementMarks): the detail page and the shipment page badge
+    // off this. Null on an ordinary dispatch.
+    const marks = await readReplacementMarksOps(this.deps.fulfillmentDb, [asgnId])
+    return { ...detail, deliveryTrail, replacementOfAsgnId: marks.get(asgnId) ?? null }
   }
 
   // GET /ops/reports/activation/batch/:btchId/xlsx: ONE batch's awaiting
@@ -390,6 +466,12 @@ export class ReportsController {
     // dispatch, which is what an operator chasing an activation asks for.
     if (name === 'activation' || name === 'dispatches') {
       result.rows = await this.mergeActivationSims(result.rows)
+    }
+    // The hold marker, dispatches report only: it is the list an operator uses
+    // to find one dispatch, and a held one was invisible there (DAMAGE.md).
+    if (name === 'dispatches') {
+      result.rows = await this.mergeHoldState(result.rows)
+      result.rows = await this.mergeReplacementMarks(result.rows)
     }
 
     res.setHeader('x-analytics-watermark', result.watermark.asOf ?? 'none')

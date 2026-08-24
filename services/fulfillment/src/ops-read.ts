@@ -477,6 +477,16 @@ export interface BatchEntryRow {
   // Not recipient PII: an opaque ingest coordinate, no name, address or number
   // in it. So the D104 default-exclude posture above is not breached.
   sourceEventId: string
+  /**
+   * The dispatch this one REPLACES (DAMAGE.md), or null on an original.
+   *
+   * This is what lets the pool and the batch page mark a replacement without
+   * downloading every damage case and joining in the browser. Event-carried from
+   * fct.tms.assignment.v1's optional replacementOf, so it is null on rows minted
+   * before that field existed as well as on genuine originals; the two are
+   * indistinguishable here and neither is a replacement worth flagging.
+   */
+  replacementOfAsgnId: string | null
   // 19 Aug 2026 (demo need): the courier's own axis, not the dispatch's.
   // dispatch_state above never reaches DELIVERED by design (it stops at
   // DISPATCHED_BY_VENDOR, courier progress lives on shpt.status), so a batch
@@ -502,6 +512,7 @@ interface BatchEntryDbRow {
   ship_to_superseded: boolean
   dispatch_group: string | null
   source_event_id: string
+  replacement_of: string | null
   courier_status: string | null
 }
 
@@ -521,6 +532,7 @@ function toBatchEntryDto(r: BatchEntryDbRow): BatchEntryRow {
     shipToSuperseded: r.ship_to_superseded,
     dispatchGroup: r.dispatch_group,
     sourceEventId: r.source_event_id,
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
     courierStatus: r.courier_status,
   }
 }
@@ -580,6 +592,14 @@ export interface BatchSettlement {
   total: number
   delivered: number
   returned: number
+  /**
+   * Dispatches whose device was flagged DAMAGED (22 Aug 2026 ruling,
+   * supersedes DEC-10's replacement condition): a damaged dispatch is settled
+   * for close purposes, full stop. The merchant keeping a broken device must
+   * not hold a batch open forever, and the replacement's own journey belongs
+   * to the replacement's dispatch, not to this batch.
+   */
+  damaged: number
   pending: number
   /** Every dispatch settled, so the batch may be closed. False on an empty batch. */
   settled: boolean
@@ -592,7 +612,7 @@ export interface BatchSettlement {
    * than discarded, so the batch's dispatch table can mark each row and the
    * counts can never disagree with the marks: they are computed once.
    */
-  perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'PENDING'>
+  perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'DAMAGED' | 'PENDING'>
 }
 
 // Terminal courier states: a shipment that reached either has stopped moving.
@@ -618,17 +638,22 @@ export async function readBatchSettlementWithinTx(tx: Tx, btchUuid: string): Pro
     FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid
   `
   if (entries.length === 0) {
-    return { total: 0, delivered: 0, returned: 0, pending: 0, settled: false, perDispatch: {} }
+    return { total: 0, delivered: 0, returned: 0, damaged: 0, pending: 0, settled: false, perDispatch: {} }
   }
 
   const asgnUuids = entries.map((e) => e.asgn_id)
-  // The kit shipment hangs off the DEVICE (unit.shipment), which is the only
-  // thing wanted from `unit` here. It used to read `status` too, for a damage
-  // rung that has been removed: see the note on BatchSettlement.
-  const units = await tx.$queryRaw<{ asgn_id: string; shipment: string | null }[]>`
-    SELECT asgn_id::text AS asgn_id, shipment::text AS shipment
+  // The kit shipment hangs off the DEVICE (unit.shipment); status is read
+  // back too since the 22 Aug 2026 ruling, because DAMAGED now settles the
+  // dispatch (see the note on BatchSettlement.damaged). Fulfillment-local on
+  // purpose: the damage CASE lives in tms and C4 forbids reading it here, but
+  // the flag also marks the device, which is this context's own fact.
+  const units = await tx.$queryRaw<{ asgn_id: string; shipment: string | null; status: string }[]>`
+    SELECT asgn_id::text AS asgn_id, shipment::text AS shipment, status
     FROM unit WHERE asgn_id = ANY(${asgnUuids}::uuid[])
   `
+
+  const damagedAsgns = new Set<string>()
+  for (const u of units) if (u.status === 'DAMAGED') damagedAsgns.add(u.asgn_id)
 
   const shipmentIds = new Set<string>()
   for (const e of entries) if (e.collateral_shipment !== null) shipmentIds.add(e.collateral_shipment)
@@ -655,9 +680,20 @@ export async function readBatchSettlementWithinTx(tx: Tx, btchUuid: string): Pro
 
   let delivered = 0
   let returned = 0
+  let damaged = 0
   let pending = 0
-  const perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'PENDING'> = {}
+  const perDispatch: Record<string, 'DELIVERED' | 'RETURNED' | 'DAMAGED' | 'PENDING'> = {}
   for (const e of entries) {
+    // DAMAGED wins first (22 Aug 2026 ruling): a flagged device settles its
+    // dispatch even while its parcel is still nominally in flight, which is
+    // exactly the case that used to block a close forever. It also outranks a
+    // later DELIVERED scan for the LABEL only: both count as settled, and the
+    // damaged mark is the one an operator needs to see on the row.
+    if (damagedAsgns.has(e.asgn_id)) {
+      damaged += 1
+      perDispatch[fromUuid('asgn', e.asgn_id)] = 'DAMAGED'
+      continue
+    }
     const states = (shipmentsByAsgn.get(e.asgn_id) ?? []).map((id) => statusOf.get(id) ?? null)
     // No shipment yet means the vendor has not returned this row, so it cannot
     // have settled however long ago the batch formed.
@@ -679,6 +715,7 @@ export async function readBatchSettlementWithinTx(tx: Tx, btchUuid: string): Pro
     total: entries.length,
     delivered,
     returned,
+    damaged,
     pending,
     settled: pending === 0,
     perDispatch,
@@ -726,7 +763,7 @@ export async function readBatchDetail(db: FulfillmentDb, btchId: string): Promis
       SELECT asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             dispatch_group, source_event_id,
+             dispatch_group, source_event_id, replacement_of::text AS replacement_of,
              COALESCE(
                (SELECT s.status FROM unit u JOIN shpt s ON s.id = u.shipment WHERE u.asgn_id = pending_pool_entry.asgn_id),
                (SELECT s.status FROM shpt s WHERE s.id = pending_pool_entry.collateral_shipment)
@@ -838,7 +875,7 @@ function toPoolEntryDto(r: PoolEntryDbRow): PoolEntryRow {
 const POOL_ENTRY_COLUMNS = `asgn_id::text AS asgn_id, merchant_display_name, merchant_legal_name,
              bank_reference_code, bank_display_name, branch_code, soundbox,
              standee_count, sticker_count, pool_status, dispatch_state, ship_to_superseded,
-             dispatch_group, source_event_id,
+             dispatch_group, source_event_id, replacement_of::text AS replacement_of,
              COALESCE(
                (SELECT s.status FROM unit u JOIN shpt s ON s.id = u.shipment WHERE u.asgn_id = pending_pool_entry.asgn_id),
                (SELECT s.status FROM shpt s WHERE s.id = pending_pool_entry.collateral_shipment)
@@ -998,12 +1035,45 @@ export interface UnitInventoryRow {
   simNo: string | null
   createdAt: Date
   updatedAt: Date
+  /**
+   * The dispatch that THIS device's dispatch replaces, or null.
+   *
+   * Names a dispatch and not a device on purpose. A replacement device is a
+   * brand-new one out of stock; nothing about the hardware is a replacement, so
+   * "this device replaces that device" would be a claim the domain does not
+   * make. What is replaced is the DISPATCH, and the parent's own device (if it
+   * had one at all, a collateral-only leg has none) is reached from there.
+   */
+  replacementOfAsgnId: string | null
 }
 
 // The per-device detail: the list row PLUS the on-demand device_qr payload.
 // Served one device at a time, never as a list.
 export interface UnitDetailView extends UnitInventoryRow {
   deviceQr: unknown
+}
+
+/**
+ * BOTH ENDS OF ONE DEVICE'S REPLACEMENT CHAIN, one hop each way.
+ *
+ * ITS OWN READ, and not folded into readDeviceDetail, deliberately. That read
+ * is the only one that serves the raw manufacturer `device_qr` blob, and the
+ * device page is guarded (device-detail.test.tsx) against calling it precisely
+ * so that payload never reaches a screen that does not render it. Answering
+ * "what did this replace" should not cost that guard, so it is a separate,
+ * narrow read carrying ids and serials only.
+ */
+export interface UnitReplacementChain {
+  /** The dispatch THIS device's dispatch replaces. */
+  replacementOfAsgnId: string | null
+  /** The dispatch that replaced THIS device's dispatch, once one exists. */
+  replacedByAsgnId: string | null
+  /** The parent dispatch's own device, when it had one at all. */
+  parentDeviceId: string | null
+  parentDeviceSerial: string | null
+  /** The successor dispatch's own device, once the vendor has paired one. */
+  successorDeviceId: string | null
+  successorDeviceSerial: string | null
 }
 
 interface UnitInventoryDbRow {
@@ -1021,6 +1091,7 @@ interface UnitInventoryDbRow {
   sim_no: string | null
   created_at: Date
   updated_at: Date
+  replacement_of: string | null
 }
 
 function toUnitInventoryDto(r: UnitInventoryDbRow): UnitInventoryRow {
@@ -1039,9 +1110,22 @@ function toUnitInventoryDto(r: UnitInventoryDbRow): UnitInventoryRow {
     simNo: r.sim_no,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
   }
 }
 
+// The dispatch this device's own dispatch REPLACES, reached through the pool
+// entry (23 Aug 2026). Shared by the list and the detail read so the two cannot
+// disagree, which they previously did: the list joined every damage case in the
+// BROWSER and the detail page asked the dispatch endpoint, two mechanisms and
+// two answers for one question.
+//
+// LEFT JOIN so an unpaired device (asgn_id null, which is every device still in
+// stock) keeps its row. LIMIT 1 keeps it row-level, which this file must stay:
+// see the guard note on the batch read above for what may not be written here,
+// in SQL or in prose. Written out at each call site rather than shared as a
+// string: a tagged template cannot interpolate a raw fragment without dropping
+// to Unsafe, and that trade is not worth one repeated clause.
 export async function listDeviceInventory(
   db: FulfillmentDb,
   { status }: { status?: string } = {},
@@ -1050,21 +1134,30 @@ export async function listDeviceInventory(
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
     if (status !== undefined) {
       return tx.$queryRaw<UnitInventoryDbRow[]>`
-        SELECT id::text AS id, device_serial, status, activated_at, product_type,
-               manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
-               shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
-               asgn_id::text AS asgn_id, location, sim_no, created_at, updated_at
-        FROM unit WHERE status = ${status}
-        ORDER BY device_serial
+        SELECT u.id::text AS id, u.device_serial, u.status, u.activated_at, u.product_type,
+               u.manufacturer_vndr::text AS manufacturer_vndr, u.batch::text AS batch,
+               u.shipment::text AS shipment, u.printed_for_merchant::text AS printed_for_merchant,
+               u.asgn_id::text AS asgn_id, u.location, u.sim_no, u.created_at, u.updated_at,
+               rep.replacement_of::text AS replacement_of
+        FROM unit u
+        LEFT JOIN LATERAL (
+          SELECT p.replacement_of FROM pending_pool_entry p WHERE p.asgn_id = u.asgn_id LIMIT 1
+        ) rep ON true
+        WHERE u.status = ${status}
+        ORDER BY u.device_serial
       `
     }
     return tx.$queryRaw<UnitInventoryDbRow[]>`
-      SELECT id::text AS id, device_serial, status, activated_at, product_type,
-               manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
-               shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
-               asgn_id::text AS asgn_id, location, sim_no, created_at, updated_at
-      FROM unit
-      ORDER BY device_serial
+      SELECT u.id::text AS id, u.device_serial, u.status, u.activated_at, u.product_type,
+             u.manufacturer_vndr::text AS manufacturer_vndr, u.batch::text AS batch,
+             u.shipment::text AS shipment, u.printed_for_merchant::text AS printed_for_merchant,
+             u.asgn_id::text AS asgn_id, u.location, u.sim_no, u.created_at, u.updated_at,
+             rep.replacement_of::text AS replacement_of
+      FROM unit u
+      LEFT JOIN LATERAL (
+        SELECT p.replacement_of FROM pending_pool_entry p WHERE p.asgn_id = u.asgn_id LIMIT 1
+      ) rep ON true
+      ORDER BY u.device_serial
     `
   })
   return rows.map(toUnitInventoryDto)
@@ -1080,6 +1173,33 @@ export async function listDeviceInventory(
 // PLATFORM-ONLY entry (no program to bind), like every other read in this file.
 // AWB and carrier status only, which is what the table carries: no recipient
 // PII reaches this row.
+/**
+ * Which of these dispatches are REPLACEMENTS (22 Aug 2026, replacement badge
+ * sweep). Keyed by wire asgn ids, returns a map of asgnId to the PARENT's wire
+ * asgn id, rows with replacement_of only.
+ *
+ * Lives here rather than on the tms side because the dispatches list is an
+ * analytics report enriched at the edge from FULFILLMENT (mergeHoldState's
+ * precedent), and pending_pool_entry.replacement_of is this context's own
+ * projected copy, carried on the demand fact for exactly this kind of display.
+ */
+export async function readReplacementMarksOps(
+  db: FulfillmentDb,
+  asgnIds: readonly string[],
+): Promise<Map<string, string>> {
+  if (asgnIds.length === 0) return new Map()
+  const uuids = asgnIds.map((id) => toUuid(id))
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<{ asgn_id: string; replacement_of: string }[]>`
+      SELECT asgn_id::text AS asgn_id, replacement_of::text AS replacement_of
+      FROM pending_pool_entry
+      WHERE asgn_id = ANY(${uuids}::uuid[]) AND replacement_of IS NOT NULL
+    `
+  })
+  return new Map(rows.map((r) => [fromUuid('asgn', r.asgn_id), fromUuid('asgn', r.replacement_of)]))
+}
+
 export interface DispatchStatusEventRow {
   status: string
   courierTimestamp: Date
@@ -1087,6 +1207,8 @@ export interface DispatchStatusEventRow {
   sourceRef: string
   receivedAt: Date
   overrideReason: string | null
+  /** Operator login handle snapshot (LeanClaim.hdl), ops doors only. */
+  actorDisplay: string | null
 }
 
 export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): Promise<DispatchStatusEventRow[]> {
@@ -1099,8 +1221,9 @@ export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): P
       source_ref: string
       received_at: Date
       override_reason: string | null
+      actor_display: string | null
     }[]>`
-      SELECT status, courier_timestamp, status_source, source_ref, received_at, override_reason
+      SELECT status, courier_timestamp, status_source, source_ref, received_at, override_reason, actor_display
       FROM shpt_status_event
       WHERE shpt_id = ${toUuid(shptId)}::uuid
       ORDER BY courier_timestamp ASC, received_at ASC
@@ -1113,7 +1236,103 @@ export async function readShipmentTrailOps(db: FulfillmentDb, shptId: string): P
     sourceRef: r.source_ref,
     receivedAt: r.received_at,
     overrideReason: r.override_reason,
+    actorDisplay: r.actor_display,
   }))
+}
+
+// STATUS_STAGES.md (21 Aug 2026): the three status trails this context owns,
+// the siblings of readShipmentTrailOps above. Same shape of question, same
+// role, same oldest-first ordering; the portal renders all four the same way.
+//
+// ORDERED BY occurred_at THEN created_at, exactly like the shipment trail: two
+// transitions stamped with the same reported instant still read back in the
+// order the platform learned them, rather than in whatever order the planner
+// happens to return.
+//
+// tms_ops_read's counterpart, fulfillment_ops_read, is cross-tenant by
+// construction, which is what an ops operator is. IDs, enum tokens and
+// timestamps only, PLUS the one ruled exception: actorDisplay, the operator's
+// own login handle snapshotted at write time (LeanClaim.hdl's ruling), because
+// resolving actorId to a name would need a cross-context read (C4) and a bare
+// UUID under a lifecycle stage answers nothing an operator asked.
+export interface StatusTrailRow {
+  status: string
+  occurredAt: Date
+  statusSource: string
+  actorId: string | null
+  actorDisplay: string | null
+  recordedAt: Date
+}
+
+interface StatusTrailDbRow {
+  status: string
+  occurred_at: Date
+  status_source: string
+  actor_id: string | null
+  actor_display: string | null
+  created_at: Date
+}
+
+function toStatusTrail(rows: StatusTrailDbRow[]): StatusTrailRow[] {
+  return rows.map((r) => ({
+    status: r.status,
+    occurredAt: r.occurred_at,
+    statusSource: r.status_source,
+    actorId: r.actor_id,
+    actorDisplay: r.actor_display,
+    recordedAt: r.created_at,
+  }))
+}
+
+/** One device's status history. unitId is a wire `unit_` id. */
+export async function readUnitTrailOps(db: FulfillmentDb, unitId: string): Promise<StatusTrailRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<StatusTrailDbRow[]>`
+      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, actor_display, created_at
+      FROM unit_status_event
+      WHERE unit_id = ${toUuid(unitId)}::uuid
+      ORDER BY occurred_at ASC, created_at ASC
+    `
+  })
+  return toStatusTrail(rows)
+}
+
+/**
+ * One dispatch's status history, BOTH axes interleaved in time (pool_status and
+ * dispatch_state land in the same table, see status-log.ts for why).
+ *
+ * Keyed by the ASSIGNMENT id, not the pool entry's own id: an assignment id is
+ * what every other ops surface carries and what an operator can actually paste,
+ * and pending_pool_entry.asgn_id is unique, so the join resolves to one entry.
+ */
+export async function readPoolEntryTrailOps(db: FulfillmentDb, asgnId: string): Promise<StatusTrailRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<StatusTrailDbRow[]>`
+      SELECT e.status, e.occurred_at, e.status_source, e.actor_id::text AS actor_id, e.actor_display, e.created_at
+      FROM pool_entry_status_event e
+      JOIN pending_pool_entry p ON p.id = e.pool_entry_id
+      WHERE p.asgn_id = ${toUuid(asgnId)}::uuid
+      ORDER BY e.occurred_at ASC, e.created_at ASC
+    `
+  })
+  return toStatusTrail(rows)
+}
+
+/** One batch's status history. This is where the batch page's sent-at and
+ * closed-at come from: the batch row itself has no such columns. */
+export async function readBatchTrailOps(db: FulfillmentDb, btchId: string): Promise<StatusTrailRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<StatusTrailDbRow[]>`
+      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, actor_display, created_at
+      FROM batch_status_event
+      WHERE batch_id = ${toUuid(btchId)}::uuid
+      ORDER BY occurred_at ASC, created_at ASC
+    `
+  })
+  return toStatusTrail(rows)
 }
 
 // T5.5 (D-19): resolve DEVICE SERIALS back to the assignments they were printed
@@ -1184,15 +1403,100 @@ export async function readDeviceDetail(db: FulfillmentDb, unitId: string): Promi
   const unitUuid = toUuid(unitId)
   const rows = await db.$transaction(async (tx: Tx) => {
     await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    // `activated_at` is in this SELECT now. It was missing while the DTO mapper
+    // read it, so this read returned activatedAt undefined while the list read
+    // beside it returned the real instant. Harmless only for as long as nothing
+    // called it, which is not a property worth relying on.
     return tx.$queryRaw<(UnitInventoryDbRow & { device_qr: unknown })[]>`
-      SELECT id::text AS id, device_serial, status, product_type,
-             manufacturer_vndr::text AS manufacturer_vndr, batch::text AS batch,
-             shipment::text AS shipment, printed_for_merchant::text AS printed_for_merchant,
-             asgn_id::text AS asgn_id, location, sim_no, device_qr, created_at, updated_at
-      FROM unit WHERE id = ${unitUuid}::uuid
+      SELECT u.id::text AS id, u.device_serial, u.status, u.activated_at, u.product_type,
+             u.manufacturer_vndr::text AS manufacturer_vndr, u.batch::text AS batch,
+             u.shipment::text AS shipment, u.printed_for_merchant::text AS printed_for_merchant,
+             u.asgn_id::text AS asgn_id, u.location, u.sim_no, u.device_qr, u.created_at, u.updated_at,
+             rep.replacement_of::text AS replacement_of
+      FROM unit u
+      LEFT JOIN LATERAL (
+        SELECT p.replacement_of FROM pending_pool_entry p WHERE p.asgn_id = u.asgn_id LIMIT 1
+      ) rep ON true
+      WHERE u.id = ${unitUuid}::uuid
     `
   })
   const r = rows[0]
   if (r === undefined) return null
   return { ...toUnitInventoryDto(r), deviceQr: r.device_qr }
+}
+
+/**
+ * One device's replacement chain, one hop in each direction. Null when the id
+ * decodes but no such unit exists.
+ *
+ * THERE IS NO DEVICE-TO-DEVICE EDGE in this schema and there should not be. The
+ * relationship holds between DISPATCHES; a device is merely attached to one. So
+ * each direction is two hops: this device -> its dispatch -> the other dispatch
+ * -> that dispatch's own device.
+ *
+ *   rep  = the dispatch THIS one replaces        (backward, the parent)
+ *   succ = the dispatch that replaced THIS one   (forward, the successor)
+ *
+ * Every join is LEFT and each may legitimately miss. A collateral-only
+ * replacement (standee or sticker, no soundbox) has no device at all, and a
+ * successor still at the print vendor has no serial paired yet. Absent is a
+ * real answer here, not a failure, and the caller renders it in words.
+ *
+ * Row-level with LIMIT 1 throughout, which this file must stay: see the guard
+ * note on the batch read for what may not be written here, in SQL or in prose.
+ */
+export async function readDeviceReplacementChain(
+  db: FulfillmentDb,
+  unitId: string,
+): Promise<UnitReplacementChain | null> {
+  const unitUuid = toUuid(unitId)
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE fulfillment_ops_read')
+    return tx.$queryRaw<
+      {
+        replacement_of: string | null
+        replaced_by: string | null
+        parent_device_id: string | null
+        parent_device_serial: string | null
+        successor_device_id: string | null
+        successor_device_serial: string | null
+      }[]
+    >`
+      SELECT rep.replacement_of::text AS replacement_of,
+             succ.asgn_id::text AS replaced_by,
+             pu.id::text AS parent_device_id, pu.device_serial AS parent_device_serial,
+             su.id::text AS successor_device_id, su.device_serial AS successor_device_serial
+      FROM unit u
+      LEFT JOIN LATERAL (
+        SELECT p.replacement_of FROM pending_pool_entry p WHERE p.asgn_id = u.asgn_id LIMIT 1
+      ) rep ON true
+      LEFT JOIN LATERAL (
+        -- NOT A CANCELLED ONE (24 Aug 2026, found live). A withdrawn damage
+        -- request leaves its pool row at CANCELLED, and without this predicate
+        -- the device page went on announcing "this device was replaced by
+        -- dispatch X" for a replacement that had been called off, with the
+        -- cancelled dispatch as a live link. The withdrawal means the damage
+        -- never happened, so there is no successor to name.
+        SELECT p.asgn_id FROM pending_pool_entry p
+         WHERE p.replacement_of = u.asgn_id AND p.pool_status <> 'CANCELLED' LIMIT 1
+      ) succ ON true
+      LEFT JOIN LATERAL (
+        SELECT x.id, x.device_serial FROM unit x WHERE x.asgn_id = rep.replacement_of LIMIT 1
+      ) pu ON true
+      LEFT JOIN LATERAL (
+        SELECT x.id, x.device_serial FROM unit x WHERE x.asgn_id = succ.asgn_id LIMIT 1
+      ) su ON true
+      WHERE u.id = ${unitUuid}::uuid
+    `
+  })
+  const r = rows[0]
+  if (r === undefined) return null
+  return {
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
+    replacedByAsgnId: r.replaced_by === null ? null : fromUuid('asgn', r.replaced_by),
+    parentDeviceId: r.parent_device_id === null ? null : fromUuid('unit', r.parent_device_id),
+    parentDeviceSerial: r.parent_device_serial,
+    successorDeviceId: r.successor_device_id === null ? null : fromUuid('unit', r.successor_device_id),
+    successorDeviceSerial: r.successor_device_serial,
+  }
 }

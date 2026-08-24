@@ -1,0 +1,15 @@
+-- DAMAGE.md (21 Aug 2026): a SOUNDBOX replacement's damage case closes on
+-- DELIVERED AND ACTIVATED, not on activation alone. A device that never arrived
+-- cannot have resolved a complaint, and a delivered device that never went live
+-- has not resolved one either.
+--
+-- The two halves come from different reporters (the courier and the CWD) and
+-- arrive in either order, so each has to be durable on its own and the close
+-- fires on whichever lands second. activated_at was already here; this is the
+-- other half, projected from fct.fulfillment.shipment.v1 (event-carried state
+-- transfer, never a cross-context read, C4).
+--
+-- Nullable and additive: every existing row predates the concept and is
+-- deliberately not backfilled, because we do not know when those parcels landed
+-- and inventing an instant would be worse than admitting we cannot say.
+ALTER TABLE "assignment" ADD COLUMN "delivered_at" TIMESTAMPTZ(6);

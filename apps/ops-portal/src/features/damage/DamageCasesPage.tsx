@@ -1,21 +1,40 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import {
   getDamageCases,
+  getDamageReasons,
+  type DamageReasonRow,
   getDamageCaseSummary,
+  getCaseTrail,
   searchDispatchesByVpa,
-  updateDamageCaseStatus,
+  type CaseTrailEntry,
   type DamageCaseView,
   type VpaDispatchRow,
 } from '../../api/endpoints.js'
-// PlainTable, not the grid: kept from when these rows held a focused note
-// input, which the grid's TanStack re-render remounts mid-typing. See
-// DataTable.tsx. The note now lives in the confirmation dialog, so the reason
-// has lapsed and this could move to DataGrid; left as-is deliberately, because
-// that swap is a table change and this pass is only the actions menu.
-import { DataTable, PlainTable, type DataTableColumn } from '../../components/DataTable.js'
+import { StatTiles, type StatTileDef } from '../../ui/StatTiles.js'
+import { SearchSelect } from '../../components/Picker.js'
+import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
+import { Toolbar } from '../../ui/primitives.js'
+import { Ban, CheckCircle2, CircleDot, Layers, Loader } from 'lucide-react'
+import { LifecycleTimeline, type TimelineStage } from '../../ui/LifecycleTimeline.js'
+import { sourceLabelOf } from '../../ui/statusRail.js'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog'
+// The cases table is a DataGrid, the portal's standard list (24 Aug 2026): it
+// brings the fixed body height, the sticky first column and the paging every
+// other list has. It was a PlainTable from when these rows held a focused note
+// input that the grid's re-render remounted mid-typing; the note moved into the
+// confirmation dialog long ago, so that reason had lapsed. DataTable survives
+// below for the small VPA result panel, which wants none of the grid's
+// furniture.
+import { DataTable, type DataTableColumn } from '../../components/DataTable.js'
 import {
   PageHeader,
   Card,
@@ -23,7 +42,6 @@ import {
   Button,
   Field,
   Input,
-  Select,
   ErrorNote,
   InfoNote,
   SkeletonRows,
@@ -31,11 +49,13 @@ import {
   StatusPill,
 } from '../../ui/primitives.js'
 import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
+import { cancelDamageCase } from '../../api/endpoints.js'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { buttonVariants } from '@/components/ui/button'
 import { MoreVertical } from 'lucide-react'
@@ -71,20 +91,30 @@ import { cn } from '@/lib/utils'
 // The three values D-24 grants, in LIFECYCLE ORDER, which is what lets the
 // dialog below tell a forward move from a backward one.
 //
-// `wire` is the walkthrough's spelling and `label` is what an operator reads.
-// The column itself stores 'In-Progress', a third spelling; the server
-// normalizes all of them (normalizeCaseStatus), so nothing here has to pick a
-// winner. What every comparison MUST use is statusKey, never `===`: comparing
-// 'In Progress' to the stored 'In-Progress' is always unequal, which is exactly
-// why an in-progress case used to be offered "In Progress" as somewhere to move
-// to. The status a case is already in is not a move.
-const CASE_MOVES = [
+// ONE SPELLING, THE SERVER'S (21 Aug 2026). This file used to carry two, and the
+// ?status= list below carried a third: `wire` said 'In Progress', the filters
+// said 'In-Progress', and the column stored 'In-Progress'. The server normalized
+// all of them on the way in, so nothing broke loudly, but every comparison had to
+// go through statusKey and one that forgot offered an in-progress case "In
+// Progress" as somewhere to move to. The status a case is already in is not a
+// move.
+//
+// The hyphenated form is now canonical and the DATABASE enforces it
+// (assignment_case_status_check, 21 Aug 2026), so there is a single right answer
+// and this file uses it. statusKey survives below as a read-side guard only.
+// The case vocabulary, kept as the LABEL source (statusLabelOf) and the
+// tile order. No longer a list of moves an operator may make: every forward
+// transition is automatic now.
+const CASE_STATUSES = [
   { wire: 'Open', label: 'Open' },
-  { wire: 'In Progress', label: 'In progress' },
+  { wire: 'In-Progress', label: 'In progress' },
   { wire: 'Closed', label: 'Closed' },
+  // Cancelled is a REAL case status (the withdraw path writes it), not a
+  // fourth stage: a cancelled case never reached the merchant and never will.
+  // It is here so statusLabelOf can name it and so it gets its own tile,
+  // because otherwise a withdrawn case was only findable under All.
+  { wire: 'Cancelled', label: 'Cancelled' },
 ] as const
-
-type CaseMove = (typeof CASE_MOVES)[number]
 
 // The cap the ops-edge enforces on the note (MAX_OPS_REMARKS_LENGTH in
 // services/tms/src/ops.ts), mirrored so the operator hits a maxLength on the
@@ -93,31 +123,26 @@ const MAX_CASE_NOTE_LENGTH = 500
 
 /** The label an operator reads for whatever spelling the column stored. */
 function statusLabelOf(status: string | null | undefined): string {
-  return CASE_MOVES.find((m) => statusKey(m.wire) === statusKey(status))?.label ?? (status ?? 'unknown')
-}
-
-/** Position in the lifecycle, or -1 for a status this screen does not know. */
-function rankOf(status: string | null | undefined): number {
-  return CASE_MOVES.findIndex((m) => statusKey(m.wire) === statusKey(status))
-}
-
-// What each status CLAIMS once it is set. The confirmation says this back to
-// the operator, because the whole point of the status is that someone else
-// reads it later and believes it.
-const MOVE_MEANING: Record<string, string> = {
-  Open: 'Open says the replacement is raised and nobody is working it yet.',
-  'In Progress': 'In progress says someone is actively working this replacement.',
-  Closed:
-    'Closed says the replacement reached the merchant. Cases close on their own when a soundbox replacement activates or a collateral replacement is delivered.',
+  return CASE_STATUSES.find((m) => statusKey(m.wire) === statusKey(status))?.label ?? (status ?? 'unknown')
 }
 
 // The ?status= vocabulary (D-31): the dashboard tile links with these exact
-// values. Comparison is spelling-insensitive (statusKey below) because the
-// column stores 'In-Progress' while the walkthrough writes 'In Progress'.
-const STATUS_FILTERS = ['Open', 'In-Progress', 'Closed'] as const
+// values. Now identical to CASE_STATUSES' wire spellings above, which is the point:
+// two lists of the same vocabulary that disagreed on spelling were two chances
+// to compare them wrongly.
+const STATUS_FILTERS = ['Open', 'In-Progress', 'Closed', 'Cancelled'] as const
 type StatusFilter = (typeof STATUS_FILTERS)[number]
 
-/** One spelling-insensitive key for a case status: hyphen, space and case dropped. */
+/**
+ * One spelling-insensitive key for a case status: hyphen, space and case
+ * dropped.
+ *
+ * A READ-SIDE GUARD, no longer a translator between this file's own two
+ * spellings (there is one now, matching the server's). It still earns its place:
+ * the DB CHECK constraint that pins the spelling is newer than the oldest rows,
+ * and a case status arrives here over HTTP from a service this bundle cannot
+ * import, so comparing on a normalized key costs nothing and cannot be wrong.
+ */
 function statusKey(raw: string | null | undefined): string {
   return (raw ?? '').replace(/[\s-]+/g, '').toLowerCase()
 }
@@ -145,23 +170,57 @@ export function DamageCasesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   // The filter lives in the URL, the portal idiom: the dashboard tile links
   // here with ?status=<value>, and a filtered screen survives a reload.
-  const statusFilter = normalizeStatusParam(searchParams.get('status'))
+  // FOUR TILES, and OPEN IS THE DEFAULT (24 Aug 2026, at the user's
+  // direction). A bare /damage-cases used to land on "everything, closed
+  // included" with no tile lit, which read as broken: the operator could not
+  // tell what they were looking at. Absent param now means Open, the queue
+  // somebody actually works; 'all' is a real value the All tile writes.
+  const rawStatus = searchParams.get('status')
+  const statusFilter: StatusFilter | 'all' =
+    rawStatus === 'all' ? 'all' : (normalizeStatusParam(rawStatus) ?? 'Open')
 
   const [rows, setRows] = useState<DamageCaseView[]>([])
+  // The two standard filters, in the URL like every other list on this portal.
+  const q = searchParams.get('q') ?? ''
+  const reasonSel = searchParams.get('reason') ?? ''
+  // The damage-reason MASTER, so the dropdown offers every configured reason
+  // rather than only the ones the loaded rows happen to use.
+  const [reasons, setReasons] = useState<DamageReasonRow[]>([])
   const [summary, setSummary] = useState<DamageCaseSummary | null>(null)
-  const [includeClosed, setIncludeClosed] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNote, setActionNote] = useState<string | null>(null)
-  const [busyId, setBusyId] = useState<string | null>(null)
-  // The move awaiting confirmation, and the note being written for it. ONE of
-  // each, not a per-row map: a status change is now picked from a row's menu
-  // and confirmed in a dialog, so exactly one can be in flight and the note
-  // belongs to it. (The per-case map existed because the note used to be an
-  // input living in every row.)
-  const [pendingMove, setPendingMove] = useState<{ row: DamageCaseView; move: CaseMove } | null>(null)
-  const [moveNote, setMoveNote] = useState('')
+  // Withdrawing a request is confirmed like a move, but its note is MANDATORY
+  // rather than optional, so it gets its own state and its own dialog.
+  // THE CASE LIFECYCLE VIEWER (22 Aug 2026): the trail table was written from
+  // day one and nothing could read it, so "when did this case move" had its
+  // answer recorded and unreachable. Row-scoped dialog rather than a page: a
+  // case's history is a question asked about ONE case mid-scan of the list.
+  const [trailFor, setTrailFor] = useState<DamageCaseView | null>(null)
+  const [trail, setTrail] = useState<CaseTrailEntry[] | null>(null)
+  const [trailError, setTrailError] = useState<string | null>(null)
+
+  const [pendingCancel, setPendingCancel] = useState<DamageCaseView | null>(null)
+  const [cancelRemarks, setCancelRemarks] = useState('')
+  const [cancelBusy, setCancelBusy] = useState(false)
+
+  useEffect(() => {
+    if (trailFor === null) return
+    let stale = false
+    setTrail(null)
+    setTrailError(null)
+    getCaseTrail(client, trailFor.asgnId)
+      .then((rows) => {
+        if (!stale) setTrail(Array.isArray(rows) ? rows : [])
+      })
+      .catch((err: unknown) => {
+        if (!stale) setTrailError(err instanceof Error ? err.message : 'Could not load the case history.')
+      })
+    return () => {
+      stale = true
+    }
+  }, [client, trailFor])
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -171,7 +230,9 @@ export function DamageCasesPage() {
       // filters), so a filtered read always asks the server for everything and
       // narrows client-side; the unfiltered screen keeps its server-side
       // includeClosed toggle.
-      setRows(await getDamageCases(client, statusFilter !== null ? true : includeClosed))
+      // ALWAYS the full set: every tile is a client-side narrowing of one read,
+      // so Closed must be in hand whichever tile is lit.
+      setRows(await getDamageCases(client, true))
     } catch {
       // Deliberately NOT err.message: on an ApiError that is only "api 500",
       // which tells an operator nothing they can act on. A read failure gets
@@ -181,11 +242,23 @@ export function DamageCasesPage() {
     } finally {
       setLoading(false)
     }
-  }, [client, includeClosed, statusFilter])
+  }, [client])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    let cancelled = false
+    getDamageReasons(client)
+      .then((list) => {
+        if (!cancelled && Array.isArray(list)) setReasons(list.filter((m) => m.active))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [client])
 
   // The chips' counts, loaded separately and silently degrading: the case
   // grid must not die with the summary read. Re-fetched with each grid load
@@ -202,53 +275,70 @@ export function DamageCasesPage() {
     }
   }, [client, rows])
 
-  function setStatusFilter(next: StatusFilter | null): void {
+  function setStatusFilter(next: StatusFilter | 'all'): void {
     setSearchParams(
       (prev) => {
         const params = new URLSearchParams(prev)
-        if (next === null) params.delete('status')
+        // Open is the default, so it is written as an absent param and the URL
+        // of the ordinary screen stays clean.
+        if (next === 'Open') params.delete('status')
         else params.set('status', next)
         return params
       },
       { replace: true },
     )
   }
+  function setParam(key: string, value: string): void {
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev)
+        if (value === '') params.delete(key)
+        else params.set(key, value)
+        return params
+      },
+      { replace: true },
+    )
+  }
 
-  async function handleTransition(row: DamageCaseView, move: CaseMove): Promise<void> {
+  /**
+   * Withdraw a damage request (DAMAGE.md).
+   *
+   * Reloads rather than patching the row: cancelling reverses four things across
+   * two contexts (the case, the child's demand state, the parent's flag, and via
+   * a fact the parent's devices and the child's pool row), and only the server
+   * knows which of them actually moved.
+   */
+  async function handleCancel(row: DamageCaseView): Promise<void> {
     setActionError(null)
     setActionNote(null)
-    setBusyId(row.asgnId)
+    setCancelBusy(true)
     try {
-      const note = moveNote.trim()
-      await updateDamageCaseStatus(client, row.asgnId, move.wire, newIdempotencyKey(), note === '' ? undefined : note)
-      // Name the merchant, not the wire id: the operator picked a row that said
-      // "Flow Alpha Store".
-      setActionNote(`${row.merchantDisplayName} moved to ${move.label}.`)
-      // Only once the write has returned does the dialog close, the same
-      // posture the batch trigger takes: dismissing on click would leave the
-      // operator watching an unchanged table with no idea whether it landed.
-      setPendingMove(null)
-      setMoveNote('')
+      await cancelDamageCase(client, row.asgnId, cancelRemarks.trim(), newIdempotencyKey())
+      setActionNote(`${row.merchantDisplayName}: damage request cancelled. The original dispatch can be flagged again.`)
+      setPendingCancel(null)
+      setCancelRemarks('')
       await load()
     } catch (err) {
-      // Stays inside the open dialog, pinned to the button that caused it.
-      setActionError(err instanceof Error ? err.message : 'Could not update the case.')
+      setActionError(err instanceof Error ? err.message : 'Could not cancel the request.')
     } finally {
-      setBusyId(null)
+      setCancelBusy(false)
     }
   }
 
   // ---- Find dispatches by VPA (D-26) -------------------------------- //
-  const [vpa, setVpa] = useState('')
   const [vpaRows, setVpaRows] = useState<VpaDispatchRow[] | null>(null)
   const [vpaBusy, setVpaBusy] = useState(false)
   const [vpaError, setVpaError] = useState<string | null>(null)
 
-  // On SUBMIT, never per keystroke: a UPI ID is dictated over the phone, and
+  /** A UPI ID has an @; a merchant name does not. That is the whole test. */
+  const vpaLooking = q.includes('@') && q.trim().length > 1
+
+  // ON DEMAND, never per keystroke: a UPI ID is dictated over the phone, and
   // firing a read per character would search on half an address every time.
-  async function handleVpaSearch(e: FormEvent): Promise<void> {
-    e.preventDefault()
-    const query = vpa.trim()
+  // The button appears only once the box looks like a UPI ID, so the ordinary
+  // case-narrowing search never grows a control it does not need.
+  async function runVpaSearch(raw: string): Promise<void> {
+    const query = raw.trim()
     if (query === '') return
     setVpaBusy(true)
     setVpaError(null)
@@ -273,7 +363,13 @@ export function DamageCasesPage() {
         </Link>
       ),
     },
-    { key: 'dispatchGroup', header: 'Group', cell: (r) => <DispatchGroupBadge group={r.dispatchGroup} /> },
+    // THIS COLUMN WAS ALREADY HERE AND ALWAYS BLANK (fixed 21 Aug 2026). The
+    // read never selected dispatch_group, so every row rendered the badge's
+    // null case, and the page could not tell a soundbox case from a collateral
+    // one even though it had a column for exactly that. The two close on
+    // different rules, so it matters: a soundbox case needs the replacement
+    // delivered AND activated, a collateral case needs only delivery.
+    { key: 'dispatchGroup', header: 'Group', cell: (r) => <DispatchGroupBadge group={r.dispatchGroup ?? null} /> },
     { key: 'merchantDisplayName', header: 'Merchant', cell: (r) => r.merchantDisplayName },
     {
       key: 'bank',
@@ -304,15 +400,89 @@ export function DamageCasesPage() {
     { key: 'createdAt', header: 'Raised', cell: (r) => fmtDateTime(r.createdAt) },
   ]
 
-  const filteredRows = statusFilter === null ? rows : rows.filter((r) => statusKey(r.caseStatus) === statusKey(statusFilter))
+  // STAGED, the portal idiom: the tiles count off the stage BEFORE their own
+  // filter, so clicking one never zeroes its own facet.
+  const searched = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    const byReason = reasonSel === '' ? rows : rows.filter((r) => (r.damageReason ?? '') === reasonSel)
+    if (needle === '') return byReason
+    return byReason.filter((r) =>
+      [r.merchantDisplayName, r.asgnId, r.replacementOf, r.bankDisplayName ?? r.bankReferenceCode, r.branchCode ?? '']
+        .some((v) => v.toLowerCase().includes(needle)),
+    )
+  }, [rows, q, reasonSel])
 
-  const chips: ReadonlyArray<{ filter: StatusFilter; label: string; count: number | null }> = [
-    { filter: 'Open', label: 'Open', count: summary?.open ?? null },
-    { filter: 'In-Progress', label: 'In progress', count: summary?.inProgress ?? null },
-    { filter: 'Closed', label: 'Closed', count: summary?.closed ?? null },
+  const countOf = useCallback(
+    (status: StatusFilter) => searched.filter((r) => statusKey(r.caseStatus) === statusKey(status)).length,
+    [searched],
+  )
+
+  const filteredRows =
+    statusFilter === 'all' ? searched : searched.filter((r) => statusKey(r.caseStatus) === statusKey(statusFilter))
+
+  // The reason master, so the dropdown offers the same codes the flag dialog
+  // writes rather than whatever happens to be in the loaded page of rows.
+  const reasonOptions = useMemo(
+    () => [
+      { value: '', label: 'All reasons' },
+      ...reasons.map((m) => ({ value: m.code, label: m.label, count: rows.filter((r) => r.damageReason === m.code).length })),
+    ],
+    [reasons, rows],
+  )
+
+  const tiles: StatTileDef[] = [
+    {
+      key: 'all',
+      label: 'All cases',
+      hint: 'every damage case ever raised',
+      icon: Layers,
+      tone: 'text-primary',
+      chip: 'bg-primary/10',
+      value: searched.length,
+    },
+    {
+      key: 'Open',
+      label: 'Open',
+      hint: 'raised, nobody working it yet',
+      icon: CircleDot,
+      tone: 'text-amber-600',
+      chip: 'bg-amber-500/10',
+      value: summary === null ? countOf('Open') : countOf('Open'),
+    },
+    {
+      key: 'In-Progress',
+      label: 'In progress',
+      hint: 'its replacement is batched',
+      icon: Loader,
+      tone: 'text-sky-600',
+      chip: 'bg-sky-500/10',
+      value: countOf('In-Progress'),
+    },
+    {
+      key: 'Closed',
+      label: 'Closed',
+      hint: 'the replacement reached the merchant',
+      icon: CheckCircle2,
+      tone: 'text-emerald-600',
+      chip: 'bg-emerald-500/10',
+      value: countOf('Closed'),
+    },
+    {
+      // WITHDRAWN, not finished: the flag should never have been raised, the
+      // parent went back to ordinary and its devices came off the damaged
+      // branch. Muted rather than red: cancelling is a correction, not a
+      // failure, and it is the one outcome an operator chooses on purpose.
+      key: 'Cancelled',
+      label: 'Cancelled',
+      hint: 'the request was withdrawn',
+      icon: Ban,
+      tone: 'text-muted-foreground',
+      chip: 'bg-muted',
+      value: countOf('Cancelled'),
+    },
   ]
 
-  const columns: DataTableColumn<DamageCaseView>[] = [
+  const gridColumns: GridColumn<DamageCaseView>[] = [
     {
       key: 'merchantDisplayName',
       header: 'Merchant',
@@ -379,7 +549,19 @@ export function DamageCasesPage() {
       // and confirmed, rather than fired by a stray click on a button sitting
       // permanently under the cursor.
       cell: (r) => {
-        const moves = CASE_MOVES.filter((m) => statusKey(m.wire) !== statusKey(r.caseStatus))
+        // NO STATUS MOVES (24 Aug 2026, at the user's direction). Every
+        // forward transition is automatic now: a case opens when damage is
+        // flagged, goes In-Progress when its replacement is batched, and
+        // closes itself when a soundbox replacement activates or a collateral
+        // one is delivered. Offering "Move to Closed" beside that invited an
+        // operator to contradict the automation by hand, and the next fact
+        // would move it back anyway.
+        //
+        // CANCEL IS OPEN-ONLY, and the SERVER already says so: cancelDamageCase
+        // answers 409 "this replacement has already been batched" for anything
+        // past Open. Showing it on an In-Progress case offered an action that
+        // could only ever fail.
+        const cancellable = statusKey(r.caseStatus) === statusKey('Open')
         return (
           <DropdownMenu>
             {/* Styled with buttonVariants directly rather than `asChild` around
@@ -392,23 +574,32 @@ export function DamageCasesPage() {
               <MoreVertical className="size-4" aria-hidden="true" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {moves.map((m) => (
-                <DropdownMenuItem
-                  key={m.wire}
-                  // Backward moves read destructive because they contradict
-                  // what the case currently claims, and a reopened case is the
-                  // one an operator most needs to mean on purpose.
-                  variant={rankOf(m.wire) < rankOf(r.caseStatus) ? 'destructive' : 'default'}
-                  onSelect={() => {
-                    setActionError(null)
-                    setActionNote(null)
-                    setMoveNote('')
-                    setPendingMove({ row: r, move: m })
-                  }}
-                >
-                  Move to {m.label}
-                </DropdownMenuItem>
-              ))}
+              <DropdownMenuItem
+                onSelect={() => {
+                  setTrailFor(r)
+                }}
+              >
+                View lifecycle
+              </DropdownMenuItem>
+              {/* WITHDRAWING THE REQUEST: the one write left on this screen. It
+                  undoes the replacement, frees the original to be flagged
+                  again, and takes its devices back off the damaged branch. */}
+              {cancellable && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => {
+                      setActionError(null)
+                      setActionNote(null)
+                      setCancelRemarks('')
+                      setPendingCancel(r)
+                    }}
+                  >
+                    Cancel this request
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )
@@ -423,165 +614,189 @@ export function DamageCasesPage() {
         description="Replacements raised by flagging a damaged dispatch. A case tracks the replacement, not the original."
       />
 
-      {/* The D-31 counts, and each one is the filter for its own rows. The
-          active chip is a toggle: clicking it again clears the filter. */}
-      {summary !== null && (
-        <div className="flex flex-wrap gap-2">
-          {chips.map((chip) => {
-            const active = statusFilter === chip.filter
-            return (
-              <button
-                key={chip.filter}
-                type="button"
-                aria-pressed={active}
-                onClick={() => setStatusFilter(active ? null : chip.filter)}
-                className={cn(
-                  'flex items-center gap-2 rounded-full border px-4 py-1.5 text-sm font-medium transition-colors',
-                  active ? 'border-primary bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:bg-muted',
-                )}
-              >
-                {chip.label}
-                <span className="num text-base font-semibold">{chip.count}</span>
-              </button>
-            )
-          })}
-        </div>
-      )}
+      {/* FOUR TILES, the portal's standard summary row, one active at a time
+          and each one a filter (24 Aug 2026, at the user's direction). They
+          replaced three pill-chips that carried the same counts but did not
+          look or behave like the tiles on every other list. */}
+      <StatTiles
+        tiles={tiles}
+        isActive={(t) => t.key === statusFilter}
+        onSelect={(t) => setStatusFilter(t.key as StatusFilter | 'all')}
+      />
 
       {loadError !== null && <ErrorNote>{loadError}</ErrorNote>}
       {actionError !== null && <ErrorNote>{actionError}</ErrorNote>}
       {actionNote !== null && <InfoNote>{actionNote}</InfoNote>}
 
-      {/* D-26: the phone-call entry point. The caller can read out their UPI
-          ID; nobody can read out a Dispatch ID. The flag itself lives on the
-          dispatch page each result links to. */}
-      <Card>
-        <CardHeader
-          title="Find dispatches by VPA"
-          subtitle="Every dispatch carrying this UPI ID, newest first. Open one to flag damage on it."
-        />
-        <div className="px-5 pb-5">
-          <form
-            className="flex flex-wrap items-end gap-3"
-            onSubmit={(e) => {
-              void handleVpaSearch(e)
-            }}
-          >
-            <Field label="UPI ID" htmlFor="vpa-search" className="w-full sm:w-72">
-              <Input
-                id="vpa-search"
-                placeholder="merchant@bank"
-                value={vpa}
-                onChange={(e) => setVpa(e.target.value)}
-                disabled={vpaBusy}
-              />
-            </Field>
-            <Button type="submit" loading={vpaBusy} disabled={vpa.trim() === ''}>
-              Search
-            </Button>
-          </form>
-          {vpaError !== null && (
-            <div className="mt-3">
-              <ErrorNote>{vpaError}</ErrorNote>
-            </div>
-          )}
-          {vpaRows !== null && (
-            <div className="mt-4">
-              <DataTable
-                columns={vpaColumns}
-                rows={vpaRows}
-                getRowKey={(r) => r.asgnId}
-                emptyMessage="No dispatches carry that UPI ID. Check the spelling with the caller; the match ignores case and spaces."
-              />
-            </div>
-          )}
-        </div>
-      </Card>
+      {/* THE STANDARD FILTER ROW, the same grammar as Inventory and Dispatches.
+          It replaced a full-width "Find dispatches by VPA" card whose only
+          control was one text box, which is a filter wearing a card's clothes.
+
+          ONE SEARCH BOX, two jobs, because an operator does not care which
+          index answers them. Plain text narrows the CASES below. A UPI ID (it
+          has an @) also asks the VPA endpoint for every DISPATCH carrying it,
+          shown above the table: that is the phone-call path, where the caller
+          reads out their UPI and the case does not exist yet. */}
+      <Toolbar>
+        <Field label="Search" htmlFor="case-search" className="w-full sm:w-80">
+          <Input
+            id="case-search"
+            placeholder="Merchant, dispatch, bank or UPI ID…"
+            value={q}
+            onChange={(e) => setParam('q', e.target.value)}
+          />
+        </Field>
+        <Field label="Reason" htmlFor="case-reason" className="w-full sm:w-56">
+          <SearchSelect
+            id="case-reason"
+            placeholder="All reasons"
+            options={reasonOptions}
+            value={reasonSel}
+            onChange={(v) => setParam('reason', v)}
+          />
+        </Field>
+        {vpaLooking && (
+          <Button variant="secondary" loading={vpaBusy} onClick={() => void runVpaSearch(q)}>
+            Find dispatches by UPI ID
+          </Button>
+        )}
+      </Toolbar>
+
+      {vpaError !== null && <ErrorNote>{vpaError}</ErrorNote>}
+      {vpaRows !== null && (
+        <Card>
+          <CardHeader
+            title="Dispatches carrying that UPI ID"
+            subtitle="Newest first. Open one to flag damage on it; the case appears below once raised."
+            actions={
+              <Button variant="secondary" size="sm" onClick={() => setVpaRows(null)}>
+                Hide
+              </Button>
+            }
+          />
+          <div className="px-5 pb-5">
+            <DataTable
+              columns={vpaColumns}
+              rows={vpaRows}
+              getRowKey={(r) => r.asgnId}
+              emptyMessage="No dispatches carry that UPI ID. Check the spelling with the caller; the match ignores case and spaces."
+            />
+          </div>
+        </Card>
+      )}
 
       <Card>
         <CardHeader
-          title={statusFilter !== null ? `${statusFilter === 'In-Progress' ? 'In progress' : statusFilter} cases` : includeClosed ? 'All cases' : 'Open cases'}
+          title={statusFilter === 'all' ? 'All cases' : `${statusLabelOf(statusFilter)} cases`}
           subtitle={`${filteredRows.length} ${filteredRows.length === 1 ? 'case' : 'cases'}`}
-          actions={
-            statusFilter !== null ? (
-              <Button variant="secondary" size="sm" onClick={() => setStatusFilter(null)}>
-                Clear filter
-              </Button>
-            ) : (
-              <Field label="Show">
-                <Select
-                  aria-label="Show"
-                  value={includeClosed ? 'all' : 'open'}
-                  onChange={(e) => setIncludeClosed(e.target.value === 'all')}
-                >
-                  <option value="open">Open and in progress</option>
-                  <option value="all">Everything, closed included</option>
-                </Select>
-              </Field>
-            )
-          }
         />
         {loading ? (
           <SkeletonRows rows={6} cols={8} />
         ) : (
-          <PlainTable
-            columns={columns}
+          <DataGrid
+            columns={gridColumns}
             rows={filteredRows}
             getRowKey={(r) => r.asgnId}
-            emptyMessage={
-              statusFilter !== null
-                ? `No ${statusFilter === 'In-Progress' ? 'in-progress' : statusFilter.toLowerCase()} damage cases.`
-                : includeClosed
-                  ? 'No damage cases.'
-                  : 'No open damage cases.'
-            }
+            searchable={false}
+            maxBodyHeight="58vh"
+            stickyFirstColumn
+            pageSize={25}
+            pageSizeOptions={[25, 50, 100]}
+            emptyTitle={statusFilter === 'all' ? 'No damage cases' : `No ${statusLabelOf(statusFilter).toLowerCase()} cases`}
+            emptyMessage="A case is raised by flagging a damaged dispatch from its own page."
           />
         )}
       </Card>
 
-      {/* THE CONFIRMATION. A case status is read later as fact by people who
-          were not here, so each move is stated in words before it is made, and
-          the optional note rides with it rather than sitting in the row where
-          it was easy to type into the wrong case. */}
-      {pendingMove !== null && (
+      {/* WITHDRAWING THE REQUEST. A separate dialog from the status moves, and
+          deliberately more emphatic: this one undoes a replacement, frees the
+          parent to be flagged again, and takes the parent's devices back off the
+          damaged branch. The note is REQUIRED, because the next person to look
+          at an un-damaged device needs to know who decided it was never
+          damaged. */}
+      {pendingCancel !== null && (
         <ConfirmDialog
           open
           onOpenChange={(next) => {
             if (!next) {
-              setPendingMove(null)
+              setPendingCancel(null)
               setActionError(null)
             }
           }}
-          title={`Move this case to ${pendingMove.move.label}?`}
-          description={`${pendingMove.row.merchantDisplayName} is ${statusLabelOf(pendingMove.row.caseStatus)}. ${MOVE_MEANING[pendingMove.move.wire] ?? ''}`}
-          confirmLabel={`Move to ${pendingMove.move.label}`}
-          tone={rankOf(pendingMove.move.wire) < rankOf(pendingMove.row.caseStatus) ? 'danger' : 'default'}
-          busy={busyId === pendingMove.row.asgnId}
+          title="Cancel this damage request?"
+          description={`${pendingCancel.merchantDisplayName}. The replacement is withdrawn, the original dispatch can be flagged again, and its devices go back to the status they held before the damage.`}
+          confirmLabel="Cancel the request"
+          tone="danger"
+          busy={cancelBusy}
           error={actionError}
+          confirmDisabled={cancelRemarks.trim() === ''}
           onConfirm={() => {
-            void handleTransition(pendingMove.row, pendingMove.move)
+            void handleCancel(pendingCancel)
           }}
         >
-          {/* Only for a BACKWARD move, and only then: the automation still
-              owns the forward transitions, so a case walked back can be moved
-              on again by the very fact that set it. */}
-          {rankOf(pendingMove.move.wire) < rankOf(pendingMove.row.caseStatus) && (
-            <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-[12.5px] font-medium text-amber-700 dark:text-amber-400">
-              This moves the case backwards. If the replacement later activates or is delivered, the case closes
-              itself again.
-            </p>
-          )}
-          <Field label="Note" htmlFor="case-move-note" hint="Optional, and recorded on the case.">
+          <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-[12.5px] font-medium text-amber-700 dark:text-amber-400">
+            Only possible while the replacement has not been batched. Once it is in a batch, cards may already be
+            printing: let it deliver and flag it again instead.
+          </p>
+          <Field label="Reason" htmlFor="case-cancel-note" hint="Required, and recorded on the case.">
             <Input
-              id="case-move-note"
+              id="case-cancel-note"
               autoFocus
               maxLength={MAX_CASE_NOTE_LENGTH}
-              placeholder="e.g. bank confirmed the courier lost it"
-              value={moveNote}
-              onChange={(e) => setMoveNote(e.target.value)}
+              placeholder="e.g. flagged the wrong dispatch"
+              value={cancelRemarks}
+              onChange={(e) => setCancelRemarks(e.target.value)}
             />
           </Field>
         </ConfirmDialog>
+      )}
+
+      {/* THE CASE LIFECYCLE. Vertical and event-grained, not a rail: a case's
+          history carries prose (who moved it, through which door, the
+          mandatory cancel reason), and that is the timeline's grammar. Every
+          row renders 'reached': these are events that happened, not a ladder
+          with rungs still ahead, and the trail's own order is the story. */}
+      {trailFor !== null && (
+        <Dialog
+          open
+          onOpenChange={(next) => {
+            if (!next) {
+              setTrailFor(null)
+              setTrail(null)
+              setTrailError(null)
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Case lifecycle</DialogTitle>
+              <DialogDescription>
+                {trailFor.merchantDisplayName}. Replacement {trailFor.asgnId}.
+              </DialogDescription>
+            </DialogHeader>
+            {trailError !== null && <ErrorNote>{trailError}</ErrorNote>}
+            {trailError === null && trail === null && (
+              <p className="text-[13px] text-muted-foreground">Loading…</p>
+            )}
+            {trail !== null && (
+              <LifecycleTimeline
+                stages={trail.map(
+                  (e, i): TimelineStage => ({
+                    key: `${String(i)}-${e.status}`,
+                    label: statusLabelOf(e.status),
+                    state: i === trail.length - 1 ? 'current' : 'reached',
+                    at: e.occurredAt,
+                    source: sourceLabelOf(e.statusSource),
+                    actor: e.actorDisplay,
+                    note: e.remarks !== null && e.remarks !== '' ? e.remarks : undefined,
+                  }),
+                )}
+                emptyTitle="No recorded history"
+                emptyMessage="This case predates the trail, so its transitions were never recorded."
+              />
+            )}
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   )

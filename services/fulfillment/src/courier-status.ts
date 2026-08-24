@@ -38,6 +38,11 @@ export interface StatusUpdate {
   // external submission IS the origin. So the caller trace is used and chained
   // onto both the trail row and the emitted fact (S21).
   traceId: string
+  /**
+   * Operator login handle snapshot (LeanClaim.hdl), set only by the ops
+   * correction door. File and webhook doors have no human and leave it unset.
+   */
+  actorDisplay?: string | null
 }
 
 export type AdvanceOutcome = 'advanced' | 'trail_only' | 'deduped' | 'unknown_awb'
@@ -86,6 +91,33 @@ export async function collateralAsgnIdsFor(tx: Tx, shptUuid: string): Promise<st
   return rows.map((r) => fromUuid('asgn', r.asgn_id))
 }
 
+/**
+ * The SOUNDBOX assignments travelling under one AWB (DAMAGE.md, 21 Aug 2026).
+ *
+ * The sibling of collateralAsgnIdsFor above, and needed for the same reason: a
+ * fact is the only bridge (T7), so a consumer that must act on a soundbox
+ * delivery has to be told which assignments delivered.
+ *
+ * WHY TMS NEEDS IT. A soundbox replacement's damage case now closes on
+ * delivered AND activated, not on activation alone: a device that never arrived
+ * cannot have resolved a complaint, and activation can be reported by the CWD
+ * before the courier's file lands. TMS holds the activation half already; this
+ * is how it learns the other half.
+ *
+ * Resolved through `unit`, not through pending_pool_entry: the soundbox parcel
+ * is linked from the DEVICE (unit.shipment), where collateral hangs off the
+ * entry because a serial-less row has no unit to find. DISTINCT because one
+ * assignment can hold several devices in one parcel.
+ */
+export async function soundboxAsgnIdsFor(tx: Tx, shptUuid: string): Promise<string[]> {
+  const rows = await tx.$queryRaw<{ asgn_id: string }[]>`
+    SELECT DISTINCT asgn_id::text AS asgn_id FROM unit
+    WHERE shipment = ${shptUuid}::uuid AND asgn_id IS NOT NULL
+    ORDER BY asgn_id
+  `
+  return rows.map((r) => fromUuid('asgn', r.asgn_id))
+}
+
 export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<AdvanceOutcome> {
   const found = await tx.$queryRaw<{ id: string; program_id: string; courier_partner: string | null }[]>`
     SELECT id::text AS id, program_id::text AS program_id, courier_partner::text AS courier_partner
@@ -111,10 +143,10 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
     // correctly under the non-owner role.
     await tx.$executeRaw`
       INSERT INTO shpt_status_event
-        (shpt_id, program_id, status, courier_timestamp, status_source, source_ref, trace_id)
+        (shpt_id, program_id, status, courier_timestamp, status_source, source_ref, actor_display, trace_id)
       VALUES
         (${shptUuid}::uuid, ${programUuid}::uuid, ${u.status}, ${u.courierTimestamp},
-         ${u.source}, ${u.sourceRef}, ${u.traceId})
+         ${u.source}, ${u.sourceRef}, ${u.actorDisplay ?? null}, ${u.traceId})
     `
 
     // The ratified successor rule (D9). incomingIsLadder is true for the five
@@ -166,13 +198,33 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
     // device's own state, and FAILED is a delivery attempt that may still
     // succeed on a retry. Advancing is monotonic, so a redelivered courier fact
     // is a no-op rather than a device that reverts.
-    if (u.status === 'DELIVERED') await advanceUnitsForShipment(tx, shptUuid, 'DELIVERED')
-    else if (u.status === 'RETURNED') await advanceUnitsForShipment(tx, shptUuid, 'RETURNED')
+    // The device trail records the COURIER's own instant, not ours: the
+    // parcel's outcome and the devices' inherited outcome happened at the
+    // same reported moment (S22's two clocks, same as shpt_status_event).
+    // statusSource stays 'courier-file' even for the ops correction door: the
+    // shpt_status_event row above already names OPS_MANUAL, and the unit moved
+    // because the PARCEL's outcome moved it. actorDisplay still travels so a
+    // manual correction's operator is visible on the device trail too.
+    const unitLog = {
+      statusSource: 'courier-file',
+      occurredAt: u.courierTimestamp,
+      traceId: u.traceId,
+      actorDisplay: u.actorDisplay ?? null,
+    } as const
+    if (u.status === 'DELIVERED') await advanceUnitsForShipment(tx, shptUuid, 'DELIVERED', unitLog)
+    else if (u.status === 'RETURNED') await advanceUnitsForShipment(tx, shptUuid, 'RETURNED', unitLog)
 
     // The dedupKey MUST be per-transition. The spec-08 birth fact uses the bare
     // shpt wire id, so a bare key here would let an E6 inbox consumer dedup
     // every transition away as a duplicate of the birth.
     const collateralAsgns = await collateralAsgnIdsFor(tx, shptUuid)
+    // A SEPARATE FIELD, never folded into asgnIds and never setting the
+    // `collateral` flag: analytics branches on that flag into a path that
+    // touches only the two collateral columns, so reusing either would make a
+    // soundbox delivery take the collateral route and stop updating the
+    // record's primary courier status. The field is additive and optional, so a
+    // consumer that does not know it simply ignores it (D120 FULL compat).
+    const soundboxAsgns = await soundboxAsgnIdsFor(tx, shptUuid)
     await enqueue(tx, {
       aggregateType: 'shpt',
       aggregateId: shptWire,
@@ -187,6 +239,7 @@ export async function advanceShipmentStatus(tx: Tx, u: StatusUpdate): Promise<Ad
           courierTimestamp: tsIso,
           statusSource: u.source,
           ...(collateralAsgns.length > 0 ? { collateral: true, asgnIds: collateralAsgns } : {}),
+          ...(soundboxAsgns.length > 0 ? { soundboxAsgnIds: soundboxAsgns } : {}),
         },
         dedupKey: `${shptWire}|${u.status}|${tsIso}`,
         traceId: u.traceId,

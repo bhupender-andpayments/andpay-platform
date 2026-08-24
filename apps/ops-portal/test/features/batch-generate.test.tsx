@@ -182,43 +182,148 @@ describe('The batch page previews one dispatch QR on demand', () => {
     expect(dialog.textContent).toContain('upi://pay?pa=')
   })
 
-  // 19 Aug 2026: HOW FAR THROUGH THE VENDOR IS.
-  //
-  // A batch reads "Sent to print vendor" from the moment it is sent until every
-  // dispatch settles, which is most of its life and says nothing about progress.
-  // The vendor ships what is ready and sends the rest later, and nowhere else
-  // surfaces that: the Activation worklist DROPS an unpaired dispatch (no device,
-  // nothing to activate), so activating 4 of 5 gives no signal that a 5th is
-  // still awaited. Counted off dispatch_state, the same column the State cells
-  // render, so the pill and the rows cannot disagree.
-  it('shows how many dispatches the vendor has shipped, once the batch has been sent', async () => {
+  // THE SUMMARY BAND (23 Aug 2026), replacing the old facts strip and its
+  // "Shipped by vendor" pill. "Mapped" is a shipment existing for the leg
+  // (courierStatus non-null), the faithful signal that the vendor's return
+  // sheet came back for it, split by dispatch group. These are the numbers an
+  // operator reads before deciding whether to chase the vendor.
+  it('counts mapped legs from courierStatus, split by dispatch group', async () => {
     stub({
       batch: { ...BATCH, status: 'SENT_TO_PRINT_VENDOR' },
       entries: [
-        entry({ asgnId: 'asgn_a', dispatchState: 'DISPATCHED_BY_VENDOR' }),
-        entry({ asgnId: 'asgn_b', dispatchState: 'DISPATCHED_BY_VENDOR' }),
-        entry({ asgnId: 'asgn_c', dispatchState: 'SENT_TO_VENDOR' }),
+        entry({ asgnId: 'asgn_a', dispatchGroup: 'SOUNDBOX', courierStatus: 'IN_TRANSIT' }),
+        entry({ asgnId: 'asgn_b', dispatchGroup: 'COLLATERAL', courierStatus: null }),
       ],
       artifacts: [artifact()],
       printLayout: 'ONE_PER_PAGE',
     })
     renderPage()
 
-    // The count is split across <span class="num"> elements so the digits get the
-    // tabular font, so the assertion reads the whole cell rather than one node.
-    const label = await screen.findByText('Shipped by vendor')
-    const cell = label.parentElement!
-    expect(cell.textContent?.replace(/\s+/g, ' ')).toContain('2 of 3 dispatched')
+    const overall = (await screen.findByText('Mapped by vendor')).closest('div[class*="rounded-xl"]')!
+    expect(overall.textContent).toContain('1/2')
+    const soundbox = screen.getByText('Soundbox mapped').closest('div[class*="rounded-xl"]')!
+    expect(soundbox.textContent).toContain('1/1')
+    const collateral = screen.getByText('Collateral mapped').closest('div[class*="rounded-xl"]')!
+    expect(collateral.textContent).toContain('0/1')
   })
 
-  it('says nothing about vendor progress before the batch has been sent', async () => {
-    // 0 of N on a batch nobody has sent yet reads as a fault rather than a
-    // not-yet, so the pill is absent until there is progress to report.
+  // THE REPLACEMENT STRIP (23 Aug 2026, ops-team ask): the damage-driven share
+  // of the batch, stated once in amber under the summary band, only when there
+  // is one to state.
+  it('shows the replacement strip with the leg and kit breakdown when the batch carries replacements', async () => {
+    stub({
+      batch: BATCH,
+      entries: [
+        entry({ asgnId: 'asgn_a', dispatchGroup: 'SOUNDBOX', standeeCount: 0, stickerCount: 0 }),
+        entry({ asgnId: 'asgn_b', dispatchGroup: 'SOUNDBOX', standeeCount: 0, stickerCount: 0, replacementOfAsgnId: 'asgn_old1' }),
+        entry({ asgnId: 'asgn_c', dispatchGroup: 'COLLATERAL', soundbox: false, standeeCount: 1, stickerCount: 2, replacementOfAsgnId: 'asgn_old2' }),
+      ],
+      artifacts: [artifact()],
+      printLayout: 'ONE_PER_PAGE',
+    })
+    renderPage()
+
+    const label = await screen.findByText('Replacements in this batch')
+    const strip = label.closest('div[class*="rounded-2xl"]')!
+    expect(strip.textContent).toContain('2 dispatches')
+    expect(strip.textContent).toContain('1 soundbox')
+    expect(strip.textContent).toContain('1 collateral (1 standee, 2 stickers)')
+  })
+
+  it('shows NO replacement strip on a batch with none', async () => {
+    stub({ batch: BATCH, entries: [entry()], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' })
+    renderPage()
+    await screen.findByText('Mapped by vendor')
+    expect(screen.queryByText('Replacements in this batch')).toBeNull()
+  })
+
+  it('keeps Status, Trigger and Formed readable in the summary band', async () => {
     stub({ batch: BATCH, entries: [entry()], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' })
     renderPage()
 
-    await screen.findByText('BRILLIANT PERFUME')
-    expect(screen.queryByText('Shipped by vendor')).toBeNull()
+    const status = (await screen.findByText('Status')).closest('div[class*="rounded-xl"]')!
+    expect(status.textContent).toContain('MANUAL trigger')
+    expect(status.textContent).toMatch(/formed/i)
+  })
+
+  // ONE SENTENCE OF NEXT-STEP GUIDANCE, keyed to the batch's state, so an
+  // operator new to the flow is not left to infer the order from which
+  // buttons happen to be enabled.
+  it('tells a BATCHED batch to generate collateral and then send', async () => {
+    stub({ batch: BATCH, entries: [entry()], artifacts: [artifact()], printLayout: 'ONE_PER_PAGE' })
+    renderPage()
+    expect(await screen.findByText(/then send this batch to the print vendor/i)).toBeTruthy()
+  })
+
+  it('tells a sent, partially mapped batch to upload the return sheet, with the count', async () => {
+    stub({
+      batch: { ...BATCH, status: 'SENT_TO_PRINT_VENDOR' },
+      entries: [
+        entry({ asgnId: 'asgn_a', dispatchGroup: 'SOUNDBOX', courierStatus: 'IN_TRANSIT' }),
+        entry({ asgnId: 'asgn_b', dispatchGroup: 'COLLATERAL', courierStatus: null }),
+      ],
+      artifacts: [artifact()],
+      printLayout: 'ONE_PER_PAGE',
+    })
+    renderPage()
+    expect(await screen.findByText(/upload their return sheet/i)).toBeTruthy()
+    expect(screen.getByText(/1 of 2 mapped so far/i)).toBeTruthy()
+  })
+
+  // MARK ALL DELIVERED IS ALWAYS CLICKABLE (23 Aug 2026, at the user's
+  // direction): it used to render disabled with its reason in a title
+  // attribute, so the operator had to hover a faded control to learn why. The
+  // dialog now states the condition and only the confirm is gated, the same
+  // shape Close batch already had.
+  it('opens the deliver dialog even when not every dispatch has shipped, and gates only the confirm', async () => {
+    stub({
+      batch: { ...BATCH, status: 'SENT_TO_PRINT_VENDOR' },
+      entries: [
+        entry({ asgnId: 'asgn_a', dispatchState: 'DISPATCHED_BY_VENDOR' }),
+        entry({ asgnId: 'asgn_b', dispatchState: 'SENT_TO_VENDOR' }),
+      ],
+      artifacts: [artifact()],
+      printLayout: 'ONE_PER_PAGE',
+    })
+    renderPage()
+
+    const open = await screen.findByRole('button', { name: /mark every dispatch in batch .* delivered/i })
+    expect(open.hasAttribute('disabled')).toBe(false)
+    await userEvent.click(open)
+
+    const dialog = await screen.findByRole('dialog')
+    // The condition, with its numbers, inside the dialog.
+    expect(dialog.textContent).toContain('1/2')
+    expect(within(dialog).getByText(/not every dispatch has reached the vendor yet/i)).toBeTruthy()
+    expect(within(dialog).getByText(/return sheet/i)).toBeTruthy()
+    // Only the confirm is gated.
+    expect(within(dialog).getByRole('button', { name: /^mark all delivered$/i }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('allows the confirm once every dispatch has shipped', async () => {
+    stub({
+      batch: { ...BATCH, status: 'SENT_TO_PRINT_VENDOR' },
+      entries: [entry({ asgnId: 'asgn_a', dispatchState: 'DISPATCHED_BY_VENDOR' })],
+      artifacts: [artifact()],
+      printLayout: 'ONE_PER_PAGE',
+    })
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: /mark every dispatch in batch .* delivered/i }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('button', { name: /^mark all delivered$/i }).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('says a settled batch can be closed', async () => {
+    stub({
+      batch: { ...BATCH, status: 'SENT_TO_PRINT_VENDOR' },
+      entries: [entry({ asgnId: 'asgn_a', dispatchGroup: 'SOUNDBOX', courierStatus: 'DELIVERED' })],
+      artifacts: [artifact()],
+      printLayout: 'ONE_PER_PAGE',
+      settlement: { total: 1, delivered: 1, returned: 0, pending: 0, settled: true },
+    })
+    renderPage()
+    expect(await screen.findByText(/this batch can be closed/i)).toBeTruthy()
   })
 
   it('offers the card-type switch only when the dispatch really has both cards', async () => {

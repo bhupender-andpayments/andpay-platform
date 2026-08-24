@@ -1,6 +1,6 @@
 import { onceWithin, enqueue } from '@andpay/outbox'
 import { buildAuthzAuditEvent, type AuthzAuditRecord } from '@andpay/audit'
-import { instanceKey } from '@andpay/keys'
+import { instanceKey, eventKey, childKey } from '@andpay/keys'
 import { toUuid } from '@andpay/ids'
 // D-8: DETECTION only. The same rule fulfillment corrects with, so the count
 // TMS reports is exactly what gets rewritten downstream. See the package.
@@ -18,7 +18,8 @@ import {
   type RequestRowRejectReason,
   type DuplicateVpaOriginal,
 } from './ingest.js'
-import { CASE_STATUS_VALUES, normalizeCaseStatus } from './damage-case.js'
+import { CASE_STATUS_VALUES, normalizeCaseStatus, logCaseStatusWithinTx } from './damage-case.js'
+import { TMS_DEACTIVATED_TOPIC, deactivatedFactEnvelope } from './events.js'
 
 // The cap on an operator's case note, matching the trigger-note and hold-reason
 // caps elsewhere: long enough for a real explanation, short enough that the
@@ -32,7 +33,6 @@ import {
   type DamageReasonRow,
 } from './damage-reason.js'
 import { activateAssignmentWithinTx } from './assignment.js'
-import { recordActivationStatusWithinTx } from './activation-branch.js'
 import type { DevicePort } from './device-port.js'
 
 // Fix wave 1 (fulfillment/src/ops.ts, Task 9 review, Important 1) equivalent
@@ -557,82 +557,95 @@ export async function closeQuarantineRow(
 }
 
 /**
- * D-16 (T4.1b): record that the activation request for these dispatch ids has
- * been SENT TO THE CWD.
+ * Undo an activation (ACTIVATION.md, 21 Aug 2026).
  *
- * WHY THIS IS AN ACTION AND NOT A SIDE EFFECT OF THE REPORT. D-16 says report
- * generation is what sets REQUEST_SENT_TO_CWD, and the literal reading would put
- * a write inside GET /ops/reports/activation. That route is a pinned pure read
- * whose whole posture is that reads are not mutations, and a mutating GET is
- * also retried by every proxy and prefetched by every browser. So the same state
- * is written by an explicit operator act instead: "I have sent this batch to the
- * CWD", which is the claim the 6e should carry anyway. The domain write is this
- * one function either way, so moving the trigger later costs a route and no
- * state. Raised as a question rather than assumed (PLAN.md Q24).
+ * WHY THIS CAN EXIST AT ALL. Activation used to be the top rung of an ordered
+ * status, and undoing a rung on a forward-only ladder is a contradiction. It is
+ * a parallel toggle now, so clearing it is an ordinary write rather than a
+ * reversal of history: activated_at and activated_by go back to null together,
+ * which is precisely the state a never-activated dispatch is already in.
  *
- * Takes a LIST because that is how the work happens: an operator exports a
- * worklist and sends it in one go, and stamping thirty rows through thirty
- * requests would leave a half-sent batch on any failure.
+ * demand_state IS DELIBERATELY LEFT ALONE. It was set to 'activated' by the
+ * activation, and there is no honest value to put back: the row's real position
+ * is whatever fulfillment says about its parcel, which this context cannot read
+ * (C4). Reverting it to 'pooled-for-fulfillment' would be inventing a past. The
+ * activation axis is the one this clears, and the axis separation is exactly
+ * what makes that safe.
  *
- * The program for each row is resolved SERVER-SIDE from the assignment itself
- * (D99), never from the caller, and the write scope is entered per row because
- * the scope is per program and one send can span several. Unknown ids are
- * REPORTED rather than thrown on: a stale worklist naming a row that has since
- * been archived should not cost the operator the other twenty-nine.
+ * NO FACT IS EMITTED, and that is a gap worth naming rather than hiding. The
+ * activation fact (fct.tms.assignment.activated.v1) told fulfillment to stamp
+ * the device's activated_at; nothing tells it to clear it, so a deactivated
+ * dispatch leaves its unit still marked activated until a deactivation fact
+ * exists. Adding one is a topic plus a consumer plus a projector, which is the
+ * same shape as the damage cancel flow and belongs with it (DAMAGE.md). Until
+ * then this corrects the ASSIGNMENT only.
+ *
+ * Idempotent on the business key, like activateAssignmentOps: deactivating an
+ * already-inactive dispatch is a no-op that still audits the authorized action.
  */
-export async function requestActivationOps(
+export async function deactivateAssignmentOps(
   db: TmsDb,
-  args: { asgnIds: string[]; clientKey: string; actorId: string; traceId: string },
-): Promise<{ deduped: boolean; recorded: string[]; unknown: string[] }> {
-  if (args.asgnIds.length === 0) {
-    throw new OpsClientError('invalid', 'at least one dispatch id is required')
-  }
-  const recorded: string[] = []
-  const unknown: string[] = []
-  const ran = await db.$transaction(async (tx: Tx) => {
-    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:request-activation'), async () => {
-      // ONE reported instant for the whole send, taken once: every row in this
-      // batch left for the CWD together, and stamping each with its own
-      // now() would put a spurious ordering in the trail.
-      const occurredAt = new Date()
-      for (const asgnId of args.asgnIds) {
-        const target = await tx.$queryRaw<{ program_id: string }[]>`
-          SELECT program_id::text AS program_id FROM assignment WHERE id = ${toUuid(asgnId)}::uuid
-        `
-        if (target.length === 0) {
-          unknown.push(asgnId)
-          continue
-        }
-        await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
-        await recordActivationStatusWithinTx(tx, {
-          asgnId,
-          programUuid: target[0]!.program_id,
-          status: 'REQUEST_SENT_TO_CWD',
-          occurredAt,
-          statusSource: 'ops:request-activation',
-          actorId: args.actorId,
-          traceId: args.traceId,
+  args: { asgnId: string; clientKey: string; actorId: string; traceId: string },
+): Promise<{ deactivated: boolean }> {
+  const asgnUuid = toUuid(args.asgnId)
+  let deactivated = false
+  await db.$transaction(async (tx: Tx) => {
+    // The program is resolved SERVER-SIDE from the target row (D99), never from
+    // the caller, exactly as the activate path does it.
+    const target = await tx.$queryRaw<{ program_id: string }[]>`
+      SELECT program_id::text AS program_id FROM assignment WHERE id = ${asgnUuid}::uuid
+    `
+    if (target.length === 0) throw new OpsClientError('not-found', 'no such dispatch')
+    await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
+
+    await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:deactivate'), async () => {
+      const cleared = await tx.$queryRaw<{ id: string }[]>`
+        UPDATE assignment
+        SET activated_at = NULL, activated_by = NULL, updated_at = now()
+        WHERE id = ${asgnUuid}::uuid AND activated_at IS NOT NULL
+        RETURNING id::text AS id
+      `
+      deactivated = cleared.length > 0
+      // The fact, so the device and the analytics row learn it too. Emitted
+      // only when a row actually cleared: an at-least-once redelivery of a
+      // no-op deactivation would tell two other contexts to clear something
+      // that was already clear, which is harmless but dishonest history.
+      if (deactivated) {
+        await enqueue(tx, {
+          aggregateType: 'assignment',
+          aggregateId: args.asgnId,
+          eventType: TMS_DEACTIVATED_TOPIC,
+          partitionKey: args.asgnId,
+          payload: deactivatedFactEnvelope({
+            payload: { asgnId: args.asgnId },
+            dedupKey: eventKey(instanceKey(args.clientKey, 'ops:deactivate'), 'tms.assignment.deactivated'),
+            traceId: args.traceId,
+          }),
         })
-        recorded.push(asgnId)
       }
-      // The ALLOW 6e co-commits in the SAME tx as the stamps (spec 10c CC-1),
-      // naming every id the operator actually acted on. IDs and enum tokens
-      // only (S7/S10.5).
+      // The 6e ALLOW co-commits in the SAME tx (spec 10c CC-1), and
+      // unconditionally inside the client-key callback: the audit records the
+      // authorized action, not whether a row happened to be in the state to
+      // change, which is the rule recordRelease already follows.
       await enqueue(
         tx,
         buildAuthzAuditEvent(
           opsAllow({
-            operation: 'ops:request-activation',
+            operation: 'ops:deactivate',
             principalId: args.actorId,
-            resourceIds: recorded,
+            resourceIds: [args.asgnId],
             traceId: args.traceId,
           }),
         ),
       )
     })
   })
-  return { deduped: !ran, recorded, unknown }
+  return { deactivated }
 }
+
+// requestActivationOps DELETED (ACTIVATION.md, 21 Aug 2026): the
+// REQUEST_SENT_TO_CWD status and its trail are gone. Activation is a
+// one-time toggle now; there is nothing to "send" first.
 
 // Phase 3 Task 1 (BRD FR-08, FR-11) admin CRUD on the damage_reason master,
 // the class-3 ops HTTP edge counterpart to createDamageReasonWithinTx /
@@ -818,6 +831,7 @@ export async function updateDamageCaseStatusOps(
     opsRemarks?: string
     clientKey: string
     actorId: string
+    actorDisplay?: string | null
     traceId: string
   },
 ): Promise<{ deduped: boolean }> {
@@ -832,13 +846,14 @@ export async function updateDamageCaseStatusOps(
 
   const ran = await db.$transaction(async (tx: Tx) => {
     await enterWriteRole(tx, 'tms_write')
-    const rows = await tx.$queryRaw<{ program_id: string }[]>`
-      SELECT program_id FROM assignment WHERE id = ${asgnUuid}::uuid AND replacement_of IS NOT NULL
+    const rows = await tx.$queryRaw<{ program_id: string; case_status: string | null }[]>`
+      SELECT program_id, case_status FROM assignment WHERE id = ${asgnUuid}::uuid AND replacement_of IS NOT NULL
     `
     if (rows.length !== 1) {
       throw new OpsClientError('invalid', 'no such damage case (target must be a replacement assignment)')
     }
     const programId = rows[0]!.program_id
+    const priorStatus = rows[0]!.case_status
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:update-damage-case'), async () => {
       // enterWriteScope is deliberately INSIDE onceWithin (holdRecord scopes
       // before it): the onceWithin inbox INSERT runs with app.program_id unset,
@@ -857,6 +872,20 @@ export async function updateDamageCaseStatusOps(
             updated_at = now()
         WHERE id = ${asgnUuid}::uuid
       `
+      // The trail row this writer was MISSING until 22 Aug 2026: every
+      // automatic transition logged itself, and the one door where a human
+      // moves the case recorded nothing, so a manually-closed case had a trail
+      // that stopped at In-Progress. Logged only when the status actually
+      // changed: a remarks-only resend of the same status is not a transition.
+      if (priorStatus !== target) {
+        await logCaseStatusWithinTx(tx, asgnUuid, programId, {
+          status: target,
+          statusSource: 'ops:update-damage-case',
+          actorId: args.actorId,
+          actorDisplay: args.actorDisplay ?? null,
+          traceId: args.traceId,
+        })
+      }
       await enqueue(
         tx,
         buildAuthzAuditEvent(
@@ -879,12 +908,19 @@ export async function updateDamageCaseStatusOps(
 // only, section 2 of the grounding). Unlike updateDamageCaseStatusOps this
 // does NOT duplicate the write body: it reuses activateAssignmentWithinTx
 // (assignment.ts) and passes an onAudit callback so the 6e ALLOW co-commits
-// INSIDE the same onceWithin as the UPDATE+fact. A redelivered/duplicate
-// activation (already-activated assignment) is therefore a no-op for BOTH the
-// domain effect and the audit, exactly like holdRecord; idempotency is the
-// business key `${asgnId}|activate` (activateAssignmentWithinTx), NOT the
-// caller's clientKey, so a double-activation is impossible regardless of the
-// Idempotency-Key used.
+// INSIDE the same onceWithin as the UPDATE+fact.
+//
+// IDEMPOTENCY CHANGED ON 23 Aug 2026 (with the write itself; the full story is
+// on activateAssignmentWithinTx). It was the business key `${asgnId}|activate`,
+// which made activation a one-way door: once deactivation existed, no dispatch
+// could ever be activated a SECOND time, and the portal's bulk and single
+// activate both reported "already-activated" for a dispatch that was live-off.
+// The key is now PER ATTEMPT, clientKey + dispatch (the dispatch segment
+// matters: the bulk route sends ONE client key for the whole list, and without
+// it only the first row of every bulk would ever run). A replayed request is
+// still a no-op with a single audit; a fresh attempt on a deactivated dispatch
+// flips it back on. Double-activation stays impossible, but by the write's own
+// `activated_at IS NULL` guard rather than by a forever inbox row.
 //
 // The DELIVERED gate is enforced by the CALLER (ops-edge, which holds the
 // analyticsDb local projection, D-H.1's binding decision): this function
@@ -901,9 +937,10 @@ export async function activateAssignmentOps(
   const result = await args.port.activate({ asgnId: args.asgnId, deviceRef: args.asgnId })
   return db.$transaction((tx: Tx) =>
     activateAssignmentWithinTx(tx, args.asgnId, result.activatedAt, args.traceId, {
-      // D-16: this door HAS an operator behind it, so the activation trail names
-      // both rather than falling back to the port default.
-      statusSource: 'ops:mark-activated',
+      // Rule 1 then rule 2 of the 06.A grammar: {Kc}|ops:mark-activated|{asgn}.
+      attemptKey: childKey(instanceKey(args.clientKey, 'ops:mark-activated'), args.asgnId),
+      // ACTIVATION.md: this door HAS an operator behind it, so activated_by
+      // names them rather than staying null (the port-only default).
       actorId: args.actorId,
       onAudit: (tx2) =>
         enqueue(

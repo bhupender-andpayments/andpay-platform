@@ -6,7 +6,13 @@ import type { TmsDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteRole, enterWriteScope } from './write-context.js'
 import { emitDemandFact, type DispatchGroup } from './assignment.js'
-import { replacementRaisedFactEnvelope, TMS_REPLACEMENT_RAISED_TOPIC } from './events.js'
+import {
+  replacementRaisedFactEnvelope,
+  TMS_REPLACEMENT_RAISED_TOPIC,
+  replacementCancelledFactEnvelope,
+  TMS_REPLACEMENT_CANCELLED_TOPIC,
+} from './events.js'
+import { logCaseStatusWithinTx } from './damage-case.js'
 import { OpsClientError } from './ops.js'
 
 // D-26, D-27, D-28 (Damage and Replacement Workflow, 16 Aug 2026): the Flag
@@ -38,6 +44,7 @@ export interface FlagDamageArgs {
   stickerCount?: number // COLLATERAL only, int 0..99
   clientKey: string // Idempotency-Key
   actorId: string // claim.sub, never a body field
+  actorDisplay?: string | null // claim.hdl snapshot, display only
   traceId: string
 }
 
@@ -63,7 +70,21 @@ interface ParentRow {
   contact_name: string | null
   mobile: string | null
   branch_code: string | null
+  // BRD 5.1b, 22 Aug 2026: inherited by the replacement alongside the contact
+  // block. Without this a merchant whose newest request is a replacement would
+  // show blank city/email on the merchants list even though its original
+  // carried them.
+  email: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  qr_type: string | null
   dispatch_group: DispatchGroup
+  /** The merchant-request identity this leg belongs to; the child derives from it. */
+  source_event_id: string
+  /** What was ORDERED on this leg, the ceiling a replacement may not exceed. */
+  standee_count: number
+  sticker_count: number
 }
 
 function requireItemCount(value: number | undefined, name: string): void {
@@ -94,10 +115,6 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
   requireItemCount(args.stickerCount, 'stickerCount')
   const parentUuid = toUuid(args.asgnId)
 
-  // DP-4: the child's correlation id. The column is a correlation id, not a
-  // UUID (file rows used fileId|rowNo); the client key makes a retry land on
-  // the same (source_event_id, dispatch_group) unique row.
-  const sourceEventId = `ops-flag|${args.clientKey}`
 
   return db.$transaction(async (tx: Tx) => {
     await enterWriteRole(tx, 'tms_write')
@@ -107,13 +124,51 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
     const parents = await tx.$queryRaw<ParentRow[]>`
       SELECT id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
              bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value,
-             contact_name, mobile, branch_code, dispatch_group
+             contact_name, mobile, branch_code, email, city, state, pincode, qr_type,
+             dispatch_group, source_event_id,
+             standee_count, sticker_count
       FROM assignment WHERE id = ${parentUuid}::uuid
     `
     if (parents.length !== 1) {
       throw new OpsClientError('not-found', 'no such dispatch')
     }
     const parent = parents[0]!
+
+    // THE CHILD'S REQUEST KEY IS DERIVED FROM THE PARENT'S (DAMAGE.md).
+    //
+    // source_event_id is the platform's merchant-request identity: both legs of
+    // one bank-file row share it, the pool GROUPS BY it, and the minimum-lot
+    // batching gate counts DISTINCT values of it. A replacement used to get a
+    // fresh random key (`ops-flag|<clientKey>`), which broke all three at once.
+    // Flagging a merchant's soundbox and their standee produced two unrelated
+    // request rows in the pool for what was one request, and counted 2 toward a
+    // gate the original counted 1 for.
+    //
+    // Deriving it from the parent's key puts both replacement legs back in one
+    // request, exactly like the original.
+    //
+    // THE GENERATION SUFFIX IS NOT DECORATION. Without it a second round of
+    // damage on the same leg would reuse the same (source_event_id,
+    // dispatch_group) pair and be swallowed silently by the ON CONFLICT DO
+    // NOTHING below, so the operator would get a success and no replacement.
+    // The generation is the depth of the chain the parent already sits on.
+    const depth = await tx.$queryRaw<{ n: bigint }[]>`
+      WITH RECURSIVE up AS (
+        SELECT id, replacement_of FROM assignment WHERE id = ${parentUuid}::uuid
+        UNION ALL
+        SELECT a.id, a.replacement_of FROM assignment a JOIN up u ON a.id = u.replacement_of
+      )
+      SELECT count(*) AS n FROM up
+    `
+    // The parent itself is row 1, so its first replacement is generation 1.
+    const generation = Number(depth[0]?.n ?? 1n)
+    // The ROOT request's key, never the parent's own derived one, so a third
+    // generation reads `...|g3` rather than `...|g2|g3`.
+    const rootKey = parent.source_event_id.replace(/^ops-flag\|/, '').replace(/\|g\d+$/, '')
+    const sourceEventId = `ops-flag|${rootKey}|g${String(generation)}`
+
+
+
 
     // DP-2: the leg decides the product columns. A SOUNDBOX leg is quantity
     // one by definition (D-27 and D-6), so any count input is a caller error
@@ -136,6 +191,29 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
       if (standeeCount + stickerCount < 1) {
         throw new OpsClientError('invalid', 'a collateral flag must replace at least one item')
       }
+      // THE CEILING IS WHAT WAS ORDERED (DAMAGE.md, 21 Aug 2026). Every layer
+      // used to accept 0..99 with no reference to the parent at all, so flagging
+      // 99 standees against a dispatch that shipped one succeeded end to end and
+      // put 99 replacements into the pool.
+      //
+      // ORDERED and not DELIVERED, deliberately and with a caveat worth stating:
+      // no per-dispatch delivered quantity exists anywhere in this platform.
+      // Delivery is recorded per parcel and per serialized device, never as a
+      // collateral item count, so the ordered count is the closest honest
+      // ceiling. It can still be too generous where a partial delivery
+      // happened; it can never be absurd, which is what this fixes.
+      if (standeeCount > parent.standee_count) {
+        throw new OpsClientError(
+          'invalid',
+          `this dispatch ordered ${String(parent.standee_count)} standee(s); cannot replace ${String(standeeCount)}`,
+        )
+      }
+      if (stickerCount > parent.sticker_count) {
+        throw new OpsClientError(
+          'invalid',
+          `this dispatch ordered ${String(parent.sticker_count)} sticker(s); cannot replace ${String(stickerCount)}`,
+        )
+      }
     }
 
     // DP-5: the reason is the master CODE, validated active. The file ingest
@@ -148,22 +226,70 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
       throw new OpsClientError('invalid', 'reasonCode must name an active damage reason')
     }
 
-    // DP-3: one live case per dispatch. A child of this parent whose case is
-    // not Closed blocks a new flag; after it closes, a new flag is allowed
-    // (repeat damage is real). The child THIS client key minted is excluded so
-    // a replay of the same request stays idempotent instead of colliding with
-    // its own earlier success.
-    const live = await tx.$queryRaw<{ id: string }[]>`
-      SELECT id FROM assignment
-      WHERE replacement_of = ${parentUuid}::uuid
-        AND case_status IS DISTINCT FROM 'Closed'
-        AND source_event_id <> ${sourceEventId}
-    `
-    if (live.length > 0) {
-      throw new OpsClientError('conflict', 'this dispatch already has a live damage case')
-    }
+    // DP-3's one-live-case guard USED TO BE HERE and is now unreachable: the
+    // tip gate above is strictly stronger, refusing a parent with ANY child
+    // rather than only one whose case is still open. Kept as a note instead of
+    // as dead code, because DP-3 said the opposite (re-flagging a parent was
+    // allowed once its case closed) and the change is deliberate: after a
+    // replacement exists, the merchant's working device IS the replacement, so
+    // the next round of damage belongs to it.
+    //
+    // The partial unique index assignment_one_live_case (migration
+    // 20260816210000) still backs the rule at the database, which is what makes
+    // a concurrent double-flag safe rather than racy; the catch below maps its
+    // 23505 to the same conflict.
 
     await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:flag-damage'), async () => {
+    // ONLY THE CHAIN TIP CAN BE FLAGGED (DAMAGE.md, 21 Aug 2026).
+    //
+    // Damage used to be flaggable on any dispatch whose case had closed, which
+    // meant a second round of damage landed on the ORIGINAL rather than on the
+    // replacement the merchant is actually holding. That produced two sibling
+    // replacements of one parent instead of a chain, and neither knew about the
+    // other.
+    //
+    // A dispatch with ANY replacement child is therefore no longer flaggable,
+    // open case or closed. The refusal names the tip so the caller can go
+    // straight there rather than guessing which of the chain is current.
+    // INSIDE THE onceWithin, unlike every validation above it, and that
+    // placement is the whole reason this works. A replay of the same
+    // Idempotency-Key never reaches here: onceWithin's inbox row short-circuits
+    // the body, so the retry returns its original answer instead of tripping
+    // over the child it already created.
+    //
+    // An exclusion by source_event_id was tried instead and cannot work: the
+    // child's key is derived from the PARENT now, so a genuine second attempt
+    // computes the same key as the first and would exclude the very row it
+    // needs to see. The client key is the only thing that separates a retry
+    // from a new request, and the inbox is where the client key lives.
+    //
+    // A state conflict consuming the idempotency key is correct, unlike the
+    // input validations above: the caller's request was well formed and the
+    // answer is stable, so replaying it should keep returning that answer.
+    const existingReplacement = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id::text AS id FROM assignment
+      WHERE replacement_of = ${parentUuid}::uuid
+      ORDER BY created_at DESC
+      LIMIT 1
+    `
+    if (existingReplacement.length > 0) {
+      // Walk to the newest descendant, not just the immediate one: after two
+      // rounds the caller needs the END of the chain, and replacement_of is a
+      // one-level pointer so the walk has to be explicit.
+      const tip = await tx.$queryRaw<{ id: string }[]>`
+        WITH RECURSIVE chain AS (
+          SELECT id, created_at FROM assignment WHERE id = ${parentUuid}::uuid
+          UNION ALL
+          SELECT a.id, a.created_at FROM assignment a JOIN chain c ON a.replacement_of = c.id
+        )
+        SELECT id::text AS id FROM chain ORDER BY created_at DESC LIMIT 1
+      `
+      throw new OpsClientError(
+        'conflict',
+        `this dispatch has already been replaced; flag the current one instead (${fromUuid('asgn', tip[0]!.id)})`,
+      )
+    }
+
       // enterWriteScope is deliberately INSIDE onceWithin (same reasoning as
       // updateDamageCaseStatusOps): the inbox INSERT is not program-gated, and
       // binding the scope here keeps the WITH-CHECK program next to the writes
@@ -192,14 +318,16 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
           bank_reference_code, bank_display_name, ship_to_address,
           qr_value, vpa_value, soundbox, standee_count, sticker_count,
           billable, replacement_of, damage_reason, ops_remarks, flagged_by, case_status,
-          demand_state, origin, source_event_id, contact_name, mobile, branch_code, dispatch_group, updated_at
+          demand_state, origin, source_event_id, contact_name, mobile, branch_code,
+          email, city, state, pincode, qr_type, dispatch_group, updated_at
         ) VALUES (
           ${childUuid}::uuid, ${parent.merchant_id}::uuid, ${parent.program_id}::uuid, ${parent.tenant_id}::uuid,
           ${parent.merchant_display_name}, ${parent.merchant_legal_name}, ${parent.merchant_mcc},
           ${parent.bank_reference_code}, ${parent.bank_display_name}, ${parent.ship_to_address},
           ${parent.qr_value}, ${parent.vpa_value}, ${soundbox}, ${standeeCount}, ${stickerCount},
           ${false}, ${parent.id}::uuid, ${args.reasonCode}, ${remarks}, ${args.actorId}, ${'Open'},
-          ${'received'}, ${'ADDITIONAL'}, ${sourceEventId}, ${parent.contact_name}, ${parent.mobile}, ${parent.branch_code}, ${parent.dispatch_group}, now()
+          ${'received'}, ${'ADDITIONAL'}, ${sourceEventId}, ${parent.contact_name}, ${parent.mobile}, ${parent.branch_code},
+          ${parent.email}, ${parent.city}, ${parent.state}, ${parent.pincode}, ${parent.qr_type}, ${parent.dispatch_group}, now()
         )
         ON CONFLICT (source_event_id, dispatch_group) DO NOTHING
         RETURNING id
@@ -216,6 +344,19 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
         throw err
       }
       if (won.length === 0) return // the child already exists (idempotent net)
+
+      // The case trail's BIRTH row (22 Aug 2026): the INSERT above sets
+      // case_status='Open' and, until now, nothing recorded that as an event,
+      // so a fresh case's trail began at In-Progress. Same tx, same
+      // RETURNING-gated shape as every other trail writer: an idempotent
+      // replay returns above and appends nothing.
+      await logCaseStatusWithinTx(tx, childUuid, parent.program_id, {
+        status: 'Open',
+        statusSource: 'ops:flag-damage',
+        actorId: args.actorId,
+        actorDisplay: args.actorDisplay ?? null,
+        traceId: args.traceId,
+      })
 
       const childId = fromUuid('asgn', childUuid)
       // The linkage fact. damageReason carries the master CODE (DP-5) and
@@ -272,4 +413,179 @@ export async function flagDamageOps(db: TmsDb, args: FlagDamageArgs): Promise<Fl
     }
     return { childAsgnId: fromUuid('asgn', child[0]!.id), caseStatus: 'Open' as const }
   })
+}
+
+/**
+ * CANCEL A DAMAGE REQUEST (DAMAGE.md, 21 Aug 2026).
+ *
+ * An operator flags the wrong dispatch, or flags one twice, and until now there
+ * was no way back: a replacement existed in the pool, the parent was marked
+ * damaged, and its devices sat on the DAMAGED terminal branch. Every one of
+ * those is undone here.
+ *
+ * THE WINDOW IS DELIBERATELY NARROW: only while the replacement is still
+ * UN-BATCHED. Once it is in a batch, cards may already be printing and a vendor
+ * may already hold the workbook; withdrawing it then would make the platform
+ * disagree with paper in the world. Past that point the honest path is to let the
+ * replacement deliver and flag it again, which the tip-only rule already routes
+ * correctly.
+ *
+ * THE UN-BATCHED TEST IS `case_status = 'Open'`, which is exact rather than
+ * approximate, because In-Progress now fires precisely when the replacement is
+ * batched (DAMAGE.md moved that trigger to batch formation). So an Open case IS
+ * an un-batched replacement, stated in the vocabulary this context owns.
+ *
+ * demand_state was tried first and is useless for this: the child moves from
+ * 'received' to 'pooled-for-fulfillment' the moment its demand fact projects,
+ * which is immediately, so every cancellation was refused.
+ *
+ * ONE NARROW RACE REMAINS, and fulfillment closes it rather than tms pretending
+ * to. Between a batch forming and the dispatch fact arriving here, the case still
+ * reads Open, so a cancel would be accepted. The consumer of the fact this emits
+ * therefore refuses to withdraw a pool row that has already reached BATCHED: the
+ * context that owns the batch is the one that can see it.
+ *
+ * REMARKS ARE MANDATORY, unlike most of this service's free text. A cancellation
+ * erases a complaint and un-damages a device, and the next person to look needs
+ * to know why somebody decided the damage never happened.
+ *
+ * WHAT THIS DOES NOT DO, and cannot: the child's pool row and the parent's
+ * DEVICES both live in fulfillment. They are reverted by the consumer of the
+ * fact this emits, which is the same shape flagging itself uses in reverse.
+ */
+export async function cancelReplacementOps(
+  db: TmsDb,
+  args: {
+    /** The REPLACEMENT being withdrawn, not the parent. */
+    asgnId: string
+    remarks: string
+    clientKey: string
+    actorId: string
+    actorDisplay?: string | null
+    traceId: string
+  },
+): Promise<{ cancelled: boolean; parentAsgnId: string }> {
+  const remarks = args.remarks.trim()
+  if (remarks === '') {
+    throw new OpsClientError('invalid', 'remarks are required to cancel a damage request')
+  }
+  if (remarks.length > MAX_REMARKS_LENGTH) {
+    throw new OpsClientError('invalid', `remarks must be ${String(MAX_REMARKS_LENGTH)} characters or fewer`)
+  }
+  const childUuid = toUuid(args.asgnId)
+  let cancelled = false
+  let parentAsgnId = ''
+
+  await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'tms_write')
+
+    const rows = await tx.$queryRaw<
+      { program_id: string; replacement_of: string | null; case_status: string | null; demand_state: string }[]
+    >`
+      SELECT program_id::text AS program_id, replacement_of::text AS replacement_of,
+             case_status, demand_state
+      FROM assignment WHERE id = ${childUuid}::uuid
+    `
+    if (rows.length !== 1) throw new OpsClientError('not-found', 'no such dispatch')
+    const row = rows[0]!
+    if (row.replacement_of === null) {
+      throw new OpsClientError('invalid', 'only a replacement can be cancelled')
+    }
+    if (row.case_status === 'Cancelled') {
+      // Already withdrawn. Not an error: a retry with a fresh key should not
+      // punish the operator for a double click.
+      parentAsgnId = fromUuid('asgn', row.replacement_of)
+      return
+    }
+    if (row.case_status === 'Closed') {
+      throw new OpsClientError('conflict', 'a closed case cannot be cancelled')
+    }
+    if (row.case_status !== 'Open') {
+      throw new OpsClientError(
+        'conflict',
+        'this replacement has already been batched; let it deliver and flag it again instead',
+      )
+    }
+    parentAsgnId = fromUuid('asgn', row.replacement_of)
+    await enterWriteScope(tx, 'tms_write', row.program_id)
+
+    await onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:cancel-damage'), async () => {
+      // 1. The case becomes Cancelled, with the reason, the actor and the time.
+      const moved = await tx.$queryRaw<{ id: string }[]>`
+        UPDATE assignment
+        SET case_status = 'Cancelled',
+            case_cancel_remarks = ${remarks},
+            cancelled_by = ${args.actorId}::uuid,
+            cancelled_at = now(),
+            -- The child leaves the demand pipeline. 'closed' is the value
+            -- demand_state has always documented for a row that is done and
+            -- going nowhere, and which nothing wrote until now.
+            demand_state = 'closed',
+            updated_at = now()
+        WHERE id = ${childUuid}::uuid AND case_status IS DISTINCT FROM 'Cancelled'
+        RETURNING id::text AS id
+      `
+      cancelled = moved.length > 0
+      if (!cancelled) return
+
+      await logCaseStatusWithinTx(tx, childUuid, row.program_id, {
+        status: 'Cancelled',
+        statusSource: 'ops:cancel-damage',
+        actorId: args.actorId,
+        actorDisplay: args.actorDisplay ?? null,
+        remarks,
+        traceId: args.traceId,
+      })
+
+      // 2. The PARENT goes back to being an ordinary dispatch, so it is
+      // flaggable again (the tip-only rule keys off having a replacement child,
+      // and this one no longer counts once the fact lands and its pool row is
+      // withdrawn). demand_state returns to the state it held BEFORE the flag,
+      // and that state is DERIVED, not assumed (22 Aug 2026, closing the
+      // escalation doc's overwrite bug for the cancel path): the flag's own
+      // overwrite is unconditional, so an ACTIVATED parent that was flagged
+      // and then un-flagged used to land on 'pooled-for-fulfillment' and read
+      // as never activated, contradicting its own activated_at. activated_at
+      // survives the flag untouched, so it is the honest witness of which
+      // state to restore.
+      await tx.$executeRaw`
+        UPDATE assignment
+        SET demand_state = CASE WHEN activated_at IS NOT NULL THEN 'activated' ELSE 'pooled-for-fulfillment' END,
+            updated_at = now()
+        WHERE id = ${toUuid(parentAsgnId)}::uuid AND demand_state = 'replacement-raised'
+      `
+
+      // 3. The fact, so fulfillment can withdraw the child's pool row and take
+      // the parent's devices back off the DAMAGED branch. Neither is reachable
+      // from here (C4), which is exactly why raising damage is a fact too.
+      await enqueue(tx, {
+        aggregateType: 'assignment',
+        aggregateId: args.asgnId,
+        eventType: TMS_REPLACEMENT_CANCELLED_TOPIC,
+        partitionKey: args.asgnId,
+        payload: replacementCancelledFactEnvelope({
+          payload: { asgnId: args.asgnId, replacedAsgnId: parentAsgnId },
+          dedupKey: eventKey(instanceKey(args.clientKey, 'ops:cancel-damage'), 'tms.assignment.replacement_cancelled'),
+          traceId: args.traceId,
+        }),
+      })
+
+      // The ALLOW 6e co-commits in the SAME tx (spec 10c CC-1). IDs and enum
+      // tokens only (S7/S10.5): the withdrawn child and the parent it frees.
+      // The REASON is deliberately not here: operator free text lives on the
+      // domain row and on the case trail, never on an audit record (DD1).
+      const record: AuthzAuditRecord = {
+        principalId: args.actorId,
+        cls: 3,
+        actorChannel: 'human-direct',
+        operation: 'ops:cancel-damage',
+        decision: 'ALLOW',
+        outcome: 'allowed',
+        resourceIds: [args.asgnId, parentAsgnId],
+        traceId: args.traceId,
+      }
+      await enqueue(tx, buildAuthzAuditEvent(record))
+    })
+  })
+  return { cancelled, parentAsgnId }
 }

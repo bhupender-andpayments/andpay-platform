@@ -90,6 +90,41 @@ export function RequestDispatchesDialog({
                   <dt>Pooled:</dt>
                   <dd className="text-foreground">{fmtDateTime(r.createdAt)}</dd>
                 </div>
+                {/* THE SHIP-TO IDENTITY, added 23 Aug 2026. The dialog named the
+                    parcel and its kit but not who or where it was going, which
+                    is what an operator is checking before they hold something.
+                    Bank and branch are here rather than only on the row behind,
+                    because the dialog covers that row while it is open. */}
+                <div className="flex gap-1">
+                  <dt>Merchant:</dt>
+                  <dd className="text-foreground">{r.merchantDisplayName}</dd>
+                </div>
+                <div className="flex gap-1">
+                  <dt>Bank:</dt>
+                  <dd className="text-foreground">
+                    {r.bankDisplayName} ({r.bankReferenceCode})
+                  </dd>
+                </div>
+                <div className="flex gap-1">
+                  <dt>Branch code:</dt>
+                  <dd className="text-foreground">{r.branchCode ?? '-'}</dd>
+                </div>
+                {(r.replacementOfAsgnId ?? null) !== null && (
+                  <div className="flex gap-1">
+                    <dt>Replaces:</dt>
+                    <dd>
+                      <CodeChip>{r.replacementOfAsgnId}</CodeChip>
+                    </dd>
+                  </div>
+                )}
+                {r.batch !== null && (
+                  <div className="flex gap-1">
+                    <dt>Batch:</dt>
+                    <dd>
+                      <CodeChip>{r.batch}</CodeChip>
+                    </dd>
+                  </div>
+                )}
               </dl>
               {/* A held parcel says WHY on its own row: the reason is the whole
                   point of recording a hold, and it belongs next to the release

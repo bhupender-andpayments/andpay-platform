@@ -116,13 +116,26 @@ const OPS_PERMISSIONS = [
   // exception, T6). No list permission is needed (no new list route is added
   // by this task).
   'ops:mark-activated',
-  // D-16 (T4.1b, 13 Aug 2026): the OTHER half of the activation branch. This
-  // records that the activation request has LEFT US for the CWD, which is the
-  // window an operator chases and which nothing could express before. Its own
-  // operation string rather than a flag on mark-activated, for the same reason
-  // close-quarantine has one: "I sent this to the CWD" and "the CWD confirmed
-  // it" are different claims, and the co-committed 6e carries the operation.
-  'ops:request-activation',
+  // ACTIVATION.md (21 Aug 2026): the reverse. An operator who marked the wrong
+  // dispatch activated needs a way back, and activation is a toggle now rather
+  // than a one-way rung, so undoing it is a real action instead of a
+  // contradiction.
+  //
+  // ITS OWN OPERATION STRING, not a flag on mark-activated, for the reason
+  // close-quarantine has one: the co-committed 6e carries the operation, and
+  // "I marked this live" and "I took that back" are different claims about the
+  // same device. Same ops tier, because whoever may activate may correct it.
+  //
+  // This REPLACES 'ops:request-activation', deleted in the same pass: the
+  // two-step REQUEST_SENT_TO_CWD status it guarded is gone, so the permission
+  // guarded a route that no longer exists.
+  'ops:deactivate',
+  // DAMAGE.md (21 Aug 2026): withdraw a damage request raised by mistake. Its
+  // own operation string because it is not the inverse of one permission but a
+  // correction spanning two rows (the case and its parent) and, via a fact, a
+  // device coming back off a terminal branch. Same ops tier: whoever may flag
+  // damage may take that flag back.
+  'ops:cancel-damage',
   // D-17 (T5.1, 13 Aug 2026): the courier emails its morning status file and an
   // operator uploads it. Its own permission rather than reuse of
   // ops:upload-device-inventory, because the two uploads move different things
@@ -137,6 +150,13 @@ const OPS_PERMISSIONS = [
   // from the device page. Same tier as every other ops mutation here; the
   // forward-only guard (unit-lifecycle.ts) is what limits this, not the role.
   'ops:unit-status-correction',
+  // 22 Aug 2026 (STAGES end-to-end): the dispatch_state sibling of the unit
+  // correction above, for when a vendor's return sheet or the send step never
+  // recorded a move that physically happened. Same tier, and the same shape of
+  // limit: the forward-only rank guard in correctDispatchState is what bounds
+  // it (QR_GENERATED > SENT_TO_VENDOR > DISPATCHED_BY_VENDOR, never backwards,
+  // never onto a row the batching step has not QR'd), not the role.
+  'ops:correct-dispatch-state',
   // The bulk sheet-upload sibling of the above: many devices, one file. Same
   // tier, same guard, per-row tolerant like every other upload in this bundle.
   'ops:upload-unit-status',

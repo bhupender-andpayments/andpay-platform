@@ -182,6 +182,92 @@ describe('step-7 merchants route', () => {
     await tmsDb.$executeRaw`DELETE FROM merchant_projection WHERE id = ${uuid}::uuid`
   }
 
+  // THE RULED D104 EXCEPTION, pinned by a test rather than by the absence of
+  // one (docs/plan/CORPUS_SUBMISSION_2026-08-22_MERCHANTS_LIST.md). The BRD's
+  // merchant record IS the bank-file field table, so this list carries the
+  // contact block and the VPA on purpose, and the worklist guard further up
+  // this file is now explicitly scoped to /ops/pool and /ops/batches.
+  //
+  // Asserted POSITIVELY, on the KEYS rather than on values: this merchant has
+  // no request, so every one of them is null. That is the point. The keys must
+  // be present so a change that quietly drops the disclosure fails here, and
+  // the nulls prove a merchant with no bank file behind them is still listed
+  // rather than filtered out by the lateral join.
+  it('carries the BRD block by ruling, null for a merchant with no request', async () => {
+    const m = await seedMerchant('ZZ BRD BLOCK PROBE')
+    try {
+      const res = await request(app.getHttpServer())
+        .get('/ops/merchants')
+        .set('Authorization', `Bearer ${await mint()}`)
+      expect(res.status).toBe(200)
+      const row = res.body.find((r: { mrchId: string }) => r.mrchId === m.wire) as Record<string, unknown> | undefined
+      expect(row, 'the seeded merchant must be listed').toBeDefined()
+      for (const field of [
+        'vpa',
+        'contactName',
+        'mobile',
+        'email',
+        'address',
+        'city',
+        'state',
+        'pincode',
+        'bankDisplayName',
+        'bankReferenceCode',
+        'branchCode',
+        'createdAt',
+      ]) {
+        expect(Object.keys(row ?? {}), `merchants row must carry ${field}`).toContain(field)
+      }
+      expect(row?.['vpa']).toBeNull()
+      expect(row?.['contactName']).toBeNull()
+    } finally {
+      await removeMerchant(m.uuid)
+    }
+  })
+
+  // THE REASON THE EDGE COMPOSES TWO READS AT ALL (22 Aug 2026). TMS gets the
+  // BRD block from the merchant's most recent assignment; a merchant created by
+  // hand has none, and their block lives in identity.merchant, which C4 forbids
+  // TMS from reading. Without the merge this row renders blank on the one page
+  // whose job is finding them. Seeds BOTH sides by hand, the same shape the two
+  // real birth paths leave behind.
+  it('fills the BRD block from identity for a merchant with no request', async () => {
+    const m = await seedMerchant('ZZ MERGE PROBE')
+    try {
+      await identityDb.$executeRaw`
+        INSERT INTO merchant (
+          id, display_name, legal_name, mcc, registered_address, activation_state, status,
+          contact_name, mobile, email, city, state, pincode, created_at, updated_at
+        ) VALUES (
+          ${m.uuid}::uuid, ${'ZZ MERGE PROBE'}, ${'LEGAL ZZ MERGE PROBE'}, ${'5411'},
+          ${'9 HAND CREATED ROAD, Surat, Gujarat, 395003'}, ${'PENDING'}, ${'ACTIVE'},
+          ${'Hand Created Contact'}, ${'9111111111'}, ${'hand@created.example'},
+          ${'Surat'}, ${'Gujarat'}, ${'395003'}, now(), now()
+        )
+      `
+      const res = await request(app.getHttpServer())
+        .get('/ops/merchants')
+        .set('Authorization', `Bearer ${await mint()}`)
+      expect(res.status).toBe(200)
+      const row = res.body.find((r: { mrchId: string }) => r.mrchId === m.wire) as Record<string, unknown> | undefined
+      expect(row, 'the seeded merchant must be listed').toBeDefined()
+      expect(row?.['contactName']).toBe('Hand Created Contact')
+      expect(row?.['mobile']).toBe('9111111111')
+      expect(row?.['email']).toBe('hand@created.example')
+      expect(row?.['city']).toBe('Surat')
+      expect(row?.['pincode']).toBe('395003')
+      expect(row?.['address']).toContain('HAND CREATED ROAD')
+      // The merge fills the CONTACT block only. VPA and the bank live on a
+      // request, and this merchant has none, so they stay honestly null rather
+      // than being invented from the resolver row.
+      expect(row?.['vpa']).toBeNull()
+      expect(row?.['bankDisplayName']).toBeNull()
+    } finally {
+      await identityDb.$executeRaw`DELETE FROM merchant WHERE id = ${m.uuid}::uuid`
+      await removeMerchant(m.uuid)
+    }
+  })
+
   it('GET /ops/merchants -> 200 with the merchant, as a WIRE id', async () => {
     const m = await seedMerchant('ZZ EDGE PROBE')
     try {
@@ -301,7 +387,11 @@ describe('P2-1 object-spine routes: posture', () => {
     expect(res.headers['content-type']).toContain('spreadsheetml')
   })
 
-  it('no recipient PII crosses the wire on the list routes (D104)', async () => {
+  // SCOPED TO THE WORKLIST ROUTES, 22 Aug 2026. This used to read as though it
+  // covered every list; it never looped over more than these two, and now that
+  // difference is deliberate rather than incidental. /ops/merchants is a ruled
+  // exception with its own assertion directly below.
+  it('no recipient PII crosses the wire on the worklist routes (D104)', async () => {
     await seedBatchWithEntry()
     const token = await mint()
     for (const path of ['/ops/pool', '/ops/batches']) {
@@ -312,4 +402,5 @@ describe('P2-1 object-spine routes: posture', () => {
       expect(body, `${path} leaked a raw upi payload`).not.toContain('upi://')
     }
   })
+
 })

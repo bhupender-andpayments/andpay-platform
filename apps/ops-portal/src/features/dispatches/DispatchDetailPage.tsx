@@ -2,16 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import {
   AlertTriangle,
+  Ban,
   Boxes,
   Building2,
   Landmark,
   Package,
   PackageCheck,
   QrCode,
-  Repeat,
   Smartphone,
   Store,
-  Pencil,
+  PauseCircle,
   Truck,
   Undo2,
 } from 'lucide-react'
@@ -23,8 +23,11 @@ import {
   getDamageReasons,
   getDevices,
   getDispatchDetail,
+  getDispatchTrail,
+  getReplacementChain,
   getPoolEntries,
   type BatchEntryRow,
+  type PoolEntryRow,
   type DamageCaseRow,
   type DamageReasonRow,
   type DispatchDetailView,
@@ -41,14 +44,13 @@ import {
   EmptyState,
   Field,
   Input,
-  InfoNote,
-  Select,
   SkeletonRows,
   StatusPill,
   CodeChip,
 } from '../../ui/primitives.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
-import { DispatchStatusEditDialog } from './DispatchStatusEditDialog.js'
+import type { StatusTrailEntry, ChainMemberRow } from '../../api/endpoints.js'
+import { ReplacementChain } from './ReplacementChain.js'
 import {
   COURIER_RUNG,
   DISPATCH_LADDER,
@@ -57,8 +59,10 @@ import {
   rungOf,
 } from './dispatchStatus.js'
 import { BackLink, FactRow, NoValue, SectionHeading } from '../../ui/DetailFacts.js'
+import { SearchSelect } from '../../components/Picker.js'
 import { WatermarkBadge } from '../../components/WatermarkBadge.js'
 import { DispatchGroupBadge } from '../fulfillment/DispatchGroupBadge.js'
+import { PoolEntryActions } from '../fulfillment/PoolEntryActions.js'
 import { fmtDateTime, statusMeta } from '../../ui/format.js'
 
 // ONE DISPATCH, END TO END: what was asked for, what it became, and where it has
@@ -86,13 +90,36 @@ import { fmtDateTime, statusMeta } from '../../ui/format.js'
 // (S22: reported by the courier vs recorded by us), source channels and
 // override reasons lives on the shipment page, one click away through the AWB.
 //
-// ONE STATUS CONTROL, and it is Change status on the rail's own card (19 Aug
-// 2026). It routes each rung to that rung's real owner, because no per-dispatch
-// status route exists: the batch's send-to-vendor action, or the shipment's
-// courier correction. See DispatchStatusEditDialog.tsx for the full mapping.
-// Record courier update was ALSO offered here under decision D11 and has been
-// removed: it wrote the same courier status this page's own control writes, so
-// the page asked the operator to choose between two doors to one room.
+// NO STATUS CONTROL AT ALL, as of 23 Aug 2026 (at the user's direction, after
+// the control had been narrowed twice in one day). THE RAIL ON THIS PAGE IS A
+// READ. Every rung on it is owned elsewhere, and the owner is the only writer:
+//
+//   Received, Pending batch, QR generated   ingest, the pool, and the
+//                                           transaction that forms the batch
+//   Sent to print vendor                    the BATCH's send action, which
+//                                           moves every dispatch in it at once
+//   Dispatched by vendor                    the print vendor's RETURN SHEET,
+//                                           which also supplies the AWB and
+//                                           pairs the device
+//   In transit, Delivered, Failed, Returned the SHIPMENT, on the AWB linked in
+//                                           the Fulfilment card below
+//   damaged                                 not a status: Flag damage opens a
+//                                           case and raises a replacement
+//   held                                    Hold / Release hold, its own card
+//
+// WHY A DISPATCH HAS NO WRITER OF ITS OWN. Courier truth belongs to the parcel,
+// and one parcel can carry several dispatches: recording DELIVERED on a
+// shipment moves every unit on it in the same transaction and announces every
+// linked assignment on one fact, so all of its dispatches settle together. A
+// per-dispatch control would be a SECOND writer for that axis, able to mark one
+// leg delivered while its parcel-mates disagree, which is the desync class this
+// codebase has spent its history removing. The dispatch row keeps its status
+// because a stored value is what makes the list filterable, not because
+// anything here may set it.
+//
+// Record courier update was ALSO offered here under decision D11 and was
+// removed for the same reason, one step earlier: it wrote the shipment's status
+// from a page that cannot show the shipment's trail.
 //
 // WHERE EVERY STAGE'S TIME COMES FROM, and where none exists. The courier legs
 // are genuine append-only events, so they carry real instants. Everything
@@ -121,7 +148,23 @@ export function DispatchDetailPage() {
   // Both live in fulfillment, keyed by this same Dispatch ID, so they are fetched
   // from the reads that already serve them rather than asked of a new route.
   const [entry, setEntry] = useState<BatchEntryRow | null>(null)
+  // THE POOL ROW, kept separately from `entry` above and deliberately not merged
+  // into it (23 Aug 2026). Both describe this dispatch, but they come from
+  // different reads with different shapes: a BATCH entry carries no hold fields
+  // at all, and that absence is correct rather than missing, because a hold only
+  // exists while an entry is still waiting to be batched. Typing one state as
+  // the wider PoolEntryRow would have meant pretending a batch entry could carry
+  // a holdReason. Null once batched, which is exactly when no hold can apply.
+  const [poolEntry, setPoolEntry] = useState<PoolEntryRow | null>(null)
   const [batchFormedAt, setBatchFormedAt] = useState<string | null>(null)
+  // The dispatch's own status trail (pool_status + dispatch_state, interleaved).
+  // Supplies the real instants for the rail's pre-courier rungs, which used to
+  // be inferred from the entry's current state and so could carry no time.
+  const [dispatchTrail, setDispatchTrail] = useState<readonly StatusTrailEntry[]>([])
+  // The replacement chain through this dispatch (DAMAGE.md). Any member returns
+  // the whole chain, so this page renders the same card wherever an operator
+  // entered it from.
+  const [chain, setChain] = useState<readonly ChainMemberRow[]>([])
   const [labelQr, setLabelQr] = useState<string | null>(null)
   const [deviceIdBySerial, setDeviceIdBySerial] = useState<ReadonlyMap<string, string>>(new Map())
 
@@ -149,15 +192,20 @@ export function DispatchDetailPage() {
 
   // This dispatch AS THE ORIGINAL: a live (non-Closed) case naming it is what
   // gates the "Flag damage" button, mirroring the server's own DP-3 rule.
+  // LIVE means neither Closed NOR Cancelled (24 Aug 2026, found live): the
+  // withdraw flow exists precisely so the parent can be flagged again, and
+  // counting a Cancelled case as live kept the Flag damage button hidden on
+  // exactly the dispatch the cancellation had just freed.
   const openCaseAsOriginal = useMemo(
-    () => damageCases.find((c) => c.replacementOf === asgnId && c.caseStatus !== 'Closed') ?? null,
+    () =>
+      damageCases.find(
+        (c) => c.replacementOf === asgnId && c.caseStatus !== 'Closed' && c.caseStatus !== 'Cancelled',
+      ) ?? null,
     [damageCases, asgnId],
   )
-  // This dispatch AS THE REPLACEMENT: a case whose OWN asgnId is this
-  // dispatch. Unlike above, this is checked regardless of case status: being
-  // born from a damage case is a permanent fact about this dispatch, not a
-  // live-state gate.
-  const caseAsReplacement = useMemo(() => damageCases.find((c) => c.asgnId === asgnId) ?? null, [damageCases, asgnId])
+  // The dispatch's own identity AS a replacement now renders from the CHAIN
+  // (the one damage surface since 23 Aug 2026); no separate damage-case lookup
+  // is kept for it.
 
   const load = useCallback(async () => {
     if (asgnId === undefined) return
@@ -178,6 +226,42 @@ export function DispatchDetailPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // The dispatch trail, silent on failure like every other enrichment read on
+  // this page: a trail that does not arrive costs the early rungs their
+  // timestamps, not the page.
+  // A CALLBACK, not a bare effect, because the flag-damage submit must re-run
+  // it: the chain gains its newest member the moment the flag lands (TMS is
+  // the owner and this read is TMS-side), and leaving the fetch mount-only was
+  // the reported defect (23 Aug 2026): flag a damage, and the page showed only
+  // a one-line note until a manual reload conjured the history card.
+  const loadChain = useCallback(async () => {
+    if (asgnId === undefined) return
+    try {
+      const rows = await getReplacementChain(client, asgnId)
+      setChain(Array.isArray(rows) ? rows : [])
+    } catch {
+      setChain([])
+    }
+  }, [client, asgnId])
+  useEffect(() => {
+    void loadChain()
+  }, [loadChain])
+
+  useEffect(() => {
+    if (asgnId === undefined) return
+    let cancelled = false
+    getDispatchTrail(client, asgnId)
+      .then((rows) => {
+        if (!cancelled) setDispatchTrail(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setDispatchTrail([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client, asgnId])
 
   // Enrichment, and deliberately silent on failure: this page must still render
   // everything the analytics read gave it if fulfillment is unreachable. A
@@ -201,7 +285,9 @@ export function DispatchDetailPage() {
       getPoolEntries(client)
         .then((pool) => {
           if (cancelled || !Array.isArray(pool)) return
-          setEntry(pool.find((p) => p.asgnId === asgnId) ?? null)
+          const hit = pool.find((p) => p.asgnId === asgnId) ?? null
+          setEntry(hit)
+          setPoolEntry(hit)
         })
         .catch(() => {})
     }
@@ -237,9 +323,15 @@ export function DispatchDetailPage() {
     return null
   }, [labelQr])
 
+  /** This dispatch is itself a WITHDRAWN replacement: its own case was cancelled. */
+  const cancelledAsReplacement = useMemo(
+    () => damageCases.find((c) => c.asgnId === asgnId && c.caseStatus === 'Cancelled') ?? null,
+    [damageCases, asgnId],
+  )
+
   const rail = useMemo(
-    () => (detail === null ? [] : buildRail(detail, entry, batchFormedAt)),
-    [detail, entry, batchFormedAt],
+    () => (detail === null ? [] : buildRail(detail, entry, batchFormedAt, dispatchTrail, cancelledAsReplacement)),
+    [detail, entry, batchFormedAt, dispatchTrail, cancelledAsReplacement],
   )
 
   // WHERE THIS DISPATCH IS, as one value, taken OUT OF THE RAIL rather than
@@ -273,14 +365,15 @@ export function DispatchDetailPage() {
       FIRST_COURIER_RUNG,
     )
   }, [currentStage, rail])
-  const [changingStatus, setChangingStatus] = useState(false)
+  /** Parked out of batching: the Held card below is what says so, and offers Release. */
+  const isHeld = poolEntry !== null && poolEntry.poolStatus === 'HELD'
 
-  // D-26: damage is flagged HERE, on the dispatch it happened to, now that
-  // the damage-file upload is gone (D-25). The operator names the reason from
-  // the master (code stored, label shown, DP-5), writes the why into remarks,
-  // and, for a COLLATERAL leg only, the counts the replacement should carry
-  // (DP-2). A SOUNDBOX leg carries no count: the quantity is fixed at one
-  // replacement soundbox (D-27).
+  // Damage is flagged HERE, on the dispatch it happened to, now that the
+  // damage-file upload is gone (D-25). The operator names the reason from the
+  // master (code stored, label shown), writes the why into remarks, and, for a
+  // COLLATERAL leg only, the counts the replacement should carry, capped at
+  // what the dispatch actually carried. A SOUNDBOX leg carries no count: the
+  // quantity is fixed at one replacement soundbox.
   const isCollateral = detail?.dispatchGroup === 'COLLATERAL'
   const [flagOpen, setFlagOpen] = useState(false)
   const [reasons, setReasons] = useState<DamageReasonRow[] | null>(null)
@@ -290,6 +383,18 @@ export function DispatchDetailPage() {
   const [stickerCount, setStickerCount] = useState('0')
   const [flagBusy, setFlagBusy] = useState(false)
   const [flagError, setFlagError] = useState<string | null>(null)
+
+  // SEEDED WITH WHAT THE PARCEL CARRIED, which is the common case: the whole
+  // thing arrived damaged, and an operator replacing only part of it edits
+  // down. An EFFECT rather than the dialog's onOpenChange, because that only
+  // fires when the DIALOG asks to change (escape, overlay), never when this
+  // page opens it, and because the batch read that carries the counts can land
+  // after the dialog is already on screen.
+  useEffect(() => {
+    if (!flagOpen || !isCollateral || entry === null) return
+    setStandeeCount(String(entry.standeeCount))
+    setStickerCount(String(entry.stickerCount))
+  }, [flagOpen, isCollateral, entry])
   const [flagged, setFlagged] = useState<{ childAsgnId: string } | null>(null)
 
   // The button-suppressing note used to come ONLY from `flagged`, set purely
@@ -299,6 +404,23 @@ export function DispatchDetailPage() {
   // after a submit (no round trip lag); `openCaseAsOriginal` is what makes the
   // note survive a reload.
   const flaggedDisplay = flagged ?? (openCaseAsOriginal !== null ? { childAsgnId: openCaseAsOriginal.asgnId } : null)
+
+  /**
+   * Damage was raised AGAINST this dispatch, at any point. Its own pill in the
+   * header (24 Aug 2026, at the user's direction), beside the stage rather than
+   * replacing it, the way the device page carries activation as its own pill.
+   *
+   * ANY case status, unlike openCaseAsOriginal above: that one gates the Flag
+   * damage button and so must ask "is a case LIVE", while this is the permanent
+   * fact that this dispatch was damaged once, which closing a case never undoes.
+   */
+  // Cancelled cases DO NOT count (24 Aug 2026): a withdrawn flag means the
+  // damage never happened, so the pill it once justified comes off with it.
+  // Closed cases still count - the damage was real, it just got resolved.
+  const damagedAsOriginal = useMemo(
+    () => damageCases.some((c) => c.replacementOf === asgnId && c.caseStatus !== 'Cancelled'),
+    [damageCases, asgnId],
+  )
 
   // The master is read when the dialog first opens, not on page mount: most
   // visits to this page never flag anything.
@@ -318,9 +440,23 @@ export function DispatchDetailPage() {
   }, [flagOpen, reasons, client])
 
   const trimmedRemarks = remarks.trim()
+  // THE ORIGINAL REQUEST IS THE CEILING (23 Aug 2026, at the user's
+  // direction). A replacement replaces what was sent, so a dispatch that
+  // carried 1 standee and 2 stickers cannot have 99 of either flagged. The
+  // inputs used to allow 0 to 99 regardless, which offered a quantity the
+  // parcel never contained. Falls back to 99 only while the pool entry has not
+  // loaded, so the fields are never accidentally capped at 0.
+  const maxStandee = entry?.standeeCount ?? 99
+  const maxSticker = entry?.stickerCount ?? 99
   const standee = parseCount(standeeCount)
   const sticker = parseCount(stickerCount)
-  const countsValid = !isCollateral || (standee !== null && sticker !== null && standee + sticker >= 1)
+  const countsValid =
+    !isCollateral ||
+    (standee !== null &&
+      sticker !== null &&
+      standee + sticker >= 1 &&
+      standee <= maxStandee &&
+      sticker <= maxSticker)
   const flagValid = reasonCode !== '' && trimmedRemarks !== '' && trimmedRemarks.length <= 500 && countsValid
 
   const runFlagDamage = useCallback(async (): Promise<void> => {
@@ -342,7 +478,7 @@ export function DispatchDetailPage() {
       )
       setFlagged({ childAsgnId: res.childAsgnId })
       setFlagOpen(false)
-      await Promise.all([load(), loadDamageCases()])
+      await Promise.all([load(), loadDamageCases(), loadChain()])
     } catch (e) {
       // DP-3: one live case per dispatch. The 409 is that rule answering, so
       // it gets its own sentence rather than the generic conflict wording.
@@ -384,6 +520,8 @@ export function DispatchDetailPage() {
         </div>
         <div className="ml-auto flex items-center gap-3">
           <StatusPill value={currentStage?.key ?? ''} />
+          {damagedAsOriginal && <StatusPill value="DAMAGED" />}
+          {cancelledAsReplacement !== null && <StatusPill value="Cancelled" />}
           <WatermarkBadge watermark={detail.watermark.asOf} />
         </div>
       </div>
@@ -392,20 +530,14 @@ export function DispatchDetailPage() {
           grammar as the device page. */}
       <Card>
         <CardBody>
-          {/* The status control sits in this card's TOP-RIGHT, on the card that
-              SHOWS the status (19 Aug 2026, at the user's direction). Same
-              placement rule as every other card here, and the same dialog
-              grammar as the device editor. */}
-          <div className="flex items-start justify-between gap-3 pb-5">
-            <div>
-              <h2 className="text-base font-medium">Dispatch lifecycle</h2>
-              <p className="text-[12.5px] text-muted-foreground">
-                The BRD delivery ladder, Received through Delivered. The AWB below opens the full courier trail.
-              </p>
-            </div>
-            <Button variant="secondary" size="sm" onClick={() => setChangingStatus(true)}>
-              <Pencil className="mr-1.5 size-3.5" aria-hidden="true" /> Change status
-            </Button>
+          {/* NO ACTION IN THIS HEADER. The card that shows the status used to
+              carry the control that set it; the rail is a read now (see the
+              file header), so the header is a heading. */}
+          <div className="pb-5">
+            <h2 className="text-base font-medium">Dispatch lifecycle</h2>
+            <p className="text-[12.5px] text-muted-foreground">
+              Where this dispatch has reached. Delivery is the courier's: open the AWB below to record or correct it.
+            </p>
           </div>
           <LifecycleRail stages={rail} />
         </CardBody>
@@ -535,84 +667,93 @@ export function DispatchDetailPage() {
             D-27 or D-28. So this is a UI policy over a route that would still
             accept the write, and making it an invariant is an architecture-chat
             question, not a portal edit. */}
-        {/* This dispatch AS THE REPLACEMENT: the same fact Inventory's amber
-            "Replacement" pill shows for the device that lands here, now shown
-            on the dispatch itself, which had nothing at all before. Shown
-            regardless of case status or courier rung: being a replacement is
-            where this dispatch came from, not where it is now.
+        {/* HELD, stated on the dispatch itself (23 Aug 2026).
+            This page could not say a dispatch was held, could not release one,
+            and its rail dropped the HELD trail event outright, so a parcel
+            deliberately parked by an operator looked entirely ordinary here.
+            The hold lives on fulfillment's pool entry, which this page already
+            fetches for the kit contents; only the reading of it is new.
 
-            AMBER, not the neutral card every other section on this page uses
-            (19 Aug 2026, at the user's direction): a fact this consequential
-            read as background noise next to REQUEST/FULFILMENT, so it gets the
-            same amber tone as Inventory's own "Replacement" pill instead of a
-            new colour invented for this one card. */}
-        {caseAsReplacement !== null && (
+            Amber for the same reason the replacement card below is: a fact this
+            consequential should not read as background next to the neutral
+            sections. PoolEntryActions is the SAME component the Pool page uses,
+            so hold and release behave identically on both screens rather than
+            being implemented twice. */}
+        {isHeld && poolEntry !== null && (
           <Card className="border-amber-300 bg-amber-500/[0.06] dark:border-amber-800 dark:bg-amber-500/10">
             <CardBody>
-              <div className="flex items-center gap-1.5 pb-1">
-                <Repeat className="h-4 w-4 text-amber-700 dark:text-amber-400" aria-hidden="true" />
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
-                  Replacement
-                </p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <PauseCircle className="mt-0.5 size-4 shrink-0 text-amber-700" aria-hidden="true" />
+                  <div className="min-w-0 text-sm">
+                    <p className="font-medium text-foreground">Held out of batching</p>
+                    <p className="text-muted-foreground">
+                      {(poolEntry.holdReason ?? null) === null
+                        ? 'No reason was recorded.'
+                        : `Reason: ${poolEntry.holdReason}`}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      It stays out of every batch until released, so nothing reaches the print vendor meanwhile.
+                    </p>
+                  </div>
+                </div>
+                <PoolEntryActions row={poolEntry} onChanged={load} showReason={false} />
               </div>
-              <p className="text-[13px] text-foreground/90">
-                Non-billable replacement for{' '}
-                <Link className="underline underline-offset-2" to={`/dispatches/${caseAsReplacement.replacementOf}`}>
-                  <CodeChip>{caseAsReplacement.replacementOf}</CodeChip>
-                </Link>
-                , raised over {caseAsReplacement.damageReason ?? 'an unspecified reason'}. Case{' '}
-                {caseAsReplacement.caseStatus ?? 'Open'}.
-              </p>
             </CardBody>
           </Card>
         )}
-
-        {detail.dispatchGroup !== null && currentRung >= FIRST_COURIER_RUNG && (
+        {/* ONLY THE AFFORDANCE (23 Aug 2026, at the user's direction). Once a
+            case exists this card disappears entirely: the Replacement history
+            card below the grid is the ONE place the damage story is told, and
+            the three overlapping boxes this page briefly grew (this note, the
+            amber replacement card, the history) said the same thing thrice. */}
+        {detail.dispatchGroup !== null && currentRung >= FIRST_COURIER_RUNG && flaggedDisplay === null && (
           <Card>
             <CardBody>
               <SectionHeading>Damage</SectionHeading>
-              {flaggedDisplay !== null ? (
-                <InfoNote>
-                  Damage case opened. The replacement dispatch is{' '}
-                  <Link className="underline underline-offset-2" to={`/dispatches/${flaggedDisplay.childAsgnId}`}>
-                    <CodeChip>{flaggedDisplay.childAsgnId}</CodeChip>
-                  </Link>
-                  , non-billable, already in the normal pool.
-                </InfoNote>
-              ) : (
-                <>
-                  <p className="text-sm text-muted-foreground">
-                    Flagging opens a damage case and raises a non-billable replacement into the normal pool. One live
-                    case per dispatch; a new flag is allowed once the case closes.
-                  </p>
-                  <div className="mt-3">
-                    <Button variant="secondary" onClick={() => setFlagOpen(true)}>
-                      <AlertTriangle className="mr-1.5 h-3.5 w-3.5" /> Flag damage
-                    </Button>
-                  </div>
-                </>
-              )}
+              <p className="text-sm text-muted-foreground">
+                Flagging opens a damage case and raises a non-billable replacement into the normal pool. One live
+                case per dispatch; a new flag is allowed once the case closes.
+              </p>
+              <div className="mt-3">
+                <Button variant="secondary" onClick={() => setFlagOpen(true)}>
+                  <AlertTriangle className="mr-1.5 h-3.5 w-3.5" /> Flag damage
+                </Button>
+              </div>
             </CardBody>
           </Card>
         )}
       </div>
 
-      {/* Change status, from the lifecycle card's header. It owns no write of its
-          own: it routes each rung to that rung's real owner (the batch's
-          send-to-vendor action, or the shipment's courier correction), because no
-          per-dispatch status route exists. Its own file says which and why. */}
-      <DispatchStatusEditDialog
-        asgnId={detail.dispatchId}
-        merchantDisplay={detail.merchantDisplay}
-        currentKey={currentStage?.key ?? ''}
-        currentRung={currentRung}
-        batchId={detail.batchId}
-        shptId={detail.shptId}
-        courierStatus={detail.courierStatus}
-        open={changingStatus}
-        onOpenChange={setChangingStatus}
-        onSaved={() => void load()}
-      />
+      {/* THE ONE DAMAGE SURFACE, below Request/Fulfilment (23 Aug 2026, at the
+          user's direction: those two answer the page's first questions, so the
+          history sits under them, not above). Renders as the chain when the
+          chain read has it, and as a one-line pointer in the brief window right
+          after a flag if that read has not landed, so the operator is never
+          shown nothing about a case that exists. */}
+      {asgnId !== undefined && (chain.length > 1 || flaggedDisplay !== null) && (
+        <Card>
+          <CardBody>
+            <div className="pb-4">
+              <h2 className="text-base font-medium">Replacement history</h2>
+              <p className="text-[12.5px] text-muted-foreground">
+                Damage on this merchant's kit, oldest first. A new damage flag goes on the current one.
+              </p>
+            </div>
+            {chain.length > 1 ? (
+              <ReplacementChain chain={chain} currentAsgnId={asgnId} />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Damage case opened. The replacement is{' '}
+                <Link className="underline underline-offset-2" to={`/dispatches/${flaggedDisplay!.childAsgnId}`}>
+                  <CodeChip>{flaggedDisplay!.childAsgnId}</CodeChip>
+                </Link>
+                , non-billable, already in the normal pool.
+              </p>
+            )}
+          </CardBody>
+        </Card>
+      )}
 
       <ConfirmDialog
         open={flagOpen}
@@ -634,23 +775,21 @@ export function DispatchDetailPage() {
         }}
       >
         <div className="space-y-4">
-          <Field label="Reason" htmlFor="flag-damage-reason" hint="From the damage-reason master. The code is what is stored.">
-            <Select
+          {/* THE SHARED PICKER, not a native <select> (23 Aug 2026, at the
+              user's direction): every other dropdown in this portal is
+              SearchSelect, and this one was rendering the browser's own
+              control in the middle of a dialog. */}
+          <Field label="Reason" htmlFor="flag-damage-reason" hint="From the damage-reason master.">
+            <SearchSelect
               id="flag-damage-reason"
-              aria-label="Reason"
+              placeholder="Select a reason"
               value={reasonCode}
-              onChange={(e) => setReasonCode(e.target.value)}
+              onChange={setReasonCode}
               disabled={flagBusy}
-            >
-              <option value="">Select a reason</option>
-              {(reasons ?? [])
+              options={(reasons ?? [])
                 .filter((r) => r.active)
-                .map((r) => (
-                  <option key={r.code} value={r.code}>
-                    {r.label}
-                  </option>
-                ))}
-            </Select>
+                .map((r) => ({ value: r.code, label: r.label }))}
+            />
           </Field>
           <Field
             label="Remarks"
@@ -670,40 +809,54 @@ export function DispatchDetailPage() {
             />
           </Field>
           {isCollateral ? (
-            <>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Standees" htmlFor="flag-damage-standee">
+            <div className="rounded-xl border bg-muted/20 p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                What the replacement carries
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <Field label={`Standees (max ${String(maxStandee)})`} htmlFor="flag-damage-standee">
                   <Input
                     id="flag-damage-standee"
                     aria-label="Standees"
                     type="number"
                     min={0}
-                    max={99}
+                    max={maxStandee}
                     value={standeeCount}
                     onChange={(e) => setStandeeCount(e.target.value)}
-                    disabled={flagBusy}
+                    disabled={flagBusy || maxStandee === 0}
                   />
                 </Field>
-                <Field label="Stickers" htmlFor="flag-damage-sticker">
+                <Field label={`Stickers (max ${String(maxSticker)})`} htmlFor="flag-damage-sticker">
                   <Input
                     id="flag-damage-sticker"
                     aria-label="Stickers"
                     type="number"
                     min={0}
-                    max={99}
+                    max={maxSticker}
                     value={stickerCount}
                     onChange={(e) => setStickerCount(e.target.value)}
-                    disabled={flagBusy}
+                    disabled={flagBusy || maxSticker === 0}
                   />
                 </Field>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Whole numbers 0 to 99, at least one item in total: the collateral the replacement should carry.
+              <p className="mt-3 text-[12px] text-muted-foreground">
+                {entry === null ? (
+                  'Loading what this dispatch was sent with…'
+                ) : (
+                  <>
+                    This dispatch carried{' '}
+                    <span className="font-semibold text-foreground">
+                      {maxStandee} standee{maxStandee === 1 ? '' : 's'} and {maxSticker} sticker
+                      {maxSticker === 1 ? '' : 's'}
+                    </span>
+                    . Replace all of it, or edit down to the damaged items. At least one item is required.
+                  </>
+                )}
               </p>
-            </>
+            </div>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              One replacement soundbox is raised, fixed per D-27. There is no quantity to enter.
+            <p className="text-[12.5px] text-muted-foreground">
+              One replacement soundbox is raised. There is no quantity to enter.
             </p>
           )}
         </div>
@@ -712,7 +865,7 @@ export function DispatchDetailPage() {
   )
 }
 
-/** An int 0 to 99 or null: the D-27 count grammar, checked before submit. */
+/** An int 0 to 99 or null. The per-field ceiling is the original request. */
 function parseCount(raw: string): number | null {
   return /^\d{1,2}$/.test(raw.trim()) ? Number(raw.trim()) : null
 }
@@ -745,7 +898,14 @@ function parseCount(raw: string): number | null {
  * OUT_FOR_DELIVERY, so recording either ordinary status drew the parcel as a red
  * failure with a warning triangle.
  */
-function buildRail(detail: DispatchDetailView, entry: BatchEntryRow | null, batchFormedAt: string | null): RailStage[] {
+function buildRail(
+  detail: DispatchDetailView,
+  entry: BatchEntryRow | null,
+  batchFormedAt: string | null,
+  dispatchTrail: readonly StatusTrailEntry[],
+  /** This dispatch IS a replacement and its case was withdrawn. */
+  cancelledCase: DamageCaseRow | null,
+): RailStage[] {
   const batched = detail.batchId !== null
   const dispatchState = entry?.dispatchState ?? null
   const trail = detail.deliveryTrail
@@ -762,6 +922,41 @@ function buildRail(detail: DispatchDetailView, entry: BatchEntryRow | null, batc
   const rungTime = (key: string): string | null =>
     trail.reduce<string | null>((latest, e) => (e.status === key ? e.courierTimestamp : latest), null)
 
+  // THE PRE-COURIER RUNGS NOW HAVE REAL INSTANTS (STATUS_STAGES.md, 21 Aug
+  // 2026). Until pool_entry_status_event existed, the first four rungs were
+  // INFERRED from the entry's current dispatch_state, which could say where the
+  // dispatch had got to but never when it got there, so they rendered bare. The
+  // dispatch trail records every one of those transitions, so each rung that
+  // actually happened now carries its own time.
+  //
+  // The trail's own vocabulary is fulfillment's two axes; this maps them onto
+  // the BRD ladder's words. POOLED is the pool wait, which the ladder calls
+  // Pending batch; BATCHED shares that rung because forming the batch is what
+  // ends the wait, and QR generation is the next rung along.
+  //
+  // HELD SHARES THE PENDING_BATCH RUNG (23 Aug 2026) rather than being dropped,
+  // which is what happened before: a held entry's trail event matched no rung,
+  // so the rail silently ignored it and the page gave no sign a hold had ever
+  // happened. A hold is not a rung of its own and must not become one, because
+  // the ladder is a POSITION and a hold does not move the parcel; it is the
+  // state of being parked AT the pending-batch position. The banner above the
+  // rail is what says it is held right now.
+  const TRAIL_TO_RUNG: Record<string, string> = {
+    POOLED: 'PENDING_BATCH',
+    HELD: 'PENDING_BATCH',
+    BATCHED: 'PENDING_BATCH',
+    QR_GENERATED: 'QR_GENERATED',
+    SENT_TO_VENDOR: 'SENT_TO_VENDOR',
+    DISPATCHED_BY_VENDOR: 'DISPATCHED_BY_VENDOR',
+  }
+  /** First time this rung was entered, per the dispatch trail. */
+  const dispatchRungTime = (key: string): string | null => {
+    for (const e of dispatchTrail) {
+      if (TRAIL_TO_RUNG[e.status] === key) return e.occurredAt
+    }
+    return null
+  }
+
   const stages: RailStage[] = DISPATCH_LADDER.map((rung, i) => ({
     key: rung.key,
     label: rung.label,
@@ -770,11 +965,15 @@ function buildRail(detail: DispatchDetailView, entry: BatchEntryRow | null, batc
     // 'current': the red stop is where the parcel actually is.
     state: i < currentIdx ? 'reached' : i === currentIdx ? (offLadder ? 'reached' : 'current') : 'future',
     at:
-      rung.key === 'PENDING_BATCH' && batched
-        ? batchFormedAt
-        : i <= currentIdx
-          ? rungTime(rung.key)
-          : null,
+      i > currentIdx
+        ? null
+        : // Prefer what a trail RECORDED over anything inferred, courier trail
+          // for its own rungs and dispatch trail for the earlier ones. The
+          // batch-formed fallback stays for rows batched before the trail
+          // existed, whose history begins at their backfilled rung.
+          (rungTime(rung.key) ??
+          dispatchRungTime(rung.key) ??
+          (rung.key === 'PENDING_BATCH' && batched ? batchFormedAt : null)),
   }))
 
   if (offLadder) {
@@ -784,6 +983,29 @@ function buildRail(detail: DispatchDetailView, entry: BatchEntryRow | null, batc
       icon: last.status === 'RETURNED' ? Undo2 : AlertTriangle,
       state: 'current',
       at: last.courierTimestamp,
+      terminal: true,
+    })
+  }
+
+  // CANCELLED IS A TERMINAL STOP, appended like the courier's (24 Aug 2026, at
+  // the user's report). A withdrawn replacement goes nowhere: it left the pool
+  // CANCELLED, its demand state is closed, and no later fact will move it. The
+  // rail used to end on whatever rung it had reached (usually Pending batch),
+  // which read as a dispatch still waiting to be batched.
+  //
+  // APPENDED, not substituted, for the same reason the courier stops are: the
+  // rungs it DID pass are true and their instants are real history. The stop
+  // says where it stopped and why.
+  if (cancelledCase !== null) {
+    for (const st of stages) {
+      if (st.state === 'current') st.state = 'reached'
+    }
+    stages.push({
+      key: 'CANCELLED',
+      label: 'Cancelled',
+      icon: Ban,
+      state: 'current',
+      at: cancelledCase.updatedAt,
       terminal: true,
     })
   }

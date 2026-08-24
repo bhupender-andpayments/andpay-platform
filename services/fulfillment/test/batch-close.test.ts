@@ -130,38 +130,42 @@ describe('closeBatch: manual, and gated on every dispatch having settled', () =>
     expect(await statusOf(fx.btchUuid)).toBe('CLOSED')
   })
 
-  // REVERSED 19 Aug 2026, at the product owner's direction. This used to assert
-  // that a DAMAGED device settles its dispatch, on the reasoning that a
-  // replacement has been raised so the outcome is known. Two things were wrong
-  // with it.
+  // REVERSED AGAIN, 22 Aug 2026, at the product owner's direction, and this
+  // assertion has now pointed both ways so the history matters. The original
+  // (pre-19 Aug) version settled on DAMAGED; the 19 Aug ruling reversed that
+  // because the number could not be located on the page and damage was held
+  // not to be a travel outcome; the 22 Aug ruling reverses it back:
   //
-  // It read the wrong axis. `unit.status` is the DEVICE's; the whole breakdown is
-  // about DISPATCHES, and the batch page's State column renders
-  // pending_pool_entry.dispatch_state, which has no damaged value. So the close
-  // dialog reported "1 damaged" over a table of identical Dispatched by vendor
-  // rows, and the operator could not find the row the number referred to.
+  //   "either all dispatches inside a batch are delivered, returned or damaged
+  //    ... if all are into, then simply it will be close."
   //
-  // And damage is not a travel outcome. The parcel is still with the courier and
-  // will deliver or come back RTO; that event settles the row. A parcel that
-  // genuinely stops moving without one is what the shipment override is for.
-  it('does NOT settle a dispatch just because its device was flagged damaged', async () => {
+  // What changed since 19 Aug is that BOTH of that ruling's objections fell.
+  // settlement.perDispatch now marks the exact row as DAMAGED, so the count is
+  // locatable; and the merchant-keeps-the-broken-device case proved that a
+  // damaged parcel's courier event can simply never come, which left a batch
+  // unclosable forever. No replacement condition: damaged is damaged.
+  it('settles a dispatch whose device was flagged damaged, even mid-flight', async () => {
     const fx = await seedSentBatch(1)
     await seedShippedDevice(fx, fx.asgnWires[0]!, 'IN_TRANSIT', 'DAMAGED')
-    await expect(
-      closeBatch(db, {
-        btchId: fx.btchWire,
-        clientKey: crypto.randomUUID(),
-        actorId: ACTOR,
-        traceId: 'trace-close-2',
-      }),
-    ).rejects.toThrow(/still in flight/i)
-    expect(await statusOf(fx.btchUuid)).toBe('SENT_TO_PRINT_VENDOR')
+    const res = await closeBatch(db, {
+      btchId: fx.btchWire,
+      clientKey: crypto.randomUUID(),
+      actorId: ACTOR,
+      traceId: 'trace-close-2',
+    })
+    expect(res.closed).toBe(true)
+    expect(res.settlement).toMatchObject({ total: 1, damaged: 1, pending: 0, settled: true })
+    // And the verdict is locatable: the row itself is marked, which is what
+    // was missing when the 19 Aug ruling cut the damaged bucket.
+    expect(res.settlement.perDispatch[fx.asgnWires[0]!]).toBe('DAMAGED')
+    expect(await statusOf(fx.btchUuid)).toBe('CLOSED')
   })
 
-  it('settles that same dispatch once its parcel reaches a courier terminal state', async () => {
+  it('labels a damaged dispatch DAMAGED even when its parcel also returned', async () => {
     const fx = await seedSentBatch(1)
-    // Damaged device, and the parcel came back: RETURNED is the travel outcome,
-    // and it is what the count reports.
+    // Damaged device AND the parcel came back. Both settle; the DAMAGED mark
+    // wins the label because it is the one an operator has to act on (a
+    // replacement exists), while RETURNED merely ends the travel.
     await seedShippedDevice(fx, fx.asgnWires[0]!, 'RETURNED', 'DAMAGED')
     const res = await closeBatch(db, {
       btchId: fx.btchWire,
@@ -169,7 +173,7 @@ describe('closeBatch: manual, and gated on every dispatch having settled', () =>
       actorId: ACTOR,
       traceId: 'trace-close-2b',
     })
-    expect(res.settlement).toMatchObject({ total: 1, returned: 1, pending: 0, settled: true })
+    expect(res.settlement).toMatchObject({ total: 1, damaged: 1, returned: 0, pending: 0, settled: true })
     expect(await statusOf(fx.btchUuid)).toBe('CLOSED')
   })
 

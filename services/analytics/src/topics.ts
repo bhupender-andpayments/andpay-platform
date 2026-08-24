@@ -11,7 +11,14 @@ export const ANALYTICS_TOPICS: string[] = [
   'fct.tms.assignment.v1',
   'fct.tms.assignment.ship_to_amended.v1',
   'fct.tms.assignment.replacement_raised.v1',
+  // The withdrawal of the above (24 Aug 2026). Absent since the topic was born
+  // on 21 Aug, and the absence was the reported defect: a cancelled damage
+  // case left the PARENT's dispatch_row reading replacement_status = RAISED
+  // forever, so the list badged it Damaged, the detail page pinned a DAMAGED
+  // pill on it, and nothing an operator did could clear either.
+  'fct.tms.assignment.replacement_cancelled.v1',
   'fct.tms.assignment.activated.v1',
+  'fct.tms.assignment.deactivated.v1',
   'fct.fulfillment.unit.v1',
   'fct.fulfillment.unit.print_for.v1',
   'fct.fulfillment.batch.v1',

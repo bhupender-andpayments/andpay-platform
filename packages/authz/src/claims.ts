@@ -4,6 +4,18 @@
 // principal arrived. Class 6 is produced by local resolution of api_/apsk_ and
 // is never minted as a JWT (5a, 5f). IDs and enums only, never PII or a secret
 // (S10.5, S7).
+//
+// ONE NARROW EXCEPTION, 21 Aug 2026: `hdl`, the operator's own login handle.
+// Ruled by the product owner. It is not a secret and not third-party PII: it is
+// the operator's self-chosen sign-in name, already shown to that same operator
+// in the portal shell, and it names WHO PERFORMED an action rather than
+// describing any customer. It rides the token because the alternative is worse
+// on every axis: every status-log row an operator writes needs an attributable
+// name, and the choices were a cross-context read into auth on every display
+// (C4 forbids it), a principal-directory projection into five schemas (auth is
+// deliberately outside the relay, so that reopens a ratified decision), or this
+// one claim the edge already holds at write time. Class 3 and class 7 humans
+// only; never class 6.
 
 // Principal taxonomy (16.1). Classes 1, 2, 4, 5 are reserved for later specs;
 // this slice exercises class 3 (internal humans), class 6 (vendor systems),
@@ -60,6 +72,11 @@ export interface LeanClaim {
   scope: Scope
   psr: string
   epoch: number
+  // The operator's login handle, for DISPLAY ATTRIBUTION only (see the file
+  // header). Optional because class 6 has no human behind it, and because a
+  // token minted before this claim existed stays valid until it expires.
+  // NEVER an authorization input: nothing may gate on hdl, only sub.
+  hdl?: string
   // Assurance claims (6a/6b) ride on human principals only. Class 6 has no
   // acr/amr/auth_time (5f: assurance is the credential, no MFA, no session).
   acr?: Acr

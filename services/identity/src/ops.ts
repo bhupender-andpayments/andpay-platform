@@ -742,3 +742,80 @@ export async function listBankMasters(db: IdentityDb): Promise<BankMasterRow[]> 
   `
   return rows.map(toBankMasterRow)
 }
+
+/**
+ * The BRD 5.1b contact and address block for a set of merchants, keyed by wire
+ * mrch_ id. Added 22 Aug 2026 for the merchants list.
+ *
+ * WHY THIS EXISTS AT ALL. A merchant is born two ways. The bank file mints one
+ * through projectRowFact, which writes display_name/legal_name/mcc/
+ * registered_address and nothing else, so the contact block below stays null;
+ * the operator's own Add merchant writes the whole block. The merchants list is
+ * served from TMS, which C4 forbids from reading identity.merchant, so a
+ * hand-created merchant would show up blank on the one page that exists to find
+ * them. The ops edge composes this over the TMS read to close that, exactly as
+ * reports.controller.ts composes hold state and replacement marks over an
+ * analytics report. Neither service reads the other's schema; the edge holds
+ * both clients and does the join in memory.
+ *
+ * Like listBankMasters above this does NOT SET LOCAL ROLE, and for the same
+ * recorded reason: identity has no ops-read role (identity_read is created but
+ * deliberately ungranted, spec 10d) and there is no per-role data scoping to
+ * enforce here. The ops HTTP edge gates it as an authenticated class-3 read.
+ *
+ * An empty input returns an empty map without touching the database.
+ */
+export interface MerchantContactRow {
+  contactName: string | null
+  mobile: string | null
+  email: string | null
+  registeredAddress: string
+  address2: string | null
+  address3: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+}
+
+interface MerchantContactDbRow {
+  id: string
+  contact_name: string | null
+  mobile: string | null
+  email: string | null
+  registered_address: string
+  address2: string | null
+  address3: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+}
+
+export async function readMerchantContacts(
+  db: IdentityDb,
+  mrchIds: readonly string[],
+): Promise<Map<string, MerchantContactRow>> {
+  if (mrchIds.length === 0) return new Map()
+  const uuids = mrchIds.map((id) => toUuid(id))
+  const rows = await db.$queryRaw<MerchantContactDbRow[]>`
+    SELECT id::text AS id, contact_name, mobile, email, registered_address,
+           address2, address3, city, state, pincode
+    FROM merchant
+    WHERE id = ANY(${uuids}::uuid[])
+  `
+  return new Map(
+    rows.map((r) => [
+      fromUuid('mrch', r.id),
+      {
+        contactName: r.contact_name,
+        mobile: r.mobile,
+        email: r.email,
+        registeredAddress: r.registered_address,
+        address2: r.address2,
+        address3: r.address3,
+        city: r.city,
+        state: r.state,
+        pincode: r.pincode,
+      },
+    ]),
+  )
+}

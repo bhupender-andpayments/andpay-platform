@@ -13,7 +13,6 @@ export function pillClass(variant: PillVariant): string {
 const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   // device lifecycle (unit-lifecycle.ts spine + terminals)
   IN_STOCK: { variant: 'positive', label: 'In stock' },
-  ALLOCATED: { variant: 'pending', label: 'Allocated' },
   PRINTED: { variant: 'info', label: 'At print vendor' },
   DAMAGED: { variant: 'negative', label: 'Damaged' },
   // batch lifecycle (BATCH_STATUSES in services/fulfillment/src/batch-status.ts).
@@ -27,6 +26,12 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   // pipeline
   RECEIVED: { variant: 'neutral', label: 'Received' },
   POOLED: { variant: 'neutral', label: 'Pooled' },
+  // HELD is pending, not negative: an operator deliberately parked this parcel
+  // and will release it. It is a pool_status value, NOT a pipeline stage, and
+  // it deliberately never enters the pipeline ladder, because that ladder only
+  // moves forward and a hold is reversible. The Dispatches page composes the
+  // two axes in one cell; see its Stage column.
+  HELD: { variant: 'pending', label: 'Held' },
   // PENDING_BATCH is a rung of the BRD 6.2 ladder that no column stores: it is
   // the position "exists, not batched yet", which the dispatch page derives.
   // It is here because that page's header pill renders the SAME value its rail
@@ -48,6 +53,9 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   // colours the Shipments table's Status cell too, consistently.
   QR_GENERATED: { variant: 'pending', label: 'QR generated' },
   DISPATCHED_BY_VENDOR: { variant: 'info', label: 'Dispatched by vendor' },
+  // STATUS_STAGES.md: DERIVED, never stored. "Delivered and activated", the
+  // one answer an operator wants about a device that is finished.
+  COMPLETED: { variant: 'positive', label: 'Completed' },
   DELIVERED: { variant: 'positive', label: 'Delivered' },
   ACTIVATED: { variant: 'positive', label: 'Activated' },
   // NOT_ACTIVATED IS NOT A BACKEND VALUE. Activation is a timestamp axis, not an
@@ -70,7 +78,6 @@ const STATUS_MAP: Record<string, { variant: PillVariant; label: string }> = {
   RETURNED: { variant: 'negative', label: 'RTO' },
   FAILED: { variant: 'negative', label: 'Failed' },
   // D-16 activation branch: the request half. ACTIVATED is already above.
-  REQUEST_SENT_TO_CWD: { variant: 'pending', label: 'Request sent to CWD' },
   // activation
   ACTIVE: { variant: 'positive', label: 'Active' },
   PENDING: { variant: 'pending', label: 'Pending' },

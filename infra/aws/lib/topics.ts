@@ -174,6 +174,35 @@ export const FACT_SCHEMAS: FactSchema[] = [
       required: ['asgnId', 'activatedAt'],
     },
   },
+  // The two WITHDRAWAL facts, mirrored 23 Aug 2026 from TMS_FACT_SCHEMAS. Both
+  // have been produced and consumed since 21 Aug and neither was ever declared
+  // here or added to TOPIC_NAMES below, so on MSK the topics would not exist at
+  // all and the relay's publish would fail against a cluster that forbids
+  // auto-creation. Local dev never saw it: packages/bus/src/topics.ts has had
+  // both since the day they were written, and Redpanda is provisioned from that.
+  {
+    name: 'fct.tms.assignment.deactivated.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        asgnId: { type: 'string' },
+      },
+      required: ['asgnId'],
+    },
+  },
+  {
+    name: 'fct.tms.assignment.replacement_cancelled.v1',
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        asgnId: { type: 'string' },
+        replacedAsgnId: { type: 'string' },
+      },
+      required: ['asgnId', 'replacedAsgnId'],
+    },
+  },
   {
     name: 'fct.fulfillment.unit.v1',
     schema: {
@@ -309,7 +338,9 @@ export const TOPIC_NAMES = [
   'fct.tms.bank_file_row.v1',
   'fct.tms.assignment.ship_to_amended.v1',
   'fct.tms.assignment.replacement_raised.v1',
+  'fct.tms.assignment.replacement_cancelled.v1',
   'fct.tms.assignment.activated.v1',
+  'fct.tms.assignment.deactivated.v1',
   'fct.fulfillment.batch.v1',
   'fct.fulfillment.unit.v1',
   'fct.fulfillment.dispatch.v1',

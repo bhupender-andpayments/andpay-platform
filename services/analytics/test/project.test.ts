@@ -221,6 +221,48 @@ function collateralShipmentEnvelope(o: {
   })
 }
 
+/**
+ * The two ACTIVATION-AXIS envelopes. They exist here because the defect below
+ * was invisible to applyFact-only tests: applyFact has handled both topics
+ * since they were written, and the break was in which topics the two SELECTORS
+ * (affectedAsgns online, foldAsgn on rebuild) bother to look at.
+ */
+function activatedEnvelope(o: { asgnId: string; activatedAt: string; ts: string }): Envelope {
+  return newEnvelope({
+    type: 'fct.tms.assignment.activated.v1',
+    version: 1,
+    subject: o.asgnId,
+    dedupKey: `act|${o.asgnId}`,
+    traceId: 'trace-proj',
+    timestamp: o.ts,
+    payload: { asgnId: o.asgnId, activatedAt: o.activatedAt },
+  })
+}
+
+function deactivatedEnvelope(o: { asgnId: string; ts: string }): Envelope {
+  return newEnvelope({
+    type: 'fct.tms.assignment.deactivated.v1',
+    version: 1,
+    subject: o.asgnId,
+    dedupKey: `deact|${o.asgnId}`,
+    traceId: 'trace-proj',
+    timestamp: o.ts,
+    payload: { asgnId: o.asgnId },
+  })
+}
+
+function replacementCancelledEnvelope(o: { asgnId: string; replacedAsgnId: string; ts: string }): Envelope {
+  return newEnvelope({
+    type: 'fct.tms.assignment.replacement_cancelled.v1',
+    version: 1,
+    subject: o.asgnId,
+    dedupKey: `cancel|${o.asgnId}`,
+    traceId: 'trace-proj',
+    timestamp: o.ts,
+    payload: { asgnId: o.asgnId, replacedAsgnId: o.replacedAsgnId },
+  })
+}
+
 async function snapshotRows(): Promise<Record<string, unknown>[]> {
   return db.$queryRawUnsafe<Record<string, unknown>[]>(`
     SELECT dispatch_id, program_id::text AS program_id, bank_code, bank_display, branch,
@@ -625,5 +667,99 @@ describe('analytics modeled projection: fact-only dispatch_row assembly + determ
     expect(delivered.deliveryDate).toEqual(new Date('2026-07-06T00:00:00Z'))
     // Both axes survive, which is the whole point.
     expect(delivered.activationStatus).toBe('ACTIVATED')
+  })
+
+  // THE REPORTED DEFECT (23 Aug 2026). An operator deactivated a soundbox from
+  // its device page. Fulfillment cleared unit.activated_at (it routes the fact),
+  // TMS cleared assignment.activated_at (it wrote it), and analytics went on
+  // reporting activation_status = 'ACTIVATED' forever. On screen: the Activation
+  // tab counted 3 pending soundboxes for a batch whose own device page listed 4
+  // devices, none of them activated. The batch had 4 soundbox legs and analytics
+  // still believed one of them was live.
+  //
+  // The fold was never wrong. applyFact's T.DEACTIVATED case has cleared the
+  // three columns since the day the topic was added. Neither SELECTOR named the
+  // topic: affectedAsgns returned [] so the online path re-folded nothing, and
+  // foldAsgn's topic filter omitted it so a rebuild would have dropped it too.
+  // That is the online/rebuild divergence D98 forbids, broken in both directions
+  // at once, which is why it could not show up as a rebuild mismatch either.
+  it('a DEACTIVATION clears the activation axis, online and on rebuild alike', async () => {
+    const asgn = newId('asgn')
+    const prog = newId('prog') as ProgId
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgn, progId: prog, ts: '2026-07-01T00:00:00Z' }))
+    await ingestEnvelope(db, activatedEnvelope({ asgnId: asgn, activatedAt: '2026-07-05T00:00:00Z', ts: '2026-07-05T00:00:00Z' }))
+
+    const live = await snapshotRows()
+    expect(live[0]!.activation_status).toBe('ACTIVATED')
+
+    await ingestEnvelope(db, deactivatedEnvelope({ asgnId: asgn, ts: '2026-07-06T00:00:00Z' }))
+
+    // ONLINE. This is the assertion that failed: it read 'ACTIVATED'.
+    const online = await snapshotRows()
+    expect(online[0]!.activation_status).toBeNull()
+    expect(online[0]!.sim_activation_status).toBeNull()
+    expect(online[0]!.activation_date).toBeNull()
+
+    // REBUILD, from the same raw rows: byte-identical, so the deactivation is in
+    // foldAsgn's topic filter as well as in affectedAsgns. One without the other
+    // is the divergence, not a fix.
+    await rebuildDispatchRows(db)
+    expect(await snapshotRows()).toEqual(online)
+  })
+
+  // The other order, because a withdrawal that arrives before the activation it
+  // withdraws must not leave the row live: the fold is by occurred_at, so the
+  // activation is applied first regardless of arrival.
+  // THE CANCELLED-FLAG DESYNC (24 Aug 2026). The withdraw fact existed and was
+  // consumed by fulfillment, but analytics neither subscribed to it nor folded
+  // it, so a cancelled damage case left the PARENT reading replacement_status
+  // = RAISED forever: badged Damaged on the list, DAMAGED pill on its page,
+  // and no way for an operator to clear either. Same class as the deactivation
+  // gap, same fix shape, same both-selectors test.
+  it('a REPLACEMENT CANCELLATION clears the parent damage marks, online and on rebuild alike', async () => {
+    const parent = newId('asgn')
+    const child = newId('asgn')
+    const prog = newId('prog') as ProgId
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: parent, progId: prog, ts: '2026-07-01T00:00:00Z' }))
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: child, progId: prog, ts: '2026-07-02T00:00:00Z' }))
+    await ingestEnvelope(
+      db,
+      replacementEnvelope({ asgnId: child, replacedAsgnId: parent, damageReason: 'battery_issue', ts: '2026-07-03T00:00:00Z' }),
+    )
+
+    const raised = await snapshotRows()
+    const parentRow = raised.find((r) => r.dispatch_id === parent)!
+    expect(parentRow.replacement_status).toBe('RAISED')
+
+    await ingestEnvelope(db, replacementCancelledEnvelope({ asgnId: child, replacedAsgnId: parent, ts: '2026-07-04T00:00:00Z' }))
+
+    const online = await snapshotRows()
+    const p2 = online.find((r) => r.dispatch_id === parent)!
+    // The parent is an ordinary dispatch again: the marks are NULL, not some
+    // CANCELLED token, because a withdrawn flag means the damage never happened.
+    expect(p2.replacement_status).toBeNull()
+    expect(p2.replacement_dispatch_id).toBeNull()
+    // The child keeps its identity: born from a flag is permanent history.
+    const c2 = online.find((r) => r.dispatch_id === child)!
+    expect(c2.is_replacement).toBe(true)
+    expect(c2.original_dispatch_id).toBe(parent)
+
+    // REBUILD parity: the cancellation is in foldAsgn's selector as well as in
+    // affectedAsgns. One without the other is the D98 divergence, not a fix.
+    await rebuildDispatchRows(db)
+    expect(await snapshotRows()).toEqual(online)
+  })
+
+  it('converges no matter which of the two arrives first', async () => {
+    const asgn = newId('asgn')
+    const prog = newId('prog') as ProgId
+    await ingestEnvelope(db, assignmentEnvelope({ asgnId: asgn, progId: prog, ts: '2026-07-01T00:00:00Z' }))
+    await ingestEnvelope(db, deactivatedEnvelope({ asgnId: asgn, ts: '2026-07-06T00:00:00Z' }))
+    await ingestEnvelope(db, activatedEnvelope({ asgnId: asgn, activatedAt: '2026-07-05T00:00:00Z', ts: '2026-07-05T00:00:00Z' }))
+
+    const online = await snapshotRows()
+    expect(online[0]!.activation_status).toBeNull()
+    await rebuildDispatchRows(db)
+    expect(await snapshotRows()).toEqual(online)
   })
 })

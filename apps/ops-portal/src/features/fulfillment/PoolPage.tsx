@@ -5,16 +5,19 @@ import { fmtWait, resolveGlobalRule } from './BatchingRules.js'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
 import { BatchablePools } from './BatchablePools.js'
+import { POOL_QUERY_STATUSES } from './poolStatuses.js'
 import { BatchPreviewCard } from './BatchPreviewCard.js'
 import { RequestDispatchesDialog } from './RequestDispatchesDialog.js'
 import { PoolEntryActions } from './PoolEntryActions.js'
+import { DispatchGroupBadge } from './DispatchGroupBadge.js'
 import {
   getBatchingConfig,
+  getDevices,
   getPoolEntries,
   type BatchingConfigRow,
   type PoolEntryRow,
 } from '../../api/endpoints.js'
-import { PageHeader, Card, CardHeader, Button, ErrorNote, Tabs } from '../../ui/primitives.js'
+import { PageHeader, Card, CardHeader, Button, ErrorNote, Tabs, CodeChip } from '../../ui/primitives.js'
 import { fmtDateTime, fmtNumber } from '../../ui/format.js'
 
 // THE POOL, its own section as of 18 Aug 2026 (decision D14).
@@ -39,6 +42,8 @@ interface RequestRow {
   /** The request key, shared by both dispatch groups of one bank row. */
   key: string
   merchant: string
+  /** BRD 5.1b: the registered name, which can differ from the trade name. */
+  merchantLegalName: string
   bankDisplayName: string
   bankReferenceCode: string
   branchCode: string | null
@@ -47,6 +52,8 @@ interface RequestRow {
   stickerCount: number
   dispatches: number
   heldCount: number
+  /** Every leg replaces something: this whole request is a replacement round. */
+  isReplacement: boolean
   /** Earliest of its dispatches: how long the REQUEST has been waiting. */
   pooledAt: string
   rows: PoolEntryRow[]
@@ -72,6 +79,7 @@ export function groupByRequest(entries: readonly PoolEntryRow[]): RequestRow[] {
     return {
       key,
       merchant: first.merchantDisplayName,
+      merchantLegalName: first.merchantLegalName,
       bankDisplayName: first.bankDisplayName,
       bankReferenceCode: first.bankReferenceCode,
       branchCode: first.branchCode,
@@ -83,6 +91,11 @@ export function groupByRequest(entries: readonly PoolEntryRow[]): RequestRow[] {
       stickerCount: rows.reduce((n, r) => n + r.stickerCount, 0),
       dispatches: rows.length,
       heldCount: rows.filter((r) => r.poolStatus === 'HELD').length,
+      // A REPLACEMENT REQUEST reads as one (DAMAGE.md). Every leg of a
+      // replacement round is a replacement, so `every` rather than `some`: a
+      // mixed set would mean two unrelated requests share a key, which the
+      // derived-key fix exists to prevent.
+      isReplacement: rows.length > 0 && rows.every((r) => (r.replacementOfAsgnId ?? null) !== null),
       pooledAt: rows.reduce((min, r) => (r.createdAt < min ? r.createdAt : min), first.createdAt),
       rows,
     }
@@ -97,11 +110,33 @@ function kitLabel(r: RequestRow): string {
   return parts.length === 0 ? 'nothing' : parts.join(', ')
 }
 
+/**
+ * The same label for ONE parcel rather than a whole request.
+ *
+ * The Held view is per dispatch, so it cannot reuse kitLabel above: that one
+ * takes the folded request, whose counts are summed across both parcels. Saying
+ * a held soundbox leg contains the collateral's standees would be wrong.
+ */
+function entryKitLabel(r: PoolEntryRow): string {
+  const parts: string[] = []
+  if (r.soundbox) parts.push('Soundbox')
+  if (r.standeeCount > 0) parts.push(`${String(r.standeeCount)} standee`)
+  if (r.stickerCount > 0) parts.push(`${String(r.stickerCount)} sticker`)
+  return parts.length === 0 ? 'nothing' : parts.join(', ')
+}
+
 export function PoolPage() {
   const { client } = useAuth()
   const navigate = useNavigate()
 
   const [pooled, setPooled] = useState<PoolEntryRow[]>([])
+  /**
+   * Serialized devices in the warehouse. Read HERE rather than inside the two
+   * components that show it, so the Batch preview card and the trigger strip
+   * can never quote different numbers on one screen. null means the level
+   * could not be read, which is deliberately not zero.
+   */
+  const [inStock, setInStock] = useState<number | null>(null)
   const [held, setHeld] = useState<PoolEntryRow[]>([])
   const [configs, setConfigs] = useState<BatchingConfigRow[] | null>(null)
   const [loading, setLoading] = useState(true)
@@ -124,9 +159,12 @@ export function PoolPage() {
         // asked for it, so a held dispatch could not be found again, let alone
         // released. Two reads rather than one unfiltered read keeps each view
         // exactly what its tab claims.
+        // The two statuses come from the shared vocabulary (poolStatuses.ts),
+        // not from bare literals typed here: this call and the server's own
+        // POOL_STATUSES are now held together by a parity test.
         const [pooledRows, heldRows] = await Promise.all([
-          getPoolEntries(client, 'POOLED'),
-          getPoolEntries(client, 'HELD'),
+          getPoolEntries(client, POOL_QUERY_STATUSES[0]),
+          getPoolEntries(client, POOL_QUERY_STATUSES[1]),
         ])
         setPooled(pooledRows)
         setHeld(heldRows)
@@ -134,6 +172,14 @@ export function PoolPage() {
         if (!quiet) setLoadError(err instanceof Error ? err.message : 'Failed to load the pool.')
       } finally {
         if (!quiet) setLoading(false)
+      }
+      // Separately, and deliberately not fatal: a stock level we cannot read
+      // costs an advisory, not the screen.
+      try {
+        const devices = await getDevices(client, 'IN_STOCK')
+        setInStock(Array.isArray(devices) ? devices.length : null)
+      } catch {
+        setInStock(null)
       }
     },
     [client],
@@ -188,7 +234,20 @@ export function PoolPage() {
     {
       key: 'merchant',
       header: 'Merchant',
-      cell: (r) => <span className="font-medium">{r.merchant}</span>,
+      cell: (r) => (
+        <span className="flex items-center gap-2">
+          <span className="font-medium">{r.merchant}</span>
+          {/* Native at last: this used to be impossible here, because
+              replacement_of was TMS-local and the pool row had no way to know.
+              The dispatch detail page faked it by downloading every damage case
+              and searching; a list could not fake it at all. */}
+          {r.isReplacement && (
+            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+              Replacement
+            </span>
+          )}
+        </span>
+      ),
       sortValue: (r) => r.merchant,
     },
     {
@@ -197,8 +256,27 @@ export function PoolPage() {
       cell: (r) => `${r.bankDisplayName} (${r.bankReferenceCode})`,
       sortValue: (r) => r.bankReferenceCode,
     },
-    { key: 'branch', header: 'Branch', cell: (r) => r.branchCode ?? '-', sortValue: (r) => r.branchCode ?? '' },
+    {
+      key: 'legalName',
+      header: 'Legal name',
+      cell: (r) => <span className="text-muted-foreground">{r.merchantLegalName}</span>,
+      sortValue: (r) => r.merchantLegalName,
+    },
+    { key: 'branch', header: 'Branch code', cell: (r) => r.branchCode ?? '-', sortValue: (r) => r.branchCode ?? '' },
     { key: 'kit', header: 'Kit', cell: (r) => kitLabel(r), sortValue: (r) => kitLabel(r) },
+    {
+      // WHICH PARCELS this request travels as. A request splits into at most two
+      // (W-5: the soundbox kit and the collateral), and which ones it has is the
+      // thing an operator is checking when they open the dialog, so the row can
+      // answer it without the click.
+      key: 'parcels',
+      header: 'Parcels',
+      cell: (r) => {
+        const groups = [...new Set(r.rows.map((x) => x.dispatchGroup).filter((g): g is string => g !== null))]
+        return <span className="text-muted-foreground">{groups.length === 0 ? '-' : groups.join(', ')}</span>
+      },
+      sortValue: (r) => r.rows.length,
+    },
     {
       key: 'dispatches',
       header: 'Dispatches',
@@ -228,8 +306,39 @@ export function PoolPage() {
     {
       key: 'merchant',
       header: 'Merchant',
-      cell: (r) => <span className="font-medium">{r.merchantDisplayName}</span>,
+      cell: (r) => (
+        <span className="flex items-center gap-2">
+          <span className="font-medium">{r.merchantDisplayName}</span>
+          {(r.replacementOfAsgnId ?? null) !== null && (
+            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+              Replacement
+            </span>
+          )}
+        </span>
+      ),
       sortValue: (r) => r.merchantDisplayName,
+    },
+    // THE PARCEL, named. This view is per DISPATCH rather than per request, so
+    // the dispatch id is the one thing that identifies the row uniquely, and it
+    // was the one thing missing: two held parcels of the same request read
+    // identically before this.
+    {
+      key: 'asgnId',
+      header: 'Dispatch ID',
+      cell: (r) => <CodeChip>{r.asgnId}</CodeChip>,
+      sortValue: (r) => r.asgnId,
+    },
+    {
+      key: 'group',
+      header: 'Category',
+      cell: (r) => (r.dispatchGroup === null ? '-' : <DispatchGroupBadge group={r.dispatchGroup} />),
+      sortValue: (r) => r.dispatchGroup ?? '',
+    },
+    {
+      key: 'kit',
+      header: 'Kit',
+      cell: (r) => entryKitLabel(r),
+      sortValue: (r) => entryKitLabel(r),
     },
     {
       key: 'bank',
@@ -238,10 +347,22 @@ export function PoolPage() {
       sortValue: (r) => r.bankReferenceCode,
     },
     {
+      key: 'branch',
+      header: 'Branch code',
+      cell: (r) => r.branchCode ?? '-',
+      sortValue: (r) => r.branchCode ?? '',
+    },
+    {
       key: 'reason',
       header: 'Why it is held',
       cell: (r) => r.holdReason ?? 'no reason recorded',
       sortValue: (r) => r.holdReason ?? '',
+    },
+    {
+      key: 'pooledAt',
+      header: 'Pooled at',
+      cell: (r) => <span className="text-muted-foreground">{fmtDateTime(r.createdAt)}</span>,
+      sortValue: (r) => r.createdAt,
     },
     {
       key: 'actions',
@@ -272,10 +393,14 @@ export function PoolPage() {
 
       {loadError !== null ? <ErrorNote>{loadError}</ErrorNote> : null}
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+      {/* items-start so each column ends where its content ends: the left card
+          used to stretch to the taller right column and stranded its trigger
+          strip at the bottom of the borrowed height. */}
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         {tab === 'pooled' ? (
           <BatchablePools
             onTriggered={() => void load()}
+            inStock={inStock}
             reloadKey={poolFingerprint}
             lotSizeFor={lotSizeFor}
             maxWaitSeconds={rule.maxWaitSeconds}
@@ -327,7 +452,7 @@ export function PoolPage() {
         )}
 
         <div className="flex flex-col gap-4">
-          <BatchPreviewCard rows={pooled} minLotSize={rule.minLotSize} />
+          <BatchPreviewCard rows={pooled} minLotSize={rule.minLotSize} inStock={inStock} />
           <AutoTriggerCard
             minLotSize={rule.minLotSize}
             maxWaitSeconds={rule.maxWaitSeconds}

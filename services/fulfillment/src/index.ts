@@ -33,7 +33,9 @@ export {
   type UnitTerminalStatus,
   type AnyUnitStatus,
   projectActivationToUnits,
+  projectDeactivationToUnits,
   projectReplacementToUnits,
+  projectReplacementCancelledToUnits,
   type ActivatedFactView,
   type ReplacementRaisedFactView,
 } from './unit-lifecycle.js'
@@ -62,6 +64,12 @@ export {
   ingestIntakeSheetWithinTx,
   isSheetStructurallyValid,
 } from './intake.js'
+export {
+  POOL_STATUSES,
+  DISPATCH_STATES,
+  type PoolStatus,
+  type DispatchStateValue,
+} from './batch-status.js'
 export { BATCH_STATUSES, type BatchStatus } from './batch-status.js'
 export { consumeBatchFact, TemplateTrimMismatchError } from './dispatch.js'
 export {
@@ -151,6 +159,7 @@ export {
   bulkDeliverBatch,
   overrideTerminal,
   correctUnitStatus,
+  correctDispatchState,
   recomposeArtifact,
   holdRecord,
   releaseRecord,
@@ -233,7 +242,13 @@ export {
   listDispatches,
   listDeviceInventory,
   readDeviceDetail,
+  readDeviceReplacementChain,
   readShipmentTrailOps,
+  readReplacementMarksOps,
+  readUnitTrailOps,
+  readPoolEntryTrailOps,
+  readBatchTrailOps,
+  type StatusTrailRow,
   resolveAssignmentsByDeviceSerial,
   // R-5: the activation report's ICCID fan-out (the SIM never reaches
   // analytics; the ops edge merges it from here).
@@ -242,6 +257,7 @@ export {
   type DispatchRow,
   type UnitInventoryRow,
   type UnitDetailView,
+  type UnitReplacementChain,
 } from './ops-read.js'
 export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
 export { InMemoryAssetStore } from './storage/dev-asset-store.js'
@@ -252,3 +268,12 @@ export {
   type ShipmentReadRow,
   type ShipmentStatusEventRow,
 } from './read.js'
+export {
+  logUnitStatus,
+  logUnitStatuses,
+  logPoolEntryStatus,
+  logPoolEntryStatusesForBatch,
+  logBatchStatus,
+  type StatusLogSource,
+  type StatusLogArgs,
+} from './status-log.js'

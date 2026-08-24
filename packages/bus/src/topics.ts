@@ -39,7 +39,16 @@ export const SOUNDBOX_TOPICS: TopicSpec[] = [
   { name: 'fct.tms.bank_file_row.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.tms.assignment.ship_to_amended.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.tms.assignment.replacement_raised.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  // DAMAGE.md (21 Aug 2026): the mirror of replacement_raised. Raising damage
+  // marks the parent's devices DAMAGED in fulfillment, so undoing it needs a
+  // channel back; without one a mistaken flag stranded a device on a terminal
+  // branch forever.
+  { name: 'fct.tms.assignment.replacement_cancelled.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.tms.assignment.activated.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  // ACTIVATION.md (21 Aug 2026): activation became a toggle, so its withdrawal
+  // needs a channel too. Without it a deactivation reached the tms row only,
+  // and the device and the analytics row went on reporting the dispatch live.
+  { name: 'fct.tms.assignment.deactivated.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.batch.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.unit.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.fulfillment.dispatch.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },

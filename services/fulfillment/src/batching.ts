@@ -4,6 +4,7 @@ import { setTimer, claimAndFireDueTimers } from '@andpay/engine'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 import { enterWriteScope, enterWriteRole } from './write-context.js'
+import { logPoolEntryStatus, logBatchStatus, type StatusLogSource } from './status-log.js'
 import { resolvePoolConfig, resolveBankLotOverride } from './config/pool-config.js'
 import { BATCH_TOPIC, batchFactEnvelope } from './events.js'
 import type { OpsActor } from './vendor.js'
@@ -208,6 +209,8 @@ export interface TriggerBatchOpts {
   firingTimerId?: string
   /** The class-3 actor for a MANUAL trigger (Task 10); recorded on batch.triggered_by_actor. */
   actorUuid?: string
+  /** Operator login handle snapshot for the trails (manual trigger only). */
+  actorDisplay?: string | null
   /**
    * The operator's free-text reason for a MANUAL trigger (BRD 5.3.4 force
    * dispatch); recorded on batch.trigger_note. Optional on this shape and
@@ -367,6 +370,41 @@ export async function triggerBatchWithinTx(
           INSERT INTO batch (id, tenant_id, program_id, status, trigger_reason, triggered_by_actor, trigger_note, unit_count, updated_at)
           VALUES (${btchUuid}::uuid, ${tenantUuid}::uuid, ${programUuid}::uuid, 'BATCHED', ${reason}, ${opts.actorUuid ?? null}::uuid, ${opts.triggerNote ?? null}, ${claimed.length}, now())
         `
+
+        // The status trails (STATUS_STAGES.md). The trigger reason IS the
+        // provenance here, so it maps straight onto the trail's source token:
+        // a batch formed by the lot-size gate, the max-wait timer, and an
+        // operator forcing it are three different stories about the same
+        // transition, and the trail is where that distinction survives.
+        const batchedAt = new Date()
+        const trailSource: StatusLogSource =
+          reason === 'LOT_SIZE'
+            ? 'batching:lot-size'
+            : reason === 'MAX_WAIT'
+              ? 'batching:max-wait'
+              : 'batching:manual'
+        await logBatchStatus(tx, btchUuid, programUuid, {
+          status: 'BATCHED',
+          occurredAt: batchedAt,
+          statusSource: trailSource,
+          actorId: opts.actorUuid ?? null,
+          actorDisplay: opts.actorDisplay ?? null,
+          traceId: oldestTraceId,
+        })
+        // Each claimed entry's own move out of POOLED. Logged per entry rather
+        // than for the batch as a whole: the question a dispatch page answers
+        // is what happened to THIS dispatch, and the batch it landed in is one
+        // event in that story.
+        for (const c of claimed) {
+          await logPoolEntryStatus(tx, c.id, programUuid, {
+            status: 'BATCHED',
+            occurredAt: batchedAt,
+            statusSource: trailSource,
+            actorId: opts.actorUuid ?? null,
+            actorDisplay: opts.actorDisplay ?? null,
+            traceId: c.trace_id,
+          })
+        }
 
         await enqueue(tx, {
           aggregateType: 'batch',
@@ -667,6 +705,7 @@ export async function manualTrigger(
   const res = await triggerBatch(db, tenantWire, programWire, 'MANUAL', {
     epoch: opsToken,
     actorUuid: actor.operatorId,
+    actorDisplay: actor.actorDisplay ?? null,
     traceId,
   })
   return res ? { btchId: res.btchId } : null
@@ -715,8 +754,12 @@ export async function holdEntryWithinTx(
 ): Promise<void> {
   const asgnUuid = toUuid(asgnIdWire)
 
-  const rows = await tx.$queryRaw<{ program_id: string }[]>`
-    SELECT program_id::text AS program_id FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
+  // id and trace_id come back too, for the status trail below: OpsActor carries
+  // no traceId, so the entry's own stored trace is the honest one to record
+  // (the same choice the return-sheet and batching trails make).
+  const rows = await tx.$queryRaw<{ id: string; program_id: string; trace_id: string }[]>`
+    SELECT id::text AS id, program_id::text AS program_id, trace_id
+    FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
   `
   if (rows.length === 0) return // nothing to hold
 
@@ -725,12 +768,26 @@ export async function holdEntryWithinTx(
   // The reason rides as a BOUND parameter, never interpolated, and is never
   // logged: it is operator free text on a domain row, the same posture as
   // batch.trigger_note.
-  await tx.$executeRaw`
+  const held = await tx.$queryRaw<{ id: string }[]>`
     UPDATE pending_pool_entry
     SET pool_status = 'HELD', held_by_actor = ${actor.operatorId}::uuid, held_at = now(),
         hold_reason = ${reason ?? null}, updated_at = now()
     WHERE asgn_id = ${asgnUuid}::uuid AND pool_status = 'POOLED'
+    RETURNING id::text AS id
   `
+  // RETURNING-gated: the `pool_status = 'POOLED'` guard means holding an
+  // already-HELD entry moves nothing, and the trail must not grow a second
+  // HELD rung for a hold that did not happen.
+  if (held.length > 0) {
+    await logPoolEntryStatus(tx, held[0]!.id, rows[0]!.program_id, {
+      status: 'HELD',
+      occurredAt: new Date(),
+      statusSource: 'batching:hold',
+      actorId: actor.operatorId,
+      actorDisplay: actor.actorDisplay ?? null,
+      traceId: rows[0]!.trace_id,
+    })
+  }
 }
 
 // Non-ops entry point (spec 10d Task 4): enters fulfillment_write FIRST so the

@@ -12,7 +12,14 @@ import { enterWriteRole } from './write-context.js'
 // file, now nobody) may assert the lifecycle at birth. Moved here from the
 // deleted damage.ts (D-25): the case overlay lives on the replacement
 // assignment, and this module is its lifecycle.
-export const CASE_STATUS_VALUES = ['Open', 'In-Progress', 'Closed'] as const
+export const CASE_STATUS_VALUES = ['Open', 'In-Progress', 'Closed', 'Cancelled'] as const
+
+// THE CANONICAL SPELLING IS THE HYPHENATED ONE, and as of 21 Aug 2026 the
+// database enforces it: assignment_case_status_check admits only these values
+// (plus 'Cancelled', reserved for the damage cancel flow that DAMAGE.md
+// describes and no code writes yet). normalizeCaseStatus below still accepts the
+// spaced form on the way IN, because the walkthrough writes it that way and an
+// operator's request should not fail on a space, but nothing stores it.
 export type CaseStatus = (typeof CASE_STATUS_VALUES)[number]
 
 /**
@@ -25,6 +32,14 @@ export type CaseStatus = (typeof CASE_STATUS_VALUES)[number]
  * whether that is a client error or a silent skip.
  */
 export function normalizeCaseStatus(raw: string): CaseStatus | undefined {
+  // Defensive on a non-string, found live 22 Aug 2026: the ops route reads
+  // `body.status` off an untyped JSON body, so a request that omits the field
+  // (or sends a number) reached `raw.trim()` and threw a TypeError, which the
+  // error filter could only map to a 500. The caller's intended answer for an
+  // unrecognised value is a 400, and "absent" is a kind of unrecognised. The
+  // route's declared body type is a compile-time claim about the wire, not a
+  // runtime guarantee.
+  if (typeof raw !== 'string') return undefined
   const norm = raw.trim().toLowerCase().replace(/\s+/g, '-')
   return CASE_STATUS_VALUES.find((v) => v.toLowerCase() === norm)
 }
@@ -48,6 +63,51 @@ export function normalizeCaseStatus(raw: string): CaseStatus | undefined {
 // least once).
 const CASE_STATUS_RANK: Record<string, number> = { Open: 0, 'In-Progress': 1, Closed: 2 }
 
+// CANCELLED IS OFF THE RANKED LINE, deliberately, and has no rank above. It is
+// not a later stage of resolution, it is the statement that the complaint should
+// never have been raised: the flag was a mistake, so the replacement is undone
+// and the parent goes back to being flaggable. Ranking it would let the
+// forward-only guard treat it as progress and let a fact "advance" a case into
+// cancellation, which no fact is entitled to do. Only cancelReplacementOps
+// writes it, and only from a live case.
+export const CASE_TERMINAL_CANCELLED = 'Cancelled'
+
+/**
+ * Append one case transition to the trail (DAMAGE.md).
+ *
+ * Called in the SAME transaction as the status write, always. The trail and the
+ * column answer different questions and the column alone could not answer
+ * either well: it says where the case IS, and every write overwrote the one
+ * updated_at, so how long a complaint took was unanswerable.
+ *
+ * The caller must already have bound app.program_id to this assignment's own
+ * program: the INSERT carries a WITH CHECK on program_id.
+ */
+export async function logCaseStatusWithinTx(
+  tx: Tx,
+  asgnUuid: string,
+  programUuid: string,
+  args: {
+    status: string
+    statusSource: string
+    actorId?: string | null
+    /** Operator login handle snapshot (LeanClaim.hdl), display only. */
+    actorDisplay?: string | null
+    remarks?: string | null
+    traceId: string
+  },
+): Promise<void> {
+  await tx.$executeRaw`
+    INSERT INTO damage_case_status_event
+      (asgn_id, program_id, status, occurred_at, status_source, actor_id, actor_display, remarks, trace_id)
+    VALUES (
+      ${asgnUuid}::uuid, ${programUuid}::uuid, ${args.status}, now(),
+      ${args.statusSource}, ${args.actorId ?? null}::uuid, ${args.actorDisplay ?? null},
+      ${args.remarks ?? null}, ${args.traceId}
+    )
+  `
+}
+
 /**
  * Move a case forward, and only forward.
  *
@@ -68,16 +128,37 @@ export async function advanceCaseStatusWithinTx(
   tx: Tx,
   asgnUuid: string,
   target: CaseStatus,
+  log?: { statusSource: string; actorId?: string | null; actorDisplay?: string | null; traceId: string },
 ): Promise<boolean> {
-  const behind = CASE_STATUS_VALUES.filter((v) => CASE_STATUS_RANK[v]! < CASE_STATUS_RANK[target]!).map((v) => v)
+  // Only the ranked statuses can be advanced INTO. Cancelled has no rank (see
+  // its note above), so this returns false rather than silently doing nothing:
+  // cancelling goes through cancelReplacementOps, which has a reason to record
+  // and a replacement to undo.
+  if (CASE_STATUS_RANK[target] === undefined) return false
+  const behind = CASE_STATUS_VALUES.filter(
+    (v) => CASE_STATUS_RANK[v] !== undefined && CASE_STATUS_RANK[v]! < CASE_STATUS_RANK[target]!,
+  ).map((v) => v)
   if (behind.length === 0) return false
-  const moved = await tx.$queryRaw<{ id: string }[]>`
+  const moved = await tx.$queryRaw<{ id: string; program_id: string }[]>`
     UPDATE assignment SET case_status = ${target}, updated_at = now()
     WHERE id = ${asgnUuid}::uuid
       AND replacement_of IS NOT NULL
       AND (case_status IS NULL OR case_status = ANY(${behind}::text[]))
-    RETURNING id::text AS id
+    RETURNING id::text AS id, program_id::text AS program_id
   `
+  // Trail row only when the case actually moved, driven by RETURNING for the
+  // same reason every other trail writer is: a redelivered fact legitimately
+  // moves nothing, and a trail that recorded the attempt would grow a duplicate
+  // rung on every redelivery.
+  if (moved.length > 0 && log !== undefined) {
+    await logCaseStatusWithinTx(tx, asgnUuid, moved[0]!.program_id, {
+      status: target,
+      statusSource: log.statusSource,
+      actorId: log.actorId ?? null,
+      actorDisplay: log.actorDisplay ?? null,
+      traceId: log.traceId,
+    })
+  }
   return moved.length > 0
 }
 
@@ -90,10 +171,22 @@ export interface DispatchFactView {
 /**
  * fct.fulfillment.dispatch.v1: the batch these assignments belong to has moved.
  *
- * A replacement named on a SENT_TO_VENDOR or DISPATCHED_BY_VENDOR dispatch has
- * ENTERED THE PIPELINE, which is D-24's In Progress: somebody is physically
- * doing something about the complaint. QR_GENERATED is deliberately not enough,
- * because generating artwork is us preparing, not the replacement moving.
+ * IN-PROGRESS FIRES AT BATCH FORMATION as of 21 Aug 2026 (DAMAGE.md), which
+ * means QR_GENERATED counts, where it deliberately did not before. The old rule
+ * held that generating artwork was "us preparing, not the replacement moving",
+ * and waited for SENT_TO_VENDOR.
+ *
+ * The team overruled that, and on the operator's own ground: what they have to
+ * tell a bank chasing a complaint is whether the replacement is being worked,
+ * and it is being worked the moment it lands in a batch. Waiting for the vendor
+ * handover left a case reading Open for as long as batching took, which reads as
+ * nobody having touched it.
+ *
+ * THE TRIGGER STAGE IS THE ONLY THING THAT CHANGED. This is not a database
+ * trigger and not the create-batch API reaching across: batching belongs to
+ * fulfillment and the case belongs to tms, so one transaction cannot write both
+ * (C4). Batching already emits this fact; tms already consumes it. Only the
+ * accepted state widened.
  *
  * TMS CONSUMING A FULFILLMENT FACT IS THE SANCTIONED INTEGRATION (T7), not a
  * cross-context read: the topic already exists, nothing new is published, and
@@ -109,7 +202,9 @@ export async function projectDispatchToCases(
   env: Envelope<DispatchFactView>,
 ): Promise<{ advanced: number }> {
   const state = env.payload.dispatchState
-  if (state !== 'SENT_TO_VENDOR' && state !== 'DISPATCHED_BY_VENDOR') return { advanced: 0 }
+  if (state !== 'QR_GENERATED' && state !== 'SENT_TO_VENDOR' && state !== 'DISPATCHED_BY_VENDOR') {
+    return { advanced: 0 }
+  }
 
   let advanced = 0
   await db.$transaction(async (tx) => {
@@ -134,7 +229,16 @@ export async function projectDispatchToCases(
         // batch legitimately mixes originals with replacements.
         if (target.length === 0) continue
         await setProgramContext(tx as unknown as Tx, target[0]!.program_id)
-        if (await advanceCaseStatusWithinTx(tx as unknown as Tx, asgnUuid, 'In-Progress')) advanced++
+        if (
+          await advanceCaseStatusWithinTx(tx as unknown as Tx, asgnUuid, 'In-Progress', {
+            statusSource: `dispatch:${state.toLowerCase()}`,
+            // Envelope.traceId is optional on the wire and the trail column is
+            // NOT NULL. dedupKey is always present and is itself a correlation
+            // value, so it stands in rather than inventing a placeholder.
+            traceId: env.traceId ?? env.dedupKey,
+          })
+        )
+          advanced++
       }
     })
   })
@@ -149,32 +253,47 @@ export async function projectDispatchToCases(
 // consignment carries them.
 export interface ShipmentFactView {
   status: string
+  /** COLLATERAL legs on this consignment; delivery is their terminal. */
   asgnIds?: string[]
+  /**
+   * SOUNDBOX legs on this consignment (DAMAGE.md, 21 Aug 2026). Separate from
+   * asgnIds because the two need opposite handling: a collateral case closes on
+   * delivery outright, a soundbox case closes only once it is ALSO activated.
+   */
+  soundboxAsgnIds?: string[]
 }
 
 /**
  * fct.fulfillment.shipment.v1: a courier consignment has moved.
  *
- * B4 (D-24, DP-11): DELIVERED is the COLLATERAL replacement's terminal, the
- * moment the merchant physically holds the new standee or sticker, so the case
- * it answers closes here. The soundbox terminal is different on purpose: a
- * device is only done when it ACTIVATES, and activateAssignmentWithinTx
- * already closes that case, so this projection refuses to touch a SOUNDBOX
- * row even when a fact names it.
+ * TWO POPULATIONS, TWO RULES (DAMAGE.md, 21 Aug 2026).
  *
- * The fact carries asgnIds only on a collateral consignment, which is exactly
- * the population that needs this close; any other shipment fact has nothing
- * for us and returns without opening a transaction. Same sanctioned
- * integration as projectDispatchToCases above (T7, a fact, never a
- * cross-context read), same forward-only guarantee (a late redelivery cannot
- * reopen anything), same E6 inbox dedup.
+ * COLLATERAL closes on delivery outright (B4, D-24, DP-11): the merchant
+ * physically holds the new standee, and paper has nothing to activate.
+ *
+ * SOUNDBOX now needs DELIVERED **AND** ACTIVATED. It used to close on
+ * activation alone, and that was too generous in one direction and too strict
+ * in the other: a device the CWD activated while the parcel was still in transit
+ * closed a complaint nobody had received yet, and this projection refused to
+ * touch a soundbox row at all so delivery contributed nothing.
+ *
+ * The two halves are reported by different parties in arbitrary order, so
+ * neither can be treated as "the last step". Delivery is recorded on the row
+ * (delivered_at) and the close fires on whichever half lands SECOND: here when
+ * activation was already recorded, and in activateAssignmentWithinTx when
+ * delivery was.
+ *
+ * Same sanctioned integration as projectDispatchToCases above (T7, a fact,
+ * never a cross-context read), same forward-only guarantee (a late redelivery
+ * cannot reopen anything), same E6 inbox dedup.
  */
 export async function projectShipmentToCases(
   db: TmsDb,
   env: Envelope<ShipmentFactView>,
 ): Promise<{ advanced: number }> {
-  const asgnIds = env.payload.asgnIds
-  if (env.payload.status !== 'DELIVERED' || !Array.isArray(asgnIds) || asgnIds.length === 0) {
+  const asgnIds = Array.isArray(env.payload.asgnIds) ? env.payload.asgnIds : []
+  const soundboxIds = Array.isArray(env.payload.soundboxAsgnIds) ? env.payload.soundboxAsgnIds : []
+  if (env.payload.status !== 'DELIVERED' || (asgnIds.length === 0 && soundboxIds.length === 0)) {
     return { advanced: 0 }
   }
 
@@ -198,7 +317,52 @@ export async function projectShipmentToCases(
         `
         if (target.length === 0) continue
         await setProgramContext(tx as unknown as Tx, target[0]!.program_id)
-        if (await advanceCaseStatusWithinTx(tx as unknown as Tx, asgnUuid, 'Closed')) advanced++
+        if (
+          await advanceCaseStatusWithinTx(tx as unknown as Tx, asgnUuid, 'Closed', {
+            statusSource: 'shipment:delivered',
+            traceId: env.traceId ?? env.dedupKey,
+          })
+        )
+          advanced++
+      }
+
+      // The SOUNDBOX half. Delivery is RECORDED for every named leg, replacement
+      // or not: delivered_at is a fact about the dispatch, and restricting it to
+      // replacements would leave originals unable to answer the same question
+      // later. The CLOSE is then attempted only where a case exists and
+      // activation already landed.
+      for (const asgnId of soundboxIds) {
+        const asgnUuid = toUuid(asgnId)
+        const target = await tx.$queryRaw<{ program_id: string }[]>`
+          SELECT program_id::text AS program_id FROM assignment WHERE id = ${asgnUuid}::uuid
+        `
+        if (target.length === 0) continue
+        await setProgramContext(tx as unknown as Tx, target[0]!.program_id)
+        // FIRST delivery wins: a redelivered fact must not move the instant, and
+        // a re-attempted parcel's later scan is not a second arrival.
+        await tx.$executeRaw`
+          UPDATE assignment SET delivered_at = now(), updated_at = now()
+          WHERE id = ${asgnUuid}::uuid AND delivered_at IS NULL
+        `
+        // Now the pair. Closing only when activation is already on the row is
+        // what makes the order irrelevant: whichever half arrives second sees
+        // the other already recorded.
+        const pair = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id::text AS id FROM assignment
+          WHERE id = ${asgnUuid}::uuid
+            AND replacement_of IS NOT NULL
+            AND dispatch_group = 'SOUNDBOX'
+            AND activated_at IS NOT NULL
+            AND delivered_at IS NOT NULL
+        `
+        if (pair.length === 0) continue
+        if (
+          await advanceCaseStatusWithinTx(tx as unknown as Tx, asgnUuid, 'Closed', {
+            statusSource: 'shipment:delivered+activated',
+            traceId: env.traceId ?? env.dedupKey,
+          })
+        )
+          advanced++
       }
     })
   })

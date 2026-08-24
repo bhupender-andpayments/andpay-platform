@@ -29,24 +29,32 @@ function servicePipelineStages(): string[] {
   return [...text.slice(start, end).matchAll(/^\s*([A-Z_]+):\s*\d+,?$/gm)].map((m) => m[1]!)
 }
 
+// MOVED 23 Aug 2026, from DispatchesPage.tsx to dispatchStatus.ts. The page kept
+// its own LIFECYCLE_ORDER and LIFECYCLE_LABELS, and the labels had drifted from
+// the ones the page's own Stage COLUMN rendered: the filter said "Pending batch"
+// where the column said "Received", for one value, on one screen. The order now
+// lives beside the rest of the dispatch vocabulary and the labels come from
+// statusMeta, which is what the column already used.
 function portalLifecycleOrder(): string[] {
   const text = readFileSync(
-    join(root, 'apps', 'ops-portal', 'src', 'features', 'dispatches', 'DispatchesPage.tsx'),
+    join(root, 'apps', 'ops-portal', 'src', 'features', 'dispatches', 'dispatchStatus.ts'),
     'utf8',
   )
-  const start = text.indexOf('const LIFECYCLE_ORDER')
+  const start = text.indexOf('const PIPELINE_STAGES')
   const end = text.indexOf(']', start)
   return [...text.slice(start, end).matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]!)
 }
 
-function portalLifecycleLabelKeys(): string[] {
-  const text = readFileSync(
-    join(root, 'apps', 'ops-portal', 'src', 'features', 'dispatches', 'DispatchesPage.tsx'),
-    'utf8',
-  )
-  const start = text.indexOf('const LIFECYCLE_LABELS')
-  const end = text.indexOf('}', start)
-  return [...text.slice(start, end).matchAll(/^\s*([A-Z_]+):/gm)].map((m) => m[1]!)
+/**
+ * Every stage must resolve to a real label in the SHARED map, which is now the
+ * same one the Stage column renders through. A stage missing here would render
+ * as a title-cased fallback of its raw token in both places at once.
+ */
+function portalLabelledStatuses(): string[] {
+  const text = readFileSync(join(root, 'apps', 'ops-portal', 'src', 'ui', 'format.ts'), 'utf8')
+  const start = text.indexOf('const STATUS_MAP')
+  const end = text.indexOf('\n}', start)
+  return [...text.slice(start, end).matchAll(/^\s*([A-Z_]+):\s*\{/gm)].map((m) => m[1]!)
 }
 
 describe('dispatch lifecycle parity between services/analytics and apps/ops-portal', () => {
@@ -62,7 +70,19 @@ describe('dispatch lifecycle parity between services/analytics and apps/ops-port
     expect(portalLifecycleOrder()).toEqual(servicePipelineStages())
   })
 
-  it('every stage the filter offers has a label', () => {
-    expect([...portalLifecycleLabelKeys()].sort()).toEqual([...servicePipelineStages()].sort())
+  it('every stage the filter offers has a label in the shared map', () => {
+    const labelled = portalLabelledStatuses()
+    for (const stage of servicePipelineStages()) {
+      expect(labelled, `${stage} has no entry in STATUS_MAP`).toContain(stage)
+    }
+  })
+
+  // The hold overlay rides the Stage filter as an extra option, so it needs a
+  // label too, but it must NOT be one of the service's pipeline stages: it lives
+  // on a different table and, unlike every stage, it is reversible.
+  it('offers Held as a labelled extra that is NOT a pipeline stage', () => {
+    expect(portalLabelledStatuses()).toContain('HELD')
+    expect(servicePipelineStages()).not.toContain('HELD')
+    expect(portalLifecycleOrder()).not.toContain('HELD')
   })
 })

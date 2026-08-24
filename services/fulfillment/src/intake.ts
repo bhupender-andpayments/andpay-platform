@@ -3,6 +3,7 @@ import { onceWithin, enqueue } from '@andpay/outbox'
 import { authorize, type LeanClaim } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
+import { logUnitStatus } from './status-log.js'
 import { enterWriteRole } from './write-context.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 import { unitFactEnvelope, UNIT_TOPIC } from './events.js'
@@ -277,6 +278,16 @@ export async function ingestIntakeSheetWithinTx(
             ON CONFLICT (device_serial) DO NOTHING
             RETURNING id::text AS id
           `
+          if (won.length > 0) {
+            // The device's first trail rung. Gated by RETURNING, so a
+            // re-uploaded file (ON CONFLICT DO NOTHING) appends nothing.
+            await logUnitStatus(tx, won[0]!.id, {
+              status: 'IN_STOCK',
+              occurredAt: new Date(),
+              statusSource: 'intake',
+              traceId,
+            })
+          }
           if (won.length === 0) {
             // The serial already exists: the SAME device, so no second unit.
             // The legacy (correction) path keeps this silent no-op backstop; the
@@ -330,6 +341,13 @@ export async function ingestIntakeSheetWithinTx(
             INSERT INTO unit (id, kind, product_type, manufacturer_vndr, status, qr_string, procured, allocated, printed, dispatched, delivered, returned, scrapped, updated_at)
             VALUES (${unitUuid}::uuid, ${'QUANTITY_LINE'}, ${row.productType}, ${vndrUuid}::uuid, ${'IN_STOCK'}, ${row.qrString}, ${row.count}, 0, 0, 0, 0, 0, 0, now())
           `
+          // Inside the onceWithin above, so a re-uploaded file logs nothing twice.
+          await logUnitStatus(tx, unitUuid, {
+            status: 'IN_STOCK',
+            occurredAt: new Date(),
+            statusSource: 'intake',
+            traceId,
+          })
           const unitId = fromUuid('unit', unitUuid)
           createdUnitIds.push(unitId)
           await enqueue(tx, {

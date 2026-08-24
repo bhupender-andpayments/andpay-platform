@@ -14,7 +14,7 @@ import {
   type VendorRow,
 } from '../../api/endpoints.js'
 import { Button, Card, CardBody, ErrorNote, EmptyState, SkeletonRows, StatusPill, CodeChip } from '../../ui/primitives.js'
-import { CorrectStatusDialog, OverrideStatusDialog } from './ShipmentActionDialogs.js'
+import { CorrectStatusDialog } from './ShipmentActionDialogs.js'
 import { LifecycleTimeline, type TimelineStage, type TimelineTerminal } from '../../ui/LifecycleTimeline.js'
 import { LifecycleRail, type RailStage } from '../../ui/LifecycleRail.js'
 import { BackLink, FactRow, NoValue, SectionHeading } from '../../ui/DetailFacts.js'
@@ -94,7 +94,6 @@ export function ShipmentDetailPage() {
   const [notFound, setNotFound] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [correcting, setCorrecting] = useState(false)
-  const [overriding, setOverriding] = useState(false)
 
   const load = useCallback(async () => {
     if (shptId === undefined) return
@@ -176,6 +175,11 @@ export function ShipmentDetailPage() {
   // detailed two-clock trail kept below it. Built from the shipment row itself
   // so it renders even for a collateral-only parcel with no dispatch join;
   // rung times come from the trail when the join exists.
+  // A finished parcel: DELIVERED or RETURNED. The domain's own TERMINAL set
+  // (services/fulfillment/src/courier-status.ts), and the reason the update
+  // button is disabled rather than offering moves the server would refuse.
+  const terminalReached = shipment !== null && (shipment.status === 'DELIVERED' || shipment.status === 'RETURNED')
+
   const rail = useMemo<RailStage[]>(() => {
     if (shipment === null) return []
     return buildShipmentRail(shipment, dispatch)
@@ -190,6 +194,9 @@ export function ShipmentDetailPage() {
       at: e.courierTimestamp,
       atLabel: 'reported',
       source: `${e.statusSource}, recorded ${fmtDateTime(e.receivedAt)}`,
+      // WHO, when a human did it (22 Aug 2026): the trail's hdl snapshot. A
+      // courier file's row carries none and the line stays channel-only.
+      actor: e.actorDisplay,
       note: e.overrideReason === null ? undefined : 'operator override',
       sub: e.overrideReason === null ? undefined : `Override: ${e.overrideReason}`,
     }))
@@ -241,7 +248,18 @@ export function ShipmentDetailPage() {
             One AWB, one parcel. <CodeChip>{shipment.id}</CodeChip>
           </p>
         </div>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {/* The same replacement badge the list pages wear (22 Aug 2026): a
+              parcel carrying a replacement should say so wherever it appears,
+              and the joined dispatch is already fetched for the trail below. */}
+          {dispatch?.replacementOfAsgnId != null && (
+            <span
+              className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+              title={`Replaces ${dispatch.replacementOfAsgnId}`}
+            >
+              Replacement
+            </span>
+          )}
           <StatusPill value={shipment.status} />
         </div>
       </div>
@@ -261,8 +279,13 @@ export function ShipmentDetailPage() {
       {/* items-stretch, not items-start (18 Aug 2026, at the user's
           correction): the carrier-history card is usually the shorter of the
           two, and a half-height card beside a full one read as unfinished
-          rather than as an empty answer. */}
-      <div className="grid gap-4 lg:grid-cols-[384px_minmax(0,1fr)] lg:items-stretch">
+          rather than as an empty answer.
+
+          THE PARCEL COLUMN WIDENED from 384px to 460px (23 Aug 2026, at the
+          user's correction): a merchant name is the longest value in it and was
+          wrapping mid-word against a column sized for the labels rather than
+          for what sits beside them. */}
+      <div className="grid gap-4 lg:grid-cols-[460px_minmax(0,1fr)] lg:items-stretch">
         <Card>
           <CardBody>
             <SectionHeading>Parcel</SectionHeading>
@@ -327,7 +350,12 @@ export function ShipmentDetailPage() {
           </CardBody>
         </Card>
 
-        <Card className="max-w-2xl">
+        {/* NO max-w CAP (23 Aug 2026, at the user's correction). It was
+            max-w-2xl, so on a wide screen this card stopped short and its right
+            edge did not line up with the full-width Shipment lifecycle card
+            directly above it, leaving a band of unused page beside the trail.
+            The grid column already bounds it; the cap only broke the alignment. */}
+        <Card>
           {/* flex-col so the timeline below can grow into the card's full
               height, which is what makes the centered empty state sit in the
               middle rather than hugging the description. */}
@@ -335,24 +363,45 @@ export function ShipmentDetailPage() {
             <div className="flex flex-wrap items-start justify-between gap-3 pb-2">
               <h2 className="text-base font-medium">Carrier history</h2>
               <div className="flex items-center gap-2">
-                <Button variant="secondary" size="sm" onClick={() => setCorrecting(true)}>
+                {/* ONE BUTTON, and DELIVERED IS FINAL (23 Aug 2026, at the
+                    user's direction). There used to be a second, red
+                    "Override" here: the sanctioned C3 bypass, step-up gated,
+                    the only way to leave a terminal verdict. It is gone from
+                    this page. A parcel that reached DELIVERED or RETURNED has
+                    finished travelling, and offering a way to un-finish it put
+                    a confusing second door on the screen and a TOTP prompt in
+                    the middle of ordinary work.
+                    Disabled rather than hidden: the reason a terminal parcel
+                    cannot be updated belongs on screen, not in an absence. */}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={terminalReached}
+                  title={
+                    terminalReached
+                      ? `This parcel is ${shipment.status.toLowerCase()}. A finished parcel's status does not change.`
+                      : undefined
+                  }
+                  onClick={() => setCorrecting(true)}
+                >
                   Record courier update
                 </Button>
-                {/* Only at a terminal: everywhere else the routine tool covers
-                    every legal move, and a bypass on screen would only invite
-                    bypassing. */}
-                {(shipment.status === 'DELIVERED' || shipment.status === 'RETURNED') && (
-                  <Button variant="danger" size="sm" onClick={() => setOverriding(true)}>
-                    Override
-                  </Button>
-                )}
               </div>
             </div>
             <p className="mb-4 text-[12.5px] text-muted-foreground">
               Every courier update for this parcel, oldest first, with when the courier reported it and when we
               recorded it.
             </p>
-            <div className="flex grow flex-col justify-center">
+            <div
+              className={`flex grow flex-col ${
+                // Centered ONLY when there is nothing to show: the empty
+                // state sits mid-card by design, but a one-row history was
+                // inheriting the same centering and started from the middle
+                // of a stretched card instead of under the description
+                // (23 Aug 2026).
+                stages.stages.length === 0 && stages.terminal === null ? 'justify-center' : ''
+              }`}
+            >
               <LifecycleTimeline
                 stages={stages.stages}
                 terminal={stages.terminal}
@@ -375,15 +424,9 @@ export function ShipmentDetailPage() {
       <CorrectStatusDialog
         shptId={shipment.id}
         awb={shipment.awb}
+        currentStatus={shipment.status}
         open={correcting}
         onOpenChange={setCorrecting}
-        onSaved={refresh}
-      />
-      <OverrideStatusDialog
-        shptId={shipment.id}
-        awb={shipment.awb}
-        open={overriding}
-        onOpenChange={setOverriding}
         onSaved={refresh}
       />
     </div>
@@ -443,6 +486,16 @@ function buildShipmentRail(shipment: DispatchRow, dispatch: DispatchDetailView |
     return fromTrail
   }
 
+  // ONLY REAL SCANS CARRY A TIME (STATUS_STAGES.md, 21 Aug 2026).
+  //
+  // Position still comes from the ladder, and correctly so: the courier ladder is
+  // monotonic and the service enforces it by rank, so a parcel scanned PICKED_UP
+  // was necessarily handed over by the vendor before it. What changed is the
+  // dating. `at` used to be filled for every rung at or below the current one,
+  // from whatever the trail could nearest supply; now a rung shows an instant
+  // only when the courier actually sent a scan for THAT rung, and otherwise
+  // reads as passed-but-undated. Which is what we know: the parcel got past the
+  // handover, and no scan told us when.
   const stages: RailStage[] = SHIPMENT_LADDER.map((rung, i) => ({
     key: rung.key,
     label: rung.label,
