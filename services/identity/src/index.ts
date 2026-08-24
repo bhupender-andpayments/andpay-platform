@@ -24,3 +24,8 @@ export {
   type BankMasterRow,
   type MerchantContactRow,
 } from './ops.js'
+export {
+  announceDefaultAggregators,
+  type AnnouncedAggregator,
+  type AnnounceDefaultAggregatorsResult,
+} from './announce.js'

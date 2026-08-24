@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import type { Envelope } from '@andpay/envelope'
-import { ingestRequestRow, projectMerchantFact, projectTenantFact, createAssignmentFromEnrollment, PrismaClient as TmsClient } from '@andpay/tms-service'
-import { projectRowFact, createBankMaster, PrismaClient as IdentityClient } from '@andpay/identity-service'
+import { ingestRequestRow, projectMerchantFact, projectTenantFact, projectAggregatorFact, createAssignmentFromEnrollment, PrismaClient as TmsClient } from '@andpay/tms-service'
+import { projectRowFact, createBankMaster, announceDefaultAggregators, PrismaClient as IdentityClient } from '@andpay/identity-service'
 
 // Root-only integration seam (this file is under test/, not services/<ctx>, so
 // the cross-schema guard, test/architecture.test.ts, never scans it). This is
@@ -16,7 +16,7 @@ const tms = new TmsClient({ datasourceUrl: tmsUrl })
 const identity = new IdentityClient({ datasourceUrl: idUrl })
 
 beforeEach(async () => {
-  await tms.$executeRawUnsafe('TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox')
+  await tms.$executeRawUnsafe('TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, aggregator_projection, ingest_file, quarantine_row, outbox, inbox')
   await identity.$executeRawUnsafe('TRUNCATE aggregator, sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox')
 })
 afterAll(async () => { await tms.$disconnect(); await identity.$disconnect() })
@@ -164,5 +164,82 @@ describe('an admin-created bank reaches TMS (the tenant fact on the resolve path
     // The snapshot carries the ADMIN's display name, not the bank reference
     // code the auto-mint would have used as a placeholder.
     expect(asgn[0]!.bank_display_name).toBe('Admin Created Bank')
+  })
+})
+
+// THE BACKFILLED DEFAULT AGGREGATOR NEVER REACHED TMS.
+//
+// 20260820120000_backfill_default_aggregators inserted each pre-existing
+// tenant's default aggregator in plain SQL and emitted no fact, by its own
+// admission (a migration cannot build an E4 envelope). TMS therefore never
+// projected those rows, and on the demo database identity held 95 aggregators
+// against 94 projections, the missing one being the tenant's own default.
+//
+// This is the end-to-end proof that announceDefaultAggregators closes it: the
+// gap is reproduced exactly (SQL insert, no fact), then the announcement is
+// carried across the same seam every other fact uses.
+describe('a default aggregator inserted by the backfill reaches TMS once announced', () => {
+  it('goes from unprojected to projected, and stays put on a second announcement', async () => {
+    const bank = await createBankMaster(identity, {
+      bankReferenceCode: 'BREF-RT-ANN',
+      displayName: 'Roundtrip Announce Bank',
+      address1: '1 MG Road',
+      city: 'Bengaluru',
+      district: 'Bengaluru Urban',
+      country: 'India',
+      pin: '560001',
+      mobile: '9000000001',
+      email: 'ops@roundtrip.example',
+      clientKey: randomUUID(),
+      actorId: 'actor-rt',
+      traceId: 'trace-rt',
+    })
+
+    // Reproduce the backfill's state: the default exists in identity with no
+    // fact behind it. createBankMaster does emit one, so clear the outbox and
+    // re-insert the row the way the migration did.
+    const tenantUuid = (
+      await identity.$queryRaw<{ id: string }[]>`SELECT id::text AS id FROM tenant`
+    )[0]!.id
+    await identity.$executeRawUnsafe('TRUNCATE outbox')
+    await identity.$executeRaw`DELETE FROM aggregator WHERE tenant_id = ${tenantUuid}::uuid`
+    await identity.$executeRaw`
+      INSERT INTO aggregator (id, tenant_id, aggregator_code, display_name, status, is_default, updated_at)
+      VALUES (gen_random_uuid(), ${tenantUuid}::uuid, '3', 'GSCB', 'ACTIVE', true, now())
+    `
+
+    // 1. The gap, stated: identity has the default, TMS has nothing.
+    const identityCount = await identity.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM aggregator WHERE is_default`
+    expect(Number(identityCount[0]!.n)).toBe(1)
+    const before = await tms.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM aggregator_projection`
+    expect(Number(before[0]!.n)).toBe(0)
+
+    // 2. Identity announces its own default. No cross-context read: it never
+    // asks TMS what is missing, it restates what it holds.
+    const res = await announceDefaultAggregators(identity, { traceId: 'trace-rt-announce' })
+    expect(res.announced).toHaveLength(1)
+
+    const facts = await identityFacts()
+    const aggFacts = facts.filter((f) => f.type === 'fct.identity.aggregator.v1')
+    expect(aggFacts).toHaveLength(1)
+
+    // 3. The consumer projects it, and the projection now agrees with identity.
+    await projectAggregatorFact(tms, aggFacts[0] as never)
+    const projected = await tms.$queryRaw<
+      { aggregator_code: string; display_name: string; is_default: boolean; tenant_id: string }[]
+    >`SELECT aggregator_code, display_name, is_default, tenant_id::text AS tenant_id FROM aggregator_projection`
+    expect(projected).toHaveLength(1)
+    expect(projected[0]!.aggregator_code).toBe('3')
+    expect(projected[0]!.display_name).toBe('GSCB')
+    expect(projected[0]!.is_default).toBe(true)
+    expect(projected[0]!.tenant_id).toBe(tenantUuid)
+    expect(res.announced[0]!.tnntId).toBe(bank.tnntId)
+
+    // 4. Running it again enqueues nothing, so the repair cannot double-fire.
+    const second = await announceDefaultAggregators(identity, { traceId: 'trace-rt-again' })
+    expect(second.announced).toHaveLength(0)
+    expect(second.alreadyAnnounced).toBe(1)
+    const stillOne = await identityFacts()
+    expect(stillOne.filter((f) => f.type === 'fct.identity.aggregator.v1')).toHaveLength(1)
   })
 })
