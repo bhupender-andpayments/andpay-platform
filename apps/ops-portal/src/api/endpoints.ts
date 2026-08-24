@@ -302,6 +302,14 @@ export interface BankRequestRow {
   mobile: string
   branchCode: string
   vpaHint?: string
+  // BRD 5.1b, 22 Aug 2026. Optional for the same reason the service type has
+  // them optional: the real bank file ships all five blank, and Email ID and
+  // QR Type are Optional in the BRD outright.
+  email?: string
+  city?: string
+  state?: string
+  pincode?: string
+  qrType?: string
 }
 
 // services/fulfillment/src/intake.ts IntakeRow (discriminated union) and
@@ -461,6 +469,12 @@ export function getVendors(c: Client) {
 // value is returned, so none of it can be rendered here. The ship-view lives
 // in the excel/:group download, which is the surface that documents that
 // entitlement. Do NOT "enrich" these rows client-side from another endpoint.
+//
+// SCOPE, since one list now differs: this paragraph governs the batch, pool,
+// dispatch and shipment projections in THIS block. GET /ops/merchants is a
+// ruled exception as of 22 Aug 2026 and says so at its own type, and even
+// there the enrichment happens on the SERVER (the ops edge composes two
+// context reads), never in the browser. The client-side rule is unchanged.
 // -----------------------------------------------------------------------
 
 /** services/fulfillment/src/ops-read.ts BatchRow. */
@@ -501,6 +515,15 @@ export interface BatchEntryRow {
   standeeCount: number
   stickerCount: number
   poolStatus: string
+  /**
+   * The dispatch this one REPLACES (DAMAGE.md), null on an original.
+   *
+   * Event-carried onto the pool row, which is what finally lets these lists mark
+   * a replacement natively. The dispatch detail page used to work this out by
+   * downloading every damage case and searching it, which cost a second request
+   * and could not be done on a list at all.
+   */
+  replacementOfAsgnId?: string | null
   dispatchState: string | null
   // 19 Aug 2026: the courier's own axis. dispatchState never reaches
   // DELIVERED (it stops at DISPATCHED_BY_VENDOR by design); this is what
@@ -564,6 +587,12 @@ export interface BatchSettlement {
   total: number
   delivered: number
   returned: number
+  /**
+   * Dispatches settled by a DAMAGED device (22 Aug 2026 ruling): counted as
+   * settled for close, shown as their own bucket. Optional so an older server
+   * still parses.
+   */
+  damaged?: number
   pending: number
   settled: boolean
   /**
@@ -572,7 +601,7 @@ export interface BatchSettlement {
    * making an operator subtract one count from another. Optional so an older
    * server that predates the projection still parses.
    */
-  perDispatch?: Record<string, 'DELIVERED' | 'RETURNED' | 'PENDING'>
+  perDispatch?: Record<string, 'DELIVERED' | 'RETURNED' | 'DAMAGED' | 'PENDING'>
 }
 
 /** services/fulfillment/src/ops-read.ts BatchDetailView. */
@@ -615,8 +644,18 @@ export function getBatches(c: Client) {
 }
 
 /**
- * services/tms/src/ops-read.ts MerchantRow (PII-free: the projection holds no
- * address, contact name or mobile at all).
+ * services/tms/src/ops-read.ts MerchantRow.
+ *
+ * THE ONE LIST THAT IS NOT PII-FREE, by a deliberate 22 Aug 2026 ruling
+ * (docs/plan/CORPUS_SUBMISSION_2026-08-22_MERCHANTS_LIST.md). The BRD's
+ * merchant record IS the bank-file field table (BRD 5.1b), so an ops merchant
+ * search has to be able to show a VPA, a mobile and an address. The
+ * default-exclude posture stated above this block still governs every other
+ * list; this is the carve-out, not a precedent for widening those.
+ *
+ * The BRD block is nullable because it comes from the merchant's most recent
+ * request. Null means TMS has not seen a bank file for them yet, and the ops
+ * edge composes identity's own copy over it for the hand-created case.
  */
 export interface MerchantRow {
   mrchId: string
@@ -624,11 +663,26 @@ export interface MerchantRow {
   legalName: string
   mcc: string
   status: string
+  createdAt: string
   updatedAt: string
   // D-2: this merchant has more than one soundbox request, so at least one was
   // an ADDITIONAL request rather than a first order. DERIVED on read from the
   // requests themselves, never stored, so it cannot drift from them.
   hasAdditionalRequests: boolean
+  vpa: string | null
+  qrType: string | null
+  contactName: string | null
+  mobile: string | null
+  email: string | null
+  address: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  bankDisplayName: string | null
+  bankReferenceCode: string | null
+  branchCode: string | null
+  latestRequestOrigin: string | null
+  latestRequestAt: string | null
 }
 
 // Redesign step 7 (ruling 1b). Every merchant, not only those with something in
@@ -729,6 +783,15 @@ export interface UnitInventoryRow {
   simNo: string | null
   createdAt: string
   updatedAt: string
+  /**
+   * The dispatch that THIS device's dispatch replaces, or null. Server-provided
+   * since 23 Aug 2026, replacing a client-side join against every damage case.
+   *
+   * A dispatch, not a device: a replacement device is a brand-new one out of
+   * stock, so nothing about the hardware is a replacement. What is replaced is
+   * the dispatch.
+   */
+  replacementOfAsgnId: string | null
 }
 
 // The device inventory list. The manufacturer QR payload is absent from THIS
@@ -744,8 +807,113 @@ export interface UnitDetailRow extends UnitInventoryRow {
   deviceQr: unknown
 }
 
+/**
+ * services/fulfillment/src/ops-read.ts UnitReplacementChain: one device's
+ * chain, one hop each way.
+ *
+ * ITS OWN ROUTE rather than part of getDeviceDetail, because that one serves
+ * the raw manufacturer QR payload and the device page is guarded against
+ * calling it. Ids and serials only.
+ *
+ * Null on any field is a REAL answer, not a gap: a collateral-only replacement
+ * carries no device at all, and a successor still at the print vendor has no
+ * serial paired yet.
+ */
+export interface UnitReplacementChain {
+  replacementOfAsgnId: string | null
+  replacedByAsgnId: string | null
+  parentDeviceId: string | null
+  parentDeviceSerial: string | null
+  successorDeviceId: string | null
+  successorDeviceSerial: string | null
+}
+
+export function getDeviceReplacementChain(c: Client, unitId: string) {
+  return c.request<UnitReplacementChain>({
+    method: 'GET',
+    path: `/ops/devices/${encodeURIComponent(unitId)}/replacement-chain`,
+  })
+}
+
 export function getDeviceDetail(c: Client, unitId: string) {
   return c.request<UnitDetailRow>({ method: 'GET', path: `/ops/devices/${encodeURIComponent(unitId)}` })
+}
+
+/**
+ * One entity's status trail (STATUS_STAGES.md, 21 Aug 2026).
+ *
+ * The shape is identical for devices, dispatches and batches, and identical in
+ * spirit to DeliveryTrailEntry (the shipment's own trail, which predates these
+ * three). occurredAt is the reported instant, recordedAt is when the platform
+ * learned it; the two differ whenever a reporter stamps its own time, which is
+ * the S22 two-clock rule the courier trail already follows.
+ *
+ * actorId is null when no human was behind the transition: a fact, a timer or a
+ * file moved it. That is a meaning, not a gap.
+ */
+export interface StatusTrailEntry {
+  status: string
+  occurredAt: string
+  statusSource: string
+  actorId: string | null
+  /** Operator login handle snapshot (the JWT hdl), null on machine doors. */
+  actorDisplay: string | null
+  recordedAt: string
+}
+
+/** One damage case's status history (22 Aug 2026), keyed by the replacement. */
+export interface CaseTrailEntry {
+  status: string
+  occurredAt: string
+  statusSource: string
+  actorId: string | null
+  actorDisplay: string | null
+  /** Present on Cancelled rows: the mandatory withdrawal reason. */
+  remarks: string | null
+  recordedAt: string
+}
+
+export function getCaseTrail(c: Client, asgnId: string) {
+  return c.request<CaseTrailEntry[]>({
+    method: 'GET',
+    path: `/ops/records/${encodeURIComponent(asgnId)}/case-trail`,
+  })
+}
+
+/**
+ * Manual dispatch_state correction (22 Aug 2026): forward-only along
+ * QR_GENERATED > SENT_TO_VENDOR > DISPATCHED_BY_VENDOR, for a move that
+ * physically happened and was never recorded. The server refuses backwards
+ * moves and rows batching has not QR'd.
+ */
+export function correctDispatchState(c: Client, asgnId: string, state: string, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; advanced: boolean }>({
+    method: 'POST',
+    path: `/ops/dispatches/${encodeURIComponent(asgnId)}/state`,
+    body: { state },
+    idempotencyKey,
+  })
+}
+
+export function getDeviceTrail(c: Client, unitId: string) {
+  return c.request<StatusTrailEntry[]>({
+    method: 'GET',
+    path: `/ops/devices/${encodeURIComponent(unitId)}/trail`,
+  })
+}
+
+export function getDispatchTrail(c: Client, asgnId: string) {
+  return c.request<StatusTrailEntry[]>({
+    method: 'GET',
+    path: `/ops/dispatches/${encodeURIComponent(asgnId)}/trail`,
+  })
+}
+
+export function getBatchTrail(c: Client, btchId: string) {
+  return c.request<StatusTrailEntry[]>({
+    method: 'GET',
+    path: `/ops/batches/${encodeURIComponent(btchId)}/trail`,
+  })
 }
 
 // Manual unit-status correction (2026-08-13 ruling): the device page's edit
@@ -1925,7 +2093,9 @@ export function correctStatus(c: Client, id: string, body: StatusCorrectionBody,
 // call, POST /ops/batches/:id/deliver-all, corrects every shipment in the
 // batch to DELIVERED; the summary names how many actually moved.
 export function bulkDeliverBatch(c: Client, batchId: string, idempotencyKey: string) {
-  return c.request<{ delivered: number; skipped: number; failed: number }>({
+  // firstError arrives only when failed > 0: one honest sentence about the
+  // first thing that went wrong, so a failed count is diagnosable.
+  return c.request<{ delivered: number; skipped: number; failed: number; firstError?: string }>({
     method: 'POST',
     path: `/ops/batches/${batchId}/deliver-all`,
     idempotencyKey,
@@ -2284,17 +2454,13 @@ export interface DeliveryTrailEntry {
   /** When the platform recorded it. */
   receivedAt: string
   overrideReason: string | null
+  /** Operator login handle snapshot, ops doors only; null on courier files. */
+  actorDisplay: string | null
 }
 
-export interface ActivationTrailEntry {
-  status: string
-  /** The reported instant (the CWD's own). */
-  occurredAt: string
-  statusSource: string
-  actorId: string | null
-  /** When the platform recorded it. */
-  recordedAt: string
-}
+// ActivationTrailEntry DELETED (ACTIVATION.md, 21 Aug 2026): activation has
+// no trail any more, it is a parallel toggle (activationStatus/activationDate
+// below already carry the current state).
 
 export interface DispatchDetailView {
   dispatchId: string
@@ -2312,7 +2478,8 @@ export interface DispatchDetailView {
   activationStatus: string | null
   activationDate: string | null
   deliveryTrail: DeliveryTrailEntry[]
-  activationTrail: ActivationTrailEntry[]
+  /** The parent this dispatch replaces, merged at the edge; null ordinarily. */
+  replacementOfAsgnId: string | null
   watermark: Watermark
 }
 
@@ -2334,13 +2501,24 @@ export interface DamageCaseView {
   replacementOf: string
   merchantDisplayName: string
   bankReferenceCode: string
+  /** For the Name (CODE) rule; optional so an older server still parses. */
+  bankDisplayName?: string
   branchCode: string | null
+  /**
+   * SOUNDBOX or COLLATERAL (DAMAGE.md). The page could not tell the two apart
+   * before this, and they close on different rules, so an operator chasing a
+   * case had no way to know which they were looking at. Optional so an older
+   * server that predates the field still parses.
+   */
+  dispatchGroup?: 'SOUNDBOX' | 'COLLATERAL'
   damageReason: string | null
   /** What the BANK wrote on the damage row. */
   bankRemarks: string | null
   /** What an OPERATOR wrote about the case. Different people's words. */
   opsRemarks: string | null
   caseStatus: string | null
+  /** Why it was cancelled, on a Cancelled case only. */
+  caseCancelRemarks?: string | null
   billable: boolean
   demandState: string
   createdAt: string
@@ -2474,13 +2652,100 @@ export function markActivatedBulk(c: Client, dispatchIds: string[], idempotencyK
   })
 }
 
-// D-16 (T4.1b): record that the activation request for these dispatch ids has
-// gone out to the CWD. A list, because that is how a send happens.
-export function requestActivation(c: Client, dispatchIds: string[], idempotencyKey: string) {
-  return c.request<{ deduped: boolean; recorded: string[]; unknown: string[] }>({
+// requestActivation DELETED (ACTIVATION.md, 21 Aug 2026): the route it called
+// is gone. Activation is a one-time toggle now, with no earlier state to
+// record. It already had no caller in this file before this deletion.
+
+/**
+ * One leg of a merchant request (DAMAGE.md). Flat rows; the Requests page groups
+ * them by sourceEventId, which IS the request identity (both legs of one
+ * bank-file row share it, and the pool has always grouped by it).
+ */
+export interface RequestLegRow {
+  sourceEventId: string
+  asgnId: string
+  dispatchGroup: string
+  merchantDisplayName: string
+  bankReferenceCode: string
+  bankDisplayName: string
+  branchCode: string | null
+  vpaValue: string
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  billable: boolean
+  demandState: string
+  caseStatus: string | null
+  replacementOfAsgnId: string | null
+  activatedAt: string | null
+  createdAt: string
+  /** Recipient contact and address snapshot (BRD 5.1b), for the request detail page. */
+  contactName: string | null
+  mobile: string | null
+  email: string | null
+  shipToAddress: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  qrType: string | null
+}
+
+/**
+ * One member of a replacement chain (DAMAGE.md). generation 0 is the original.
+ *
+ * Any member returns the WHOLE chain, so a page can render the same rail whether
+ * the operator arrived on the original or on the third replacement.
+ */
+export interface ChainMemberRow {
+  asgnId: string
+  replacementOfAsgnId: string | null
+  dispatchGroup: string
+  caseStatus: string | null
+  demandState: string
+  damageReason: string | null
+  billable: boolean
+  activatedAt: string | null
+  deliveredAt: string | null
+  createdAt: string
+  generation: number
+}
+
+export function getReplacementChain(c: Client, asgnId: string) {
+  return c.request<ChainMemberRow[]>({
+    method: 'GET',
+    path: `/ops/dispatches/${encodeURIComponent(asgnId)}/chain`,
+  })
+}
+
+export function getRequestLegs(c: Client) {
+  return c.request<RequestLegRow[]>({ method: 'GET', path: '/ops/requests' })
+}
+
+/**
+ * Withdraw a damage request raised by mistake (DAMAGE.md).
+ *
+ * Remarks are MANDATORY: cancelling erases a complaint and takes a device back
+ * off the damaged branch, so the next person to look needs to know why somebody
+ * decided the damage never happened. The edge rejects an empty one.
+ *
+ * Allowed only while the replacement is still un-batched. Past that, cards may
+ * be printing, and the honest path is to let it deliver and flag it again.
+ */
+export function cancelDamageCase(c: Client, asgnId: string, remarks: string, idempotencyKey: string) {
+  return c.request<{ cancelled: boolean; parentAsgnId: string }>({
     method: 'POST',
-    path: '/ops/assignments/request-activation',
-    body: { dispatchIds },
+    path: `/ops/records/${encodeURIComponent(asgnId)}/cancel-damage`,
+    body: { remarks },
+    idempotencyKey,
+  })
+}
+
+/** Undo an activation (ACTIVATION.md): clears activatedAt and activatedBy. */
+export function deactivateAssignment(c: Client, dispatchId: string, idempotencyKey: string) {
+  return c.request<{ deactivated: boolean }>({
+    method: 'POST',
+    path: '/ops/assignments/deactivate',
+    body: { dispatchId },
     idempotencyKey,
   })
 }

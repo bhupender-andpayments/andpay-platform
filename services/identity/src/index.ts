@@ -12,6 +12,7 @@ export {
   editAggregator,
   editBankMaster,
   listBankMasters,
+  readMerchantContacts,
   OpsClientError,
   type CreateAggregatorInput,
   type CreateMerchantInput,
@@ -21,4 +22,5 @@ export {
   type AggregatorRow,
   type BankMasterAddressContact,
   type BankMasterRow,
+  type MerchantContactRow,
 } from './ops.js'

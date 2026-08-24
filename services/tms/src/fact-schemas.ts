@@ -1,4 +1,4 @@
-// The canonical JSON Schemas for the five tms facts (D120), registered at FULL
+// The canonical JSON Schemas for the seven tms facts (D120), registered at FULL
 // compatibility. Open content models (additionalProperties allowed) with a
 // minimal required set, so additive optional fields stay FULL-compatible (E3,
 // E8). IDs-and-minimal shape; PII carried by design (D116/D117) never logged.
@@ -88,5 +88,35 @@ export const TMS_FACT_SCHEMAS: Record<string, object> = {
       activatedAt: { type: 'string' },
     },
     required: ['asgnId', 'activatedAt'],
+  },
+  // The two WITHDRAWAL facts, declared 23 Aug 2026. Both topics have existed on
+  // the bus since 21 Aug (packages/bus/src/topics.ts) and both are produced and
+  // consumed, but neither was ever declared here, so the registry held no
+  // contract for the payloads actually flowing. The header above still said
+  // "the five tms facts"; there are seven.
+  //
+  // NO TIMESTAMP ON EITHER, deliberately. A withdrawal restores the state the
+  // row was in before, and the only honest clock for it is the platform's own
+  // (S22: reported time is the producer's, and there is no external reporter
+  // behind an operator undoing their own action). The audit ledger carries when
+  // and by whom.
+  'fct.tms.assignment.deactivated.v1': {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    properties: {
+      asgnId: { type: 'string' },
+    },
+    required: ['asgnId'],
+  },
+  'fct.tms.assignment.replacement_cancelled.v1': {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    properties: {
+      asgnId: { type: 'string' },
+      replacedAsgnId: { type: 'string' },
+    },
+    // BOTH, matching replacement_raised: the producer always carries the pair
+    // because the two consumers need different halves of it (events.ts).
+    required: ['asgnId', 'replacedAsgnId'],
   },
 }

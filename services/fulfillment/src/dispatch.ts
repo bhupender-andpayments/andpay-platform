@@ -6,6 +6,7 @@ import type { Envelope } from '@andpay/envelope'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope } from './write-context.js'
+import { logPoolEntryStatus } from './status-log.js'
 import { DISPATCH_TOPIC, dispatchFactEnvelope, type BatchFactPayload } from './events.js'
 import { renderCollateralPdf, DEFAULT_SIZE, type ArtifactType } from './collateral/renderer.js'
 import type { AssetStore } from './storage/asset-store.js'
@@ -537,10 +538,25 @@ export async function consumeBatchFact(
         // this, a future async consumer that races ahead (e.g. a return-sheet
         // arriving before this step) could have this UPDATE stomp a later
         // state (SENT_TO_VENDOR/DISPATCHED_BY_VENDOR) back down to QR_GENERATED.
-        await tx.$executeRaw`
+        const qrMoved = await tx.$queryRaw<{ id: string; trace_id: string }[]>`
           UPDATE pending_pool_entry SET dispatch_state = 'QR_GENERATED', updated_at = now()
           WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid AND dispatch_state IS NULL
+          RETURNING id::text AS id, trace_id
         `
+        // The trail, driven by the same RETURNING as the monotonicity guard
+        // above: an entry already past QR_GENERATED does not move and must not
+        // gain a rung claiming it went back.
+        {
+          const qrAt = new Date()
+          for (const m of qrMoved) {
+            await logPoolEntryStatus(tx, m.id, programUuid, {
+              status: 'QR_GENERATED',
+              occurredAt: qrAt,
+              statusSource: 'dispatch:qr-generated',
+              traceId: m.trace_id,
+            })
+          }
+        }
         const asgnIds = entries.map((e) => fromUuid('asgn', e.asgn_id))
         await enqueue(tx, {
           aggregateType: 'batch',
@@ -644,12 +660,23 @@ export async function sendBatchToVendorWithinTx(
     VALUES (${args.btchUuid}::uuid, 'dispatch', 'completed', 1, ${stepKey(args.btchId, 'dispatch')}, now())
     ON CONFLICT (instance_id, name) DO NOTHING
   `
-  const rows = await tx.$queryRaw<{ asgn_id: string }[]>`
+  const rows = await tx.$queryRaw<{ asgn_id: string; id: string; trace_id: string }[]>`
     UPDATE pending_pool_entry SET dispatch_state = 'SENT_TO_VENDOR', updated_at = now()
     WHERE batch = ${args.btchUuid}::uuid AND program_id = ${args.programUuid}::uuid
       AND dispatch_state = 'QR_GENERATED'
-    RETURNING asgn_id::text AS asgn_id
+    RETURNING asgn_id::text AS asgn_id, id::text AS id, trace_id
   `
+  {
+    const sentAt = new Date()
+    for (const r of rows) {
+      await logPoolEntryStatus(tx, r.id, args.programUuid, {
+        status: 'SENT_TO_VENDOR',
+        occurredAt: sentAt,
+        statusSource: 'dispatch:sent-to-vendor',
+        traceId: r.trace_id,
+      })
+    }
+  }
   const asgnIds = rows.map((r) => fromUuid('asgn', r.asgn_id))
   await enqueue(tx, {
     aggregateType: 'batch',

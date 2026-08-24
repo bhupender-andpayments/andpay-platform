@@ -48,6 +48,7 @@ import {
   resolveAssignmentsByDeviceSerial,
   previewOpsDeviceInventory,
   correctUnitStatus,
+  correctDispatchState,
   previewOpsUnitStatus,
   ingestOpsUnitStatus,
   parseReturnWorkbook,
@@ -76,7 +77,8 @@ import {
   deactivateDamageReasonOps,
   updateDamageCaseStatusOps,
   activateAssignmentOps,
-  requestActivationOps,
+  deactivateAssignmentOps,
+  cancelReplacementOps,
   ManualDevicePort,
   type BankRequestRow,
   type BankPreviewResult,
@@ -120,6 +122,13 @@ interface UnitStatusBody {
   status: string
 }
 const KNOWN_UNIT_STATUSES: readonly string[] = [...UNIT_STATUS_ORDER, ...UNIT_TERMINAL_STATUSES]
+// The manual dispatch_state correction body (22 Aug 2026): a target state only,
+// the UnitStatusBody shape. The two correctable states; QR_GENERATED is set by
+// batching itself and the service refuses it as a target.
+interface DispatchStateBody {
+  state: string
+}
+const KNOWN_DISPATCH_STATES: readonly string[] = ['SENT_TO_VENDOR', 'DISPATCHED_BY_VENDOR']
 interface OverrideBody {
   status: string
   courierTimestamp: string
@@ -163,12 +172,6 @@ const MAX_FLAG_REMARKS_LENGTH = 500
 // id (the BRD Dispatch ID), decoded server-side by TMS, never here (D99).
 interface ActivateAssignmentBody {
   dispatchId: string
-}
-// D-16 (T4.1b): the other half of the activation branch. A LIST, because an
-// operator exports a worklist and sends it to the CWD in one go; stamping thirty
-// rows through thirty requests would leave a half-sent batch on any failure.
-interface RequestActivationBody {
-  dispatchIds: string[]
 }
 // D-19 (T5.4): the bulk mark-activated body. A list for the same reason the
 // CWD-request body is one, and the response is PER ROW rather than a single
@@ -422,6 +425,15 @@ interface ResolveStatusExceptionBody {
 interface Gated {
   clientKey: string
   actorId: string
+  /**
+   * The actor's login handle from the verified claim (LeanClaim.hdl), for
+   * DISPLAY ATTRIBUTION on the rows this request writes. Optional because a
+   * token minted before the claim existed is still valid until it expires, so
+   * every writer must tolerate its absence and fall back to the id.
+   *
+   * NEVER an authorization input. Every gate below decides on `sub` alone.
+   */
+  actorDisplay: string | undefined
   traceId: string
 }
 
@@ -479,6 +491,7 @@ export class OpsController {
     stepUpKey?: keyof typeof OPS_STEP_UP_CATALOG,
   ): Promise<Gated> {
     const actorId = req.claim.sub
+    const actorDisplay = req.claim.hdl
     const clientKey = idempotencyKey
     if (clientKey === undefined || clientKey.trim() === '') {
       throw new BadRequestException('Idempotency-Key header is required')
@@ -537,7 +550,7 @@ export class OpsController {
       throw new ForbiddenException()
     }
 
-    return { clientKey, actorId, traceId: req.traceId }
+    return { clientKey, actorId, actorDisplay, traceId: req.traceId }
   }
 
   // The read-like authorize for the preview surface: a plain D2 authorize with
@@ -844,6 +857,7 @@ export class OpsController {
       courierTimestamp: new Date(body.courierTimestamp),
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result
@@ -860,12 +874,13 @@ export class OpsController {
     @Req() req: EdgeRequest,
     @Param('id') id: string,
     @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ delivered: number; skipped: number; failed: number }> {
+  ): Promise<{ delivered: number; skipped: number; failed: number; firstError?: string }> {
     const g = await this.gate(req, 'ops:status-correction', idem, [id])
     return bulkDeliverBatch(this.deps.fulfillmentDb, {
       batchId: id,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -890,6 +905,32 @@ export class OpsController {
       status: body.status,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
+      traceId: g.traceId,
+    })
+  }
+
+  // The dispatch-axis sibling of the unit correction above (22 Aug 2026,
+  // STAGES end-to-end): forward-only along the dispatch_state ladder, for a
+  // vendor handover done off a phone call or a return sheet that never came.
+  // Same tier and the same shape of limit: the rank guard in
+  // correctDispatchState bounds it, not the role.
+  @Post('dispatches/:asgnId/state')
+  @HttpCode(200)
+  async correctDispatch(
+    @Req() req: EdgeRequest,
+    @Param('asgnId') asgnId: string,
+    @Body() body: DispatchStateBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; advanced: boolean }> {
+    const g = await this.gate(req, 'ops:correct-dispatch-state', idem, [asgnId])
+    if (!KNOWN_DISPATCH_STATES.includes(body.state)) throw new BadRequestException('unknown dispatch state')
+    return correctDispatchState(this.deps.fulfillmentDb, {
+      asgnId,
+      state: body.state,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -918,6 +959,7 @@ export class OpsController {
       overrideReason: body.overrideReason,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
       ...(req.claim.acr !== undefined ? { acr: req.claim.acr } : {}),
       ...(req.claim.auth_time !== undefined ? { authTime: req.claim.auth_time } : {}),
@@ -968,6 +1010,7 @@ export class OpsController {
       reason,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result
@@ -1002,6 +1045,7 @@ export class OpsController {
       asgnId,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result
@@ -1030,6 +1074,7 @@ export class OpsController {
       ...(typeof body.opsRemarks === 'string' ? { opsRemarks: body.opsRemarks } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -1085,6 +1130,7 @@ export class OpsController {
       ...(body.stickerCount !== undefined ? { stickerCount: body.stickerCount } : {}),
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -1140,33 +1186,66 @@ export class OpsController {
     })
   }
 
-  // D-16 (T4.1b, 13 Aug 2026): record that the activation request for these
-  // dispatch ids has LEFT US for the CWD. This is the window an operator chases,
-  // between asking and being told, and nothing could express it before.
+  // DAMAGE.md (21 Aug 2026): withdraw a damage request raised by mistake.
   //
-  // A POST rather than a side effect of GET /ops/reports/activation, which is
-  // where D-16's literal wording would put it: that route is a pinned pure read,
-  // and a mutating GET is retried by proxies and prefetched by browsers. The
-  // domain write is the same function either way, so the trigger can move later
-  // at the cost of a route and no state (PLAN.md Q24).
+  // The whole reversal is one domain op: the case becomes Cancelled with the
+  // operator's reason, the replacement leaves the demand pipeline, the parent
+  // becomes flaggable again, and a fact carries the two halves this context
+  // cannot reach (the child's pool row and the parent's devices, both
+  // fulfillment's).
   //
-  // Shape validation only, here. Nothing about WHICH ids are legitimate is
-  // decided at the edge: TMS resolves each assignment and its program
-  // server-side (D99) and reports back the ones it did not recognise.
-  @Post('assignments/request-activation')
+  // Shape validation only here. WHETHER it may be cancelled is decided
+  // server-side from the row itself (only a replacement, only a live case, only
+  // while still un-batched), because those are facts about state and not about
+  // the request.
+  @Post('records/:asgnId/cancel-damage')
   @HttpCode(200)
-  async requestActivationRoute(
+  async cancelDamageRoute(
     @Req() req: EdgeRequest,
-    @Body() body: RequestActivationBody,
+    @Param('asgnId') asgnId: string,
+    @Body() body: { remarks?: string },
     @Headers('idempotency-key') idem: string | undefined,
-  ): Promise<{ deduped: boolean; recorded: string[]; unknown: string[] }> {
-    const ids = Array.isArray(body?.dispatchIds) ? body.dispatchIds.filter((id) => typeof id === 'string') : []
-    if (ids.length === 0) {
-      throw new BadRequestException('dispatchIds must be a non-empty array')
+  ): Promise<{ cancelled: boolean; parentAsgnId: string }> {
+    const remarks = typeof body?.remarks === 'string' ? body.remarks : ''
+    if (remarks.trim() === '') {
+      throw new BadRequestException('remarks are required to cancel a damage request')
     }
-    const g = await this.gate(req, 'ops:request-activation', idem, ids)
-    return requestActivationOps(this.deps.tmsDb, {
-      asgnIds: ids,
+    const g = await this.gate(req, 'ops:cancel-damage', idem, [asgnId])
+    return cancelReplacementOps(this.deps.tmsDb, {
+      asgnId,
+      remarks,
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
+      traceId: g.traceId,
+    })
+  }
+
+  // requestActivationRoute DELETED (ACTIVATION.md, 21 Aug 2026): the team
+  // ruled there is no useful "request sent to CWD" window worth tracking.
+  // Activation is a one-time toggle now (activateAssignmentRoute above), with
+  // no earlier state to record.
+
+  // The toggle's other direction (ACTIVATION.md). An operator who marked the
+  // wrong dispatch activated needs a way back, and with activation off the
+  // ordered ladder there is nothing contradictory about clearing it.
+  //
+  // NO DISPATCH-GROUP GATE HERE, unlike activate above. That gate exists
+  // because paper cannot be activated, so activating a COLLATERAL leg is
+  // nonsense; clearing an activation that should never have existed is exactly
+  // the correction an operator needs, so refusing it would strand the very row
+  // that most needs fixing. TMS resolves the row and its program server-side
+  // (D99) and 404s an unknown id.
+  @Post('assignments/deactivate')
+  @HttpCode(200)
+  async deactivateAssignmentRoute(
+    @Req() req: EdgeRequest,
+    @Body() body: ActivateAssignmentBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deactivated: boolean }> {
+    const g = await this.gate(req, 'ops:deactivate', idem, [body.dispatchId])
+    return deactivateAssignmentOps(this.deps.tmsDb, {
+      asgnId: body.dispatchId,
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,
@@ -1242,9 +1321,9 @@ export class OpsController {
         actorId: g.actorId,
         traceId: g.traceId,
       })
-      // `activated: false` is the already-activated case: the business-key dedup
-      // refused a second mark. Not an error and not a success, so it is reported
-      // as neither.
+      // `activated: false` is the already-activated case: the write's own
+      // activated_at IS NULL guard flipped nothing. Not an error and not a
+      // success, so it is reported as neither.
       results.push({ dispatchId, activated: r.activated, reason: r.activated ? null : 'already-activated' })
     }
     return results
@@ -1345,6 +1424,7 @@ export class OpsController {
       reason,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result
@@ -1373,6 +1453,7 @@ export class OpsController {
       btchId,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
   }
@@ -1381,9 +1462,13 @@ export class OpsController {
    * Close a batch whose dispatches have all settled (D5).
    *
    * No body: the operator supplies no facts, the domain checks them. A refusal
-   * comes back as a 409 whose message carries the settlement breakdown, so the
-   * portal can say what the batch is still waiting for rather than only that it
-   * cannot close.
+   * is a plain 409. The domain's message does name the pending count, but
+   * OpsErrorFilter deliberately never forwards messages to the wire (S4
+   * posture), so the portal cannot and does not read it from here: the close
+   * dialog computes the same breakdown from readBatchDetail's settlement and
+   * disables its confirm until settled. This comment previously claimed the
+   * 409 carried the breakdown; it never did on the wire (corrected 23 Aug
+   * 2026).
    */
   @Post('batches/:btchId/close')
   @HttpCode(200)
@@ -1397,6 +1482,7 @@ export class OpsController {
       btchId,
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return { deduped: result.deduped, closed: result.closed }
@@ -1621,6 +1707,7 @@ export class OpsController {
       courierTimestamp: new Date(body.courierTimestamp),
       clientKey: g.clientKey,
       actorId: g.actorId,
+      actorDisplay: g.actorDisplay ?? null,
       traceId: g.traceId,
     })
     return result

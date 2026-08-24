@@ -36,6 +36,18 @@ export interface BankRequestRow {
   // Absent means the row's own bankReferenceCode is the tenant.
   tenantReference?: string
   vpaHint?: string
+  // BRD 5.1b, 22 Aug 2026: the five columns the Annexure B profile used to
+  // discard. OPTIONAL, and deliberately absent from requestRowRejectReason
+  // below: Email ID and QR Type are Optional in the BRD and blank in the real
+  // bank file, and City/State/Pincode are already covered by the mandatory
+  // registeredAddress they were composed into. Like contactName/mobile/
+  // branchCode they never reach the row fact, only pending_row and the
+  // assignment snapshot.
+  email?: string
+  city?: string
+  state?: string
+  pincode?: string
+  qrType?: string
 }
 
 // The row-level reject reason (S8 row validation), extracted so BOTH the
@@ -429,9 +441,9 @@ export async function ingestRequestRowWithinTx(
   let outcome: 'accepted' | 'duplicate' = 'duplicate'
   const won = await tx.$queryRaw<{ id: string }[]>`
     INSERT INTO pending_row
-      (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code, status)
+      (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code, email, city, state, pincode, qr_type, status)
     VALUES
-      (${correlationId}, ${row.bankReferenceCode}, ${row.soundbox}, ${row.standeeCount}, ${row.stickerCount}, ${row.qrValue}, ${row.vpaValue}, ${row.shipToAddress}, ${row.contactName}, ${row.mobile}, ${row.branchCode}, ${'awaiting-identity'})
+      (${correlationId}, ${row.bankReferenceCode}, ${row.soundbox}, ${row.standeeCount}, ${row.stickerCount}, ${row.qrValue}, ${row.vpaValue}, ${row.shipToAddress}, ${row.contactName}, ${row.mobile}, ${row.branchCode}, ${row.email ?? null}, ${row.city ?? null}, ${row.state ?? null}, ${row.pincode ?? null}, ${row.qrType ?? null}, ${'awaiting-identity'})
     ON CONFLICT (correlation_id) DO NOTHING
     RETURNING id
   `

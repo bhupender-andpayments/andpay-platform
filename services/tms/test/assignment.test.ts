@@ -12,7 +12,7 @@ const db = new PrismaClient({ datasourceUrl: url })
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
+    'TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
   )
 })
 // Clears up AFTER the last test as well as before each one (F-9). Truncating
@@ -24,7 +24,7 @@ beforeEach(async () => {
 // test.
 afterAll(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
+    'TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
   )
   await db.$disconnect()
 })
@@ -33,8 +33,8 @@ async function seed(correlationId: string) {
   const mrchId = fromUuid('mrch', toUuid(newId('mrch')))
   const progId = fromUuid('prog', toUuid(newId('prog')))
   const tnntId = fromUuid('tnnt', toUuid(newId('tnnt')))
-  await db.$executeRaw`INSERT INTO pending_row (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code, status)
-    VALUES (${correlationId}, 'HDFC', true, 1, 2, 'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', '221B Baker Street', 'Jane Doe', '+91-9000000000', 'BR-001', 'awaiting-identity')`
+  await db.$executeRaw`INSERT INTO pending_row (correlation_id, tenant_reference, soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code, email, city, state, pincode, qr_type, status)
+    VALUES (${correlationId}, 'HDFC', true, 1, 2, 'upi://pay?pa=acme@hdfcbank', 'acme@hdfcbank', '221B Baker Street', 'Jane Doe', '+91-9000000000', 'BR-001', 'jane@acme.example', 'PUNE', 'Maharashtra', '411001', 'Static', 'awaiting-identity')`
   await db.$executeRaw`INSERT INTO merchant_projection (id, display_name, legal_name, mcc, status, updated_at)
     VALUES (${toUuid(mrchId)}::uuid, 'Acme', 'Acme Pvt Ltd', '5814', 'ACTIVE', now())`
   await db.$executeRaw`INSERT INTO tenant_projection (id, display_name, bank_reference_code, updated_at)
@@ -77,11 +77,16 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
       contact_name: string | null
       mobile: string | null
       branch_code: string | null
+      email: string | null
+      city: string | null
+      state: string | null
+      pincode: string | null
+      qr_type: string | null
       dispatch_group: string
     }[]>`
       SELECT merchant_display_name, merchant_legal_name, merchant_mcc, bank_reference_code, bank_display_name,
              ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count, demand_state, source_event_id,
-             contact_name, mobile, branch_code, dispatch_group
+             contact_name, mobile, branch_code, email, city, state, pincode, qr_type, dispatch_group
       FROM assignment ORDER BY dispatch_group
     `
     expect(asgn).toHaveLength(2)
@@ -104,6 +109,14 @@ describe('assignment creation from the enrollment fact (checks 2, 3, 9, 10)', ()
       expect(row.mobile).toBe('+91-9000000000')
       // Task 4: the Branch Code snapshot carried from pending_row.
       expect(row.branch_code).toBe('BR-001')
+      // BRD 5.1b, 22 Aug 2026: the five parts ride the same route, and BOTH
+      // dispatch groups carry them, because they describe the merchant rather
+      // than what is in the parcel.
+      expect(row.email).toBe('jane@acme.example')
+      expect(row.city).toBe('PUNE')
+      expect(row.state).toBe('Maharashtra')
+      expect(row.pincode).toBe('411001')
+      expect(row.qr_type).toBe('Static')
     }
     // W-5: the product mix diverges PER dispatch group.
     expect(soundboxRow.soundbox).toBe(true)

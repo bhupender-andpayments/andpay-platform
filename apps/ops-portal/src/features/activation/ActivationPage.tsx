@@ -450,7 +450,12 @@ export function ActivationPage() {
       // and the sheet is one row per DEVICE. One count, and it is the one that
       // matches the file.
       key: 'devices',
-      header: 'Soundboxes',
+      // "Awaiting activation", not "Soundboxes" (23 Aug 2026, at the user's
+      // correction): the count is PENDING soundboxes only (activated ones drop
+      // off the report), and the batch's own device page legitimately lists
+      // more. A header claiming the total made the two pages read as
+      // disagreeing when each was right about its own number.
+      header: 'Pending soundboxes',
       cell: (g) => g.deviceCount,
       sortValue: (g) => g.deviceCount,
       align: 'right',

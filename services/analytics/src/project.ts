@@ -21,7 +21,9 @@ const T = {
   ASSIGNMENT: 'fct.tms.assignment.v1',
   SHIP_TO_AMENDED: 'fct.tms.assignment.ship_to_amended.v1',
   REPLACEMENT: 'fct.tms.assignment.replacement_raised.v1',
+  REPLACEMENT_CANCELLED: 'fct.tms.assignment.replacement_cancelled.v1',
   ACTIVATED: 'fct.tms.assignment.activated.v1',
+  DEACTIVATED: 'fct.tms.assignment.deactivated.v1',
   UNIT: 'fct.fulfillment.unit.v1',
   PRINT_FOR: 'fct.fulfillment.unit.print_for.v1',
   BATCH: 'fct.fulfillment.batch.v1',
@@ -217,6 +219,21 @@ export function applyFact(
       }
       return s
     }
+    case T.REPLACEMENT_CANCELLED: {
+      // The withdrawal of T.REPLACEMENT (24 Aug 2026). The PARENT's damage
+      // marks come OFF: a cancelled flag means the damage never happened, so
+      // back to null rather than to some 'CANCELLED' token, exactly the
+      // deactivation rule. The CHILD keeps its identity (is_replacement,
+      // original_dispatch_id, damage_reason): being born from a flag is
+      // permanent history even when the flag was a mistake, and the case's
+      // Cancelled status lives on the TMS case row, not here.
+      const p = payload as ReplacementRaisedFactView
+      if (p.replacedAsgnId === s.dispatchId) {
+        s.replacementDispatchId = null
+        s.replacementStatus = null
+      }
+      return s
+    }
     case T.ACTIVATED: {
       const p = payload as ActivatedFactView
       s.activationStatus = 'ACTIVATED'
@@ -228,6 +245,21 @@ export function applyFact(
       // D-16 (T4.3): NO pipeline_state advance. Activation is the other axis,
       // and writing it here is what used to let an early activation mask a
       // later delivery. The columns set just above are the whole record of it.
+      return s
+    }
+    case T.DEACTIVATED: {
+      // ACTIVATION.md (21 Aug 2026): the activation was withdrawn, so the three
+      // columns the ACTIVATED case sets go back to where they started. Without
+      // this the report kept reporting a dispatch live after an operator had
+      // taken that back, which is the whole reason the fact was added.
+      //
+      // Back to null rather than to some 'DEACTIVATED' token: the axis records
+      // whether the dispatch IS live, and a withdrawn activation is
+      // indistinguishable from one that never happened. The audit ledger is
+      // where "somebody undid this" lives.
+      s.activationStatus = null
+      s.simActivationStatus = null
+      s.activationDate = null
       return s
     }
     case T.UNIT:
@@ -367,8 +399,15 @@ async function foldAsgn(tx: Tx, asgn: string): Promise<DispatchRowState | null> 
     SELECT topic, payload, occurred_at
     FROM raw_event
     WHERE
-      (topic IN (${T.ASSIGNMENT}, ${T.SHIP_TO_AMENDED}, ${T.ACTIVATED}, ${T.PRINT_FOR}) AND payload->>'asgnId' = ${asgn})
-      OR (topic = ${T.REPLACEMENT} AND (payload->>'asgnId' = ${asgn} OR payload->>'replacedAsgnId' = ${asgn}))
+      -- T.DEACTIVATED belongs in this list and was missing until 23 Aug 2026.
+      -- It was the online/rebuild divergence D98 forbids, in both directions at
+      -- once: applyFact has handled the topic since it was added, but neither
+      -- this selector nor affectedAsgns named it, so a deactivation was stored
+      -- in raw_event and then folded by nothing. The Activation tab kept
+      -- counting a withdrawn activation as done while the batch's own device
+      -- page, reading fulfillment, showed the device back to not activated.
+      (topic IN (${T.ASSIGNMENT}, ${T.SHIP_TO_AMENDED}, ${T.ACTIVATED}, ${T.DEACTIVATED}, ${T.PRINT_FOR}) AND payload->>'asgnId' = ${asgn})
+      OR (topic IN (${T.REPLACEMENT}, ${T.REPLACEMENT_CANCELLED}) AND (payload->>'asgnId' = ${asgn} OR payload->>'replacedAsgnId' = ${asgn}))
       OR (topic IN (${T.BATCH}, ${T.DISPATCH}) AND jsonb_exists(payload->'asgnIds', ${asgn}))
       OR (topic = ${T.SHIPMENT} AND payload->>'shptId' IN (SELECT shpt_id FROM shpts))
       -- A COLLATERAL shipment fact names its assignments on the fact itself. It
@@ -450,12 +489,19 @@ async function refoldAndUpsert(tx: Tx, asgn: string): Promise<void> {
 async function affectedAsgns(tx: Tx, env: Envelope): Promise<string[]> {
   const payload = env.payload as Record<string, unknown>
   switch (env.type) {
+    // T.DEACTIVATED carries asgnId exactly as T.ACTIVATED does, and omitting it
+    // from this group meant the ONLINE path resolved ZERO affected assignments:
+    // the fact landed in raw_event, nothing was re-folded, and dispatch_row went
+    // on reporting activation_status = 'ACTIVATED' after the operator had taken
+    // it back. See the matching arm in foldAsgn.
     case T.ASSIGNMENT:
     case T.SHIP_TO_AMENDED:
     case T.ACTIVATED:
+    case T.DEACTIVATED:
     case T.PRINT_FOR:
       return typeof payload.asgnId === 'string' ? [payload.asgnId] : []
-    case T.REPLACEMENT: {
+    case T.REPLACEMENT:
+    case T.REPLACEMENT_CANCELLED: {
       const out: string[] = []
       if (typeof payload.asgnId === 'string') out.push(payload.asgnId)
       if (typeof payload.replacedAsgnId === 'string') out.push(payload.replacedAsgnId)

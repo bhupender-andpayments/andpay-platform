@@ -15,7 +15,7 @@ const url = process.env.TMS_DATABASE_URL ?? 'postgresql://andpay:andpay_dev@loca
 const db = new PrismaClient({ datasourceUrl: url })
 
 beforeEach(async () => {
-  await db.$executeRawUnsafe('TRUNCATE assignment, assignment_activation_event, quarantine_row, outbox, inbox')
+  await db.$executeRawUnsafe('TRUNCATE assignment, quarantine_row, outbox, inbox')
 })
 afterAll(async () => {
   await db.$disconnect()
@@ -30,12 +30,14 @@ async function seedLeg(group: 'SOUNDBOX' | 'COLLATERAL', vpa = `flag-${randomUUI
   await db.$executeRaw`INSERT INTO assignment (
     id, merchant_id, program_id, tenant_id, merchant_display_name, merchant_legal_name, merchant_mcc,
     bank_reference_code, bank_display_name, ship_to_address, qr_value, vpa_value, soundbox, standee_count, sticker_count,
-    billable, demand_state, source_event_id, dispatch_group, contact_name, mobile, branch_code, updated_at
+    billable, demand_state, source_event_id, dispatch_group, contact_name, mobile, branch_code,
+    email, city, state, pincode, qr_type, updated_at
   ) VALUES (
     ${asgnUuid}::uuid, ${toUuid(newId('mrch'))}::uuid, ${toUuid(newId('prog'))}::uuid, ${toUuid(newId('tnnt'))}::uuid,
     'Acme', 'Acme Pvt Ltd', '5814', 'HDFC', 'HDFC Bank', 'Old Addr', 'upi://pay', ${vpa},
     ${group === 'SOUNDBOX'}, ${group === 'SOUNDBOX' ? 0 : 2}, ${group === 'SOUNDBOX' ? 0 : 3},
-    true, 'pooled-for-fulfillment', ${`flag-seed|${asgnUuid}`}, ${group}, 'Original Contact', '+91-8888888888', 'BR-ORIG', now()
+    true, 'pooled-for-fulfillment', ${`flag-seed|${asgnUuid}`}, ${group}, 'Original Contact', '+91-8888888888', 'BR-ORIG',
+    'original@acme.example', 'PUNE', 'Maharashtra', '411001', 'Static', now()
   )`
   return fromUuid('asgn', asgnUuid)
 }
@@ -87,10 +89,15 @@ describe('flagDamageOps happy path on a COLLATERAL leg (D-26, DP-2)', () => {
       demand_state: string
       contact_name: string | null
       branch_code: string | null
+      email: string | null
+      city: string | null
+      state: string | null
+      pincode: string | null
+      qr_type: string | null
     }[]>`
       SELECT id, replacement_of, dispatch_group, soundbox, standee_count, sticker_count, billable,
              damage_reason, ops_remarks, bank_remarks, flagged_by, case_status, origin, source_event_id,
-             demand_state, contact_name, branch_code
+             demand_state, contact_name, branch_code, email, city, state, pincode, qr_type
       FROM assignment WHERE replacement_of IS NOT NULL
     `
     expect(rows).toHaveLength(1)
@@ -111,13 +118,28 @@ describe('flagDamageOps happy path on a COLLATERAL leg (D-26, DP-2)', () => {
     expect(child.flagged_by).toBe(actorId)
     expect(child.case_status).toBe('Open')
     expect(child.origin).toBe('ADDITIONAL')
-    // DP-4: the correlation id is the client key under the ops-flag prefix.
-    expect(child.source_event_id).toBe(`ops-flag|${clientKey}`)
+    // THE CHILD'S REQUEST KEY IS DERIVED FROM THE PARENT'S (DAMAGE.md, 21 Aug
+    // 2026), revising DP-4, which made it the client key. source_event_id is
+    // the platform's merchant-request identity: the pool groups by it and the
+    // min-lot gate counts distinct values of it, so a random key per flag split
+    // one merchant request into two and counted it twice. `|g1` is the
+    // replacement generation, which is what keeps a SECOND round of damage on
+    // the same leg from colliding with the first and being silently swallowed.
+    expect(child.source_event_id).toBe(`ops-flag|flag-seed|${toUuid(parent)}|g1`)
     // emitDemandFact pooled the child, so it enters the normal pipeline.
     expect(child.demand_state).toBe('pooled-for-fulfillment')
     // The recipient and branch snapshots carry forward from the parent.
     expect(child.contact_name).toBe('Original Contact')
     expect(child.branch_code).toBe('BR-ORIG')
+    // BRD 5.1b, 22 Aug 2026: so does the rest of the block. Without this a
+    // merchant whose newest request is a replacement would read as having no
+    // email or city on the merchants list, because the list takes its block
+    // from the LATEST request and that is what a replacement becomes.
+    expect(child.email).toBe('original@acme.example')
+    expect(child.city).toBe('PUNE')
+    expect(child.state).toBe('Maharashtra')
+    expect(child.pincode).toBe('411001')
+    expect(child.qr_type).toBe('Static')
 
     // Both facts are enqueued in the same transaction.
     const types = (await db.$queryRaw<{ event_type: string }[]>`SELECT event_type FROM outbox ORDER BY event_type`).map(
@@ -236,15 +258,43 @@ describe('flagDamageOps validation and refusal paths', () => {
   })
 })
 
-describe('DP-3: one live case per dispatch', () => {
-  it('a second flag is refused with a conflict while the first case is not Closed, and allowed again after it closes', async () => {
+describe('the replacement quantity is capped at what was ordered (DAMAGE.md)', () => {
+  it('refuses more standees than the dispatch ordered, naming the real ceiling', async () => {
+    // seedLeg orders 2 standees and 3 stickers on a COLLATERAL leg.
+    const parent = await seedLeg('COLLATERAL')
+    await expect(
+      flagDamageOps(db, { ...baseArgs(parent), standeeCount: 99, stickerCount: 0 }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+    // Nothing was minted: the check runs before any write.
+    const n = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM assignment WHERE replacement_of = ${toUuid(parent)}::uuid
+    `
+    expect(Number(n[0]!.n)).toBe(0)
+  })
+
+  it('refuses more stickers than ordered too, on the same rule', async () => {
+    const parent = await seedLeg('COLLATERAL')
+    await expect(
+      flagDamageOps(db, { ...baseArgs(parent), standeeCount: 0, stickerCount: 99 }),
+    ).rejects.toMatchObject({ kind: 'invalid' })
+  })
+
+  it('allows exactly the ordered quantity, which is the whole consignment being replaced', async () => {
+    const parent = await seedLeg('COLLATERAL')
+    const res = await flagDamageOps(db, { ...baseArgs(parent), standeeCount: 2, stickerCount: 3 })
+    expect(res.childAsgnId).toBeTruthy()
+  })
+})
+
+describe('only the chain tip is flaggable (DAMAGE.md, revising DP-3)', () => {
+  it('a replaced dispatch is refused for good, open case or closed, and the refusal names the tip', async () => {
     const parent = await seedLeg('SOUNDBOX')
     const first = await flagDamageOps(db, baseArgs(parent))
 
-    // A fresh client key against the same parent: the live case blocks it.
+    // A fresh client key against the same parent: the replacement blocks it.
     await expect(flagDamageOps(db, baseArgs(parent))).rejects.toMatchObject({ kind: 'conflict' })
 
-    // Still blocked at In-Progress: the rule is "not Closed", not "not Open".
+    // Still blocked at In-Progress.
     await updateDamageCaseStatusOps(db, {
       asgnId: first.childAsgnId,
       newStatus: 'In-Progress',
@@ -254,7 +304,12 @@ describe('DP-3: one live case per dispatch', () => {
     })
     await expect(flagDamageOps(db, baseArgs(parent))).rejects.toMatchObject({ kind: 'conflict' })
 
-    // After the case closes, repeat damage is real and a new flag is allowed.
+    // AND STILL BLOCKED ONCE CLOSED, which is the change. DP-3 allowed a new
+    // flag on the ORIGINAL here, on the grounds that repeat damage is real. It
+    // is, but it happens to the device the merchant is now holding, which is the
+    // replacement: flagging the original again produced two sibling
+    // replacements of one parent rather than a chain, and neither knew about the
+    // other.
     await updateDamageCaseStatusOps(db, {
       asgnId: first.childAsgnId,
       newStatus: 'Closed',
@@ -262,10 +317,47 @@ describe('DP-3: one live case per dispatch', () => {
       actorId: randomUUID(),
       traceId: 't-dup-2',
     })
-    const second = await flagDamageOps(db, baseArgs(parent))
-    expect(second.childAsgnId).not.toBe(first.childAsgnId)
+    await expect(flagDamageOps(db, baseArgs(parent))).rejects.toMatchObject({ kind: 'conflict' })
+
+    // The parent keeps exactly ONE child, so the chain stayed a chain.
     const n = await db.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM assignment WHERE replacement_of = ${toUuid(parent)}::uuid`
-    expect(Number(n[0]!.n)).toBe(2)
+    expect(Number(n[0]!.n)).toBe(1)
+
+    // The refusal points at where the operator should actually go, so they do
+    // not have to guess which of a chain is current.
+    await expect(flagDamageOps(db, baseArgs(parent))).rejects.toMatchObject({
+      message: expect.stringContaining(first.childAsgnId),
+    })
+  })
+
+  it('repeat damage lands on the TIP, and its generation keeps the request key unique', async () => {
+    const parent = await seedLeg('SOUNDBOX')
+    const first = await flagDamageOps(db, baseArgs(parent))
+    await updateDamageCaseStatusOps(db, {
+      asgnId: first.childAsgnId,
+      newStatus: 'Closed',
+      clientKey: randomUUID(),
+      actorId: randomUUID(),
+      traceId: 't-gen-1',
+    })
+
+    // Flagging the REPLACEMENT is how repeat damage is recorded now.
+    const second = await flagDamageOps(db, baseArgs(first.childAsgnId))
+    expect(second.childAsgnId).not.toBe(first.childAsgnId)
+
+    // Both replacements share the ROOT request key and differ only by
+    // generation. Sharing the root is what puts a merchant's replacement legs
+    // back in one pool request; differing by generation is what stops the second
+    // round colliding with the first on (source_event_id, dispatch_group) and
+    // being swallowed by the ON CONFLICT DO NOTHING.
+    const keys = await db.$queryRaw<{ source_event_id: string }[]>`
+      SELECT source_event_id FROM assignment
+      WHERE id IN (${toUuid(first.childAsgnId)}::uuid, ${toUuid(second.childAsgnId)}::uuid)
+      ORDER BY source_event_id
+    `
+    expect(keys).toHaveLength(2)
+    expect(keys[0]!.source_event_id).toBe(`ops-flag|flag-seed|${toUuid(parent)}|g1`)
+    expect(keys[1]!.source_event_id).toBe(`ops-flag|flag-seed|${toUuid(parent)}|g2`)
   })
 
   it('a replacement itself is flaggable under the same rule (a replacement can arrive damaged)', async () => {

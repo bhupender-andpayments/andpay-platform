@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { newId } from '@andpay/ids'
 import { merchantBankReference } from '@andpay/merchant-ref'
 import { PrismaClient } from '../generated/client/index.js'
-import { createBankMaster, createMerchant, OpsClientError } from '../src/ops.js'
+import { createBankMaster, createMerchant, readMerchantContacts, OpsClientError } from '../src/ops.js'
 import { projectRowFact } from '../src/project.js'
 import { rowFactEnvelope, type RowFactPayload, type RowFactEnvelope } from '../src/row-fact.js'
 
@@ -290,5 +290,44 @@ describe('createMerchant (the ops Add-merchant path)', () => {
     await expect(createMerchant(db, createArgs('tnnt_not-a-real-id'))).rejects.toMatchObject({ kind: 'invalid' })
 
     expect(await db.merchant.count()).toBe(0)
+  })
+})
+
+// The merchants LIST is served from TMS, which C4 forbids from reading
+// identity.merchant. A hand-created merchant therefore has no BRD block on
+// that side until their first bank file arrives, and would show up blank on
+// the one page whose job is finding them. This reader is what the ops edge
+// composes over the TMS read to close that (see the merchants route in
+// apps/ops-edge/src/ops-read.controller.ts).
+describe('readMerchantContacts (the ops edge merchants composition)', () => {
+  it('returns the BRD block for a hand-created merchant, keyed by wire id', async () => {
+    const tnntId = await seedBank()
+    const res = await createMerchant(db, createArgs(tnntId))
+    const mrchId = res.mrchId as string
+
+    const contacts = await readMerchantContacts(db, [mrchId])
+    const hit = contacts.get(mrchId)
+    expect(hit, 'the merchant just created must be found').toBeDefined()
+    expect(hit?.contactName).toBe('Asha Rao')
+    expect(hit?.mobile).toBe('9000000002')
+    expect(hit?.email).toBe('asha@sunrise.example')
+    expect(hit?.city).toBe('Rajkot')
+    expect(hit?.state).toBe('Gujarat')
+    expect(hit?.pincode).toBe('360001')
+    expect(hit?.registeredAddress).toContain('Rajkot')
+  })
+
+  // The edge calls this with only the merchants TMS came back empty on, so the
+  // empty case is the common one and must not cost a query.
+  it('returns an empty map for no ids, without touching the database', async () => {
+    await expect(readMerchantContacts(db, [])).resolves.toEqual(new Map())
+  })
+
+  // An id TMS knows and identity does not is not an error: an ingested
+  // merchant projected into TMS before its identity row committed would look
+  // exactly like this, and the list must still render.
+  it('omits an id it cannot find rather than throwing', async () => {
+    const contacts = await readMerchantContacts(db, [newId('mrch')])
+    expect(contacts.size).toBe(0)
   })
 })

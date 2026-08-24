@@ -208,6 +208,11 @@ export async function login(
       cls: 3,
       mode: 'live',
       scope: {},
+      // Display attribution (LeanClaim.hdl): the handle this principal just
+      // authenticated with, so every row they write can name them without a
+      // cross-context read into auth. Taken from the loaded principal, never
+      // from the request body.
+      hdl: principal.loginHandle,
       psr: `role:${principal.role}`,
       epoch: 1,
       aud: INTERNAL_ADMIN_PLANE,

@@ -104,13 +104,24 @@ export interface DamageCaseView {
   replacementOf: string
   merchantDisplayName: string
   bankReferenceCode: string
+  /** For the Name (CODE) display rule (DEC-14); the read carried only the code. */
+  bankDisplayName: string
   branchCode: string | null
+  /**
+   * SOUNDBOX or COLLATERAL (DAMAGE.md). Absent from this read until 21 Aug 2026,
+   * which meant the damage-cases page could not tell a soundbox case from a
+   * collateral one at all: the two close on different rules and an operator
+   * chasing one has to know which they are looking at.
+   */
+  dispatchGroup: 'SOUNDBOX' | 'COLLATERAL'
   damageReason: string | null
   /** What the BANK wrote on the damage row. */
   bankRemarks: string | null
   /** What an OPERATOR wrote about the case (T6.4). Different people's words. */
   opsRemarks: string | null
   caseStatus: string | null
+  /** Why it was cancelled, on a Cancelled case only. */
+  caseCancelRemarks: string | null
   billable: boolean
   demandState: string
   createdAt: Date
@@ -122,11 +133,14 @@ interface DamageCaseDbRow {
   replacement_of: string
   merchant_display_name: string
   bank_reference_code: string
+  bank_display_name: string
   branch_code: string | null
+  dispatch_group: 'SOUNDBOX' | 'COLLATERAL'
   damage_reason: string | null
   bank_remarks: string | null
   ops_remarks: string | null
   case_status: string | null
+  case_cancel_remarks: string | null
   billable: boolean
   demand_state: string
   created_at: Date
@@ -139,11 +153,14 @@ function toDamageCaseDto(r: DamageCaseDbRow): DamageCaseView {
     replacementOf: fromUuid('asgn', r.replacement_of),
     merchantDisplayName: r.merchant_display_name,
     bankReferenceCode: r.bank_reference_code,
+    bankDisplayName: r.bank_display_name,
     branchCode: r.branch_code,
+    dispatchGroup: r.dispatch_group,
     damageReason: r.damage_reason,
     bankRemarks: r.bank_remarks,
     opsRemarks: r.ops_remarks,
     caseStatus: r.case_status,
+    caseCancelRemarks: r.case_cancel_remarks,
     billable: r.billable,
     demandState: r.demand_state,
     createdAt: r.created_at,
@@ -159,15 +176,17 @@ export async function readDamageCases(
     await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
     return args.includeClosed
       ? await tx.$queryRaw<DamageCaseDbRow[]>`
-          SELECT id, replacement_of, merchant_display_name, bank_reference_code, branch_code,
-                 damage_reason, bank_remarks, ops_remarks, case_status, billable, demand_state, created_at, updated_at
+          SELECT id, replacement_of, merchant_display_name, bank_reference_code, bank_display_name, branch_code,
+                 dispatch_group, damage_reason, bank_remarks, ops_remarks, case_status,
+                 case_cancel_remarks, billable, demand_state, created_at, updated_at
           FROM assignment
           WHERE replacement_of IS NOT NULL
           ORDER BY created_at
         `
       : await tx.$queryRaw<DamageCaseDbRow[]>`
-          SELECT id, replacement_of, merchant_display_name, bank_reference_code, branch_code,
-                 damage_reason, bank_remarks, ops_remarks, case_status, billable, demand_state, created_at, updated_at
+          SELECT id, replacement_of, merchant_display_name, bank_reference_code, bank_display_name, branch_code,
+                 dispatch_group, damage_reason, bank_remarks, ops_remarks, case_status,
+                 case_cancel_remarks, billable, demand_state, created_at, updated_at
           FROM assignment
           WHERE replacement_of IS NOT NULL AND case_status IS DISTINCT FROM 'Closed'
           ORDER BY created_at
@@ -198,8 +217,11 @@ export interface VpaDispatchRow {
   replacementOfAsgnId: string | null
   caseStatus: string | null
   demandState: string
+  /** Derived from activatedAt (ACTIVATION.md): 'ACTIVATED' or null. */
   activationStatus: string | null
   activatedAt: string | null
+  /** Who marked it activated, null when no operator was behind it. */
+  activatedBy: string | null
   createdAt: string
 }
 
@@ -216,8 +238,8 @@ interface VpaDispatchDbRow {
   replacement_of: string | null
   case_status: string | null
   demand_state: string
-  activation_status: string | null
   activated_at: Date | null
+  activated_by: string | null
   created_at: Date
 }
 
@@ -231,7 +253,7 @@ export async function searchDispatchesByVpa(db: TmsDb, vpa: string): Promise<Vpa
     return tx.$queryRaw<VpaDispatchDbRow[]>`
       SELECT id, dispatch_group, bank_reference_code, bank_display_name, merchant_display_name,
              soundbox, standee_count, sticker_count, billable, replacement_of, case_status,
-             demand_state, activation_status, activated_at, created_at
+             demand_state, activated_at, activated_by::text AS activated_by, created_at
       FROM assignment
       WHERE LOWER(TRIM(vpa_value)) = LOWER(TRIM(${vpa}))
       ORDER BY created_at DESC
@@ -250,9 +272,229 @@ export async function searchDispatchesByVpa(db: TmsDb, vpa: string): Promise<Vpa
     replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
     caseStatus: r.case_status,
     demandState: r.demand_state,
-    activationStatus: r.activation_status,
+    // ACTIVATION.md (21 Aug 2026): derived, not stored. The old
+    // activation_status column is gone; a set activated_at IS the activation.
+    activationStatus: r.activated_at === null ? null : 'ACTIVATED',
+    activatedAt: r.activated_at === null ? null : r.activated_at.toISOString(),
+    activatedBy: r.activated_by,
+    createdAt: r.created_at.toISOString(),
+  }))
+}
+
+/**
+ * THE REPLACEMENT CHAIN through any member of it (DAMAGE.md, 21 Aug 2026).
+ *
+ * replacement_of is a ONE-LEVEL pointer, and nothing walked it. That was fine
+ * while a chain was at most two long, and stopped being fine the moment repeat
+ * damage became a real flow: an operator holding the third generation could see
+ * its parent and had no way to reach the original, and an operator on the
+ * original could not tell that two replacements had already been through.
+ *
+ * Walks UP to the root first and then DOWN, so any member returns the same whole
+ * chain: "show me this dispatch's history" is the same question whichever
+ * generation you ask it from.
+ *
+ * ORDERED OLDEST FIRST, so the caller renders a progression without sorting.
+ *
+ * NOT AN AGGREGATE, which matters here: this module is row-level only by
+ * construction (architecture.test.ts check 7). WITH RECURSIVE is a row-producing
+ * query, not a count or a group by, so it is inside the rule rather than an
+ * exception to it.
+ */
+export interface ChainMemberRow {
+  asgnId: string
+  /** The one it replaces, null on the root. */
+  replacementOfAsgnId: string | null
+  dispatchGroup: string
+  caseStatus: string | null
+  demandState: string
+  damageReason: string | null
+  billable: boolean
+  activatedAt: string | null
+  deliveredAt: string | null
+  createdAt: string
+  /** 0 for the original, 1 for its replacement, and so on. */
+  generation: number
+}
+
+export async function readReplacementChainOps(db: TmsDb, asgnId: string): Promise<ChainMemberRow[]> {
+  const asgnUuid = toUuid(asgnId)
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<
+      {
+        id: string
+        replacement_of: string | null
+        dispatch_group: string
+        case_status: string | null
+        demand_state: string
+        damage_reason: string | null
+        billable: boolean
+        activated_at: Date | null
+        delivered_at: Date | null
+        created_at: Date
+        generation: number
+      }[]
+    >`
+      WITH RECURSIVE up AS (
+        -- Climb to the root: the ancestor with no replacement_of.
+        SELECT id, replacement_of FROM assignment WHERE id = ${asgnUuid}::uuid
+        UNION ALL
+        SELECT a.id, a.replacement_of FROM assignment a JOIN up u ON a.id = u.replacement_of
+      ),
+      root AS (
+        SELECT id FROM up WHERE replacement_of IS NULL LIMIT 1
+      ),
+      down AS (
+        -- Then descend from it, numbering the generations as we go.
+        SELECT a.id, a.replacement_of, 0 AS generation
+        FROM assignment a JOIN root r ON a.id = r.id
+        UNION ALL
+        SELECT c.id, c.replacement_of, d.generation + 1
+        FROM assignment c JOIN down d ON c.replacement_of = d.id
+      )
+      SELECT a.id::text AS id, a.replacement_of::text AS replacement_of, a.dispatch_group,
+             a.case_status, a.demand_state, a.damage_reason, a.billable,
+             a.activated_at, a.delivered_at, a.created_at, d.generation
+      FROM down d JOIN assignment a ON a.id = d.id
+      ORDER BY d.generation ASC, a.created_at ASC
+    `
+  })
+  return rows.map((r) => ({
+    asgnId: fromUuid('asgn', r.id),
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
+    dispatchGroup: r.dispatch_group,
+    caseStatus: r.case_status,
+    demandState: r.demand_state,
+    damageReason: r.damage_reason,
+    billable: r.billable,
+    activatedAt: r.activated_at === null ? null : r.activated_at.toISOString(),
+    deliveredAt: r.delivered_at === null ? null : r.delivered_at.toISOString(),
+    createdAt: r.created_at.toISOString(),
+    generation: Number(r.generation),
+  }))
+}
+
+// THE MERCHANT REQUEST, which the platform has always had and never shown
+// (DAMAGE.md, 21 Aug 2026).
+//
+// source_event_id IS the request identity: both legs of one bank-file row carry
+// it, the pool groups by it, and the minimum-lot batching gate counts DISTINCT
+// values of it. There is no `request` table and there does not need to be; the
+// key is the relationship. What was missing was any screen that asked the
+// question the key answers, so an operator holding a merchant's complaint had
+// to work backwards from a dispatch and guess which siblings belonged with it.
+//
+// FLAT ROWS, ONE PER LEG, grouped by the caller. Not a GROUP BY: the curated
+// read modules are row-level only by construction (architecture.test.ts check 7),
+// and the pool page already groups by this exact key client-side, so the shape
+// is the established one rather than a new pattern.
+//
+// Newest first, capped, because an operator arrives with a recent complaint and
+// an unbounded scan of every assignment ever minted is not a page.
+export interface RequestLegRow {
+  sourceEventId: string
+  asgnId: string
+  dispatchGroup: string
+  merchantDisplayName: string
+  bankReferenceCode: string
+  bankDisplayName: string
+  branchCode: string | null
+  vpaValue: string
+  soundbox: boolean
+  standeeCount: number
+  stickerCount: number
+  billable: boolean
+  demandState: string
+  caseStatus: string | null
+  /** The dispatch this leg replaces, when it is a replacement. */
+  replacementOfAsgnId: string | null
+  activatedAt: string | null
+  createdAt: string
+  /**
+   * Recipient contact and address snapshot (BRD 5.1b), read here for the
+   * request detail page. Same columns the Merchants list widening already
+   * surfaces; nullable because they are additive to a BUILT-V1 table.
+   */
+  contactName: string | null
+  mobile: string | null
+  email: string | null
+  shipToAddress: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  qrType: string | null
+}
+
+export async function listRequestLegsOps(db: TmsDb, limit = 500): Promise<RequestLegRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<
+      {
+        source_event_id: string
+        id: string
+        dispatch_group: string
+        merchant_display_name: string
+        bank_reference_code: string
+        bank_display_name: string
+        branch_code: string | null
+        vpa_value: string
+        soundbox: boolean
+        standee_count: number
+        sticker_count: number
+        billable: boolean
+        demand_state: string
+        case_status: string | null
+        replacement_of: string | null
+        activated_at: Date | null
+        created_at: Date
+        contact_name: string | null
+        mobile: string | null
+        email: string | null
+        ship_to_address: string | null
+        city: string | null
+        state: string | null
+        pincode: string | null
+        qr_type: string | null
+      }[]
+    >`
+      SELECT source_event_id, id, dispatch_group, merchant_display_name,
+             bank_reference_code, bank_display_name, branch_code, vpa_value,
+             soundbox, standee_count, sticker_count, billable, demand_state,
+             case_status, replacement_of, activated_at, created_at,
+             contact_name, mobile, email, ship_to_address, city, state,
+             pincode, qr_type
+      FROM assignment
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    `
+  })
+  return rows.map((r) => ({
+    sourceEventId: r.source_event_id,
+    asgnId: fromUuid('asgn', r.id),
+    dispatchGroup: r.dispatch_group,
+    merchantDisplayName: r.merchant_display_name,
+    bankReferenceCode: r.bank_reference_code,
+    bankDisplayName: r.bank_display_name,
+    branchCode: r.branch_code,
+    vpaValue: r.vpa_value,
+    soundbox: r.soundbox,
+    standeeCount: r.standee_count,
+    stickerCount: r.sticker_count,
+    billable: r.billable,
+    demandState: r.demand_state,
+    caseStatus: r.case_status,
+    replacementOfAsgnId: r.replacement_of === null ? null : fromUuid('asgn', r.replacement_of),
     activatedAt: r.activated_at === null ? null : r.activated_at.toISOString(),
     createdAt: r.created_at.toISOString(),
+    contactName: r.contact_name,
+    mobile: r.mobile,
+    email: r.email,
+    shipToAddress: r.ship_to_address,
+    city: r.city,
+    state: r.state,
+    pincode: r.pincode,
+    qrType: r.qr_type,
   }))
 }
 
@@ -260,6 +502,60 @@ export async function searchDispatchesByVpa(db: TmsDb, vpa: string): Promise<Vpa
 // replacement (replacement_of IS NOT NULL). This reads tms and not analytics,
 // because case_status is deliberately never projected into analytics (the
 // frozen damagedReplacementOpen tile stays frozen).
+/**
+ * One damage case's status history, oldest first (22 Aug 2026, DAMAGE
+ * end-to-end). The trail table existed and was written for a day before
+ * anything could READ it, which meant the case lifecycle the damage page was
+ * asked to show had its data recorded and unreachable.
+ *
+ * Keyed by the replacement's asgn id, same as every other case surface. Same
+ * ordering rule as fulfillment's trails: occurred_at then created_at, so two
+ * transitions in the same reported instant read back in the order the platform
+ * learned them.
+ */
+export interface CaseTrailRow {
+  status: string
+  occurredAt: Date
+  statusSource: string
+  actorId: string | null
+  /** Operator login handle snapshot (LeanClaim.hdl), display only. */
+  actorDisplay: string | null
+  /** Operator words, present on Cancelled rows (the mandatory cancel reason). */
+  remarks: string | null
+  recordedAt: Date
+}
+
+export async function readCaseTrailOps(db: TmsDb, asgnId: string): Promise<CaseTrailRow[]> {
+  const rows = await db.$transaction(async (tx: Tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
+    return tx.$queryRaw<
+      {
+        status: string
+        occurred_at: Date
+        status_source: string
+        actor_id: string | null
+        actor_display: string | null
+        remarks: string | null
+        created_at: Date
+      }[]
+    >`
+      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, actor_display, remarks, created_at
+      FROM damage_case_status_event
+      WHERE asgn_id = ${toUuid(asgnId)}::uuid
+      ORDER BY occurred_at ASC, created_at ASC
+    `
+  })
+  return rows.map((r) => ({
+    status: r.status,
+    occurredAt: r.occurred_at,
+    statusSource: r.status_source,
+    actorId: r.actor_id,
+    actorDisplay: r.actor_display,
+    remarks: r.remarks,
+    recordedAt: r.created_at,
+  }))
+}
+
 export interface DamageCaseSummary {
   open: number
   inProgress: number
@@ -301,10 +597,21 @@ export async function countDamageCasesByStatus(db: TmsDb): Promise<DamageCaseSum
 //
 // Emits the WIRE id (D-A: reads emit wire ids), never the raw uuid.
 //
-// PII-free by construction (D104 default-exclude), and not by filtering: the
-// table holds display_name, legal_name, mcc and status only. The recipient
-// address, contact name and mobile that the pool list guards against live on
-// the assignment and the pool entry, never here.
+// A DELIBERATE, NARROW D104 DISCLOSURE (22 Aug 2026, see
+// docs/plan/CORPUS_SUBMISSION_2026-08-22_MERCHANTS_LIST.md).
+//
+// This block used to read "PII-free by construction (D104 default-exclude)",
+// which was true of the projection but is no longer true of this read. The
+// merchants list now returns the recipient contact block and the raw VPA,
+// because the BRD's merchant record IS that field table (BRD 5.1b) and an ops
+// merchant search that cannot show a mobile or a VPA cannot answer the
+// question operators actually bring to it.
+//
+// The scope of the reversal is EXACTLY this list. The pool, batch, dispatch
+// and shipment projections below and in fulfillment's ops-read stay PII-free
+// by construction, and the rule that a worklist identifies a record rather
+// than addressing a parcel still governs them. A merchant page is not a
+// worklist.
 //
 // Rejected shape: deriving this from pending_pool_entry (option 1c). It shows
 // only in-flight merchants, so a search would silently omit settled ones and
@@ -316,6 +623,7 @@ export interface MerchantRow {
   legalName: string
   mcc: string
   status: string
+  createdAt: Date
   updatedAt: Date
   /**
    * D-2: this merchant has more than one soundbox request, so at least one was
@@ -324,6 +632,33 @@ export interface MerchantRow {
    * describes.
    */
   hasAdditionalRequests: boolean
+  /**
+   * THE BRD 5.1b BLOCK, snapshotted from this merchant's most recent request.
+   *
+   * Null on a merchant no bank file has carried yet: the hand-created one
+   * (ops Add merchant) has all of this in identity.merchant, which C4 forbids
+   * reading from here, so the ops edge composes it in afterwards the same way
+   * reports.controller.ts merges hold state. Null here therefore means "not
+   * yet known TO TMS", never "the merchant does not have one".
+   *
+   * `address` is the ship-to snapshot, which for every bank file to date is
+   * the same place as the registered address (the file ships one address).
+   */
+  vpa: string | null
+  qrType: string | null
+  contactName: string | null
+  mobile: string | null
+  email: string | null
+  address: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  bankDisplayName: string | null
+  bankReferenceCode: string | null
+  branchCode: string | null
+  /** INITIAL or ADDITIONAL, from that same most recent request. */
+  latestRequestOrigin: string | null
+  latestRequestAt: Date | null
 }
 
 interface MerchantDbRow {
@@ -332,8 +667,23 @@ interface MerchantDbRow {
   legal_name: string
   mcc: string
   status: string
+  created_at: Date
   updated_at: Date
   has_additional_requests: boolean
+  vpa_value: string | null
+  qr_type: string | null
+  contact_name: string | null
+  mobile: string | null
+  email: string | null
+  ship_to_address: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  bank_display_name: string | null
+  bank_reference_code: string | null
+  branch_code: string | null
+  origin: string | null
+  latest_request_at: Date | null
 }
 
 function toMerchantDto(r: MerchantDbRow): MerchantRow {
@@ -343,8 +693,23 @@ function toMerchantDto(r: MerchantDbRow): MerchantRow {
     legalName: r.legal_name,
     mcc: r.mcc,
     status: r.status,
+    createdAt: r.created_at,
     updatedAt: r.updated_at,
     hasAdditionalRequests: r.has_additional_requests,
+    vpa: r.vpa_value,
+    qrType: r.qr_type,
+    contactName: r.contact_name,
+    mobile: r.mobile,
+    email: r.email,
+    address: r.ship_to_address,
+    city: r.city,
+    state: r.state,
+    pincode: r.pincode,
+    bankDisplayName: r.bank_display_name,
+    bankReferenceCode: r.bank_reference_code,
+    branchCode: r.branch_code,
+    latestRequestOrigin: r.origin,
+    latestRequestAt: r.latest_request_at,
   }
 }
 
@@ -379,14 +744,43 @@ export async function listMerchants(db: TmsDb): Promise<MerchantRow[]> {
     // That guard also READS COMMENTS, so this note cannot spell the banned
     // function name even while explaining why it is avoided. It caught exactly
     // that on the first run here.
+    // THE BRD 5.1b BLOCK COMES FROM THE MERCHANT'S MOST RECENT REQUEST, via a
+    // LEFT JOIN LATERAL taking exactly one row.
+    //
+    // LEFT, not inner: a hand-created merchant has no assignment at all, and an
+    // inner join would delete them from the merchants list, which is the one
+    // page whose whole job is that they can be found.
+    //
+    // LIMIT 1 inside the lateral, not a set-returning shape, so this stays
+    // row-level and the architecture net over this file stays green. Same
+    // reason the note above avoids naming the banned SQL functions: that
+    // matcher reads comments too.
+    //
+    // ORDER BY created_at DESC, id DESC: the newest request wins, and the id
+    // tiebreak makes it deterministic when one bank-file row minted both a
+    // SOUNDBOX and a COLLATERAL leg in the same instant.
     return tx.$queryRaw<MerchantDbRow[]>`
-      SELECT m.id, m.display_name, m.legal_name, m.mcc, m.status, m.updated_at,
+      SELECT m.id, m.display_name, m.legal_name, m.mcc, m.status, m.created_at, m.updated_at,
              EXISTS (
                SELECT 1 FROM assignment a1
                JOIN assignment a2 ON a2.merchant_id = a1.merchant_id AND a2.id <> a1.id
                WHERE a1.merchant_id = m.id
-             ) AS has_additional_requests
+             ) AS has_additional_requests,
+             latest.vpa_value, latest.qr_type, latest.contact_name, latest.mobile, latest.email,
+             latest.ship_to_address, latest.city, latest.state, latest.pincode,
+             latest.bank_display_name, latest.bank_reference_code, latest.branch_code,
+             latest.origin, latest.created_at AS latest_request_at
       FROM merchant_projection m
+      LEFT JOIN LATERAL (
+        SELECT a.vpa_value, a.qr_type, a.contact_name, a.mobile, a.email,
+               a.ship_to_address, a.city, a.state, a.pincode,
+               a.bank_display_name, a.bank_reference_code, a.branch_code,
+               a.origin, a.created_at
+        FROM assignment a
+        WHERE a.merchant_id = m.id
+        ORDER BY a.created_at DESC, a.id DESC
+        LIMIT 1
+      ) latest ON true
       ORDER BY m.display_name, m.id
     `
   })
@@ -417,43 +811,7 @@ export async function readQuarantineQueue(
   return rows.map(toDto)
 }
 
-// D-16 (T4.5): the ACTIVATION branch's trail for one dispatch, for the
-// per-dispatch detail page. The counterpart of fulfillment's
-// readShipmentTrailOps: same shape of question, the other axis, the other
-// context, composed by the edge and never by a join (C4).
-//
-// tms_ops_read is cross-tenant by construction, which is what an ops operator
-// is. IDs, enum tokens and timestamps only; the trail carries nothing else.
-export interface ActivationTrailOpsRow {
-  status: string
-  occurredAt: Date
-  statusSource: string
-  actorId: string | null
-  recordedAt: Date
-}
-
-export async function readActivationTrailOps(db: TmsDb, asgnId: string): Promise<ActivationTrailOpsRow[]> {
-  const asgnUuid = toUuid(asgnId)
-  const rows = await db.$transaction(async (tx: Tx) => {
-    await tx.$executeRawUnsafe('SET LOCAL ROLE tms_ops_read')
-    return tx.$queryRaw<{
-      status: string
-      occurred_at: Date
-      status_source: string
-      actor_id: string | null
-      created_at: Date
-    }[]>`
-      SELECT status, occurred_at, status_source, actor_id::text AS actor_id, created_at
-      FROM assignment_activation_event
-      WHERE asgn_id = ${asgnUuid}::uuid
-      ORDER BY occurred_at ASC, created_at ASC
-    `
-  })
-  return rows.map((r) => ({
-    status: r.status,
-    occurredAt: r.occurred_at,
-    statusSource: r.status_source,
-    actorId: r.actor_id,
-    recordedAt: r.created_at,
-  }))
-}
+// readActivationTrailOps / ActivationTrailOpsRow DELETED (ACTIVATION.md,
+// 21 Aug 2026): activation has no trail any more, it is a parallel toggle
+// (Assignment.activatedAt/activatedBy). The per-dispatch detail page reads
+// those two columns directly instead of a trail.

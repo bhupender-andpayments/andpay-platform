@@ -1,5 +1,4 @@
 import {
-  AlertTriangle,
   Hourglass,
   Inbox,
   PackageCheck,
@@ -7,7 +6,6 @@ import {
   QrCode,
   Route,
   Truck,
-  Undo2,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { statusMeta } from '../../ui/format.js'
@@ -63,6 +61,70 @@ export const DISPATCH_LADDER: readonly DispatchRung[] = [
   { key: 'IN_TRANSIT', label: 'In transit', icon: Route },
   { key: 'DELIVERED', label: 'Delivered', icon: PackageCheck },
 ] as const
+
+/**
+ * THE DISPATCHES LIST's stage axis: analytics `dispatch_row.pipeline_state`.
+ *
+ * FIVE VALUES, not the seven rungs above, and the two are different on purpose.
+ * The ladder above is a POSITION SUMMARY for one dispatch's rail, so it can
+ * afford rungs nothing stores (PENDING_BATCH, QR_GENERATED). pipeline_state is
+ * a STORED column, folded monotonically from facts in
+ * services/analytics/src/project.ts, so it only ever holds these five.
+ *
+ * Order is the lifecycle, and the index is what the list sorts by.
+ *
+ * NO LABELS HERE. Labels come from statusMeta (ui/format.ts) for every one of
+ * these, which is the fix for a real defect (23 Aug 2026): the Dispatches page
+ * kept its own LIFECYCLE_LABELS map, so its filter dropdown said "Pending
+ * batch" and "At print vendor" while its own table column said "Received" and
+ * "Sent to print vendor" for the same value, on the same screen. One value now
+ * has exactly one name everywhere.
+ */
+export const PIPELINE_STAGES = ['RECEIVED', 'BATCHED', 'SENT_TO_VENDOR', 'DISPATCHED', 'DELIVERED'] as const
+
+/**
+ * The HOLD overlay, which is NOT a pipeline stage and never becomes one.
+ *
+ * Hold lives on fulfillment's `pending_pool_entry.pool_status`, a different
+ * table from the one the stage comes from, and it is REVERSIBLE. pipeline_state
+ * is computed as "the furthest point ever reached" and only moves forward, so a
+ * released dispatch could never come back down out of a HELD value. The
+ * Dispatches page therefore composes the two axes in one cell rather than
+ * merging the vocabularies. This constant exists so the filter can offer Held
+ * alongside the stages without pretending it is one of them.
+ */
+export const STAGE_FILTER_HELD = 'HELD'
+
+/**
+ * The DAMAGE overlay, the second non-stage the Stage filter offers, and it is
+ * NOT a pipeline stage for the same reason HELD is not.
+ *
+ * A dispatch that was delivered WAS delivered; raising damage on its kit
+ * afterwards does not un-deliver the parcel, and pipeline_state is a monotone
+ * maximum that must never be rewritten by a later, unrelated event. Damage
+ * lives on its own axis (analytics `dispatch_row.replacement_status`, set to
+ * RAISED on the ORIGINAL when a replacement is minted for it), so the list
+ * composes the two in one cell rather than merging the vocabularies.
+ *
+ * THE PARENT, not the child. A replacement child already reads as one from
+ * `replacementOfAsgnId`; this marks the dispatch damage was raised AGAINST,
+ * which had no marker on any list at all.
+ */
+export const STAGE_FILTER_DAMAGED = 'DAMAGED'
+
+/**
+ * The CANCELLED overlay: this dispatch is a replacement whose damage request
+ * was withdrawn. Terminal, and not a pipeline stage for the same reason HELD
+ * and DAMAGED are not.
+ *
+ * It rides fulfillment's `pending_pool_entry.pool_status`, grafted onto the
+ * report by the edge (mergeHoldState) exactly as HELD is, because analytics'
+ * pipeline_state is a monotone maximum and a withdrawal moves nothing forward.
+ * Without it the list showed a cancelled replacement as whatever rung it had
+ * reached, usually Pending batch, which read as a dispatch still waiting to be
+ * batched when in fact nothing will ever happen to it again.
+ */
+export const STAGE_FILTER_CANCELLED = 'CANCELLED'
 
 /** The first courier-owned rung: everything at or past it belongs to a shipment. */
 export const FIRST_COURIER_RUNG = 4
@@ -199,8 +261,10 @@ export function nextRungs(idx: number): readonly DispatchRung[] {
   return DISPATCH_LADDER.slice(Math.max(0, idx + 1))
 }
 
-/** The two off-ladder stops as rungs, for a dropdown that has to offer them. */
-export const TERMINAL_RUNGS: readonly DispatchRung[] = [
-  { key: 'FAILED', label: 'Failed attempt', icon: AlertTriangle },
-  { key: 'RETURNED', label: 'Returned to origin', icon: Undo2 },
-] as const
+// TERMINAL_RUNGS DELETED (23 Aug 2026). It existed for exactly one caller, the
+// dispatch status editor's dropdown, and that dropdown no longer offers a
+// terminal: FAILED and RETURNED are courier outcomes written on the AWB, not
+// dispatch statuses (DispatchStatusEditDialog.tsx carries the reasoning). The
+// rails never used it, because a rail asks isOffLadder / DISPATCH_TERMINAL
+// instead. Keeping an exported ladder of two statuses nothing may write would
+// invite the next dropdown to offer them again.

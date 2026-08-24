@@ -3,18 +3,22 @@ import type { ComponentType, ReactNode, SVGProps } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.js'
 import {
+  IconBasket,
   IconCheck,
+  IconClock,
   IconDashboard,
   IconFulfillment,
   IconGuide,
+  IconInbox,
+  IconInventory,
   IconLogout,
-  IconMasterData,
   IconMerchants,
-  IconOperations,
-  IconQueues,
   IconReports,
+  IconSend,
+  IconSettings,
   IconTruck,
   IconUploads,
+  IconWrench,
 } from './icons.js'
 import { shortId } from './format.js'
 
@@ -74,17 +78,18 @@ interface Section {
 const SECTIONS: readonly Section[] = [
   { to: '/command-center', label: 'Command Center', icon: IconDashboard },
   { to: '/merchants', label: 'Merchants', icon: IconMerchants },
-  { to: '/inventory', label: 'Inventory', icon: IconMasterData },
-  { to: '/pool', label: 'Pool', icon: IconQueues },
+  { to: '/inventory', label: 'Inventory', icon: IconInventory },
+  { to: '/requests', label: 'Requests', icon: IconInbox },
+  { to: '/pool', label: 'Pool', icon: IconBasket },
   { to: '/batches', label: 'Batches', icon: IconFulfillment },
   { to: '/activation', label: 'Activation', icon: IconCheck },
   { to: '/uploads', label: 'Uploads', icon: IconUploads },
-  { to: '/dispatches', label: 'Dispatches', icon: IconOperations },
+  { to: '/dispatches', label: 'Dispatches', icon: IconSend },
   { to: '/shipments', label: 'Shipments', icon: IconTruck },
-  { to: '/queues', label: 'Queues', icon: IconQueues },
-  { to: '/damage-cases', label: 'Damage cases', icon: IconQueues },
+  { to: '/queues', label: 'Queues', icon: IconClock },
+  { to: '/damage-cases', label: 'Damage cases', icon: IconWrench },
   { to: '/reports', label: 'Reports', icon: IconReports },
-  { to: '/masterdata', label: 'Master Data', icon: IconMasterData },
+  { to: '/masterdata', label: 'Master Data', icon: IconSettings },
   // Last on purpose (user ruling, 19 Aug 2026): a first-read explainer belongs
   // at the bottom, out of the way of the sections an operator uses every day,
   // not competing with Command Center for the top slot.
@@ -104,7 +109,9 @@ const NAV_GROUPS: ReadonlyArray<{ title: string; routes: readonly string[] }> = 
   // Array position here IS render order in the sidebar, and this order is the
   // order the work happens in: merchants ask, stock is held, a batch forms,
   // parcels move, devices go live.
-  { title: 'Pipeline', routes: ['/merchants', '/inventory', '/pool', '/batches', '/dispatches', '/shipments', '/activation'] },
+  // Requests before Pool: the bank asks first, and what is waiting to be
+  // batched is the next moment in the same story.
+  { title: 'Pipeline', routes: ['/merchants', '/inventory', '/requests', '/pool', '/batches', '/dispatches', '/shipments', '/activation'] },
   // Uploads FIRST in Operations: it is the front door and the landing route, so
   // the eye should find it without reading the group. Damage cases sit beside
   // Queues because both are work an operator picks up and moves along, as
@@ -241,7 +248,7 @@ function Sidebar({
     <aside
       className={`h-screen shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-300 ease-in-out ${collapsed ? 'w-20' : 'w-64'} ${className}`}
     >
-      <div className={`flex items-center gap-2 px-5 py-5 ${collapsed ? 'justify-center px-3' : 'justify-between'}`}>
+      <div className={`group relative flex items-center gap-2 px-5 py-5 ${collapsed ? 'justify-center px-3' : 'justify-between'}`}>
         <BrandMark collapsed={collapsed} />
         {onToggleCollapse && (
           <button
@@ -249,7 +256,17 @@ function Sidebar({
             onClick={onToggleCollapse}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            className={
+              collapsed
+                // Collapsed rail: the toggle sits ON TOP of the logo mark instead of
+                // beside it, because "beside" is what pushed the logo off-center from
+                // the nav icons below it in the first place. It stays invisible (and
+                // out of the way of the eye, and of clicks) until the row is hovered
+                // or the button itself gets keyboard focus, at which point an opaque
+                // backdrop swaps in for the logo rather than layering over it.
+                ? 'absolute inset-0 m-auto flex h-9 w-9 items-center justify-center rounded-md bg-sidebar text-sidebar-foreground/60 opacity-0 pointer-events-none transition-opacity duration-150 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto'
+                : 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+            }
           >
             <IconChevronsLeft width={15} height={15} className={collapsed ? 'rotate-180' : ''} />
           </button>
@@ -385,9 +402,22 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
   // A segment that is a wire id is deliberately NOT shown. `/batches/btch_01kz...`
   // would put 31 opaque characters in the crumb, and the batch page already
   // prints the id under its own title, so it would be noise repeated.
+  //
+  // `/requests/:sourceEventId` is the one route whose id is not a typed wire
+  // id (`prefix_...`) but the bank file's own `{uuid}|{row_no}` key (23 Aug
+  // 2026): the first regex missed it, so the pipe reached this crumb still
+  // percent-encoded as a raw `%7C`. Same reasoning as above, just a second
+  // shape of opaque id.
   const rest = section === undefined ? '' : pathname.slice(section.to.length).replace(/^\//, '')
   const leafSlug = rest.split('/')[0] ?? ''
-  const leafIsWireId = /^[a-z]+_[0-9a-z]+$/i.test(leafSlug)
+  // Three id shapes reach a URL leaf: typed wire ids (asgn_..., btch_...),
+  // bank-file request ids (<file-uuid>|<row>), and the ops-flag replacement ids
+  // TMS mints where no bank file exists (ops-flag|<file-uuid>|<row>|g<n>). The
+  // pipe arrives percent-encoded, so any leaf carrying one is an id, never a
+  // word to title-case: "Ops flag%7Cef80df3f 93f6..." in a breadcrumb was the
+  // reported sighting.
+  const leafIsWireId =
+    /^[a-z]+_[0-9a-z]+$/i.test(leafSlug) || /(?:\||%7c)/i.test(leafSlug)
   const leaf =
     leafSlug === '' || leafIsWireId
       ? null

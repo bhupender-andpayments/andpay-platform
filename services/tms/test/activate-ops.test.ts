@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { newId, toUuid, fromUuid } from '@andpay/ids'
 import { PrismaClient } from '../generated/client/index.js'
-import { activateAssignmentOps } from '../src/ops.js'
+import { activateAssignmentOps, deactivateAssignmentOps } from '../src/ops.js'
 import { activateAssignment } from '../src/assignment.js'
 import type { DevicePort } from '../src/device-port.js'
 import { TMS_ACTIVATED_TOPIC } from '../src/events.js'
@@ -18,7 +18,7 @@ const db = new PrismaClient({ datasourceUrl: url })
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE assignment, assignment_activation_event, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
+    'TRUNCATE assignment, pending_row, merchant_projection, tenant_projection, ingest_file, quarantine_row, outbox, inbox',
   )
 })
 afterAll(async () => {
@@ -83,7 +83,7 @@ describe('activateAssignmentOps (Phase 5 Task 2, D-H.1): co-committed ALLOW insi
     expect(audit[0]!.principalId).toBe(actorId)
   })
 
-  it('a second call on an already-activated assignment is a no-op: no duplicate fact, no duplicate 6e', async () => {
+  it('a second call on an already-activated assignment is a no-op for the effect: no duplicate fact', async () => {
     const asgnId = await seedAssignment()
     const first = await activateAssignmentOps(db, {
       asgnId,
@@ -94,10 +94,12 @@ describe('activateAssignmentOps (Phase 5 Task 2, D-H.1): co-committed ALLOW insi
     })
     expect(first.activated).toBe(true)
 
-    // A DIFFERENT clientKey and a DIFFERENT actor: idempotency here is the
-    // BUSINESS key `${asgnId}|activate` inside activateAssignmentWithinTx,
-    // never the caller's clientKey (the brief's binding decision), so this
-    // must still be a no-op.
+    // A DIFFERENT clientKey and a DIFFERENT actor. Since 23 Aug 2026 the no-op
+    // comes from the write's own `activated_at IS NULL` guard, NOT from a
+    // forever business key (which is what made re-activation after a
+    // deactivation impossible). The fresh attempt still flips nothing and
+    // emits nothing, but IS audited: the audit records the authorized action,
+    // the same rule the deactivate side follows.
     const second = await activateAssignmentOps(db, {
       asgnId,
       port: fixturePort,
@@ -109,7 +111,62 @@ describe('activateAssignmentOps (Phase 5 Task 2, D-H.1): co-committed ALLOW insi
 
     expect(await activatedFactCount()).toBe(1)
     const audit = await auditRowsFor('ops:mark-activated')
-    expect(audit).toHaveLength(1)
+    expect(audit).toHaveLength(2)
+  })
+
+  it('a REPLAY of the same clientKey is fully deduped: one effect, one fact, one 6e', async () => {
+    const asgnId = await seedAssignment()
+    const clientKey = randomUUID()
+    const args = { asgnId, port: fixturePort, clientKey, actorId: randomUUID(), traceId: 't-act-replay' }
+    const first = await activateAssignmentOps(db, args)
+    expect(first.activated).toBe(true)
+
+    // Same Idempotency-Key, retried by the client: the whole callback is
+    // deduped, so no second fact and no second audit row.
+    const replay = await activateAssignmentOps(db, args)
+    expect(replay.activated).toBe(false)
+    expect(await activatedFactCount()).toBe(1)
+    expect(await auditRowsFor('ops:mark-activated')).toHaveLength(1)
+  })
+
+  // THE REPORTED DEFECT (23 Aug 2026). Activation is a TOGGLE (ACTIVATION.md,
+  // 21 Aug), but its dedup key was still the forever business key
+  // `${asgnId}|activate` from when activation was one-time-ever. So the first
+  // activation wrote an inbox row that swallowed every later attempt: an
+  // operator deactivated a device, tried to activate it again from the
+  // Activation tab, and the portal answered "0 devices activated" with the
+  // dispatch stuck live-off forever. Only a never-before-activated dispatch
+  // could be activated, which is why the bulk "activated 2 of 3".
+  it('re-activation after a deactivation WORKS, and emits a fact consumers will not dedup away', async () => {
+    const asgnId = await seedAssignment()
+    await activateAssignmentOps(db, {
+      asgnId, port: fixturePort, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-act-4a',
+    })
+    const off = await deactivateAssignmentOps(db, {
+      asgnId, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-act-4b',
+    })
+    expect(off.deactivated).toBe(true)
+
+    const again = await activateAssignmentOps(db, {
+      asgnId, port: fixturePort, clientKey: randomUUID(), actorId: randomUUID(), traceId: 't-act-4c',
+    })
+    expect(again.activated).toBe(true)
+
+    const row = await db.$queryRaw<{ activated_at: Date | null }[]>`
+      SELECT activated_at FROM assignment WHERE id = ${toUuid(asgnId)}::uuid
+    `
+    expect(row[0]!.activated_at).not.toBeNull()
+
+    // TWO activation facts with DISTINCT dedup keys. The distinctness is load-
+    // bearing: fulfillment's projector dedups its unit stamp on the envelope's
+    // dedupKey, so a re-activation fact reusing the first fact's key would
+    // reach the consumer and stamp nothing, and the device would stay
+    // not-activated in fulfillment while TMS said live.
+    const facts = await db.$queryRaw<{ payload: { dedupKey: string } }[]>`
+      SELECT payload FROM outbox WHERE event_type = ${TMS_ACTIVATED_TOPIC} ORDER BY created_at ASC
+    `
+    expect(facts).toHaveLength(2)
+    expect(facts[0]!.payload.dedupKey).not.toBe(facts[1]!.payload.dedupKey)
   })
 
   it('throws (fails closed) when the target assignment does not exist, and emits no 6e', async () => {

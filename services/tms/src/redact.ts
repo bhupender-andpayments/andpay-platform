@@ -29,6 +29,15 @@ export function redactAssignmentForLog(a: {
   // only to be DROPPED by the allow-list output below (never logged, S7/S4).
   contactName?: string
   mobile?: string
+  // BRD 5.1b, 22 Aug 2026: the five new snapshot columns. Email and the address
+  // parts are recipient PII on exactly the same footing as contactName above,
+  // and qrType rides along so the whole snapshot can be passed in one object
+  // without a caller having to strip it first. All dropped by the allow-list.
+  email?: string
+  city?: string
+  state?: string
+  pincode?: string
+  qrType?: string
 }): LoggableAssignment {
   return {
     asgnId: a.asgnId,

@@ -90,6 +90,32 @@ describe('summarisePool', () => {
     expect(s.requests).toBe(2)
   })
 
+  // THE REPLACEMENT SLICE (23 Aug 2026, ops-team ask): the operators want the
+  // damage-driven share of the next batch visible without reading rows.
+  it('counts the replacement slice by request and by kit, from replacementOfAsgnId', () => {
+    const s = summarisePool([
+      // An ordinary combined request: two legs, one sourceEventId.
+      entry({ asgnId: 'a', sourceEventId: 'file|1', soundbox: true, standeeCount: 0, stickerCount: 0 }),
+      entry({ asgnId: 'b', sourceEventId: 'file|1', soundbox: false, standeeCount: 1, stickerCount: 2 }),
+      // A replacement request, also two legs sharing one sourceEventId: it must
+      // count ONCE as a replacement request, exactly like the lot count.
+      entry({ asgnId: 'c', sourceEventId: 'file|2', soundbox: true, standeeCount: 0, stickerCount: 0, replacementOfAsgnId: 'asgn_old1' }),
+      entry({ asgnId: 'd', sourceEventId: 'file|2', soundbox: false, standeeCount: 2, stickerCount: 3, replacementOfAsgnId: 'asgn_old2' }),
+    ])
+    expect(s.replacementRequests).toBe(1)
+    expect(s.replacementSoundboxes).toBe(1)
+    expect(s.replacementStandees).toBe(2)
+    expect(s.replacementStickers).toBe(3)
+    // And the ordinary totals still count everything, replacements included.
+    expect(s.requests).toBe(2)
+  })
+
+  it('reports a zero replacement slice for a pool with none', () => {
+    const s = summarisePool([entry({ asgnId: 'a' }), entry({ asgnId: 'b' })])
+    expect(s.replacementRequests).toBe(0)
+    expect(s.replacementSoundboxes).toBe(0)
+  })
+
   it('sums the kit across rows, counting soundboxes as rows that carry one', () => {
     const s = summarisePool([
       entry({ asgnId: 'a', soundbox: true, standeeCount: 2, stickerCount: 6 }),
@@ -102,6 +128,60 @@ describe('summarisePool', () => {
 })
 
 describe('BatchPreviewCard', () => {
+  it('shows the highlighted Replacements block only when the pool carries some', () => {
+    const { rerender } = render(
+      <BatchPreviewCard rows={[entry({ asgnId: 'a' })]} minLotSize={null} />,
+    )
+    // No replacements: the block is entirely absent, not a zero row.
+    expect(screen.queryByText('Replacements')).toBeNull()
+
+    rerender(
+      <BatchPreviewCard
+        rows={[
+          entry({ asgnId: 'a' }),
+          entry({ asgnId: 'b', sourceEventId: 'file|9', soundbox: true, standeeCount: 1, stickerCount: 4, replacementOfAsgnId: 'asgn_old' }),
+        ]}
+        minLotSize={null}
+      />,
+    )
+    const block = screen.getByText('Replacements').closest('div')!.parentElement!
+    expect(within(block).getByText('Request')).toBeTruthy()
+    expect(within(block).getByText('Soundboxes')).toBeTruthy()
+    expect(within(block).getByText('Standees')).toBeTruthy()
+    expect(within(block).getByText('Stickers')).toBeTruthy()
+  })
+
+  // STOCK BESIDE THE DEMAND IT COVERS (23 Aug 2026, at the user's request).
+  it('states devices in stock beside the soundbox demand, flagging a shortfall', () => {
+    const rows = [entry({ asgnId: 'a', soundbox: true }), entry({ asgnId: 'b', soundbox: true })]
+
+    const { rerender } = render(<BatchPreviewCard rows={rows} minLotSize={null} inStock={0} />)
+    const stock = screen.getByText('Devices in stock').parentElement!
+    expect(stock.textContent).toContain('0')
+    expect(stock.textContent).toContain('short 2')
+
+    // Covered: the number is there, the shortfall note is not.
+    rerender(<BatchPreviewCard rows={rows} minLotSize={null} inStock={5} />)
+    expect(screen.getByText('Devices in stock').parentElement!.textContent).not.toMatch(/short/i)
+  })
+
+  it('omits the stock line when the level is unknown or nothing needs a device', () => {
+    const rows = [entry({ asgnId: 'a', soundbox: true })]
+    // Unknown must never render as zero.
+    const { rerender } = render(<BatchPreviewCard rows={rows} minLotSize={null} inStock={null} />)
+    expect(screen.queryByText('Devices in stock')).toBeNull()
+
+    // Collateral only: a stock warning about nothing is noise.
+    rerender(
+      <BatchPreviewCard
+        rows={[entry({ asgnId: 'a', soundbox: false, standeeCount: 2 })]}
+        minLotSize={null}
+        inStock={0}
+      />,
+    )
+    expect(screen.queryByText('Devices in stock')).toBeNull()
+  })
+
   it('says the minimum lot is met once the pool reaches it', () => {
     render(<BatchPreviewCard rows={[entry({ asgnId: 'a' }), entry({ asgnId: 'b' })]} minLotSize={2} />)
     expect(screen.getByText(/meets minimum lot size \(2\)/i)).toBeTruthy()

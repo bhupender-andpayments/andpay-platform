@@ -24,6 +24,12 @@ export interface UpdateVendorInput {
 
 export interface OpsActor {
   operatorId: string
+  /**
+   * Operator login handle snapshot (LeanClaim.hdl) for the status trails.
+   * Optional so non-trail callers change nothing; display only, never an
+   * authorization input.
+   */
+  actorDisplay?: string | null
 }
 
 // Class-3 ops action (S13). Creates a Fulfillment-owned vndr_ (D115). vndr is

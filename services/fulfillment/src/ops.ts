@@ -6,9 +6,10 @@ import type { Acr } from '@andpay/authz'
 import type { FulfillmentDb } from './db.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope, enterWriteRole } from './write-context.js'
+import { logPoolEntryStatus, logBatchStatus } from './status-log.js'
 import { advanceShipmentStatus, collateralAsgnIdsFor, type AdvanceOutcome } from './courier-status.js'
 import { canAdvanceUnitStatus, advanceUnitStatus, type AnyUnitStatus } from './unit-lifecycle.js'
-import { SHIPMENT_TOPIC, shipmentFactEnvelope } from './events.js'
+import { SHIPMENT_TOPIC, shipmentFactEnvelope, DISPATCH_TOPIC, dispatchFactEnvelope } from './events.js'
 import { holdEntryWithinTx, triggerBatchWithinTx } from './batching.js'
 import {
   sendBatchToVendorWithinTx,
@@ -173,7 +174,15 @@ async function resolveProgramAndAwb(tx: Tx, shptId: string): Promise<ShptProgram
  */
 export async function correctStatus(
   db: FulfillmentDb,
-  args: { shptId: string; status: string; courierTimestamp: Date; clientKey: string; actorId: string; traceId: string },
+  args: {
+    shptId: string
+    status: string
+    courierTimestamp: Date
+    clientKey: string
+    actorId: string
+    actorDisplay?: string | null
+    traceId: string
+  },
 ): Promise<{ deduped: boolean; outcome: AdvanceOutcome | null }> {
   const shptUuid = toUuid(args.shptId)
   let outcome: AdvanceOutcome | null = null
@@ -187,6 +196,7 @@ export async function correctStatus(
         courierTimestamp: args.courierTimestamp,
         source: 'OPS_MANUAL',
         sourceRef: args.actorId,
+        actorDisplay: args.actorDisplay ?? null,
         traceId: args.traceId,
       })
       // Co-commit the ALLOW 6e (spec 10c CC-1b / S15-T2 ruling): unconditional,
@@ -238,8 +248,8 @@ export async function correctStatus(
  */
 export async function bulkDeliverBatch(
   db: FulfillmentDb,
-  args: { batchId: string; clientKey: string; actorId: string; traceId: string },
-): Promise<{ delivered: number; skipped: number; failed: number }> {
+  args: { batchId: string; clientKey: string; actorId: string; actorDisplay?: string | null; traceId: string },
+): Promise<{ delivered: number; skipped: number; failed: number; firstError?: string }> {
   const batchUuid = toUuid(args.batchId)
   const rows = await db.$queryRaw<{ shpt_id: string }[]>`
     SELECT DISTINCT s.shpt_id::text AS shpt_id
@@ -255,11 +265,32 @@ export async function bulkDeliverBatch(
     ) s(shpt_id)
     JOIN shpt ON shpt.id = s.shpt_id
     WHERE shpt.status NOT IN ('DELIVERED', 'RETURNED')
+      -- 22 Aug 2026 ruling: a dispatch already flagged DAMAGED is settled and
+      -- must not be silently overwritten as delivered by the bulk shortcut.
+      -- The whole shipment is excluded when ANY of its dispatches carries a
+      -- damaged device, because one parcel cannot be delivered for one
+      -- dispatch and withheld for another.
+      AND NOT EXISTS (
+        SELECT 1
+          FROM unit du
+          JOIN pending_pool_entry dp ON dp.asgn_id = du.asgn_id
+         WHERE dp.batch = ${batchUuid}::uuid AND du.status = 'DAMAGED'
+           AND (du.shipment = shpt.id OR dp.collateral_shipment = shpt.id)
+      )
   `
 
   let delivered = 0
   let skipped = 0
   let failed = 0
+  // The first failure's message, kept so a failed count is diagnosable
+  // (23 Aug 2026). The bare catch below used to swallow EVERYTHING: a broken
+  // write scope or a down database reported as `failed: N` inside an HTTP
+  // 200, indistinguishable from a business no-op. The loop still continues
+  // past a failure on purpose (one bad shipment must not strand the rest),
+  // but the caller now gets one honest sentence about what went wrong. No
+  // reason free-text or PII rides here: correctStatus's own errors are
+  // machine messages.
+  let firstError: string | undefined
   const now = new Date()
   for (const r of rows) {
     try {
@@ -273,15 +304,17 @@ export async function bulkDeliverBatch(
         // exactly what broke this the first time.
         clientKey: `${args.clientKey}:${r.shpt_id}`,
         actorId: args.actorId,
+        actorDisplay: args.actorDisplay ?? null,
         traceId: args.traceId,
       })
       if (!deduped && outcome === 'advanced') delivered++
       else skipped++
-    } catch {
+    } catch (err) {
       failed++
+      firstError ??= err instanceof Error ? err.message : String(err)
     }
   }
-  return { delivered, skipped, failed }
+  return firstError === undefined ? { delivered, skipped, failed } : { delivered, skipped, failed, firstError }
 }
 
 /**
@@ -311,6 +344,7 @@ export async function overrideTerminal(
     overrideReason: string
     clientKey: string
     actorId: string
+    actorDisplay?: string | null
     traceId: string
     // The step-up assurance (acr, auth_time) the edge read off the verified
     // claim that authorized this C3 bypass. IDs-and-enums only: these ride the
@@ -338,10 +372,10 @@ export async function overrideTerminal(
       `
       await tx.$executeRaw`
         INSERT INTO shpt_status_event
-          (shpt_id, program_id, status, courier_timestamp, status_source, source_ref, trace_id, override_reason)
+          (shpt_id, program_id, status, courier_timestamp, status_source, source_ref, actor_display, trace_id, override_reason)
         VALUES
           (${shptUuid}::uuid, ${programId}::uuid, ${args.status}, ${args.courierTimestamp},
-           'OPS_MANUAL', ${args.actorId}, ${args.traceId}, ${args.overrideReason})
+           'OPS_MANUAL', ${args.actorId}, ${args.actorDisplay ?? null}, ${args.traceId}, ${args.overrideReason})
       `
 
       // args.shptId is already the caller's wire form (the input contract is
@@ -415,7 +449,14 @@ export async function overrideTerminal(
  */
 export async function correctUnitStatus(
   db: FulfillmentDb,
-  args: { unitId: string; status: string; clientKey: string; actorId: string; traceId: string },
+  args: {
+    unitId: string
+    status: string
+    clientKey: string
+    actorId: string
+    actorDisplay?: string | null
+    traceId: string
+  },
 ): Promise<{ deduped: boolean; advanced: boolean }> {
   const unitUuid = toUuid(args.unitId)
   let advanced = false
@@ -432,7 +473,12 @@ export async function correctUnitStatus(
       if (!canAdvanceUnitStatus(current[0]!.status, args.status as AnyUnitStatus)) {
         throw new OpsClientError('invalid', `cannot move a unit from ${current[0]!.status} to ${args.status}`)
       }
-      advanced = await advanceUnitStatus(tx, unitUuid, args.status as AnyUnitStatus)
+      advanced = await advanceUnitStatus(tx, unitUuid, args.status as AnyUnitStatus, {
+        statusSource: 'ops:correct-unit-status',
+        actorId: args.actorId,
+        actorDisplay: args.actorDisplay ?? null,
+        traceId: args.traceId,
+      })
 
       // Co-commit the ALLOW 6e (S15/T2 ruling), unconditional once this
       // callback runs, mirroring correctStatus above: the audit records the
@@ -444,6 +490,114 @@ export async function correctUnitStatus(
             operation: 'ops:unit-status-correction',
             principalId: args.actorId,
             resourceIds: [args.unitId],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+  return { deduped: !ran, advanced: ran ? advanced : false }
+}
+
+/**
+ * Manual dispatch_state correction (22 Aug 2026, STAGES end-to-end): the
+ * dispatch-axis sibling of correctUnitStatus directly above, for when a move
+ * that physically happened was never recorded (a vendor handover done off a
+ * phone call, a return sheet that never arrived).
+ *
+ * FORWARD-ONLY along QR_GENERATED > SENT_TO_VENDOR > DISPATCHED_BY_VENDOR, and
+ * refused outright while dispatch_state is NULL: that row has not been through
+ * QR generation, so there is no artwork and nothing that could truthfully be
+ * "sent". The guard lives in the WHERE clause, so two concurrent corrections
+ * cannot both win.
+ *
+ * EMITS THE SAME fct.fulfillment.dispatch.v1 the automatic paths emit, with
+ * this one asgnId, so everything downstream that reacts to a dispatch moving
+ * (the damage case's In-Progress automation, analytics' dispatch row) follows a
+ * manual correction exactly as it follows the real step. The dedupKey carries
+ * the clientKey so a replay of THIS correction folds while a later distinct
+ * correction does not.
+ */
+export async function correctDispatchState(
+  db: FulfillmentDb,
+  args: {
+    asgnId: string
+    state: string
+    clientKey: string
+    actorId: string
+    actorDisplay?: string | null
+    traceId: string
+  },
+): Promise<{ deduped: boolean; advanced: boolean }> {
+  const DISPATCH_STATE_RANK: Record<string, number> = {
+    QR_GENERATED: 0,
+    SENT_TO_VENDOR: 1,
+    DISPATCHED_BY_VENDOR: 2,
+  }
+  const targetRank = DISPATCH_STATE_RANK[args.state]
+  if (targetRank === undefined) {
+    throw new OpsClientError('invalid', `unknown dispatch state ${args.state}`)
+  }
+  const behind = Object.keys(DISPATCH_STATE_RANK).filter((s) => DISPATCH_STATE_RANK[s]! < targetRank)
+  if (behind.length === 0) {
+    throw new OpsClientError('invalid', 'QR_GENERATED is set by batching itself and cannot be a correction target')
+  }
+
+  const asgnUuid = toUuid(args.asgnId)
+  let advanced = false
+  const ran = await db.$transaction(async (tx: Tx) => {
+    const rows = await tx.$queryRaw<
+      { id: string; program_id: string; dispatch_state: string | null; batch: string | null; trace_id: string }[]
+    >`
+      SELECT id::text AS id, program_id::text AS program_id, dispatch_state, batch::text AS batch, trace_id
+      FROM pending_pool_entry WHERE asgn_id = ${asgnUuid}::uuid
+    `
+    if (rows.length === 0) throw new OpsClientError('not-found', 'dispatch not found')
+    const entry = rows[0]!
+    if (entry.dispatch_state === null) {
+      throw new OpsClientError('invalid', 'this dispatch has not been through QR generation yet')
+    }
+    await enterWriteScope(tx, 'fulfillment_write', entry.program_id)
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:correct-dispatch-state'), async () => {
+      const moved = await tx.$queryRaw<{ id: string }[]>`
+        UPDATE pending_pool_entry SET dispatch_state = ${args.state}, updated_at = now()
+        WHERE asgn_id = ${asgnUuid}::uuid AND dispatch_state = ANY(${behind}::text[])
+        RETURNING id::text AS id
+      `
+      advanced = moved.length > 0
+      if (moved.length > 0) {
+        await logPoolEntryStatus(tx, moved[0]!.id, entry.program_id, {
+          status: args.state,
+          occurredAt: new Date(),
+          statusSource: 'ops:correct-dispatch-state',
+          actorId: args.actorId,
+          actorDisplay: args.actorDisplay ?? null,
+          traceId: args.traceId,
+        })
+        await enqueue(tx, {
+          aggregateType: 'asgn',
+          aggregateId: args.asgnId,
+          eventType: DISPATCH_TOPIC,
+          partitionKey: args.asgnId,
+          payload: dispatchFactEnvelope({
+            // dispatch_state non-null (checked above) implies the entry is
+            // batched, so the batch id is always real here.
+            payload: { btchId: fromUuid('btch', entry.batch!), asgnIds: [args.asgnId], dispatchState: args.state },
+            dedupKey: `${args.asgnId}|${args.state}|corr|${args.clientKey}`,
+            traceId: args.traceId,
+          }),
+        })
+      }
+      // Co-commit the ALLOW 6e (S15/T2 ruling), unconditional once this
+      // callback runs, mirroring correctUnitStatus: the audit records the
+      // authorized attempt, not the row effect.
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:correct-dispatch-state',
+            principalId: args.actorId,
+            resourceIds: [args.asgnId],
             traceId: args.traceId,
           }),
         ),
@@ -480,6 +634,7 @@ export async function resolveStatusException(
     courierTimestamp: Date
     clientKey: string
     actorId: string
+    actorDisplay?: string | null
     traceId: string
   },
 ): Promise<{ deduped: boolean; outcome: AdvanceOutcome | null }> {
@@ -497,6 +652,7 @@ export async function resolveStatusException(
         courierTimestamp: args.courierTimestamp,
         source: 'OPS_MANUAL',
         sourceRef: args.actorId,
+        actorDisplay: args.actorDisplay ?? null,
         traceId: args.traceId,
       })
 
@@ -786,6 +942,7 @@ export async function holdRecord(
     reason: string
     clientKey: string
     actorId: string
+    actorDisplay?: string | null
     traceId: string
   },
 ): Promise<{ deduped: boolean }> {
@@ -810,7 +967,12 @@ export async function holdRecord(
     await enterWriteScope(tx, 'fulfillment_write', rows[0]!.program_id)
 
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:record-hold'), async () => {
-      await holdEntryWithinTx(tx, args.asgnId, { operatorId: args.actorId }, reason)
+      await holdEntryWithinTx(
+        tx,
+        args.asgnId,
+        { operatorId: args.actorId, actorDisplay: args.actorDisplay ?? null },
+        reason,
+      )
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the hold.
       await enqueue(
         tx,
@@ -845,7 +1007,7 @@ export async function holdRecord(
  */
 export async function releaseRecord(
   db: FulfillmentDb,
-  args: { asgnId: string; clientKey: string; actorId: string; traceId: string },
+  args: { asgnId: string; clientKey: string; actorId: string; actorDisplay?: string | null; traceId: string },
 ): Promise<{ deduped: boolean; released: boolean }> {
   const asgnUuid = toUuid(args.asgnId)
   let released = false
@@ -858,12 +1020,26 @@ export async function releaseRecord(
     await enterWriteScope(tx, 'fulfillment_write', rows[0]!.program_id)
 
     return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:record-release'), async () => {
-      const count = await tx.$executeRaw`
+      const releasedRows = await tx.$queryRaw<{ id: string; trace_id: string }[]>`
         UPDATE pending_pool_entry
         SET pool_status = 'POOLED', released_by_actor = ${args.actorId}::uuid, released_at = now(), updated_at = now()
         WHERE asgn_id = ${asgnUuid}::uuid AND pool_status = 'HELD'
+        RETURNING id::text AS id, trace_id
       `
-      released = count > 0
+      released = releasedRows.length > 0
+      // The trail records the release only when the row was actually HELD.
+      // Note this differs from the 6e audit below on purpose: the audit records
+      // the authorized ATTEMPT, the trail records what the dispatch DID.
+      if (releasedRows.length > 0) {
+        await logPoolEntryStatus(tx, releasedRows[0]!.id, rows[0]!.program_id, {
+          status: 'POOLED',
+          occurredAt: new Date(),
+          statusSource: 'ops:release-hold',
+          actorId: args.actorId,
+          actorDisplay: args.actorDisplay ?? null,
+          traceId: releasedRows[0]!.trace_id,
+        })
+      }
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the release.
       // The operator's privileged release action is audited whenever the
       // client-key callback runs (once, never on a replay), independent of
@@ -928,7 +1104,7 @@ export async function releaseRecord(
  */
 export async function sendBatchToVendor(
   db: FulfillmentDb,
-  args: { btchId: string; clientKey: string; actorId: string; traceId: string },
+  args: { btchId: string; clientKey: string; actorId: string; actorDisplay?: string | null; traceId: string },
 ): Promise<{ deduped: boolean; sent: boolean }> {
   const btchUuid = toUuid(args.btchId)
   let sent = false
@@ -995,6 +1171,17 @@ export async function sendBatchToVendor(
           UPDATE batch SET status = 'SENT_TO_PRINT_VENDOR', updated_at = now()
           WHERE id = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
         `
+        // The batch trail. THIS is what finally gives the batch page a real
+        // sent-at: batch has no such column, so before this table the only
+        // answer was the row's single updated_at, which the close overwrote.
+        await logBatchStatus(tx, btchUuid, programUuid, {
+          status: 'SENT_TO_PRINT_VENDOR',
+          occurredAt: new Date(),
+          statusSource: 'ops:send-to-vendor',
+          actorId: args.actorId,
+          actorDisplay: args.actorDisplay ?? null,
+          traceId: args.traceId,
+        })
         sent = true
       })
       // Co-commit the ALLOW 6e (spec 10c CC-1) in the SAME tx as the effect,
@@ -1042,13 +1229,14 @@ export async function sendBatchToVendor(
  */
 export async function closeBatch(
   db: FulfillmentDb,
-  args: { btchId: string; clientKey: string; actorId: string; traceId: string },
+  args: { btchId: string; clientKey: string; actorId: string; actorDisplay?: string | null; traceId: string },
 ): Promise<{ deduped: boolean; closed: boolean; settlement: BatchSettlement }> {
   const btchUuid = toUuid(args.btchId)
   let settlement: BatchSettlement = {
     total: 0,
     delivered: 0,
     returned: 0,
+    damaged: 0,
     pending: 0,
     settled: false,
     perDispatch: {},
@@ -1083,6 +1271,16 @@ export async function closeBatch(
         UPDATE batch SET status = 'CLOSED', updated_at = now()
         WHERE id = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
       `
+      // The batch trail's closed-at, the other timestamp the batch page had no
+      // way to show.
+      await logBatchStatus(tx, btchUuid, programUuid, {
+        status: 'CLOSED',
+        occurredAt: new Date(),
+        statusSource: 'ops:close-batch',
+        actorId: args.actorId,
+        actorDisplay: args.actorDisplay ?? null,
+        traceId: args.traceId,
+      })
       closed = true
       await enqueue(
         tx,
@@ -1169,6 +1367,7 @@ export async function manualBatch(
     reason: string
     clientKey: string
     actorId: string
+    actorDisplay?: string | null
     traceId: string
   },
 ): Promise<{ btchId: string } | null> {
@@ -1201,6 +1400,7 @@ export async function manualBatch(
         batchResult = await triggerBatchWithinTx(tx, args.tenantWire, args.programWire, 'MANUAL', {
           epoch: args.clientKey,
           actorUuid: args.actorId,
+          actorDisplay: args.actorDisplay ?? null,
           // The TRIMMED reason, written to batch.trigger_note in the same
           // transaction as the batch itself and the ALLOW 6e below.
           triggerNote: reason,

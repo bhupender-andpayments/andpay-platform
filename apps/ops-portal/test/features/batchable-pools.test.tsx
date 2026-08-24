@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -63,11 +63,21 @@ function withProviders(node: React.ReactNode) {
   )
 }
 
-function stub(entries: PoolEntryRow[], triggerResult: unknown = { btchId: 'btch_50000000008008000000000009' }) {
+function stub(
+  entries: PoolEntryRow[],
+  triggerResult: unknown = { btchId: 'btch_50000000008008000000000009' },
+  // Devices IN STOCK, as an ARRAY, because that is what the endpoint returns
+  // and the card counts its length. It used to fall through to `{}` here, which
+  // made `Array.isArray` false, pinned inStock at null and silently disabled
+  // every device-shortfall path in the component: the feature had no coverage
+  // at all and the stub is why.
+  devices: unknown[] = [],
+) {
   const calls: Call[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
     calls.push({ url, init })
     if (url.includes('/ops/batches/trigger')) return jsonResponse(triggerResult)
+    if (url.includes('/ops/devices')) return jsonResponse(devices)
     if (url.includes('/ops/pool')) return jsonResponse(entries)
     return jsonResponse({})
   }))
@@ -75,7 +85,7 @@ function stub(entries: PoolEntryRow[], triggerResult: unknown = { btchId: 'btch_
 }
 
 // TRIGGERING IS TWO STEPS NOW. Forming a batch cannot be undone, so the row's
-// "Create trigger" opens a confirmation, and the confirmation is where the reason
+// "Create batch" opens a confirmation, and the confirmation is where the reason
 // the edge requires (BRD 5.3.4 force dispatch) is typed and where "Create batch"
 // actually posts. Every test that means to trigger goes through both.
 //
@@ -88,7 +98,7 @@ const A_REASON = 'bank collection cut-off is today'
 /** Open the confirmation for a pool (the first one unless told otherwise). */
 async function openTrigger(which = 0): Promise<void> {
   // Renamed from "Trigger batch" on 18 Aug 2026 (the operator's own word for it).
-  const buttons = await screen.findAllByRole('button', { name: /create trigger/i })
+  const buttons = await screen.findAllByRole('button', { name: /create batch/i })
   await userEvent.click(buttons[which]!)
 }
 
@@ -120,7 +130,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
       entry({ asgnId: 'asgn_c', bankDisplayName: 'GSCB', bankReferenceCode: '1523' }),
     ])
     render(withProviders(<BatchablePools />))
-    expect(await screen.findAllByRole('button', { name: /trigger/i })).toHaveLength(1)
+    expect(await screen.findAllByRole('button', { name: /create batch/i })).toHaveLength(1)
   })
 
   it('counts the requests waiting as two big stats against the two thresholds', async () => {
@@ -154,7 +164,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     // Only one row (one Trigger button) covers both aggregators, and the bank
     // names appear in the CONFIRMATION, where the operator is deciding what to
     // claim - the row itself leads with the two threshold stats now.
-    expect(await screen.findAllByRole('button', { name: /trigger/i })).toHaveLength(1)
+    expect(await screen.findAllByRole('button', { name: /create batch/i })).toHaveLength(1)
     await openTrigger()
     expect(await screen.findByText(/Bank A, Bank B/)).toBeTruthy()
   })
@@ -165,7 +175,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
       entry({ asgnId: 'asgn_b', tenantId: 'tnnt_2', programId: 'prog_2' }),
     ])
     render(withProviders(<BatchablePools />))
-    expect(await screen.findAllByRole('button', { name: /trigger/i })).toHaveLength(2)
+    expect(await screen.findAllByRole('button', { name: /create batch/i })).toHaveLength(2)
   })
 
   // The whole point of the step.
@@ -214,7 +224,7 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
     stub([])
     render(withProviders(<BatchablePools />))
     expect(await screen.findByText(/nothing waiting/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /trigger/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /create batch/i })).toBeNull()
   })
 
   it('offers no free-text id box anywhere, even when the pool fails to load', async () => {
@@ -230,6 +240,82 @@ describe('BatchablePools: trigger a batch without typing an id', () => {
 // pending-pool TABLE rendered right below it, owned by the parent and reading
 // the same endpoint, still listed those records as POOLED / not batched.
 // One screen, two halves, disagreeing in front of the operator.
+// THE DEVICE SHORTFALL (23 Aug 2026, at the user's request). An operator with an
+// empty warehouse created a batch, reached the vendor-Excel step and met a hard
+// refusal there ("no unpaired devices are in stock"). The fact was available all
+// along, on the pool, one step earlier; it was simply too quiet to see. It is
+// now said in three places, all from one sentence (deviceShortfall), and it is
+// ADVISORY everywhere: demand is recorded whether or not supply has arrived.
+describe('BatchablePools: the device shortfall is stated, never enforced', () => {
+  beforeEach(() => {
+    setAccessToken('t')
+    vi.unstubAllGlobals()
+  })
+  afterEach(() => {
+    cleanup()
+    clearAccessToken()
+  })
+
+  const device = (id: string) => ({ id, deviceSerial: id, status: 'IN_STOCK', asgnId: null })
+
+  it('names the whole gap when the warehouse is empty, and still offers Create batch', async () => {
+    stub([entry({ asgnId: 'a' }), entry({ asgnId: 'b' })], undefined, [])
+    render(withProviders(<BatchablePools />))
+
+    expect(await screen.findByText(/no devices in stock, and this batch needs 2/i)).toBeTruthy()
+    // ADVISORY: the action stays available. A shortfall is not a refusal.
+    expect((screen.getByRole('button', { name: /create batch/i }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('counts the partial gap when stock covers only some of the soundboxes', async () => {
+    stub([entry({ asgnId: 'a' }), entry({ asgnId: 'b' }), entry({ asgnId: 'c' })], undefined, [device('D1')])
+    render(withProviders(<BatchablePools />))
+
+    expect(await screen.findByText(/only 1 device in stock for 3 soundbox dispatches/i)).toBeTruthy()
+    expect(screen.getByText(/the 2 without a device will stall/i)).toBeTruthy()
+  })
+
+  it('says nothing when stock covers the batch', async () => {
+    stub([entry({ asgnId: 'a' })], undefined, [device('D1'), device('D2')])
+    render(withProviders(<BatchablePools />))
+
+    await screen.findByRole('button', { name: /create batch/i })
+    expect(screen.queryByText(/in stock/i)).toBeNull()
+  })
+
+  it('says nothing for a collateral-only pool, which consumes no device', async () => {
+    stub([entry({ asgnId: 'a', soundbox: false, standeeCount: 2 })], undefined, [])
+    render(withProviders(<BatchablePools />))
+
+    await screen.findByRole('button', { name: /create batch/i })
+    expect(screen.queryByText(/in stock/i)).toBeNull()
+  })
+
+  it('repeats the shortfall inside the confirmation, where the irreversible click is', async () => {
+    stub([entry({ asgnId: 'a' }), entry({ asgnId: 'b' })], undefined, [])
+    render(withProviders(<BatchablePools />))
+
+    await userEvent.click(await screen.findByRole('button', { name: /create batch/i }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/no devices in stock, and this batch needs 2/i)).toBeTruthy()
+    // Still only the reason gates the confirm, never the stock level.
+    expect(within(dialog).getByLabelText(/reason/i)).toBeTruthy()
+  })
+
+  it('shows nothing at all when the stock level could not be read', async () => {
+    // The endpoint answering with a non-array: unknown must never render as 0.
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/ops/devices')) return jsonResponse({ error: 'nope' })
+      if (url.includes('/ops/pool')) return jsonResponse([entry({ asgnId: 'a' })])
+      return jsonResponse({})
+    }))
+    render(withProviders(<BatchablePools />))
+
+    await screen.findByRole('button', { name: /create batch/i })
+    expect(screen.queryByText(/in stock/i)).toBeNull()
+  })
+})
+
 describe('BatchablePools: telling the rest of the page that the pool changed', () => {
   beforeEach(() => { setAccessToken('t'); vi.unstubAllGlobals() })
   afterEach(() => { cleanup(); clearAccessToken() })

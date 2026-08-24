@@ -5,6 +5,7 @@ import type { FulfillmentDb } from './db.js'
 import { CONSUMER, setProgramContext, type Tx } from './internal.js'
 import { enterWriteRole } from './write-context.js'
 import { advanceUnitStatus } from './unit-lifecycle.js'
+import { logPoolEntryStatus } from './status-log.js'
 import { loadFulfillmentConfig } from './authz-config.js'
 import {
   PRINT_FOR_TOPIC,
@@ -646,8 +647,12 @@ async function ingestReturnSheetBody(db: FulfillmentDb, sheet: ReturnSheet): Pro
           // through PRINTED to DISPATCHED rather than stopping at PRINTED, and
           // both steps are monotonic, so a re-uploaded sheet cannot walk a
           // device that is already DELIVERED back down.
-          await advanceUnitStatus(tx, unitUuid, 'PRINTED')
-          await advanceUnitStatus(tx, unitUuid, 'DISPATCHED')
+          // The trail attributes both rungs to the RETURN SHEET, carrying the
+          // entry's own trace id, never the ingest call's (the same reasoning
+          // the print_for fact below records for its traceId).
+          const sheetLog = { statusSource: 'return-sheet', traceId: entry.trace_id } as const
+          await advanceUnitStatus(tx, unitUuid, 'PRINTED', sheetLog)
+          await advanceUnitStatus(tx, unitUuid, 'DISPATCHED', sheetLog)
           pairedUnitIds.push(unitWire)
           if (birth) birth.unitIds.push(unitWire)
 
@@ -701,13 +706,26 @@ async function ingestReturnSheetBody(db: FulfillmentDb, sheet: ReturnSheet): Pro
         // RETURNING is load-bearing: the emitted fact below must carry ONLY
         // the asgnIds this UPDATE actually advanced, never the full covered
         // group (which may include entries this UPDATE's WHERE excluded).
-        const advanced = await tx.$queryRaw<{ asgn_id: string }[]>`
+        const advanced = await tx.$queryRaw<{ asgn_id: string; id: string; trace_id: string }[]>`
           UPDATE pending_pool_entry SET dispatch_state = 'DISPATCHED_BY_VENDOR', updated_at = now()
           WHERE asgn_id = ANY(${asgnUuidList}::uuid[]) AND program_id = ${group.programUuid}::uuid
             AND dispatch_state = 'SENT_TO_VENDOR'
-          RETURNING asgn_id::text AS asgn_id
+          RETURNING asgn_id::text AS asgn_id, id::text AS id, trace_id
         `
         if (advanced.length === 0) continue // nothing in this group actually advanced: no fact to emit
+        // The dispatch trail, on the same RETURNING that gates the fact: an
+        // entry not in SENT_TO_VENDOR does not advance, so it gains no rung.
+        {
+          const dispatchedAt = new Date()
+          for (const a of advanced) {
+            await logPoolEntryStatus(tx, a.id, group.programUuid, {
+              status: 'DISPATCHED_BY_VENDOR',
+              occurredAt: dispatchedAt,
+              statusSource: 'return-sheet',
+              traceId: a.trace_id,
+            })
+          }
+        }
         const btchWire = fromUuid('btch', group.btchUuid)
         const asgnIds = advanced.map((r) => fromUuid('asgn', r.asgn_id))
         await enqueue(tx, {

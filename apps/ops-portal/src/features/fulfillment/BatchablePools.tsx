@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Check } from 'lucide-react'
+import { AlertTriangle, Check } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import {
   Dialog,
@@ -31,7 +31,13 @@ const MAX_REASON_LENGTH = 500
 // Setting the token to 20px fixes the alignment (header px matches the body's
 // px-5) and gap-3 sets the vertical rhythm in one place, so the children below
 // carry horizontal padding only and never their own bottom padding.
-const CARD_RHYTHM = 'flex h-full flex-col gap-3 [--card-spacing:--spacing(5)]'
+// NO h-full (23 Aug 2026, at the user's correction). The card used to stretch
+// to the height of the right-hand column, and with rows present the spare
+// height landed BETWEEN the table and the mt-auto'd trigger strip: a ten-row
+// pool showed a hand of dead space with the button stranded at the bottom of
+// it. The card is content-sized now and the page's grid is items-start, so
+// both columns end where their content ends.
+const CARD_RHYTHM = 'flex flex-col gap-3 [--card-spacing:--spacing(5)]'
 
 // Redesign step 3, the flagship. This replaces a form with two free-text boxes
 // labelled `tnnt_...` and `prg_...`.
@@ -61,9 +67,47 @@ interface BatchablePool {
   records: number
   /** Dispatches, the shipping grain, shown as secondary context. */
   dispatches: number
+  /**
+   * Soundbox legs only (row.soundbox === true), so the device-in-stock
+   * warning below compares like with like: `inStock` counts serialized
+   * devices, which only soundbox dispatches ever consume. Collateral
+   * (standee/sticker) has no device and must never count toward this.
+   */
+  soundboxDispatches: number
   banks: number
   bankNames: string[]
   oldestCreatedAt: string
+}
+
+/**
+ * THE DEVICE-SHORTFALL SENTENCE, in one place (23 Aug 2026, at the user's
+ * request). It is said on the pool strip, again inside the create-batch
+ * confirmation, and again on the Batch preview card, and three copies of the
+ * wording would drift the way every other tripled string on this portal has.
+ *
+ * NEVER A BLOCK. A batch can form with no devices at all: the pool is DEMAND
+ * and stock is SUPPLY, and refusing to record demand because supply is late
+ * would be the platform inventing a rule the business does not have. What the
+ * shortfall costs is later and elsewhere, and it is worth saying out loud: the
+ * vendor Excel cannot name a device that does not exist, so those soundbox rows
+ * stall at the print vendor until an inventory file arrives.
+ *
+ * Returns null when there is nothing to warn about, which is the ordinary case:
+ * enough stock, no soundbox legs, or a stock level we could not read at all
+ * (unknown must never render as zero).
+ */
+export function deviceShortfall(
+  soundboxDispatches: number,
+  inStock: number | null,
+): { short: number; message: string } | null {
+  if (inStock === null || soundboxDispatches === 0 || soundboxDispatches <= inStock) return null
+  return {
+    short: soundboxDispatches - inStock,
+    message:
+      inStock === 0
+        ? `No devices in stock, and this batch needs ${String(soundboxDispatches)}. It can still be created; those soundbox rows will stall at the print vendor until a device inventory file is uploaded.`
+        : `Only ${String(inStock)} device${inStock === 1 ? '' : 's'} in stock for ${String(soundboxDispatches)} soundbox dispatches. The batch can still be created; the ${String(soundboxDispatches - inStock)} without a device will stall at the print vendor.`,
+  }
 }
 
 export function groupBatchablePools(entries: readonly PoolEntryRow[]): BatchablePool[] {
@@ -85,6 +129,7 @@ export function groupBatchablePools(entries: readonly PoolEntryRow[]): Batchable
       // the panel and the server could disagree about whether the lot was met.
       records: new Set(rows.map((r) => r.sourceEventId ?? r.asgnId)).size,
       dispatches: rows.length,
+      soundboxDispatches: rows.filter((r) => r.soundbox).length,
       // Counted on the AGGREGATOR code, not the display name: D7 leaves
       // bank_display_name as the partner ("GSCB") on every row, so counting
       // names would report 1 bank for a pool spanning 19 aggregators.
@@ -125,8 +170,16 @@ export function BatchablePools<Row>({
   onPoolRowClick,
   poolSearchPlaceholder,
   poolTabs,
+  inStock: inStockProp,
 }: {
   onTriggered?: () => void
+  /**
+   * Serialized devices in the warehouse, when the page already knows. Passed
+   * down so this strip and the Batch preview card beside it quote ONE number
+   * and cannot drift; omitted, this card reads it itself (the workflow
+   * workspace mounts it that way). null means unknown, never zero.
+   */
+  inStock?: number | null
   /**
    * A value that changes when the caller has learned the pool changed. This card
    * owns its own read, so without it the card would sit stale behind a page that
@@ -217,7 +270,10 @@ export function BatchablePools<Row>({
   // How many devices are actually in the warehouse. null means we could not
   // find out, which is deliberately different from zero: an unknown stock level
   // must never render as "0 in stock".
-  const [inStock, setInStock] = useState<number | null>(null)
+  // Supplied by PoolPage so this strip and the Batch preview card beside it
+  // quote ONE number; fetched here only when a caller does not pass it.
+  const [ownInStock, setOwnInStock] = useState<number | null>(null)
+  const inStock = inStockProp ?? ownInStock
 
   async function load(): Promise<void> {
     setLoadError(null)
@@ -227,12 +283,15 @@ export function BatchablePools<Row>({
       setLoadError(err instanceof Error ? err.message : 'Failed to load the pending pool.')
     }
     // Separately, and deliberately not fatal: a stock level we cannot read
-    // costs an advisory line, not the screen.
-    try {
-      const devices = await getDevices(client, 'IN_STOCK')
-      setInStock(Array.isArray(devices) ? devices.length : null)
-    } catch {
-      setInStock(null)
+    // costs an advisory line, not the screen. Skipped when the page already
+    // handed one down, so the same GET is not issued twice on one screen.
+    if (inStockProp === undefined) {
+      try {
+        const devices = await getDevices(client, 'IN_STOCK')
+        setOwnInStock(Array.isArray(devices) ? devices.length : null)
+      } catch {
+        setOwnInStock(null)
+      }
     }
   }
 
@@ -391,20 +450,16 @@ export function BatchablePools<Row>({
           </div>
         )
       ) : (
-        // mt-auto pins the trigger strip to the BOTTOM of the card. The card
-        // stretches to the height of the right-hand column (deliberately, see
-        // the no-items-start note on FulfillmentPage), so without this the
-        // leftover height fell below the strip and left it stranded mid-card
-        // over dead space. Pushed down, the same leftover becomes breathing
-        // room between the evidence and the decision, and the strip reads as
-        // the card's footer bar.
-        <div className="mt-auto flex flex-col gap-3 px-5">
+        // Directly under the table, no mt-auto: the card no longer stretches
+        // (see CARD_RHYTHM), so the decision sits right beneath the evidence
+        // instead of being pinned to the far end of borrowed height.
+        <div className="flex flex-col gap-3 px-5">
           {pools.map((pool) => {
             const key = `${pool.tenantId}|${pool.programId}`
             const days = ageInDays(pool.oldestCreatedAt)
             const lot = lotSizeFor?.(pool.tenantId, pool.programId) ?? null
             const maxWaitDays = maxWaitSeconds !== undefined ? Math.round(maxWaitSeconds / 86_400) : null
-            const shortfall = inStock !== null && pool.dispatches > inStock
+            const shortfall = deviceShortfall(pool.soundboxDispatches, inStock)
             return (
               // Each pool is its own PANEL: a subtle primary top accent
               // borrows the "layout selector" pattern from the batch generate
@@ -473,16 +528,21 @@ export function BatchablePools<Row>({
                       setConfirming(pool)
                     }}
                   >
-                    Create trigger
+                    Create batch
                   </Button>
                   {/* basis-full so the advisory takes its own line UNDER the
                       row rather than squeezing the numbers and the button when
-                      it appears. Last in the DOM for the same reason. */}
-                  {shortfall && (
-                    <span className="basis-full rounded-md bg-amber-500/10 px-2 py-1 text-[12px] font-medium text-amber-700 dark:text-amber-400">
-                      {inStock === 0
-                        ? 'No devices in stock. The batch can still form; nothing prints against it yet.'
-                        : `Only ${inStock} of ${pool.dispatches} dispatches have a device in stock. The shortfall will stall at the print vendor.`}
+                      it appears. Last in the DOM for the same reason.
+
+                      A BORDERED CALLOUT WITH AN ICON since 23 Aug 2026: it was
+                      a faint tinted line and an operator with an empty
+                      warehouse read straight past it, then met the same fact as
+                      a hard refusal at the vendor-file step, which is the worst
+                      possible place to learn it. */}
+                  {shortfall !== null && (
+                    <span className="flex basis-full items-start gap-2 rounded-lg border border-amber-300 bg-amber-500/10 px-3 py-2 text-[12.5px] font-medium text-amber-800 dark:border-amber-800 dark:text-amber-300">
+                      <AlertTriangle className="mt-px size-4 shrink-0" aria-hidden="true" />
+                      <span>{shortfall.message}</span>
                     </span>
                   )}
                 </div>
@@ -596,6 +656,20 @@ export function BatchablePools<Row>({
               <dd className="font-semibold">{confirming.bankNames.join(', ')}</dd>
             </div>
           </dl>
+          {/* THE SHORTFALL, AT THE MOMENT OF DECISION (23 Aug 2026, at the
+              user's request). The strip behind this overlay says it too, but
+              the dialog is where the irreversible click happens and the strip
+              is not readable from here. Stated, never enforced: creating the
+              batch stays allowed. */}
+          {(() => {
+            const shortfall = deviceShortfall(confirming.soundboxDispatches, inStock)
+            return shortfall === null ? null : (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-500/10 px-3 py-2.5 text-[12.5px] text-amber-800 dark:border-amber-800 dark:text-amber-300">
+                <AlertTriangle className="mt-px size-4 shrink-0" aria-hidden="true" />
+                <span>{shortfall.message}</span>
+              </div>
+            )
+          })()}
           <Field
             label="Reason"
             htmlFor="trigger-reason"

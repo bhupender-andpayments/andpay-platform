@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
@@ -124,11 +124,29 @@ describe('PoolEntryActions: the action is on the row it acts on', () => {
     expect(screen.getByText(/held: awaiting bank confirmation/i)).toBeTruthy()
   })
 
-  it('releases using the row own id', async () => {
+  // RELEASE CONFIRMS FIRST as of 23 Aug 2026. It used to fire on the single
+  // click, and the consequence is not small: the parcel rejoins the pool and the
+  // next batch trigger can sweep it to the print vendor, which is the outcome
+  // the hold was placed to prevent.
+  it('asks before releasing, and writes nothing until confirmed', async () => {
     const calls = stub()
     renderActions(entry({ asgnId: 'asgn_real', poolStatus: 'HELD' }))
-    await userEvent.click(screen.getByRole('button', { name: /release/i }))
-    expect(calls.some((c) => c.url.includes('/ops/records/asgn_real/release'))).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: /release hold/i }))
+
+    expect(await screen.findByText(/release this hold\?/i)).toBeTruthy()
+    expect(calls.some((c) => c.url.includes('/release'))).toBe(false)
+  })
+
+  it('releases using the row own id once confirmed', async () => {
+    const calls = stub()
+    renderActions(entry({ asgnId: 'asgn_real', poolStatus: 'HELD' }))
+    await userEvent.click(screen.getByRole('button', { name: /release hold/i }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /release hold/i }))
+
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/ops/records/asgn_real/release'))).toBe(true)
+    })
   })
 
   it('tells the table to re-read, so the row reflects what just happened', async () => {

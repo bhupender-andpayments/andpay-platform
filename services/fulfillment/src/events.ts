@@ -119,6 +119,11 @@ export interface AssignmentFactView {
   // a fact with no dispatchGroup key is a pre-split combined row, and its
   // absence, not any default, is what downstream branches on.
   dispatchGroup?: 'SOUNDBOX' | 'COLLATERAL'
+  // DAMAGE.md (21 Aug 2026): the dispatch this one replaces, OPTIONAL on the
+  // wire and absent on every original. Declared LOCALLY like every other field
+  // here, never imported from tms (C4); drift is caught by the wire schema
+  // (D120) and the round-trip test, not by a cross-context import.
+  replacementOf?: string
 }
 export interface CredentialFactView {
   apiId: string; vndrRef: string; status: string; epoch: number; mode: string

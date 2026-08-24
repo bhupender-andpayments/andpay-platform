@@ -3,6 +3,7 @@ import { useAuth } from '../../auth/AuthContext.js'
 import { newIdempotencyKey } from '../../api/idempotency.js'
 import { holdRecord, releaseHold, type PoolEntryRow } from '../../api/endpoints.js'
 import { Button, ErrorNote, Field, Input, CodeChip } from '../../ui/primitives.js'
+import { ConfirmDialog } from '../../ui/ConfirmDialog.js'
 import {
   Dialog,
   DialogContent,
@@ -43,8 +44,14 @@ import {
 // reason is REQUIRED (the edge rejects a blank one before it authorizes
 // anything), and holding keeps a merchant's real order out of every batch for
 // as long as it stands, so asking for a sentence is the point rather than
-// friction. Release is unchanged and stays one click: it returns the record to
-// the ordinary pool, so there is no equivalent claim to justify.
+// friction.
+//
+// 23 Aug 2026: RELEASE NOW CONFIRMS TOO. It stayed one click on the reasoning
+// that returning a record to the ordinary pool makes no claim needing
+// justification. True as far as it goes, but it understated the consequence:
+// the released parcel can be swept into the very next batch and sent to the
+// print vendor, which is the outcome the hold was placed to prevent. It still
+// asks for no reason, only for confirmation.
 //
 // 2026-08-14: the reason is collected in a DIALOG rather than a form that
 // expanded inside the table cell. The in-cell form re-flowed every row under it
@@ -55,11 +62,28 @@ import {
 // number: this one gives immediate feedback, the edge is the guarantee.
 const MAX_HOLD_REASON_LENGTH = 500
 
-export function PoolEntryActions({ row, onChanged }: { row: PoolEntryRow; onChanged: () => void }) {
+export function PoolEntryActions({
+  row,
+  onChanged,
+  showReason = true,
+}: {
+  row: PoolEntryRow
+  onChanged: () => void
+  /**
+   * Whether to repeat the hold reason next to the button.
+   *
+   * True on the Pool page, where this component IS the only place the reason
+   * appears in the row. False on the dispatch detail page, whose Held banner
+   * states the reason prominently already, and where repeating it inside the
+   * same card printed it twice (23 Aug 2026).
+   */
+  showReason?: boolean
+}) {
   const { client } = useAuth()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [holding, setHolding] = useState(false)
+  const [releasing, setReleasing] = useState(false)
   const [reason, setReason] = useState('')
 
   async function run(action: 'hold' | 'release'): Promise<void> {
@@ -72,6 +96,7 @@ export function PoolEntryActions({ row, onChanged }: { row: PoolEntryRow; onChan
       // entry now is, and a locally-guessed status that disagreed with it would
       // be worse than a brief wait.
       setHolding(false)
+      setReleasing(false)
       setReason('')
       onChanged()
     } catch (err) {
@@ -89,25 +114,39 @@ export function PoolEntryActions({ row, onChanged }: { row: PoolEntryRow; onChan
     // A HELD row that has since been batched still shows WHY it was held, if a
     // reason was recorded. Losing that the moment the action disappears would
     // throw away the only account of the decision.
-    return (row.holdReason ?? null) === null ? null : <span className="text-xs text-muted-foreground">{row.holdReason}</span>
+    return (row.holdReason ?? null) === null || !showReason ? null : (
+      <span className="text-xs text-muted-foreground">{row.holdReason}</span>
+    )
   }
 
   if (action === 'release') {
     return (
       <div className="flex flex-col items-start gap-1">
-        {(row.holdReason ?? null) !== null && <span className="text-xs text-muted-foreground">Held: {row.holdReason}</span>}
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={busy}
-          loading={busy}
-          onClick={() => {
-            void run('release')
-          }}
-        >
+        {showReason && (row.holdReason ?? null) !== null && (
+          <span className="text-xs text-muted-foreground">Held: {row.holdReason}</span>
+        )}
+        <Button variant="secondary" size="sm" disabled={busy} onClick={() => setReleasing(true)}>
           Release hold
         </Button>
-        {error !== null && <ErrorNote>{error}</ErrorNote>}
+        {/* RELEASE ASKS FIRST (23 Aug 2026). It used to fire on the single
+            click, and it is not a small act: the parcel rejoins the pool and
+            the very next batch trigger can sweep it to the print vendor, which
+            is exactly what the hold existed to prevent. Holding already asks
+            for a reason, so the two directions are now symmetric. */}
+        <ConfirmDialog
+          open={releasing}
+          onOpenChange={setReleasing}
+          title="Release this hold?"
+          description={`${row.merchantDisplayName} rejoins the pool and can be swept into the next batch.${
+            (row.holdReason ?? null) !== null ? ` It was held because: ${row.holdReason}` : ''
+          }`}
+          confirmLabel="Release hold"
+          busy={busy}
+          error={error}
+          onConfirm={() => {
+            void run('release')
+          }}
+        />
       </div>
     )
   }

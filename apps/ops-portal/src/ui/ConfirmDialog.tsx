@@ -39,6 +39,12 @@ export interface ConfirmDialogProps {
   /** Guards the confirm button while the dialog's own inputs are incomplete. */
   confirmDisabled?: boolean
   /**
+   * Widens the dialog from the default max-w-md (23 Aug 2026). A dialog whose
+   * body carries a real panel of numbers, rather than a sentence and a field,
+   * wraps every label onto two lines at the default width.
+   */
+  wide?: boolean
+  /**
    * Rendered inside the dialog, pinned to the confirm button, exactly as the
    * inline-error rule requires: an error from the action the dialog triggered
    * must not disappear with the dialog or show up as a toast.
@@ -58,6 +64,7 @@ export function ConfirmDialog({
   tone = 'default',
   busy = false,
   confirmDisabled = false,
+  wide = false,
   error = null,
   onConfirm,
   children,
@@ -73,7 +80,7 @@ export function ConfirmDialog({
         onOpenChange(next)
       }}
     >
-      <DialogContent>
+      <DialogContent className={wide ? 'max-w-2xl' : undefined}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description !== undefined && <DialogDescription>{description}</DialogDescription>}

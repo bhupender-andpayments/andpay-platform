@@ -1,20 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Boxes, Check, Copy, Download, PackageCheck, PackageX, Pencil, Smartphone, Truck, Upload } from 'lucide-react'
+import { Boxes, Check, Copy, Download, PackageCheck, PackageX, Smartphone, Truck, Upload } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { DataGrid, type GridColumn } from '../../ui/DataGrid.js'
-import { UnitStatusEditDialog } from './UnitStatusEditDialog.js'
-import { UNIT_STATUS_ORDER as STATUS_ORDER, STATUS_LABEL, legalNextStatuses } from './unitStatus.js'
+import { UNIT_STATUS_ORDER as STATUS_ORDER, STATUS_LABEL } from './unitStatus.js'
 import { MultiSelect, SearchSelect } from '../../components/Picker.js'
 import {
   getDevices,
   getMerchants,
   getVendors,
-  getDamageCases,
   type UnitInventoryRow,
   type MerchantRow,
   type VendorRow,
-  type DamageCaseRow,
 } from '../../api/endpoints.js'
 import { PageHeader, Card, Field, Input, Button, ErrorNote, Toolbar, StatusPill, CodeChip } from '../../ui/primitives.js'
 import { buildSampleInventoryFile, SAMPLE_ROW_COUNT } from './sampleInventory.js'
@@ -90,6 +87,34 @@ function StatCard({ def, active, onClick }: { def: StatCardDef; active: boolean;
   )
 }
 
+/**
+ * WHICH KIND OF DISPATCH this device is on, the axis the Source filter and the
+ * Dispatch type column both read.
+ *
+ * THREE states, not two. A device is only linked to a dispatch when the print
+ * vendor's return sheet pairs it, so a device still in the warehouse has no
+ * dispatch at all. Calling that "fresh" (which the old two-state split did, by
+ * computing fresh as everything-minus-replacements) counted stock as though it
+ * had shipped.
+ *
+ * And it is the DISPATCH that is fresh or a replacement, never the device: a
+ * replacement device is a brand-new one out of stock. The column is labelled
+ * accordingly, because "Replacement" on a device reads as refurbished, which
+ * would be wrong and matters (replacements are non-billable).
+ */
+type DispatchType = 'fresh' | 'replacement' | 'undispatched'
+
+function dispatchTypeOf(r: UnitInventoryRow): DispatchType {
+  if (r.asgnId === null) return 'undispatched'
+  return r.replacementOfAsgnId !== null ? 'replacement' : 'fresh'
+}
+
+const DISPATCH_TYPE_LABEL: Record<DispatchType, string> = {
+  fresh: 'Fresh',
+  replacement: 'Replacement',
+  undispatched: 'Not dispatched',
+}
+
 export function InventoryPage() {
   const { client } = useAuth()
   const navigate = useNavigate()
@@ -99,10 +124,8 @@ export function InventoryPage() {
   const [rows, setRows] = useState<UnitInventoryRow[]>([])
   // The row whose status is being corrected, or null. One dialog for the whole
   // grid: mounting one per row would mount a hundred.
-  const [editingUnit, setEditingUnit] = useState<UnitInventoryRow | null>(null)
   const [merchantNames, setMerchantNames] = useState<ReadonlyMap<string, string>>(new Map())
   const [vendors, setVendors] = useState<VendorRow[]>([])
-  const [replacementAsgnIds, setReplacementAsgnIds] = useState<ReadonlySet<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -192,14 +215,6 @@ export function InventoryPage() {
         setVendors(list)
       })
       .catch(() => {})
-    getDamageCases(client)
-      .then((list: DamageCaseRow[]) => {
-        if (cancelled || !Array.isArray(list)) return
-        // A damage case's asgnId IS the replacement assignment, so a device
-        // whose asgn_id appears here exists as the replacement for a damaged one.
-        setReplacementAsgnIds(new Set(list.map((c) => c.asgnId)))
-      })
-      .catch(() => {})
     return () => {
       cancelled = true
     }
@@ -241,18 +256,21 @@ export function InventoryPage() {
     [dateSearchScoped, mfrSel],
   )
 
-  // Stage 3: + status, the source axis, and the activation toggle. These are
-  // the table rows.
+  // Stage 3: + status, the dispatch-type axis, and the activation toggle. These
+  // are the table rows.
   const tableRows = useMemo(() => {
     return scoped.filter((r) => {
       if (statusSel.length > 0 && !statusSel.includes(r.status)) return false
-      const isReplacement = r.asgnId !== null && replacementAsgnIds.has(r.asgnId)
-      if (srcSel === 'replacement' && !isReplacement) return false
-      if (srcSel === 'fresh' && isReplacement) return false
+      // 'fresh' matches everything that is NOT a replacement (undispatched
+      // included), mirroring the Requests filter's two-way split. 'undispatched'
+      // is no longer offered but an old URL carrying it still narrows exactly.
+      if (srcSel === 'replacement' && dispatchTypeOf(r) !== 'replacement') return false
+      if (srcSel === 'fresh' && dispatchTypeOf(r) === 'replacement') return false
+      if (srcSel === 'undispatched' && dispatchTypeOf(r) !== 'undispatched') return false
       if (actOnly && r.activatedAt === null) return false
       return true
     })
-  }, [scoped, statusSel, srcSel, actOnly, replacementAsgnIds])
+  }, [scoped, statusSel, srcSel, actOnly])
 
   const byStatus = useMemo(() => {
     const m = new Map<string, number>()
@@ -265,10 +283,22 @@ export function InventoryPage() {
   // card totals stay comparable.
   const activatedCount = useMemo(() => scoped.filter((r) => r.activatedAt !== null).length, [scoped])
 
-  const replacementCount = useMemo(
-    () => scoped.filter((r) => r.asgnId !== null && replacementAsgnIds.has(r.asgnId)).length,
-    [scoped, replacementAsgnIds],
-  )
+  // ONE TALLY PER STATE, none of them derived by subtraction (23 Aug 2026).
+  //
+  // "Fresh" used to be computed as `everything - replacements`, which quietly
+  // counted every device still in the warehouse as a fresh DISPATCH. A device
+  // only gets an asgn_id when the vendor's return sheet pairs it, so unpaired
+  // stock is not fresh and not a replacement: it has not been dispatched at all.
+  // That is now its own state rather than a rounding error in another one.
+  const byDispatchType = useMemo(() => {
+    const m = new Map<DispatchType, number>([
+      ['fresh', 0],
+      ['replacement', 0],
+      ['undispatched', 0],
+    ])
+    for (const r of scoped) m.set(dispatchTypeOf(r), (m.get(dispatchTypeOf(r)) ?? 0) + 1)
+    return m
+  }, [scoped])
 
   const cards: StatCardDef[] = [
     {
@@ -458,32 +488,38 @@ export function InventoryPage() {
       cell: (r) => (
         <span className="group/status flex items-center gap-1.5">
           <StatusPill value={r.status} />
-          {r.asgnId !== null && replacementAsgnIds.has(r.asgnId) && (
-            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-              Replacement
-            </span>
-          )}
-          {/* The correction lives on the value it corrects. Hidden outright on a
-              terminal device rather than shown disabled: there is no forward
-              move left, so an affordance would only promise one. */}
-          {legalNextStatuses(r.status).length > 0 && (
-            <button
-              type="button"
-              title="Change status"
-              aria-label={`Change status of ${r.deviceSerial ?? r.id}`}
-              className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground group-hover/status:text-muted-foreground"
-              onClick={(e) => {
-                // The row itself navigates to the device page; editing here
-                // must not also do that.
-                e.stopPropagation()
-                setEditingUnit(r)
-              }}
-            >
-              <Pencil className="size-3.5" aria-hidden="true" />
-            </button>
-          )}
+          {/* The Replacement pill that used to sit here moved out to its own
+              Dispatch type column (23 Aug 2026): buried inside another cell it
+              was missed entirely, and it is a different axis from delivery
+              status, so it was never really this column's business. */}
+          {/* NO STATUS ACTION HERE (24 Aug 2026, at the user's direction). A device's
+              status is written by the flows that own it: the batch's send, the
+              vendor's return sheet, the SHIPMENT's courier updates, and the
+              dispatch's Flag damage. On a paired device this pencil opened a
+              dialog with nothing selectable in it, which is the worst kind of
+              control: one that promises an action it cannot perform. */}
         </span>
       ),
+    },
+    {
+      key: 'dispatchType',
+      header: 'Dispatch type',
+      sortValue: (r) => DISPATCH_TYPE_LABEL[dispatchTypeOf(r)],
+      cell: (r) => {
+        const t = dispatchTypeOf(r)
+        if (t === 'undispatched') return <span className="text-muted-foreground">{DISPATCH_TYPE_LABEL[t]}</span>
+        if (t === 'replacement') {
+          return (
+            <span
+              className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+              title={`This device travels on a replacement dispatch. Replaces ${r.replacementOfAsgnId ?? ''}`}
+            >
+              {DISPATCH_TYPE_LABEL[t]}
+            </span>
+          )
+        }
+        return <span>{DISPATCH_TYPE_LABEL[t]}</span>
+      },
     },
     {
       key: 'manufacturer',
@@ -525,6 +561,47 @@ export function InventoryPage() {
           >
             {r.batch}
           </button>
+        ),
+    },
+    // Already on the row and already on the device page, but absent from the
+    // list until 23 Aug 2026. Dispatch in particular: the list could reach a
+    // device's merchant and its batch, but not the dispatch it travels on.
+    {
+      key: 'dispatch',
+      header: 'Dispatch ID',
+      sortValue: (r) => r.asgnId ?? '',
+      cell: (r) =>
+        r.asgnId === null ? (
+          <span className="text-muted-foreground">-</span>
+        ) : (
+          <button
+            type="button"
+            className="underline underline-offset-2"
+            onClick={(e) => {
+              e.stopPropagation()
+              navigate(`/dispatches/${r.asgnId!}`)
+            }}
+          >
+            <CodeChip>{r.asgnId}</CodeChip>
+          </button>
+        ),
+    },
+    {
+      key: 'shipment',
+      header: 'Shipment ID',
+      sortValue: (r) => r.shipment ?? '',
+      cell: (r) =>
+        r.shipment === null ? <span className="text-muted-foreground">-</span> : <CodeChip>{r.shipment}</CodeChip>,
+    },
+    {
+      key: 'location',
+      header: 'Location',
+      sortValue: (r) => r.location ?? '',
+      cell: (r) =>
+        r.location === null || r.location === '' ? (
+          <span className="text-muted-foreground">-</span>
+        ) : (
+          <span className="text-muted-foreground">{r.location}</span>
         ),
     },
     {
@@ -615,14 +692,25 @@ export function InventoryPage() {
             onChange={(next) => setParam('mfr', next.join(','))}
           />
         </Field>
-        <Field label="Source" htmlFor="invSrc" className="w-full sm:w-44">
+        {/* THE REQUESTS VOCABULARY, exactly (23 Aug 2026, at the user's
+            correction): one filter name and one pair of options everywhere the
+            replacement split is offered, so an operator never meets two
+            wordings for one idea. "Fresh only" is everything that is not a
+            replacement, undispatched stock included: a device is fresh until
+            damage says otherwise. The Dispatch type COLUMN keeps its honest
+            three states; only the filter collapses to the pair. */}
+        <Field label="Replacement" htmlFor="invSrc" className="w-full sm:w-40">
           <SearchSelect
             id="invSrc"
-            placeholder="All sources"
+            placeholder="All devices"
             clearable
             options={[
-              { value: 'fresh', label: 'Fresh (billable)', count: scoped.length - replacementCount },
-              { value: 'replacement', label: 'Replacement', count: replacementCount },
+              { value: 'replacement', label: 'Replacement only', count: byDispatchType.get('replacement') ?? 0 },
+              {
+                value: 'fresh',
+                label: 'Fresh only',
+                count: (byDispatchType.get('fresh') ?? 0) + (byDispatchType.get('undispatched') ?? 0),
+              },
             ]}
             value={srcSel}
             onChange={(v) => setParam('src', v)}
@@ -666,19 +754,6 @@ export function InventoryPage() {
       {/* Patched in place rather than refetched: the operator stays where they
           were, on the same page of the same filtered list, and the stat cards
           recompute from `rows` anyway so they follow the change for free. */}
-      {editingUnit !== null && (
-        <UnitStatusEditDialog
-          unit={editingUnit}
-          open
-          onOpenChange={(next) => {
-            if (!next) setEditingUnit(null)
-          }}
-          onSaved={(status) => {
-            const editedId = editingUnit.id
-            setRows((prev) => prev.map((r) => (r.id === editedId ? { ...r, status } : r)))
-          }}
-        />
-      )}
     </div>
   )
 }

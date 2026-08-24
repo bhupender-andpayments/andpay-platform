@@ -27,12 +27,28 @@ export function resolveBase(raw: string | undefined, fallback: string): string {
   return trimmed ? trimmed : fallback
 }
 
+// Typed HERE rather than via vite/client's ambient ImportMeta, deliberately.
+// This module is imported (through endpoints.ts) by the root vocabulary-parity
+// tests, and an import overrides the root tsconfig's exclude, so this file is
+// type-checked in a scope where vite's ambient types do not exist. That held
+// only as long as a stale hoisted copy of vite sat in the ROOT node_modules:
+// a clean `pnpm install --frozen-lockfile` removes it and the whole gate goes
+// red on `Property 'env' does not exist on type 'ImportMeta'`. A local view of
+// the one field this module reads keeps it standalone in every scope.
+interface ViteEnvCarrier {
+  env?: Record<string, string | undefined>
+}
+
+function viteEnv(): Record<string, string | undefined> {
+  return (import.meta as unknown as ViteEnvCarrier).env ?? {}
+}
+
 export function opsBase(): string {
-  return resolveBase(import.meta.env.VITE_OPS_BASE as string | undefined, DEFAULT_OPS_BASE)
+  return resolveBase(viteEnv()['VITE_OPS_BASE'], DEFAULT_OPS_BASE)
 }
 
 export function authBase(): string {
-  return resolveBase(import.meta.env.VITE_AUTH_BASE as string | undefined, DEFAULT_AUTH_BASE)
+  return resolveBase(viteEnv()['VITE_AUTH_BASE'], DEFAULT_AUTH_BASE)
 }
 
 /// Called ONCE from main.tsx. The bases are the first thing to check when the

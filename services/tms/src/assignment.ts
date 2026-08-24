@@ -13,7 +13,6 @@ import {
 } from './events.js'
 import { CONSUMER, type Tx } from './internal.js'
 import { enterWriteScope } from './write-context.js'
-import { recordActivationStatusWithinTx, type ActivationStatusSource } from './activation-branch.js'
 import { advanceCaseStatusWithinTx } from './damage-case.js'
 import type { DevicePort } from './device-port.js'
 
@@ -39,6 +38,13 @@ interface PendingRowRow {
   contact_name: string | null
   mobile: string | null
   branch_code: string | null
+  // BRD 5.1b, 22 Aug 2026: carried from pending_row onto the assignment
+  // snapshot alongside contact_name/mobile/branch_code above.
+  email: string | null
+  city: string | null
+  state: string | null
+  pincode: string | null
+  qr_type: string | null
   // The row's OWN bank code (the aggregator / member bank beneath the tenant),
   // written by ingest from BankRequestRow.bankReferenceCode. See the
   // bank_reference_code note on the INSERT below for why the assignment now
@@ -74,6 +80,7 @@ interface AssignmentSnapshotRow {
   mobile: string | null
   branch_code: string | null
   dispatch_group: string
+  replacement_of: string | null
 }
 
 // Emit the demand fact for an already-inserted assignment (row present) and move
@@ -84,7 +91,8 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
     SELECT a.merchant_id, a.program_id, a.tenant_id, a.merchant_display_name AS display_name,
            a.merchant_legal_name AS legal_name, a.merchant_mcc AS mcc, a.bank_reference_code, a.bank_display_name,
            a.ship_to_address, a.qr_value, a.vpa_value, a.soundbox, a.standee_count, a.sticker_count,
-           a.billable, a.source_event_id, a.contact_name, a.mobile, a.branch_code, a.dispatch_group
+           a.billable, a.source_event_id, a.contact_name, a.mobile, a.branch_code, a.dispatch_group,
+           a.replacement_of::text AS replacement_of
     FROM assignment a WHERE a.id = ${asgnUuid}::uuid
   `
   if (rows.length === 0) throw new Error(`emitDemandFact: assignment ${asgnUuid} not found`)
@@ -126,6 +134,11 @@ export async function emitDemandFact(tx: Tx, asgnUuid: string, envId: string, tr
         // W-5: dispatch group marker. NOT NULL in tms (Task 1), so every row here
         // has one; no ?? undefined dance needed.
         dispatchGroup: a.dispatch_group as 'SOUNDBOX' | 'COLLATERAL',
+        // Omitted entirely on an original rather than sent as null: the field is
+        // optional on the wire, and an absent field and a null one mean the same
+        // thing to every consumer while the absent one keeps the payload honest
+        // about what this dispatch is.
+        ...(a.replacement_of === null ? {} : { replacementOf: fromUuid('asgn', a.replacement_of) }),
       },
       dedupKey: eventKey(envId, 'tms.assignment'),
       traceId,
@@ -181,6 +194,7 @@ export async function createAssignmentFromEnrollment(
     await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
       const pend = await tx.$queryRaw<PendingRowRow[]>`
         SELECT soundbox, standee_count, sticker_count, qr_value, vpa_value, ship_to_address, contact_name, mobile, branch_code,
+               email, city, state, pincode, qr_type,
                tenant_reference, status
         FROM pending_row WHERE correlation_id = ${p.sourceEventId}
       `
@@ -254,13 +268,15 @@ export async function createAssignmentFromEnrollment(
             merchant_display_name, merchant_legal_name, merchant_mcc,
             bank_reference_code, bank_display_name, ship_to_address,
             qr_value, vpa_value, soundbox, standee_count, sticker_count,
-            billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code, dispatch_group, updated_at
+            billable, demand_state, origin, source_event_id, contact_name, mobile, branch_code,
+            email, city, state, pincode, qr_type, dispatch_group, updated_at
           ) VALUES (
             ${asgnUuid}::uuid, ${mrchUuid}::uuid, ${progUuid}::uuid, ${tnntUuid}::uuid,
             ${m.display_name}, ${m.legal_name}, ${m.mcc},
             ${pr.tenant_reference}, ${t.display_name}, ${pr.ship_to_address},
             ${pr.qr_value}, ${pr.vpa_value}, ${groupSpec.soundbox}, ${groupSpec.standeeCount}, ${groupSpec.stickerCount},
-            ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, ${pr.branch_code}, ${groupSpec.group}, now()
+            ${true}, ${'received'}, ${origin}, ${p.sourceEventId}, ${pr.contact_name}, ${pr.mobile}, ${pr.branch_code},
+            ${pr.email}, ${pr.city}, ${pr.state}, ${pr.pincode}, ${pr.qr_type}, ${groupSpec.group}, now()
           )
           ON CONFLICT (source_event_id, dispatch_group) DO NOTHING
           RETURNING id
@@ -345,10 +361,23 @@ export async function amendShipTo(
 // DevicePort seam (C6/T11), never a direct partner or AWS IoT call from this
 // function. The port call happens OUTSIDE the transaction (it is an external
 // side effect); the state change and fact emission are wrapped together in one
-// onceWithin-guarded transaction (E1, E6) keyed on `${asgnId}|activate`, so a
-// redelivered activation call does not re-run the effect. Device identity and
-// activation facts are identical across adapter families (C6/T11 applied to
-// devices).
+// onceWithin-guarded transaction (E1, E6), so a redelivered activation call
+// does not re-run the effect. Device identity and activation facts are
+// identical across adapter families (C6/T11 applied to devices).
+//
+// THE DEDUP KEY CHANGED ON 23 Aug 2026, because activation is a TOGGLE now and
+// the old key made it a one-way door. The key was the business key
+// `${asgnId}|activate`, written into the inbox forever on the FIRST activation.
+// That was correct when activation was one-time-ever; once deactivation existed
+// (ACTIVATION.md, 21 Aug), every RE-activation of a since-deactivated dispatch
+// hit that permanent row and was swallowed as a "redelivered duplicate": no
+// UPDATE, no fact, activated:false. On screen: an operator deactivates a
+// device, tries to activate it again, and the portal reports "0 devices
+// activated" with nothing to act on. The ops path now dedups on a PER-ATTEMPT
+// key (opts.attemptKey, client key + dispatch) and the flip itself is guarded
+// by `AND activated_at IS NULL`, exactly the shape deactivateAssignmentOps has
+// always had. The port path keeps the business key: a CWD-driven activation is
+// genuinely one-time, and that door has no operator toggling behind it.
 //
 // Phase 5 Task 2 (D-H.1): the transaction BODY is extracted into
 // activateAssignmentWithinTx below so the class-3 ops trigger
@@ -364,15 +393,19 @@ export async function activateAssignmentWithinTx(
   traceId: string,
   opts?: {
     onAudit?: (tx: Tx) => Promise<void>
-    // D-16: who to name on the activation trail row. The ops trigger passes its
-    // own door and actor; the port path passes neither and the trail records
-    // 'port' with no operator, which is a meaning rather than a gap.
-    statusSource?: ActivationStatusSource
+    // ACTIVATION.md (21 Aug 2026): who to stamp as activatedBy. The ops
+    // trigger passes its own actor; the port path passes none, and
+    // activatedBy stays null, which is a meaning (no operator behind it)
+    // rather than a gap.
     actorId?: string
+    // The per-attempt dedup key (client key + dispatch), so a REPLAYED request
+    // is a no-op while a NEW attempt can re-activate a deactivated dispatch.
+    // Absent on the port path, which keeps the one-time business key.
+    attemptKey?: string
   },
 ): Promise<{ activated: boolean }> {
   const asgnUuid = toUuid(asgnId)
-  const dedupKey = `${asgnId}|activate`
+  const dedupKey = opts?.attemptKey ?? `${asgnId}|activate`
   // Fork-E named exception (spec 10d Task 3, check 1/8): activateAssignment
   // carries NO program on the wire at all, so program_id is resolved
   // SERVER-SIDE from the target assignment row itself (D99: never a caller
@@ -384,56 +417,83 @@ export async function activateAssignmentWithinTx(
   if (target.length === 0) throw new Error(`activateAssignment: assignment ${asgnId} not found`)
   await enterWriteScope(tx, 'tms_write', target[0]!.program_id)
 
-  const ran = await onceWithin(tx, CONSUMER, dedupKey, async () => {
-    await tx.$executeRaw`UPDATE assignment SET activated_at = ${activatedAt}::timestamptz, demand_state = 'activated', updated_at = now() WHERE id = ${asgnUuid}::uuid`
-    // D-16: the same transition, recorded on the ACTIVATION AXIS. activated_at
-    // and demand_state above are the old scalar shape and stay exactly as they
-    // were, so nothing reading them moves; this adds the branch state and its
-    // append-only trail alongside. Inside the onceWithin, so a redelivered
-    // activation appends nothing and the trail cannot grow a duplicate.
+  let activated = false
+  await onceWithin(tx, CONSUMER, dedupKey, async () => {
+    // ACTIVATION.md (21 Aug 2026): activated_at + activated_by, a parallel
+    // flag with no log (activation is a toggle, not a lifecycle; the old
+    // activation_status axis and its append-only trail are deleted).
     //
-    // statusSource is 'port' rather than the operator door: this function is
-    // reached both by activateAssignment (the DevicePort path, no human) and by
-    // activateAssignmentOps, and the caller that KNOWS an operator was behind it
-    // is the one that passes opts.statusSource.
-    await recordActivationStatusWithinTx(tx, {
-      asgnId,
-      programUuid: target[0]!.program_id,
-      status: 'ACTIVATED',
-      occurredAt: new Date(activatedAt),
-      statusSource: opts?.statusSource ?? 'port',
-      actorId: opts?.actorId ?? null,
-      traceId,
-    })
-    // D-24 (T6.5): if this assignment is a REPLACEMENT, activation is its
-    // terminal, so the damage case it answers closes here. The write's own
-    // predicate checks `replacement_of IS NOT NULL`, so an ordinary activation
-    // moves nothing and needs no branch: a case only closes when there was a
-    // case. Forward-only, so a redelivered activation closes nothing twice and
-    // a case an operator already closed stays closed.
-    //
-    // This is the SOUNDBOX terminal. A COLLATERAL replacement's terminal is
-    // delivery, which is a fulfillment fact TMS cannot map to an assignment
-    // without holding a shipment reference it is not allowed to hold (T2/T12).
-    // See PLAN.md Q26: that half is not automated, and manual close covers it.
-    await advanceCaseStatusWithinTx(tx, asgnUuid, 'Closed')
-    await enqueue(tx, {
-      aggregateType: 'assignment',
-      aggregateId: asgnId,
-      eventType: TMS_ACTIVATED_TOPIC,
-      partitionKey: asgnId,
-      payload: activatedFactEnvelope({
-        payload: { asgnId, activatedAt },
-        dedupKey: eventKey(dedupKey, 'tms.assignment.activated'),
-        traceId,
-      }),
-    })
+    // GUARDED on activated_at IS NULL (23 Aug 2026), the mirror of the
+    // deactivate write's IS NOT NULL: an already-live dispatch flips nothing,
+    // emits nothing, and reports activated:false honestly, instead of the old
+    // unconditional UPDATE that relied on the forever business key to never
+    // run twice.
+    const flipped = await tx.$queryRaw<{ id: string }[]>`
+      UPDATE assignment
+      SET activated_at = ${activatedAt}::timestamptz,
+          activated_by = ${opts?.actorId ?? null}::uuid,
+          demand_state = 'activated',
+          updated_at = now()
+      WHERE id = ${asgnUuid}::uuid AND activated_at IS NULL
+      RETURNING id::text AS id
+    `
+    activated = flipped.length > 0
+    if (activated) {
+      // D-24 (T6.5), REVISED 21 Aug 2026 (DAMAGE.md): a soundbox replacement's
+      // case closes on DELIVERED **AND** ACTIVATED, so activation alone no
+      // longer closes it. It used to, and that closed complaints the merchant
+      // had not received yet: the CWD can confirm an activation while the
+      // parcel is still in transit, which is the same independence-of-axes that
+      // D-16 exists for.
+      //
+      // The halves arrive in either order, so this is the mirror of the
+      // delivery side in projectShipmentToCases: close only when the OTHER half
+      // is already on the row, and whichever lands second does the closing.
+      //
+      // Forward-only still, so a no-op activation closes nothing twice and a
+      // case an operator already closed stays closed. The predicate keeps
+      // requiring replacement_of, so an ordinary activation moves nothing.
+      const closable = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id::text AS id FROM assignment
+        WHERE id = ${asgnUuid}::uuid
+          AND replacement_of IS NOT NULL
+          AND delivered_at IS NOT NULL
+      `
+      if (closable.length > 0) {
+        await advanceCaseStatusWithinTx(tx, asgnUuid, 'Closed', {
+          statusSource: 'activation:delivered+activated',
+          actorId: opts?.actorId ?? null,
+          traceId,
+        })
+      }
+      // The fact, ONLY when a row actually flipped, exactly like the
+      // deactivate side: telling two other contexts to stamp an activation
+      // that did not happen is dishonest history. Its dedupKey derives from
+      // the ATTEMPT key, so a re-activation after a deactivation is a NEW
+      // fact to every consumer's inbox rather than a redelivery of the first
+      // one (fulfillment dedups on `${env.dedupKey}|unit_activated`, and a
+      // reused key there would leave the unit un-restamped forever).
+      await enqueue(tx, {
+        aggregateType: 'assignment',
+        aggregateId: asgnId,
+        eventType: TMS_ACTIVATED_TOPIC,
+        partitionKey: asgnId,
+        payload: activatedFactEnvelope({
+          payload: { asgnId, activatedAt },
+          dedupKey: eventKey(dedupKey, 'tms.assignment.activated'),
+          traceId,
+        }),
+      })
+    }
     // The 6e ALLOW co-commits INSIDE this same onceWithin (spec 10c CC-1,
-    // activateAssignmentOps only): a redelivered/duplicate activation is a
-    // no-op for BOTH the domain effect and the audit, exactly like holdRecord.
+    // activateAssignmentOps only), and UNCONDITIONALLY within it: the audit
+    // records the authorized action, not whether a row happened to be in the
+    // state to change, which is the rule deactivateAssignmentOps and
+    // recordRelease already follow. A REPLAY (same attempt key) still audits
+    // exactly once, because the whole callback is deduped.
     if (opts?.onAudit) await opts.onAudit(tx)
   })
-  return { activated: ran }
+  return { activated }
 }
 
 export async function activateAssignment(

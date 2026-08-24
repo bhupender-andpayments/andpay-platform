@@ -144,6 +144,20 @@ export const ANNEXURE_B_PROFILE: BankSourceProfile = {
       contactName: rec['Contact Name'] ?? '',
       mobile: rec['Mobile'] ?? '',
       branchCode: rec['Branch code'] ?? '',
+      // BRD 5.1b, 22 Aug 2026. City/State/Pincode were already read above, but
+      // only to be composed into `address`; the parts were then dropped and
+      // nothing downstream could answer "which city is this merchant in".
+      // Email ID and QR Type were not read at all. Kept here as parts as well
+      // as inside the composed address, which stays exactly as it was.
+      //
+      // NONE of the five joins `signature` or `requiredSourceColumns`: all
+      // five are blank in the real GSCB export, so requiring any of them would
+      // reject every live file.
+      email: rec['Email ID'] ?? '',
+      city: rec['City'] ?? '',
+      state: rec['State'] ?? '',
+      pincode: rec['Pincode'] ?? '',
+      qrType: rec['QR Type'] ?? '',
     }
   },
 }

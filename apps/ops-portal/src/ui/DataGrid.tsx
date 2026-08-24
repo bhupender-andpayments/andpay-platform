@@ -57,7 +57,13 @@ function SizedCell({ width, maxWidth, children }: { width?: number; maxWidth?: n
 // spec so feature pages stay terse.
 export interface GridColumn<T> {
   key: string
-  header: string
+  /**
+   * A plain label in the ordinary case. A ReactNode is accepted too (22 Aug
+   * 2026, the activation multiselect's select-all checkbox), for the one kind
+   * of column whose header is itself a control rather than a caption; such a
+   * column has no sortValue; ordinary sortable text headers stay strings.
+   */
+  header: string | ReactNode
   cell(row: T): ReactNode
   // Sort/search key. When present the header is sortable and the value feeds
   // the global filter; omit for a purely presentational column.
@@ -172,7 +178,10 @@ export function DataGrid<T>({
       columns.map((c) => ({
         id: c.key,
         accessorFn: (row: T) => (c.sortValue ? c.sortValue(row) : ''),
-        header: c.header,
+        // TanStack's own header prop takes a STRING or a RENDER FUNCTION, never
+        // a bare element, so a ReactNode header is wrapped in a thunk here
+        // rather than widening every caller into that function-returning shape.
+        header: typeof c.header === 'string' ? c.header : () => c.header,
         cell: (ctx) => c.cell(ctx.row.original),
         enableSorting: Boolean(c.sortValue),
         enableGlobalFilter: Boolean(c.sortValue),
