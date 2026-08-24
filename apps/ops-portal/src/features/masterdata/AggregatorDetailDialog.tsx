@@ -8,6 +8,7 @@ import {
   getAggregatorLogoCurrent,
   fetchAggregatorLogoDerivative,
   fetchAggregatorLogoVersionMaster,
+  fetchAggregatorCardPreview,
   type AggregatorEditBody,
   type AggregatorRow,
   type BankLogoVersionRow,
@@ -48,11 +49,14 @@ export function AggregatorDetailDialog({
   open,
   onOpenChange,
   onSaved,
+  readOnly = false,
 }: {
   aggregator: AggregatorRow
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved: () => void
+  /** View mode (Task 2, 24 Aug 2026): same dialog, nothing writable. */
+  readOnly?: boolean
 }) {
   const { client } = useAuth()
   const { toast } = useToast()
@@ -156,6 +160,12 @@ export function AggregatorDetailDialog({
   const [bannerPendingUrl, setBannerPendingUrl] = useState<string | null>(null)
   const [bannerUploading, setBannerUploading] = useState(false)
   const [bannerError, setBannerError] = useState<string | null>(null)
+  // The sample-card preview (Task 4, 24 Aug 2026): renders the exact PDF a
+  // dispatch would produce for this bank, server-side from current master
+  // data, then rasterizes page 1 in the browser like every other PDF here.
+  const [cardPreview, setCardPreview] = useState<
+    { kind: 'loading'; label: string } | { kind: 'image'; label: string; dataUrl: string } | { kind: 'error'; label: string } | null
+  >(null)
   // The version-history preview: which token the operator clicked, and what
   // came back for it (a data: URL, 'loading', or 'none' for a 404).
   const [viewedVersion, setViewedVersion] = useState<string | null>(null)
@@ -261,6 +271,22 @@ export function AggregatorDetailDialog({
     setBannerPendingUrl(await blobToDataUrl(file))
   }
 
+  async function previewCard(artifactType: 'STANDEE_IMG' | 'SOUNDBOX_IMG'): Promise<void> {
+    const label = artifactType === 'STANDEE_IMG' ? 'Standee' : 'Soundbox card'
+    setCardPreview({ kind: 'loading', label })
+    try {
+      const blob = await fetchAggregatorCardPreview(client, aggregator.aggrId, artifactType)
+      if (blob === null) {
+        setCardPreview({ kind: 'error', label })
+        return
+      }
+      const { dataUrl } = await rasterizeAiFile(new File([blob], 'preview.pdf', { type: 'application/pdf' }))
+      setCardPreview({ kind: 'image', label, dataUrl })
+    } catch {
+      setCardPreview({ kind: 'error', label })
+    }
+  }
+
   async function uploadBanner(): Promise<void> {
     if (bannerFile === null) return
     setBannerUploading(true)
@@ -313,7 +339,7 @@ export function AggregatorDetailDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Edit aggregator</DialogTitle>
+          <DialogTitle>{readOnly ? 'Aggregator details' : 'Edit aggregator'}</DialogTitle>
           <DialogDescription>{aggregator.displayName}</DialogDescription>
         </DialogHeader>
         {error !== null && <ErrorNote>{error}</ErrorNote>}
@@ -323,12 +349,13 @@ export function AggregatorDetailDialog({
           <div className="space-y-4">
             <div className="grid grid-cols-[2fr_1fr] gap-3">
               <Field label="Display name" htmlFor="agg-detail-name">
-                <Input id="agg-detail-name" value={f('displayName')} onChange={set('displayName')} />
+                <Input id="agg-detail-name" value={f('displayName')} onChange={set('displayName')} disabled={readOnly} />
               </Field>
               <Field label="Status" htmlFor="agg-detail-status">
                 <Select
                   id="agg-detail-status"
                   value={f('status')}
+                  disabled={readOnly}
                   onChange={(e) => {
                     setValue('status', e.target.value)
                   }}
@@ -356,7 +383,7 @@ export function AggregatorDetailDialog({
                 className="font-mono"
                 value={f('aggregatorCode')}
                 onChange={set('aggregatorCode')}
-                disabled={aggregator.codeLocked}
+                disabled={aggregator.codeLocked || readOnly}
               />
             </Field>
           </div>
@@ -384,7 +411,7 @@ export function AggregatorDetailDialog({
                   )}
                 </p>
               </div>
-              {stored?.master != null && (
+              {stored?.master != null && !readOnly && (
                 <Button type="button" variant="secondary" size="sm" onClick={() => setReplacing((r) => !r)}>
                   {replacing ? 'Keep current' : 'Replace'}
                 </Button>
@@ -430,7 +457,7 @@ export function AggregatorDetailDialog({
 
             {/* The upload area: open from the start when nothing is stored,
                 behind Replace once something is. Same fields, same flow. */}
-            {(replacing || stored?.master == null) && (
+            {!readOnly && (replacing || stored?.master == null) && (
               <div className="space-y-3 rounded-xl border border-dashed p-3">
                 {(pendingUrl !== null || rendering) && (
                   <div className="flex items-start gap-6">
@@ -583,6 +610,7 @@ export function AggregatorDetailDialog({
                 className="w-full rounded border border-border bg-white object-contain p-1"
               />
             )}
+            {!readOnly && (
             <div className="flex items-end gap-3">
               <div className="min-w-0 flex-1">
                 <Field
@@ -609,6 +637,7 @@ export function AggregatorDetailDialog({
                 Upload banner
               </Button>
             </div>
+            )}
             {bannerPendingUrl !== null && (
               <div className="space-y-1">
                 <p className="text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">
@@ -623,6 +652,24 @@ export function AggregatorDetailDialog({
             )}
           </div>
 
+          {/* -- Card preview (Task 4, 24 Aug 2026) ----------------------- */}
+          <div className="space-y-3 border-t pt-4">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold">Card preview</h3>
+              <p className="text-xs text-muted-foreground">
+                The exact card a dispatch would print for this bank, from its current logo, banner, and template.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button type="button" variant="secondary" size="sm" onClick={() => void previewCard('STANDEE_IMG')}>
+                Preview standee
+              </Button>
+              <Button type="button" variant="secondary" size="sm" onClick={() => void previewCard('SOUNDBOX_IMG')}>
+                Preview soundbox card
+              </Button>
+            </div>
+          </div>
+
           {/* -- Address and contact (all optional, folded while empty) --- */}
           <div className="border-t pt-4">
             {!contactOpen && !hasAnyContact ? (
@@ -631,46 +678,48 @@ export function AggregatorDetailDialog({
                   <p className="text-sm font-semibold">Address and contact</p>
                   <p className="text-xs text-muted-foreground">All optional. Nothing filled in yet.</p>
                 </div>
-                <Button type="button" variant="ghost" size="sm" onClick={() => setContactOpen(true)}>
-                  Add
-                </Button>
+                {!readOnly && (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setContactOpen(true)}>
+                    Add
+                  </Button>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
                 <h3 className="text-sm font-semibold">Address and contact</h3>
                 <Field label="Address 1" htmlFor="agg-detail-addr1" hint="Optional.">
-                  <Input id="agg-detail-addr1" value={f('address1')} onChange={set('address1')} />
+                  <Input id="agg-detail-addr1" disabled={readOnly} value={f('address1')} onChange={set('address1')} />
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Address 2" htmlFor="agg-detail-addr2" hint="Optional.">
-                    <Input id="agg-detail-addr2" value={f('address2')} onChange={set('address2')} />
+                    <Input id="agg-detail-addr2" disabled={readOnly} value={f('address2')} onChange={set('address2')} />
                   </Field>
                   <Field label="Address 3" htmlFor="agg-detail-addr3" hint="Optional.">
-                    <Input id="agg-detail-addr3" value={f('address3')} onChange={set('address3')} />
+                    <Input id="agg-detail-addr3" disabled={readOnly} value={f('address3')} onChange={set('address3')} />
                   </Field>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="City" htmlFor="agg-detail-city" hint="Optional.">
-                    <Input id="agg-detail-city" value={f('city')} onChange={set('city')} />
+                    <Input id="agg-detail-city" disabled={readOnly} value={f('city')} onChange={set('city')} />
                   </Field>
                   <Field label="District" htmlFor="agg-detail-district" hint="Optional.">
-                    <Input id="agg-detail-district" value={f('district')} onChange={set('district')} />
+                    <Input id="agg-detail-district" disabled={readOnly} value={f('district')} onChange={set('district')} />
                   </Field>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Country" htmlFor="agg-detail-country" hint="Optional.">
-                    <Input id="agg-detail-country" value={f('country')} onChange={set('country')} />
+                    <Input id="agg-detail-country" disabled={readOnly} value={f('country')} onChange={set('country')} />
                   </Field>
                   <Field label="PIN" htmlFor="agg-detail-pin" hint="Optional.">
-                    <Input id="agg-detail-pin" value={f('pin')} onChange={set('pin')} />
+                    <Input id="agg-detail-pin" disabled={readOnly} value={f('pin')} onChange={set('pin')} />
                   </Field>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Mobile" htmlFor="agg-detail-mobile" hint="Optional. 10 digits.">
-                    <Input id="agg-detail-mobile" value={f('mobile')} inputMode="numeric" maxLength={10} onChange={set('mobile')} />
+                    <Input id="agg-detail-mobile" disabled={readOnly} value={f('mobile')} inputMode="numeric" maxLength={10} onChange={set('mobile')} />
                   </Field>
                   <Field label="Email" htmlFor="agg-detail-email" hint="Optional.">
-                    <Input id="agg-detail-email" type="email" value={f('email')} onChange={set('email')} />
+                    <Input id="agg-detail-email" disabled={readOnly} type="email" value={f('email')} onChange={set('email')} />
                   </Field>
                 </div>
               </div>
@@ -688,13 +737,37 @@ export function AggregatorDetailDialog({
           )}
           <div className="flex gap-2">
             <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
-              Cancel
+              {readOnly ? 'Close' : 'Cancel'}
             </Button>
-            <Button type="button" onClick={() => void submit()} disabled={incomplete} loading={saving}>
-              Save changes
-            </Button>
+            {!readOnly && (
+              <Button type="button" onClick={() => void submit()} disabled={incomplete} loading={saving}>
+                Save changes
+              </Button>
+            )}
           </div>
         </DialogFooter>
+
+        {/* The sample-card preview popup (Task 4): same nested-dialog idiom as
+            the logo lightbox below. */}
+        <Dialog open={cardPreview !== null} onOpenChange={(next) => { if (!next) setCardPreview(null) }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>{cardPreview?.label ?? 'Card'} preview</DialogTitle>
+              <DialogDescription>{aggregator.displayName}, rendered from current master data</DialogDescription>
+            </DialogHeader>
+            {cardPreview?.kind === 'loading' && <p className="p-3 text-sm text-muted-foreground">Rendering the card…</p>}
+            {cardPreview?.kind === 'error' && (
+              <p className="p-3 text-sm text-muted-foreground">Could not render the preview. Try again.</p>
+            )}
+            {cardPreview?.kind === 'image' && (
+              <img
+                src={cardPreview.dataUrl}
+                alt={`${aggregator.displayName} sample card`}
+                className="max-h-[70vh] w-full rounded border border-border bg-white object-contain p-2"
+              />
+            )}
+          </DialogContent>
+        </Dialog>
 
         {/* The click-to-enlarge popup for the CURRENT logo. A nested dialog
             (radix stacks them) rather than a route or a new page: the point is

@@ -594,6 +594,60 @@
               }
             },
             {
+              "name": "GET /ops/aggregators/:aggrId/card-preview/:artifactType",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/aggregators/:aggrId/card-preview/:artifactType",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "aggregators",
+                    ":aggrId",
+                    "card-preview",
+                    ":artifactType"
+                  ],
+                  "variable": [
+                    {
+                      "key": "aggrId",
+                      "value": "",
+                      "description": "Path parameter :aggrId"
+                    },
+                    {
+                      "key": "artifactType",
+                      "value": "",
+                      "description": "Path parameter :artifactType"
+                    }
+                  ]
+                },
+                "description": "Handler: ops-read.aggregatorCardPreview (source order preserved).\nGuard: OpsEdgeGuard.\nPath parameters: aggrId, artifactType."
+              }
+            },
+            {
+              "name": "GET /ops/bank-config/template/current",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{opsBase}}/ops/bank-config/template/current",
+                  "host": [
+                    "{{opsBase}}"
+                  ],
+                  "path": [
+                    "ops",
+                    "bank-config",
+                    "template",
+                    "current"
+                  ],
+                  "variable": []
+                },
+                "description": "Handler: ops-read.templateCurrent (source order preserved).\nGuard: OpsEdgeGuard.\nSuccess status: 200."
+              }
+            },
+            {
               "name": "GET /ops/aggregators/:aggrId/banner",
               "request": {
                 "method": "GET",

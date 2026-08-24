@@ -2,6 +2,7 @@ import type { ApiRequest } from './client.js'
 import { getAccessToken } from './tokenStore.js'
 import { ApiError } from './errors.js'
 import { opsBase } from '../lib/env.js'
+import { newIdempotencyKey } from './idempotency.js'
 
 type Client = { request<T>(req: ApiRequest): Promise<T> }
 
@@ -1163,6 +1164,58 @@ export async function fetchAggregatorBanner(c: Client, aggrId: string): Promise<
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) return null
     throw err
+  }
+}
+
+// The sample card (standee-frame flow Task 4): the exact PDF a dispatch would
+// produce for this aggregator, rendered server-side from its current master
+// data with fixed sample variable data. The caller rasterizes it like any
+// other PDF; 404 means the aggregator id is unknown.
+export async function fetchAggregatorCardPreview(
+  c: Client,
+  aggrId: string,
+  artifactType: 'STANDEE_IMG' | 'SOUNDBOX_IMG' | 'STICKER_IMG',
+): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/aggregators/${encodeURIComponent(aggrId)}/card-preview/${artifactType}`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
+// What frame template is stored right now on the tenant default row, by name.
+export interface TemplateCurrent {
+  collateral: BankLogoVersionRow | null
+  soundbox: BankLogoVersionRow | null
+}
+
+export function getTemplateCurrent(c: Client) {
+  return c.request<TemplateCurrent>({ method: 'GET', path: '/ops/bank-config/template/current' })
+}
+
+// The shared frame upload: ONE picked PDF stored for BOTH delivery groups so
+// the equal-trim guarantee holds by construction (the 24 Aug 2026 ruling).
+// Two sequential calls to the existing per-group route, each with its own
+// idempotency key; the second failing leaves the first applied, which the
+// caller surfaces so the operator can simply retry.
+export async function uploadBankTemplate(c: Client, tenantWire: string, file: File): Promise<void> {
+  for (const group of ['COLLATERAL', 'SOUNDBOX'] as const) {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('tenantWire', tenantWire)
+    form.append('bankCode', '')
+    form.append('group', group)
+    await c.request<{ deduped: boolean }>({
+      method: 'POST',
+      path: '/ops/bank-config/template',
+      formBody: form,
+      idempotencyKey: newIdempotencyKey(),
+    })
   }
 }
 

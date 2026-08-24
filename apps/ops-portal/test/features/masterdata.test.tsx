@@ -2,9 +2,10 @@ import type { ReactElement } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, within, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from '../../src/auth/AuthContext.js'
 import { MasterDataPage } from '../../src/features/masterdata/MasterDataPage.js'
+import { TenantAggregatorsPage } from '../../src/features/masterdata/TenantAggregatorsPage.js'
 import { VendorRegistryPage } from '../../src/features/masterdata/VendorRegistryPage.js'
 import { CourierMasterPage } from '../../src/features/masterdata/CourierMasterPage.js'
 import { setAccessToken, clearAccessToken } from '../../src/api/tokenStore.js'
@@ -203,6 +204,23 @@ function renderPage(ui: ReactElement) {
   )
 }
 
+// The tenant-specific page (Task 3, 24 Aug 2026): rendered at its real route
+// so useParams resolves the tnnt id exactly as the list's View link does.
+function renderTenantPage(tnntId = 'tnnt_p1') {
+  return render(
+    <MemoryRouter
+      initialEntries={[`/masterdata/bank-masters/${tnntId}`]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <AuthProvider>
+        <Routes>
+          <Route path="/masterdata/bank-masters/:tnntId" element={<TenantAggregatorsPage />} />
+        </Routes>
+      </AuthProvider>
+    </MemoryRouter>,
+  )
+}
+
 // The actions still deferred under L9 after the create-only reversal. The Tabs
 // primitive's own switch buttons never match this, so it is safe to check
 // against every button on the page.
@@ -292,7 +310,7 @@ describe('master data views', () => {
   // folds each tenant's aggregators behind its row by default, so one tenant
   // with 94 aggregators reads as ONE row until asked. Expanding pins the
   // default aggregator first and badges it.
-  it('folds aggregators under their tenant, expands on the chevron, default pinned first', async () => {
+  it('the list shows tenants only; the tenant page lists its aggregators, default pinned first (Task 3)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
@@ -304,28 +322,25 @@ describe('master data views', () => {
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
 
-    // Collapsed by default: the tenant row and its count badge, no members.
+    // Tenants only: the count badge and a View link, never the members inline.
     expect(await screen.findByText('2 aggregators')).toBeTruthy()
     expect(screen.queryByText('VSC Bank')).toBeNull()
+    expect(screen.getByRole('button', { name: 'View bank master Gujarat State Co-op Bank' })).toBeTruthy()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    cleanup()
 
+    // The tenant page carries the members, default pinned first.
+    renderTenantPage()
     expect(await screen.findByText('VSC Bank')).toBeTruthy()
     expect(screen.getByText('default')).toBeTruthy()
     const items = screen.getAllByRole('listitem').map((li) => li.textContent ?? '')
-    const tenantIdx = items.findIndex((t) => t.includes('2 aggregators'))
-    const defaultIdx = items.findIndex((t) => t.includes('default') && !t.includes('aggregators'))
+    const defaultIdx = items.findIndex((t) => t.includes('default'))
     const memberIdx = items.findIndex((t) => t.includes('VSC Bank'))
-    expect(tenantIdx).toBeGreaterThanOrEqual(0)
-    expect(defaultIdx).toBeGreaterThan(tenantIdx)
+    expect(defaultIdx).toBeGreaterThanOrEqual(0)
     expect(memberIdx).toBeGreaterThan(defaultIdx)
-
-    // And folds again.
-    await userEvent.click(screen.getByRole('button', { name: 'Hide aggregators of Gujarat State Co-op Bank' }))
-    expect(screen.queryByText('VSC Bank')).toBeNull()
   })
 
-  it('the search filters the flat list by name or code, keeping the tenant heading', async () => {
+  it('the list search matches by aggregator name too, keeping the tenant row; the tenant page search filters members', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
@@ -336,23 +351,25 @@ describe('master data views', () => {
 
     renderPage(<MasterDataPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    // Collapsed by default: the member is NOT in the DOM until the search
-    // itself surfaces it.
     await screen.findByText('2 aggregators')
-    expect(screen.queryByText('VSC Bank')).toBeNull()
 
+    // A search naming an AGGREGATOR keeps its tenant findable from the list.
     await userEvent.type(screen.getByLabelText('Search bank masters'), 'VSC')
-
-    // The matching member stays, its tenant stays as the group heading, and
-    // the non-matching default aggregator is filtered out.
-    expect(await screen.findByText('VSC Bank')).toBeTruthy()
     expect(screen.getByText('Gujarat State Co-op Bank')).toBeTruthy()
-    expect(screen.queryByText('default')).toBeNull()
 
-    // Clearing the search folds the members away again: they were only
-    // auto-surfaced by the match, never manually expanded.
+    // A search matching nothing filters the tenant out.
     await userEvent.clear(screen.getByLabelText('Search bank masters'))
-    expect(screen.queryByText('VSC Bank')).toBeNull()
+    await userEvent.type(screen.getByLabelText('Search bank masters'), 'no-such-bank')
+    expect(screen.queryByText('Gujarat State Co-op Bank')).toBeNull()
+
+    cleanup()
+
+    // The tenant page's own search filters the member rows.
+    renderTenantPage()
+    expect(await screen.findByText('VSC Bank')).toBeTruthy()
+    await userEvent.type(screen.getByLabelText('Search aggregators'), 'VSC')
+    expect(screen.getByText('VSC Bank')).toBeTruthy()
+    expect(screen.queryByText('default')).toBeNull()
   })
 
   it('Bank Masters shows exactly ONE search box', async () => {
@@ -506,12 +523,14 @@ describe('master data views', () => {
         expect(
           [...tabLabels, control].includes(name) ||
             /^Edit /.test(name) ||
+            // Task 2/3 (24 Aug 2026): a read-only View beside every Edit, and
+            // the tenant name itself opens the tenant page.
+            /^View /.test(name) ||
+            /^Open bank master /.test(name) ||
             name === 'Add aggregator' ||
-            // The flat Bank Masters list pages 20 rows at a time and folds
-            // each tenant's aggregators behind a chevron.
+            // The Bank Masters list pages 20 rows at a time.
             name === 'Previous' ||
-            name === 'Next' ||
-            /^(Show|Hide) aggregators of /.test(name),
+            name === 'Next',
         ).toBe(true)
       }
       // Suspend, activate and deactivate stay deferred under L9; edit does not
@@ -752,9 +771,7 @@ describe('master data create dialogs', () => {
   it('the aggregator detail dialog code input is disabled with a locked hint when codeLocked', async () => {
     const calls: Call[] = []
     stubAggregatorWrites(calls)
-    renderPage(<MasterDataPage />)
-    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    renderTenantPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     const codeInput = screen.getByLabelText(/aggregator code/i) as HTMLInputElement
@@ -765,9 +782,7 @@ describe('master data create dialogs', () => {
   it('the aggregator detail dialog saves a diff-only edit via editAggregator, to the real aggr_ id', async () => {
     const calls: Call[] = []
     stubAggregatorWrites(calls)
-    renderPage(<MasterDataPage />)
-    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    renderTenantPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator VSC Bank' }))
 
     // VSC (aggr_c1) is not codeLocked, so the code input is editable here.
@@ -787,9 +802,7 @@ describe('master data create dialogs', () => {
   it('the aggregator logo section uploads the pair as multipart against the aggregator id', async () => {
     const calls: Call[] = []
     stubAggregatorWrites(calls)
-    renderPage(<MasterDataPage />)
-    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    renderTenantPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     expect(await screen.findByText('No logo uploaded yet.')).toBeTruthy()
@@ -833,9 +846,7 @@ describe('master data create dialogs', () => {
       }),
     )
 
-    renderPage(<MasterDataPage />)
-    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    renderTenantPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     await screen.findByText(/v2 gscb-v2\.png/)
@@ -865,9 +876,7 @@ describe('master data create dialogs', () => {
       }),
     )
 
-    renderPage(<MasterDataPage />)
-    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    renderTenantPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     const img = await screen.findByAltText('GSCB logo')
@@ -893,9 +902,7 @@ describe('master data create dialogs', () => {
       }),
     )
 
-    renderPage(<MasterDataPage />)
-    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    renderTenantPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     // Redesign 21 Aug 2026: with a logo stored, the upload area sits behind
@@ -910,6 +917,65 @@ describe('master data create dialogs', () => {
     expect(screen.getAllByText(/Currently stored:/).length).toBe(2)
   })
 
+  it('View opens the read-only aggregator dialog: disabled fields, Close, no Save (Task 2)', async () => {
+    const calls: Call[] = []
+    stubAggregatorWrites(calls)
+    renderTenantPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'View aggregator GSCB' }))
+
+    expect(await screen.findByText('Aggregator details')).toBeTruthy()
+    const nameInput = screen.getByLabelText(/display name/i) as HTMLInputElement
+    expect(nameInput.disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Upload banner' })).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Close' }).length).toBeGreaterThan(0)
+    // The card preview is still available in view mode (Task 4).
+    expect(screen.getByRole('button', { name: 'Preview standee' })).toBeTruthy()
+  })
+
+  it('Preview standee fetches the sample card for this aggregator (Task 4)', async () => {
+    const calls: Call[] = []
+    stubAggregatorWrites(calls)
+    renderTenantPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'View aggregator GSCB' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Preview standee' }))
+
+    expect(await screen.findByText('Standee preview')).toBeTruthy()
+    expect(calls.some((c) => c.url.includes('/ops/aggregators/aggr_d1/card-preview/STANDEE_IMG'))).toBe(true)
+  })
+
+  it('the tenant page uploads ONE template PDF for BOTH delivery groups (Task 4)', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit = { method: 'GET' }) => {
+        calls.push({ url, init })
+        if ((init.method ?? 'GET').toUpperCase() === 'POST') {
+          return jsonResponse({ deduped: false, id: 'cfg-1', reference: 'r', version: 'v1' })
+        }
+        if (url.includes('/banner')) return new Response(null, { status: 404 })
+        if (url.includes('/ops/bank-masters')) return jsonResponse(TENANT_WITH_AGGREGATORS)
+        return jsonResponse([])
+      }),
+    )
+    renderTenantPage()
+    await screen.findByText('Card template')
+
+    const file = new File(['%PDF-1.7 frame'], 'New Size.pdf', { type: 'application/pdf' })
+    await userEvent.upload(screen.getByLabelText(/Template \(PDF\)/), file)
+    await userEvent.click(screen.getByRole('button', { name: 'Upload template' }))
+
+    const posts = calls.filter(
+      (c) => (c.init.method ?? 'GET').toUpperCase() === 'POST' && c.url.includes('/ops/bank-config/template'),
+    )
+    expect(posts).toHaveLength(2)
+    const groups = posts.map((c) => (c.init.body as FormData).get('group'))
+    expect(groups.sort()).toEqual(['COLLATERAL', 'SOUNDBOX'])
+    // The default-row target: an empty bank code, the tenant on the wire.
+    expect((posts[0]!.init.body as FormData).get('bankCode')).toBe('')
+    expect((posts[0]!.init.body as FormData).get('tenantWire')).toBe('tnnt_p1')
+  })
+
   it('the dialog shows the Header banner section with an upload control (standee-frame flow)', async () => {
     vi.stubGlobal(
       'fetch',
@@ -922,9 +988,7 @@ describe('master data create dialogs', () => {
         return jsonResponse([])
       }),
     )
-    renderPage(<MasterDataPage />)
-    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    renderTenantPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
     expect(await screen.findByText('Header banner')).toBeTruthy()
     expect(screen.getByLabelText(/Banner \(PNG or JPG\)/)).toBeTruthy()
@@ -954,9 +1018,7 @@ describe('master data create dialogs', () => {
       }),
     )
 
-    renderPage(<MasterDataPage />)
-    await userEvent.click(screen.getByRole('button', { name: 'Bank Masters' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Show aggregators of Gujarat State Co-op Bank' }))
+    renderTenantPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit aggregator GSCB' }))
 
     // Two ways in: the clickable thumbnail and the explicit Preview button.

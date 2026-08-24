@@ -22,6 +22,7 @@ import {
   resolveCollateralGroup,
   assembleGroupPdf,
   readComposedArtifact,
+  renderSampleCard,
   listBatches,
   readBatchDetail,
   listPoolEntries,
@@ -225,7 +226,10 @@ export class OpsReadController {
     const rows = await listBankMasters(this.deps.identityDb)
     const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
     if (agg === undefined) return []
-    const versions = await this.deps.assetStore.listVersions(agg.aggregatorCode)
+    // Keys are the aggregator's immutable wire id (ruled 24 Aug 2026); the
+    // resolution above still runs so an unknown id answers [] rather than
+    // probing the store with arbitrary caller input.
+    const versions = await this.deps.assetStore.listVersions(agg.aggrId)
     return versions.map((v) => ({ version: v.version, filename: v.meta.filename, contentType: v.meta.contentType }))
   }
 
@@ -244,7 +248,7 @@ export class OpsReadController {
   ): Promise<void> {
     const rows = await listBankMasters(this.deps.identityDb)
     const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
-    const versions = agg === undefined ? [] : await this.deps.assetStore.listVersions(agg.aggregatorCode)
+    const versions = agg === undefined ? [] : await this.deps.assetStore.listVersions(agg.aggrId)
     const match = versions.find((v) => v.version === version)
     const rec = match === undefined ? null : await this.deps.assetStore.getByReference(match.reference)
     if (rec === null) {
@@ -285,11 +289,65 @@ export class OpsReadController {
       }
     }
     const [master, derivative, banner] = await Promise.all([
-      head(agg.aggregatorCode),
-      head(`${agg.aggregatorCode}:derivative`),
-      head(`${agg.aggregatorCode}:banner`),
+      head(agg.aggrId),
+      head(`${agg.aggrId}:derivative`),
+      head(`${agg.aggrId}:banner`),
     ])
     return { master, derivative, banner }
+  }
+
+  // The SAMPLE card (standee-frame flow Task 4, 24 Aug 2026): the exact PDF a
+  // real dispatch would produce for this aggregator, with fixed sample
+  // variable data, rendered from its CURRENT master data (template, banner,
+  // logo, calibration). Guard-only, like every logo read here: it is print
+  // collateral input, not config detail. The type param is validated to the
+  // three literals at the door.
+  @Get('aggregators/:aggrId/card-preview/:artifactType')
+  async aggregatorCardPreview(
+    @Param('aggrId') aggrId: string,
+    @Param('artifactType') artifactType: string,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
+    if (artifactType !== 'STANDEE_IMG' && artifactType !== 'SOUNDBOX_IMG' && artifactType !== 'STICKER_IMG') {
+      throw new BadRequestException('artifactType must be STANDEE_IMG, SOUNDBOX_IMG or STICKER_IMG')
+    }
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    if (agg === undefined) throw new NotFoundException('aggregator not found')
+    const pdf = await renderSampleCard(this.deps.fulfillmentDb, this.deps.assetStore, {
+      bankCode: agg.aggregatorCode,
+      bankName: agg.displayName,
+      artifactType,
+    })
+    res.setHeader('Content-Type', 'application/pdf')
+    res.status(200).send(Buffer.from(pdf))
+  }
+
+  // What frame template is stored RIGHT NOW for the tenant default row, by
+  // name: metadata only, one listVersions per group key (the exact keys
+  // setBankTemplateMaster builds for the '' default code). The Master Data
+  // template card shows these beside its Replace control.
+  @Get('bank-config/template/current')
+  @HttpCode(200)
+  async templateCurrent(@Req() req: EdgeRequest): Promise<{
+    collateral: { version: string; filename: string; contentType: string; lastModified: string | null } | null
+    soundbox: { version: string; filename: string; contentType: string; lastModified: string | null } | null
+  }> {
+    // A CONFIG VIEW, same D-29/DP-8 restriction as bank-config above.
+    requireUnrestrictedRead(req.claim)
+    const head = async (key: string) => {
+      const versions = await this.deps.assetStore.listVersions(key)
+      const newest = versions[0]
+      if (newest === undefined) return null
+      return {
+        version: newest.version,
+        filename: newest.meta.filename,
+        contentType: newest.meta.contentType,
+        lastModified: newest.meta.lastModified ?? null,
+      }
+    }
+    const [collateral, soundbox] = await Promise.all([head('template/COLLATERAL/'), head('template/SOUNDBOX/')])
+    return { collateral, soundbox }
   }
 
   // The stored co-brand header banner strip's bytes, for the dialog's
@@ -298,7 +356,7 @@ export class OpsReadController {
   async aggregatorBanner(@Param('aggrId') aggrId: string, @Res() res: EdgeResponse): Promise<void> {
     const rows = await listBankMasters(this.deps.identityDb)
     const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
-    const rec = agg === undefined ? null : await this.deps.assetStore.getCurrent(`${agg.aggregatorCode}:banner`)
+    const rec = agg === undefined ? null : await this.deps.assetStore.getCurrent(`${agg.aggrId}:banner`)
     if (rec === null) {
       res.status(404).send(Buffer.from(''))
       return
@@ -311,7 +369,7 @@ export class OpsReadController {
   async aggregatorLogoDerivative(@Param('aggrId') aggrId: string, @Res() res: EdgeResponse): Promise<void> {
     const rows = await listBankMasters(this.deps.identityDb)
     const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
-    const rec = agg === undefined ? null : await this.deps.assetStore.getCurrent(`${agg.aggregatorCode}:derivative`)
+    const rec = agg === undefined ? null : await this.deps.assetStore.getCurrent(`${agg.aggrId}:derivative`)
     if (rec === null) {
       res.status(404).send(Buffer.from(''))
       return

@@ -8,6 +8,7 @@ import { PlatformOverviewPage } from './features/overview/PlatformOverviewPage.j
 import { ReportPage } from './features/dashboards/ReportPage.js'
 import { QueuesPage } from './features/queues/QueuesPage.js'
 import { MasterDataPage } from './features/masterdata/MasterDataPage.js'
+import { TenantAggregatorsPage } from './features/masterdata/TenantAggregatorsPage.js'
 import { UploadsPage } from './features/uploads/UploadsPage.js'
 import { DispatchesPage } from './features/dispatches/DispatchesPage.js'
 import { DispatchDetailPage } from './features/dispatches/DispatchDetailPage.js'
@@ -148,6 +149,9 @@ export function AppRoutes() {
           <Route path="/queues/:tab" element={<QueuesPage />} />
           <Route path="/reports" element={<ReportPage />} />
           <Route path="/masterdata" element={<MasterDataPage />} />
+          {/* Task 3 (24 Aug 2026): one tenant's aggregators, template, and
+              dialogs on a dedicated page; the list above links here. */}
+          <Route path="/masterdata/bank-masters/:tnntId" element={<TenantAggregatorsPage />} />
 
           {/* The renamed routes keep working. A bookmark, a link in someone's
               notes, or a deep link in an old runbook must not 404 or silently

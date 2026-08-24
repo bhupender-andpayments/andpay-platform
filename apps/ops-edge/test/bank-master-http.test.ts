@@ -492,6 +492,41 @@ describe('aggregator logo over HTTP', () => {
     expect(current.body.derivative).toBeNull()
   })
 
+  it('card-preview renders a PDF for a known aggregator, 400s a bad type, 404s an unknown id (Task 4)', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'PREV-T1' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    const preview = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/card-preview/STANDEE_IMG`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(preview.headers['content-type']).toContain('application/pdf')
+    expect(preview.body.length).toBeGreaterThan(1000)
+
+    await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/card-preview/POSTER_IMG`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(400)
+    await request(app.getHttpServer())
+      .get('/ops/aggregators/aggr_00000000000000000000000000/card-preview/STANDEE_IMG')
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(404)
+  })
+
+  it('template/current answers null-null before any upload (Task 4)', async () => {
+    const tok = await mint()
+    const current = await request(app.getHttpServer())
+      .get('/ops/bank-config/template/current')
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(current.body).toEqual({ collateral: null, soundbox: null })
+  })
+
   it('streams the master bytes AT each listed version token, and 404s an unknown token', async () => {
     const tok = await mint()
     const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
