@@ -2,7 +2,7 @@ import { Kafka, logLevel } from 'kafkajs'
 import { runFactConsumer } from '@andpay/bus'
 import { PrismaClient as IdentityClient } from '@andpay/identity-service'
 import { PrismaClient as TmsClient } from '@andpay/tms-service'
-import { PrismaClient as FulfillmentClient, FilesystemAssetStore } from '@andpay/fulfillment-service'
+import { PrismaClient as FulfillmentClient, resolveAssetStoreFromEnv } from '@andpay/fulfillment-service'
 import { PrismaClient as AnalyticsClient } from '@andpay/analytics-service'
 import { PrismaClient as AuthClient } from '@andpay/auth-service'
 import { identityRoutes, tmsRoutes, fulfillmentRoutes, analyticsRoutes, authRoutes, groupIdFor, type ConsumerRoute } from './routes.js'
@@ -36,7 +36,9 @@ interface Built {
   disconnect: () => Promise<void>
 }
 
-function buildContext(context: string): Built {
+// Async because resolving the AssetStore is: the S3 adapter dynamically
+// imports the AWS SDK so a filesystem-backed run needs no dependency loaded.
+async function buildContext(context: string): Promise<Built> {
   switch (context) {
     case 'identity': {
       const db = new IdentityClient({ datasourceUrl: requireEnv('IDENTITY_DATABASE_URL') })
@@ -48,19 +50,21 @@ function buildContext(context: string): Built {
     }
     case 'fulfillment': {
       const db = new FulfillmentClient({ datasourceUrl: requireEnv('FULFILLMENT_DATABASE_URL') })
-      // GO-LIVE BLOCKER E-5 is still OPEN: production needs the S3 adapter,
-      // and this filesystem adapter is not it (no durability guarantee beyond
-      // the local disk, no lifecycle policy, no cross-host story).
+      // THE SHARED RESOLVER, never a hardcoded adapter. consumeBatchFact
+      // renders collateral into this store, so an adapter that disagrees with
+      // the one the EDGES resolve makes every artifact this process writes
+      // unreadable through them: the download answers 500 and
+      // composed_artifact looks perfectly healthy, because the rows are fine
+      // and only the bytes are somewhere else.
       //
-      // What it DOES fix is the half of E-5 that was breaking the running
-      // system rather than a future one. consumeBatchFact renders collateral
-      // into this store, and with the in-memory adapter those bytes lived in
-      // THIS process's memory, so the ops edge (a different process) could not
-      // serve what this one rendered: every collateral download answered 500
-      // while composed_artifact looked perfectly healthy. Both processes now
-      // resolve the same directory, so a reference minted here is readable
-      // there. See storage/fs-asset-store.ts.
-      const assetStore = new FilesystemAssetStore()
+      // THAT FAILURE HAS NOW HAPPENED TWICE AT THIS LINE. First with the
+      // in-memory adapter, whose bytes lived in this process's heap; the fix
+      // was to hardcode the filesystem adapter here so both sides resolved the
+      // same directory. Then the S3 adapter (E-5) was wired into both edges
+      // and NOT here, so with ANDPAY_S3_BUCKET set the same split reopened in
+      // the other direction. Hardcoding any adapter is the bug; the resolver
+      // is shared precisely so this line cannot state a third opinion.
+      const assetStore = await resolveAssetStoreFromEnv()
       return { route: fulfillmentRoutes(db, assetStore), disconnect: () => db.$disconnect() }
     }
     case 'analytics': {
@@ -87,7 +91,7 @@ async function main(): Promise<void> {
   const brokers = requireEnv('KAFKA_BROKERS').split(',').map((b) => b.trim()).filter((b) => b !== '')
   if (brokers.length === 0) throw new Error('KAFKA_BROKERS contained no usable broker')
 
-  const { route, disconnect } = buildContext(context)
+  const { route, disconnect } = await buildContext(context)
   const groupId = groupIdFor(context)
 
   // fromBeginning is passed EXPLICITLY (ruling A-6.3). runFactConsumer defaults

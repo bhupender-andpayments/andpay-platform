@@ -17,6 +17,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import process from 'node:process'
+import console from 'node:console'
 
 export const CONTEXTS = ['identity', 'tms', 'fulfillment', 'orchestrator', 'auth', 'analytics']
 

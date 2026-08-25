@@ -33,6 +33,7 @@ export const AUTHZ_AUDIT_TOPIC = 'authz.audit'
 export const SOUNDBOX_TOPICS: TopicSpec[] = [
   { name: 'fct.identity.merchant.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.identity.tenant.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
+  { name: 'fct.identity.aggregator.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.identity.program.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.identity.enrollment.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },
   { name: 'fct.tms.assignment.v1', partitions: 3, config: { 'retention.ms': THIRTY_DAYS_MS } },

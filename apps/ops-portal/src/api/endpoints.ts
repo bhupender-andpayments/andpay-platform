@@ -2,6 +2,7 @@ import type { ApiRequest } from './client.js'
 import { getAccessToken } from './tokenStore.js'
 import { ApiError } from './errors.js'
 import { opsBase } from '../lib/env.js'
+import { newIdempotencyKey } from './idempotency.js'
 
 type Client = { request<T>(req: ApiRequest): Promise<T> }
 
@@ -1015,10 +1016,69 @@ export interface BankMasterRow {
   pin: string | null
   mobile: string | null
   email: string | null
+  aggregators: AggregatorRow[]
+}
+
+export interface AggregatorRow {
+  aggrId: string
+  tnntId: string
+  aggregatorCode: string
+  displayName: string
+  status: string
+  isDefault: boolean
+  codeLocked: boolean
+  hasLogo: boolean
+  /** ISO instant of the last write; optional so an older edge still parses. */
+  updatedAt?: string
+  address1: string | null
+  address2: string | null
+  address3: string | null
+  city: string | null
+  district: string | null
+  country: string | null
+  pin: string | null
+  mobile: string | null
+  email: string | null
 }
 
 export function getBankMasters(c: Client) {
   return c.request<BankMasterRow[]>({ method: 'GET', path: '/ops/bank-masters' })
+}
+
+export interface AggregatorCreateBody {
+  displayName: string
+  aggregatorCode: string
+  address1?: string
+  address2?: string
+  address3?: string
+  city?: string
+  district?: string
+  country?: string
+  pin?: string
+  mobile?: string
+  email?: string
+}
+
+export interface AggregatorEditBody extends Partial<AggregatorCreateBody> {
+  status?: string
+}
+
+export function createAggregator(c: Client, tnntId: string, body: AggregatorCreateBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; aggrId: string | null }>({
+    method: 'POST',
+    path: `/ops/bank-masters/${encodeURIComponent(tnntId)}/aggregators`,
+    body,
+    idempotencyKey,
+  })
+}
+
+export function editAggregator(c: Client, aggrId: string, body: AggregatorEditBody, idempotencyKey: string) {
+  return c.request<{ deduped: boolean; changedFields: string[] }>({
+    method: 'POST',
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/edit`,
+    body,
+    idempotencyKey,
+  })
 }
 
 /**
@@ -1171,6 +1231,210 @@ export function editBankMaster(c: Client, tnntId: string, body: BankMasterEditBo
     body,
     idempotencyKey,
   })
+}
+
+// The logo pair upload (spec 2026-08-19). Multipart through the typed client's
+// formBody path (client.ts), so it keeps the 401 refresh-and-retry the raw
+// fetch downloads below forgo.
+export function uploadAggregatorLogo(
+  c: Client,
+  aggrId: string,
+  master: File,
+  derivative: File,
+  idempotencyKey: string,
+) {
+  const form = new FormData()
+  form.append('master', master)
+  form.append('derivative', derivative)
+  return c.request<{ deduped: boolean; id: string | null; masterVersion: string | null; derivativeVersion: string | null }>({
+    method: 'POST',
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo`,
+    formBody: form,
+    idempotencyKey,
+  })
+}
+
+export interface BankLogoVersionRow {
+  version: string
+  filename: string
+  contentType: string
+  /** ISO instant the version was stored; null/absent for pre-field versions. */
+  lastModified?: string | null
+}
+
+export function getAggregatorLogoVersions(c: Client, aggrId: string) {
+  return c.request<BankLogoVersionRow[]>({
+    method: 'GET',
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo/versions`,
+  })
+}
+
+// The names of what is stored right now, one per asset key. The master and
+// the derivative run separate version sequences, so the master's history list
+// above cannot answer "which derivative is current"; this can.
+export interface AggregatorLogoCurrent {
+  master: BankLogoVersionRow | null
+  derivative: BankLogoVersionRow | null
+  /** The co-brand header banner strip (standee-frame flow, 2026-08-24). */
+  banner: BankLogoVersionRow | null
+}
+
+export function getAggregatorLogoCurrent(c: Client, aggrId: string) {
+  return c.request<AggregatorLogoCurrent>({
+    method: 'GET',
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo/current`,
+  })
+}
+
+// BINARY body, routed through the client's 'blob' responseType so it gets the
+// refresh-on-401-and-retry. These two used raw fetch with a Bearer, and unlike
+// the dispatch downloads (a button the operator can click again after a typed
+// call refreshes the token) the thumbnail is a passive render: once the access
+// token aged out, every logo on the Bank Masters page decayed to
+// "unavailable" until a full reload. 404 is a real answer (no logo yet),
+// surfaced as null.
+export async function fetchAggregatorLogoDerivative(c: Client, aggrId: string): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo/derivative`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
+// The header banner upload: one PNG/JPG strip, same multipart client path as
+// the logo pair so it keeps the 401 refresh-and-retry.
+export function uploadAggregatorBanner(c: Client, aggrId: string, banner: File, idempotencyKey: string) {
+  const form = new FormData()
+  form.append('banner', banner)
+  return c.request<{ deduped: boolean; id: string | null; version: string | null }>({
+    method: 'POST',
+    path: `/ops/aggregators/${encodeURIComponent(aggrId)}/banner`,
+    formBody: form,
+    idempotencyKey,
+  })
+}
+
+// The stored banner's bytes for the dialog preview; 404 (no banner yet) is a
+// real answer, surfaced as null. Routed through the blob client path, same as
+// the derivative above.
+export async function fetchAggregatorBanner(c: Client, aggrId: string): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/aggregators/${encodeURIComponent(aggrId)}/banner`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
+// The sample card (standee-frame flow Task 4): the exact PDF a dispatch would
+// produce for this aggregator, rendered server-side from its current master
+// data with fixed sample variable data. The caller rasterizes it like any
+// other PDF; 404 means the aggregator id is unknown.
+export async function fetchAggregatorCardPreview(
+  c: Client,
+  aggrId: string,
+  artifactType: 'STANDEE_IMG' | 'SOUNDBOX_IMG' | 'STICKER_IMG',
+): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/aggregators/${encodeURIComponent(aggrId)}/card-preview/${artifactType}`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
+// The composition-config rows for one tenant (branding + image templates per
+// (bank, branch) key; refs never ride here). Used by the tenant page to read
+// and write the default row's overlay flags.
+export interface BankConfigRowView {
+  id: string
+  tenantId: string
+  bankCode: string
+  branchCode: string
+  brandingParams: unknown
+  imageTemplates: unknown
+}
+
+export function getBankConfigRows(c: Client, tenantWire: string) {
+  return c.request<BankConfigRowView[]>({
+    method: 'GET',
+    path: `/ops/bank-config?tenantWire=${encodeURIComponent(tenantWire)}`,
+  })
+}
+
+export function upsertBankConfig(
+  c: Client,
+  body: { tenantWire: string; bankCode: string; branchCode?: string; brandingParams: unknown; imageTemplates: unknown },
+  idempotencyKey: string,
+) {
+  return c.request<{ deduped: boolean; id: string | null }>({
+    method: 'POST',
+    path: '/ops/bank-config',
+    body,
+    idempotencyKey,
+  })
+}
+
+// What frame template is stored right now on the tenant default row, by name.
+export interface TemplateCurrent {
+  collateral: BankLogoVersionRow | null
+  soundbox: BankLogoVersionRow | null
+}
+
+export function getTemplateCurrent(c: Client) {
+  return c.request<TemplateCurrent>({ method: 'GET', path: '/ops/bank-config/template/current' })
+}
+
+// The shared frame upload: ONE picked PDF stored for BOTH delivery groups so
+// the equal-trim guarantee holds by construction (the 24 Aug 2026 ruling).
+// Two sequential calls to the existing per-group route, each with its own
+// idempotency key; the second failing leaves the first applied, which the
+// caller surfaces so the operator can simply retry.
+export async function uploadBankTemplate(c: Client, tenantWire: string, file: File): Promise<void> {
+  for (const group of ['COLLATERAL', 'SOUNDBOX'] as const) {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('tenantWire', tenantWire)
+    form.append('bankCode', '')
+    form.append('group', group)
+    await c.request<{ deduped: boolean }>({
+      method: 'POST',
+      path: '/ops/bank-config/template',
+      formBody: form,
+      idempotencyKey: newIdempotencyKey(),
+    })
+  }
+}
+
+// The MASTER bytes at one token from the dialog's history list (the list IS
+// the master key's history, so its tokens are only valid against that key;
+// the derivative key runs its own version sequence). The caller rasterizes
+// the .ai in the browser, exactly like a freshly picked file. Same routed
+// shape as above; 404 means an unknown token, surfaced as null.
+export async function fetchAggregatorLogoVersionMaster(c: Client, aggrId: string, version: string): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/aggregators/${encodeURIComponent(aggrId)}/logo/versions/${encodeURIComponent(version)}/master`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
 }
 
 /** apps/ops-edge/src/ops.controller.ts DamageReasonCreateBody (BRD FR-08). */
@@ -1972,21 +2236,52 @@ export async function downloadActivationSheet(btchId: string): Promise<Downloade
   return { blob, filename: filenameFromContentDisposition(res, `${btchId}-activation.xlsx`) }
 }
 
+// ONE dispatch's stored card, the bytes compose wrote (aggregator logo from
+// the asset store, bank fields off the master-data snapshot). The proof dialog
+// rasterizes this in the browser, so what the operator checks IS what prints.
+// Blob path: refresh-on-401 like the other passive renders. 404 (unknown id or
+// type, or not composed yet) surfaces as null.
+export async function fetchDispatchArtifact(
+  c: Client,
+  btchId: string,
+  asgnId: string,
+  artifactType: string,
+): Promise<Blob | null> {
+  try {
+    return await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/batches/${encodeURIComponent(btchId)}/artifacts/${encodeURIComponent(asgnId)}/${encodeURIComponent(artifactType)}`,
+      responseType: 'blob',
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
 // 404 (no artifact of that type for the batch) is a real, non-error outcome
 // - the edge itself returns 404 deliberately (ops-read.controller.ts's
 // collateral route) rather than an empty/500 - so it is surfaced as `null`,
 // not thrown.
-export async function downloadCollateral(btchId: string, artifactType: string): Promise<DownloadedFile | null> {
-  const res = await fetch(`${opsBaseUrl()}/ops/batches/${btchId}/collateral/${artifactType}`, {
-    headers: { Authorization: `Bearer ${getAccessToken()}` },
-  })
-  if (res.status === 404) return null
-  if (!res.ok) {
-    const text = await res.text()
-    throw new ApiError(res.status, text === '' ? null : JSON.parse(text))
+//
+// Routed through the client's 'blob' path (21 Aug 2026): this stopped being a
+// click-again download button when the batch page's print run started being
+// BUILT from it, so it now gets the refresh-on-401-and-retry like every other
+// load-bearing read. The filename is derived locally with the exact shape the
+// edge's Content-Disposition carries (batch id first, group lowercased), since
+// the typed client returns only the body.
+export async function downloadCollateral(c: Client, btchId: string, collateralKey: string): Promise<DownloadedFile | null> {
+  try {
+    const blob = await c.request<Blob>({
+      method: 'GET',
+      path: `/ops/batches/${encodeURIComponent(btchId)}/collateral/${encodeURIComponent(collateralKey)}`,
+      responseType: 'blob',
+    })
+    return { blob, filename: `${btchId}-${collateralKey.toLowerCase()}.pdf` }
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
   }
-  const blob = await res.blob()
-  return { blob, filename: filenameFromContentDisposition(res, `${btchId}-${artifactType.toLowerCase()}.pdf`) }
 }
 
 // -----------------------------------------------------------------------

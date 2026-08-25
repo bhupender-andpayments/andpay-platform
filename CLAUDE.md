@@ -151,20 +151,71 @@ Generated Prisma clients live under `services/*/generated` and
 `packages/*/generated` and are gitignored. If a suite fails on a missing
 `generated/client`, run `bash ./infra/db.sh`.
 
+### Local first, then sync (RULE, 20 Aug 2026)
+
+**All development work runs against LOCAL docker.** Feature branches never point
+at the shared RDS. The shared instance is a downstream mirror, refreshed only
+after work lands on `main`:
+
+1. Develop and demo against local docker (`pnpm db:up`, then plain
+   `bash scripts/demo.sh` with NO `source infra/rds-env.sh`).
+2. Before merging: pull `main`, resolve conflicts, run the gate.
+3. Merge to `main`.
+4. THEN sync the shared RDS, so `main`'s code and the shared database are the
+   one default everybody works from:
+
+       pnpm rds:sync            # DRY RUN: what would be applied
+       pnpm rds:sync --apply    # apply it
+
+**SCHEMA ONLY. The shared data is never touched** (Rahul, 20 Aug 2026).
+`infra/rds-sync.sh` runs `prisma migrate deploy` and nothing else: no seed, no
+truncate, no `migrate dev`, no reset. Refreshing the shared demo dataset is a
+separate, explicitly destructive decision that needs its own go-ahead.
+
+The script enforces the rule rather than trusting memory: it refuses off `main`,
+refuses with uncommitted migrations, refuses when the checkout is behind
+`origin/main`, refuses a loopback host, and derives the urls into its own
+process so the calling shell is never poisoned for `pnpm test`. It defaults to a
+dry run because "schema only" is not the same as "cannot lose data": a migration
+may carry `DROP COLUMN` or `DELETE FROM`, so the dry run scans the pending SQL
+and names every destructive statement before you decide.
+
+Other developers stay in sync by pulling `main` and running `bash ./infra/db.sh`
+against their own local docker. Only the shared instance goes through
+`rds:sync`.
+
+Two consequences worth stating, because both have already bitten:
+
+- A migration applied to a database from an UNMERGED branch leaves that
+  database ahead of `main`. On 20 Aug the local `andpay` carried
+  `20260819061949_damage_replacement_raised_marker` from the unmerged
+  `damage-flow-edge-case` branch. `migrate deploy` tolerates an extra applied
+  row; `migrate dev` wants to reset. Run `prisma migrate status` per context
+  before assuming a database matches the branch you are on.
+- The shared RDS can be AHEAD of `main` from before this rule existed. It
+  already carries the three `feature/bank-master-hierarchy` migrations
+  (`20260820023159_tenant_aggregator`,
+  `20260820120000_backfill_default_aggregators`, and tms
+  `20260820052713_aggregator_projection`), applied by hand on 19 and 20 Aug so
+  the 93-bank import could run there. `rds:sync` will therefore report nothing
+  pending when that branch merges. Being ahead is benign for `migrate deploy`;
+  the point of the rule is that it stops happening.
+
 ### The shared developer database
 
 `infra/docker-compose.dev.yml` remains the ONLY database the test gate ever
 touches. A shared AWS RDS Postgres in ap-south-1 holds the common dataset for
-portal and demo work.
+portal and demo work, refreshed from local per the rule above.
 
     source infra/rds-env.sh     # export the six urls for the SHARED dataset
     bash infra/rds-bootstrap.sh # first time only: create and migrate it
 
-Bootstrapped 2026-08-17: all 78 migrations are applied across the six schemas
-and the dataset is live. The instance runs PostgreSQL 18.3, which is fine.
-An earlier note here called for recreating it at 16 on the belief that Prisma
-predated 18; the installed client is 6.19.3, not the 6.3.0 floor declared in
-`package.json`, and it applied every migration cleanly.
+Bootstrapped 2026-08-17. As of 20 Aug 2026 all 84 migrations are applied across
+the six schemas on all three databases (local `andpay`, local `andpay_test`, and
+the shared RDS) and the dataset is live. The instance runs PostgreSQL 18.3,
+which is fine. An earlier note here called for recreating it at 16 on the belief
+that Prisma predated 18; the installed client is 6.19.3, not the 6.3.0 floor
+declared in `package.json`, and it applied every migration cleanly.
 
 Credentials come from a gitignored `.env` holding four keys; see
 `.env.example`. `infra/db-url.mjs` derives the urls, parsing the file

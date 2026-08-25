@@ -15,6 +15,10 @@ export default tseslint.config(
       // ledger, plans, and raw acceptance-evidence scripts. Not shipped source.
       'docs/**',
       'evidence/**',
+      // Agent scratch worktrees (locally excluded, never committed). They hold
+      // whole second copies of the tree, so linting them double-reports every
+      // finding and makes the local gate disagree with CI.
+      '**/.claude/worktrees/**',
     ],
   },
   js.configs.recommended,

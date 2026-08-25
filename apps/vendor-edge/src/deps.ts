@@ -1,4 +1,9 @@
-import { PrismaClient as FulfillmentClient, FilesystemAssetStore, type FulfillmentDb, type AssetStore } from '@andpay/fulfillment-service'
+import {
+  PrismaClient as FulfillmentClient,
+  resolveAssetStoreFromEnv,
+  type FulfillmentDb,
+  type AssetStore,
+} from '@andpay/fulfillment-service'
 import type { Mode } from '@andpay/authz'
 import type { JSONWebKeySet } from 'jose'
 
@@ -55,7 +60,8 @@ export const MAX_SHEET_BYTES = 5 * 1024 * 1024
 
 // The real bootstrap's deps (main.ts only; never exercised by a test, which
 // builds its own EdgeDeps with a fixture pepper and a test-scoped FulfillmentClient).
-export function buildEdgeDepsFromEnv(): EdgeDeps {
+
+export async function buildEdgeDepsFromEnv(): Promise<EdgeDeps> {
   const pepper = process.env.VENDOR_EDGE_PEPPER
   if (!pepper) {
     throw new Error('VENDOR_EDGE_PEPPER is required (the 5c pepper is never defaulted in code, S4)')
@@ -82,9 +88,9 @@ export function buildEdgeDepsFromEnv(): EdgeDeps {
     jwks,
     expectedIss,
     vendorPortalOrigin,
-    // Filesystem-backed: the collateral this edge serves to the print vendor
-    // is rendered by the fulfillment CONSUMER, a different process, so a
-    // per-process store cannot resolve it. E-5 (S3) is still open.
-    assetStore: new FilesystemAssetStore(),
+    // Filesystem-backed by default: the collateral this edge serves to the
+    // print vendor is rendered by the fulfillment CONSUMER, a different
+    // process. Set ANDPAY_S3_BUCKET (plus ANDPAY_S3_PREFIX) for S3: E-5.
+    assetStore: await resolveAssetStoreFromEnv(),
   }
 }

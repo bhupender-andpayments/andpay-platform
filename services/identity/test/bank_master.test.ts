@@ -90,7 +90,7 @@ afterAll(async () => {
 })
 beforeEach(async () => {
   await db.$executeRawUnsafe(
-    'TRUNCATE sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
+    'TRUNCATE aggregator, sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
   )
 })
 
@@ -113,6 +113,20 @@ describe('createBankMaster (BRD Annexure D)', () => {
     expect(audit).toHaveLength(1)
     expect(audit[0]!.decision).toBe('ALLOW')
     expect(audit[0]!.resourceIds).toEqual([res.tnntId])
+  })
+
+  it('createBankMaster mints the default aggregator in the same transaction', async () => {
+    const res = await createBankMaster(db, createArgs())
+    const rows = await listBankMasters(db)
+    const row = rows.find((r) => r.tnntId === res.tnntId)!
+    expect(row.aggregators).toHaveLength(1)
+    expect(row.aggregators[0]!.aggregatorCode).toBe('BREF-ADMIN-1')
+    expect(row.aggregators[0]!.isDefault).toBe(true)
+    expect(row.aggregators[0]!.displayName).toBe('HDFC Bank')
+    const facts = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.aggregator.v1'
+    `
+    expect(Number(facts[0]!.n)).toBe(1)
   })
 
   it('a duplicate bankReferenceCode is a 4xx OpsClientError, NEVER a resolve-to-existing', async () => {
@@ -140,6 +154,7 @@ describe('createBankMaster (BRD Annexure D)', () => {
     expect(await db.tenant.count()).toBe(1)
     expect(await auditRowsFor('ops:bank-master-create')).toHaveLength(1)
   })
+
 })
 
 describe('editBankMaster (BRD Annexure D.4)', () => {
@@ -208,6 +223,7 @@ describe('editBankMaster (BRD Annexure D.4)', () => {
       }),
     ).rejects.toMatchObject({ kind: 'not-found' })
   })
+
 })
 
 // The admin write path must PUBLISH what it changes, or TMS never learns the
@@ -352,5 +368,57 @@ describe('auto-mint reconciliation: admin-created Bank Master and ingest resolve
     // an admin create for the SAME code must NOT resolve-to-existing; it is a 4xx
     await expect(createBankMaster(db, createArgs())).rejects.toMatchObject({ kind: 'invalid' })
     expect(await db.tenant.count()).toBe(1)
+  })
+})
+
+describe('ingest resolves-or-mints aggregators (per-row bankReferenceCode)', () => {
+  it('projectRowFact mints and locks an aggregator for the per-row code', async () => {
+    await projectRowFact(db, ingestRow({ bankReferenceCode: '3', tenantReference: 'BREF-ADMIN-1' }))
+    const rows = await db.$queryRaw<{ aggregator_code: string; code_locked_at: Date | null; is_default: boolean }[]>`
+      SELECT aggregator_code, code_locked_at, is_default FROM aggregator ORDER BY aggregator_code
+    `
+    expect(rows.map((r) => r.aggregator_code)).toContain('3')
+    const minted = rows.find((r) => r.aggregator_code === '3')!
+    expect(minted.code_locked_at).not.toBeNull()
+    expect(minted.is_default).toBe(false)
+    const facts = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.aggregator.v1'
+    `
+    expect(Number(facts[0]!.n)).toBeGreaterThanOrEqual(1)
+  })
+
+  it('a second row with the same code resolves without a second mint or fact', async () => {
+    await projectRowFact(db, ingestRow({ bankReferenceCode: '3', tenantReference: 'BREF-ADMIN-1' }))
+    const before = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.aggregator.v1'
+    `
+    await projectRowFact(db, ingestRow({ bankReferenceCode: '3', bankMerchantReference: 'BREF-M-2', vpaHint: 'x@y', tenantReference: 'BREF-ADMIN-1' }, 'file-bm|2'))
+    const after = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM outbox WHERE event_type = 'fct.identity.aggregator.v1'
+    `
+    expect(Number(after[0]!.n)).toBe(Number(before[0]!.n))
+  })
+
+  it('an ingest-minted tenant gets its default aggregator', async () => {
+    await projectRowFact(db, ingestRow({ bankReferenceCode: 'NEWB' }))
+    const rows = await db.$queryRaw<{ aggregator_code: string; is_default: boolean }[]>`
+      SELECT aggregator_code, is_default FROM aggregator
+    `
+    expect(rows.some((r) => r.aggregator_code === 'NEWB' && r.is_default)).toBe(true)
+  })
+
+  // Whole-branch review finding: a per-row bankReferenceCode flows straight
+  // off the bank file into resolveAggregator's dedup key. A '|' in that code
+  // used to be interpolated into the eventKey purpose, and eventKey's
+  // assertLeaf throws on a '|' in a purpose leaf, so a pipe-bearing code made
+  // this consumer throw and retry forever instead of minting the aggregator.
+  it('a per-row bankReferenceCode containing a pipe mints the aggregator instead of throwing', async () => {
+    await expect(
+      projectRowFact(db, ingestRow({ bankReferenceCode: 'BAD|CODE', tenantReference: 'BREF-ADMIN-1' })),
+    ).resolves.not.toThrow()
+    const rows = await db.$queryRaw<{ aggregator_code: string }[]>`
+      SELECT aggregator_code FROM aggregator ORDER BY aggregator_code
+    `
+    expect(rows.map((r) => r.aggregator_code)).toContain('BAD|CODE')
   })
 })

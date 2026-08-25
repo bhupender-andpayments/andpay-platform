@@ -1702,12 +1702,16 @@ export interface SetBankLogoInput {
 
 /**
  * Store a new bank/branch logo via the T3 AssetStore port and persist the
- * returned reference into logoMasterRef, nulling logoDerivativeRef
- * (rasterization is deferred -- see the schema.prisma comment on both
- * columns). Creates the config row if it does not already exist (a logo can
- * be the FIRST write for a (tenant, bank, branch), before any branding/
- * template upsert), otherwise updates the existing row in place, leaving
- * brandingParams/imageTemplates untouched.
+ * returned reference into logoMasterRef. logoDerivativeRef is owned by the
+ * pair path (setBankLogoPair below) and is left UNTOUCHED here: a single
+ * master-only refresh (this function) keeps whatever derivative is already on
+ * the row until a subsequent pair upload replaces both together. On a FIRST
+ * write for a (tenant, bank, branch) there is no existing derivative, so the
+ * inserted row still gets an explicit NULL; only the ON CONFLICT branch skips
+ * the derivative column. Creates the config row if it does not already exist
+ * (a logo can be the FIRST write for a (tenant, bank, branch), before any
+ * branding/template upsert), otherwise updates the existing row in place,
+ * leaving brandingParams/imageTemplates untouched.
  *
  * The AssetStore `key` is the bank/branch CODE ONLY -- never the tenantId,
  * actorId, or any PII (S4; the T3 dev reference embeds the key in plaintext,
@@ -1754,7 +1758,7 @@ export async function setBankLogo(
         INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at)
         VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${args.bankCode}, ${branchCode}, ${put.reference}, NULL, '{}'::jsonb, '{}'::jsonb, now())
         ON CONFLICT (tenant_id, bank_code, branch_code)
-        DO UPDATE SET logo_master_ref = EXCLUDED.logo_master_ref, logo_derivative_ref = NULL, updated_at = now()
+        DO UPDATE SET logo_master_ref = EXCLUDED.logo_master_ref, updated_at = now()
         RETURNING id::text AS id
       `
       id = rows[0]!.id
@@ -1780,6 +1784,172 @@ export async function setBankLogo(
     reference: ran ? reference : null,
     version: ran ? version : null,
   }
+}
+
+export interface SetBankLogoPairInput {
+  tenantWire: string
+  bankCode: string
+  /**
+   * The asset-store key stem for this aggregator's artwork (ruled 24 Aug
+   * 2026): the aggregator's own WIRE `aggr_` id. The id never changes, so
+   * artwork survives a code correction without the key replay the 24 Aug
+   * renumbering needed; the config ROW stays keyed on bankCode because
+   * dispatch resolves it from the request row's code. Still IDs-only, never
+   * PII (S4).
+   */
+  assetKey: string
+  master: { bytes: Uint8Array; contentType: string; filename: string }
+  derivative: { bytes: Uint8Array; contentType: string; filename: string }
+  clientKey: string
+  actorId: string
+  traceId: string
+}
+
+/**
+ * Store BOTH the vendor-artwork master (typically a .ai vector) and its
+ * rasterised derivative in one write, mirroring setBankLogo's own structure
+ * exactly (enterWriteRole first, both put()s INSIDE the onceWithin effect, a
+ * single co-committed 6e). This is the Task 4 pair-upload path (bank master
+ * hierarchy): the master stays the artwork of record, the derivative is what
+ * dispatch.ts's PDF embedder actually consumes (a .ai file cannot be embedded
+ * directly, BRD D.2).
+ *
+ * Asset keys are the aggregator's immutable wire id (ruled 24 Aug 2026,
+ * after the code renumbering forced a full key replay): the master keys on
+ * the bare assetKey, the derivative on "{assetKey}:derivative" (the ":"
+ * cannot collide with the "bankCode/branchCode" branch keys setBankLogo
+ * builds). IDs only, never tenantId/actorId/PII (S4).
+ *
+ * Both put()s run INSIDE the onceWithin effect (after the client-key dedup
+ * check): a replay of the same clientKey must never mint a second asset
+ * version for either the master or the derivative.
+ */
+export async function setBankLogoPair(
+  db: FulfillmentDb,
+  assetStore: AssetStore,
+  args: SetBankLogoPairInput,
+): Promise<{ deduped: boolean; id: string | null; masterVersion: string | null; derivativeVersion: string | null }> {
+  const tenantUuid = toUuid(args.tenantWire)
+  const masterKey = args.assetKey
+  const derivativeKey = `${args.assetKey}:derivative`
+
+  let id: string | null = null
+  let masterVersion: string | null = null
+  let derivativeVersion: string | null = null
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:bank-logo-set'), async () => {
+      const masterPut = await assetStore.put(masterKey, args.master.bytes, {
+        contentType: args.master.contentType,
+        filename: args.master.filename,
+      })
+      const derivativePut = await assetStore.put(derivativeKey, args.derivative.bytes, {
+        contentType: args.derivative.contentType,
+        filename: args.derivative.filename,
+      })
+      masterVersion = masterPut.version
+      derivativeVersion = derivativePut.version
+
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, logo_master_ref, logo_derivative_ref, branding_params, image_templates, updated_at)
+        VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${args.bankCode}, '', ${masterPut.reference}, ${derivativePut.reference}, '{}'::jsonb, '{}'::jsonb, now())
+        ON CONFLICT (tenant_id, bank_code, branch_code)
+        DO UPDATE SET logo_master_ref = EXCLUDED.logo_master_ref, logo_derivative_ref = EXCLUDED.logo_derivative_ref, updated_at = now()
+        RETURNING id::text AS id
+      `
+      id = rows[0]!.id
+
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:bank-logo-set',
+            principalId: args.actorId,
+            resourceIds: [id, `logo-version:${masterPut.version}`],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return {
+    deduped: !ran,
+    id: ran ? id : null,
+    masterVersion: ran ? masterVersion : null,
+    derivativeVersion: ran ? derivativeVersion : null,
+  }
+}
+
+export interface SetBankBannerInput {
+  tenantWire: string
+  bankCode: string
+  /** The aggregator's wire aggr_ id; see SetBankLogoPairInput.assetKey. */
+  assetKey: string
+  banner: { bytes: Uint8Array; contentType: string; filename: string }
+  clientKey: string
+  actorId: string
+  traceId: string
+}
+
+/**
+ * Store the bank's co-brand HEADER BANNER strip (standee-frame flow,
+ * 2026-08-24): the finished "<bank lockup> | Powered By GSC BANK" PNG the
+ * product team ships per bank, drawn by the renderer into the shared frame's
+ * top band. A third slot beside the logo pair, mirroring setBankLogoPair's
+ * structure exactly: enterWriteRole first, the put() INSIDE the onceWithin
+ * effect, a single co-committed 6e under the same 'ops:bank-logo-set'
+ * operation (the banner is the same master-data surface as the logo pair,
+ * not a new authz operation).
+ *
+ * The asset key is "{assetKey}:banner" (the aggregator's wire id, ruled 24
+ * Aug 2026): IDs only, never tenantId/actorId/PII (S4), and the ":" suffix
+ * rule keeps it collision-free against both the bare master key and the
+ * "{assetKey}:derivative" key, exactly as documented on setBankLogoPair.
+ */
+export async function setBankBanner(
+  db: FulfillmentDb,
+  assetStore: AssetStore,
+  args: SetBankBannerInput,
+): Promise<{ deduped: boolean; id: string | null; version: string | null }> {
+  const tenantUuid = toUuid(args.tenantWire)
+  const bannerKey = `${args.assetKey}:banner`
+
+  let id: string | null = null
+  let version: string | null = null
+  const ran = await db.$transaction(async (tx: Tx) => {
+    await enterWriteRole(tx, 'fulfillment_write')
+    return onceWithin(tx, CONSUMER, instanceKey(args.clientKey, 'ops:bank-logo-set'), async () => {
+      const put = await assetStore.put(bannerKey, args.banner.bytes, {
+        contentType: args.banner.contentType,
+        filename: args.banner.filename,
+      })
+      version = put.version
+
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO bank_composition_config (id, tenant_id, bank_code, branch_code, header_banner_ref, branding_params, image_templates, updated_at)
+        VALUES (gen_random_uuid(), ${tenantUuid}::uuid, ${args.bankCode}, '', ${put.reference}, '{}'::jsonb, '{}'::jsonb, now())
+        ON CONFLICT (tenant_id, bank_code, branch_code)
+        DO UPDATE SET header_banner_ref = EXCLUDED.header_banner_ref, updated_at = now()
+        RETURNING id::text AS id
+      `
+      id = rows[0]!.id
+
+      await enqueue(
+        tx,
+        buildAuthzAuditEvent(
+          opsAllow({
+            operation: 'ops:bank-logo-set',
+            principalId: args.actorId,
+            resourceIds: [id, `banner-version:${put.version}`],
+            traceId: args.traceId,
+          }),
+        ),
+      )
+    })
+  })
+
+  return { deduped: !ran, id: ran ? id : null, version: ran ? version : null }
 }
 
 export interface SetBankTemplateMasterInput {

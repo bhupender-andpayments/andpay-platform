@@ -33,6 +33,13 @@ export interface AssetMeta {
   contentType: string
   /** Original filename as uploaded/supplied by the caller (e.g. "hdfc-logo.ai"). */
   filename: string
+  /**
+   * ISO 8601 instant this version was stored, filled by adapters on READ
+   * paths from their backend's own clock (S3 LastModified, a file's mtime).
+   * Optional additively: callers never supply it on put(), and a version
+   * stored before an adapter recorded it simply lacks it.
+   */
+  lastModified?: string
 }
 
 /** One stored asset version: opaque reference + the version token + its metadata. */

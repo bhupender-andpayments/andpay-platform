@@ -7,14 +7,16 @@ import {
   Headers,
   HttpCode,
   Inject,
+  NotFoundException,
   Param,
   Post,
   Req,
   UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common'
-import { FileInterceptor } from '@nestjs/platform-express'
+import { FileInterceptor, FileFieldsInterceptor } from '@nestjs/platform-express'
 import { createHash } from 'node:crypto'
 import { authorize, requireStepUp, OPS_STEP_UP_CATALOG } from '@andpay/authz'
 import {
@@ -35,6 +37,8 @@ import {
   isKnownStatus,
   upsertBankCompositionConfig,
   setBankLogo,
+  setBankLogoPair,
+  setBankBanner,
   setBankTemplateMaster,
   upsertBatchingConfig,
   setVendorPrintLayout,
@@ -83,9 +87,16 @@ import {
   type DuplicateVpaOriginal,
 } from '@andpay/tms-service'
 import { readDispatchActivationStatus } from '@andpay/analytics-service'
-import { createBankMaster, createMerchant, editBankMaster } from '@andpay/identity-service'
+import {
+  createAggregator,
+  createBankMaster,
+  createMerchant,
+  editAggregator,
+  editBankMaster,
+  listBankMasters,
+} from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
-import { EDGE_DEPS, MAX_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
+import { EDGE_DEPS, MAX_UPLOAD_BYTES, MAX_ARTWORK_UPLOAD_BYTES, type OpsEdgeDeps } from './deps.js'
 import { emitOpsAuthzAudit } from './audit.js'
 import type { EdgeRequest } from './request.js'
 
@@ -312,6 +323,41 @@ interface BankMasterEditBody {
   mobile?: string
   email?: string
   status?: string
+}
+// The aggregator (sub-tenant) create body (spec 2026-08-20). aggregatorCode is
+// set ONCE here at create time; the target tnnt is the route param, never
+// here (M7/S16). Every address/contact field is optional (D.1), same posture
+// as BankMasterCreateBody's own optionals.
+interface AggregatorCreateBody {
+  displayName: string
+  aggregatorCode: string
+  address1?: string
+  address2?: string
+  address3?: string
+  city?: string
+  district?: string
+  country?: string
+  pin?: string
+  mobile?: string
+  email?: string
+}
+// The aggregator edit body. Every field is optional (a partial edit); the
+// target aggr is the route param, never here. Unlike BankMasterEditBody,
+// aggregatorCode IS editable here (guarded server-side once ingest locks it,
+// per editAggregator's own doc comment).
+interface AggregatorEditBody {
+  displayName?: string
+  aggregatorCode?: string
+  status?: string
+  address1?: string
+  address2?: string
+  address3?: string
+  city?: string
+  district?: string
+  country?: string
+  pin?: string
+  mobile?: string
+  email?: string
 }
 // The minimal multer file shape the upload routes read (mirrors vendor-edge's
 // UploadedJson, extended with originalname): the raw bytes plus the client
@@ -1911,6 +1957,173 @@ export class OpsController {
       ...(body.mobile !== undefined ? { mobile: body.mobile } : {}),
       ...(body.email !== undefined ? { email: body.email } : {}),
       ...(body.status !== undefined ? { status: body.status } : {}),
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // The aggregator (sub-tenant) create, under a Bank Master (spec 2026-08-20).
+  // Same gate/idempotency/co-committed-6e posture as createBankMasterRoute
+  // above; NOT step-up-gated, same reasoning (master-data maintenance). The
+  // target tnnt rides the route param; the write is an IDENTITY-context
+  // function called with deps.identityDb, so the edge never does a
+  // cross-context DB write (C4); an unknown tnntId or a duplicate
+  // (tenant, code) surfaces as identity's OpsClientError, mapped by the
+  // app-wide OpsErrorFilter.
+  @Post('bank-masters/:tnntId/aggregators')
+  @HttpCode(200)
+  async createAggregatorRoute(
+    @Req() req: EdgeRequest,
+    @Param('tnntId') tnntId: string,
+    @Body() body: AggregatorCreateBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; aggrId: string | null }> {
+    const g = await this.gate(req, 'ops:aggregator-create', idem, [])
+    return createAggregator(this.deps.identityDb, {
+      tnntId,
+      displayName: body.displayName,
+      aggregatorCode: body.aggregatorCode,
+      ...(body.address1 !== undefined ? { address1: body.address1 } : {}),
+      ...(body.address2 !== undefined ? { address2: body.address2 } : {}),
+      ...(body.address3 !== undefined ? { address3: body.address3 } : {}),
+      ...(body.city !== undefined ? { city: body.city } : {}),
+      ...(body.district !== undefined ? { district: body.district } : {}),
+      ...(body.country !== undefined ? { country: body.country } : {}),
+      ...(body.pin !== undefined ? { pin: body.pin } : {}),
+      ...(body.mobile !== undefined ? { mobile: body.mobile } : {}),
+      ...(body.email !== undefined ? { email: body.email } : {}),
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // The aggregator edit, addressed by its own wire aggr id (mirrors
+  // editBankMasterRoute exactly). aggregatorCode IS accepted here (unlike
+  // bankReferenceCode on the parent edit), since editAggregator itself is the
+  // guard against an ingest-locked code change.
+  @Post('aggregators/:aggrId/edit')
+  @HttpCode(200)
+  async editAggregatorRoute(
+    @Req() req: EdgeRequest,
+    @Param('aggrId') aggrId: string,
+    @Body() body: AggregatorEditBody,
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; changedFields: string[] }> {
+    const g = await this.gate(req, 'ops:aggregator-edit', idem, [aggrId])
+    return editAggregator(this.deps.identityDb, {
+      aggrId,
+      ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
+      ...(body.aggregatorCode !== undefined ? { aggregatorCode: body.aggregatorCode } : {}),
+      ...(body.status !== undefined ? { status: body.status } : {}),
+      ...(body.address1 !== undefined ? { address1: body.address1 } : {}),
+      ...(body.address2 !== undefined ? { address2: body.address2 } : {}),
+      ...(body.address3 !== undefined ? { address3: body.address3 } : {}),
+      ...(body.city !== undefined ? { city: body.city } : {}),
+      ...(body.district !== undefined ? { district: body.district } : {}),
+      ...(body.country !== undefined ? { country: body.country } : {}),
+      ...(body.pin !== undefined ? { pin: body.pin } : {}),
+      ...(body.mobile !== undefined ? { mobile: body.mobile } : {}),
+      ...(body.email !== undefined ? { email: body.email } : {}),
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // Resolve which (tenantWire, bankCode) the composition-config row for this
+  // AGGREGATOR keys on (spec 2026-08-20): the aggregator's own tnntId paired
+  // with its own aggregatorCode. The parent-hierarchy resolveLogoTarget this
+  // replaced is gone along with parentTnntId; every logo now targets the
+  // aggregator that will actually render it.
+  private async resolveAggregatorLogoTarget(aggrId: string): Promise<{ tenantWire: string; bankCode: string }> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    for (const row of rows) {
+      const agg = row.aggregators.find((a) => a.aggrId === aggrId)
+      if (agg !== undefined) return { tenantWire: agg.tnntId, bankCode: agg.aggregatorCode }
+    }
+    throw new NotFoundException('aggregator not found')
+  }
+
+  // The aggregator logo pair (spec 2026-08-20, re-homed from the old
+  // bank-masters/:id/logo route): the .ai MASTER (BRD D.2 source of truth,
+  // versioned) plus the PNG/SVG DERIVATIVE the renderer embeds. Both
+  // validated here at the edge, a 400 before the domain call, identically to
+  // the route this replaced.
+  @Post('aggregators/:aggrId/logo')
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'master', maxCount: 1 },
+        { name: 'derivative', maxCount: 1 },
+      ],
+      { limits: { fileSize: MAX_ARTWORK_UPLOAD_BYTES } },
+    ),
+  )
+  @HttpCode(200)
+  async setAggregatorLogoRoute(
+    @Req() req: EdgeRequest,
+    @Param('aggrId') aggrId: string,
+    @UploadedFiles() files: { master?: UploadedLogoFile[]; derivative?: UploadedLogoFile[] },
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; id: string | null; masterVersion: string | null; derivativeVersion: string | null }> {
+    const g = await this.gate(req, 'ops:bank-logo-set', idem, [aggrId])
+    const master = files.master?.[0]
+    const derivative = files.derivative?.[0]
+    if (!master || !derivative) throw new BadRequestException('both master and derivative files are required')
+    const masterOk =
+      master.mimetype === 'application/postscript' ||
+      master.mimetype === 'application/pdf' ||
+      master.mimetype === 'application/illustrator' ||
+      master.originalname.toLowerCase().endsWith('.ai')
+    if (!masterOk) throw new BadRequestException('master must be an Adobe Illustrator (.ai) file')
+    if (derivative.mimetype !== 'image/png' && derivative.mimetype !== 'image/svg+xml') {
+      throw new BadRequestException('derivative must be a PNG or SVG image')
+    }
+    const target = await this.resolveAggregatorLogoTarget(aggrId)
+    return setBankLogoPair(this.deps.fulfillmentDb, this.deps.assetStore, {
+      tenantWire: target.tenantWire,
+      bankCode: target.bankCode,
+      // The store keys on the aggregator's immutable id, not its code (ruled
+      // 24 Aug 2026), so a later code correction never orphans the artwork.
+      assetKey: aggrId,
+      master: { bytes: master.buffer, contentType: master.mimetype, filename: master.originalname },
+      derivative: { bytes: derivative.buffer, contentType: derivative.mimetype, filename: derivative.originalname },
+      clientKey: g.clientKey,
+      actorId: g.actorId,
+      traceId: g.traceId,
+    })
+  }
+
+  // The co-brand header banner strip (standee-frame flow, 2026-08-24): the
+  // finished "<bank lockup> | Powered By GSC BANK" PNG drawn into the shared
+  // frame's top band. Same master-data surface and same authz operation as
+  // the logo pair; one file, PNG or JPG only (the renderer embeds it as a
+  // raster and a vector strip has no supplier today).
+  @Post('aggregators/:aggrId/banner')
+  @UseInterceptors(
+    FileFieldsInterceptor([{ name: 'banner', maxCount: 1 }], { limits: { fileSize: MAX_ARTWORK_UPLOAD_BYTES } }),
+  )
+  @HttpCode(200)
+  async setAggregatorBannerRoute(
+    @Req() req: EdgeRequest,
+    @Param('aggrId') aggrId: string,
+    @UploadedFiles() files: { banner?: UploadedLogoFile[] },
+    @Headers('idempotency-key') idem: string | undefined,
+  ): Promise<{ deduped: boolean; id: string | null; version: string | null }> {
+    const g = await this.gate(req, 'ops:bank-logo-set', idem, [aggrId])
+    const banner = files.banner?.[0]
+    if (!banner) throw new BadRequestException('a banner file is required')
+    if (banner.mimetype !== 'image/png' && banner.mimetype !== 'image/jpeg') {
+      throw new BadRequestException('the banner must be a PNG or JPG image')
+    }
+    const target = await this.resolveAggregatorLogoTarget(aggrId)
+    return setBankBanner(this.deps.fulfillmentDb, this.deps.assetStore, {
+      tenantWire: target.tenantWire,
+      bankCode: target.bankCode,
+      assetKey: aggrId,
+      banner: { bytes: banner.buffer, contentType: banner.mimetype, filename: banner.originalname },
       clientKey: g.clientKey,
       actorId: g.actorId,
       traceId: g.traceId,

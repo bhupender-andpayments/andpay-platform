@@ -426,6 +426,47 @@ const GROUP_ARTIFACT_TYPES: Record<CollateralGroup, readonly string[]> = {
 // holds keeps resolving to the PDF that now carries that product. Anything else
 // returns null, and every caller maps that to the same 404 an unknown type
 // produced before.
+// ONE dispatch's stored card, by (batch, assignment, type): the bytes compose
+// wrote, carrying the aggregator's own logo from the asset store, so the
+// portal's on-screen proof can show the ACTUAL stored artifact instead of
+// re-drawing a lookalike client-side (ruled 21 Aug 2026: wherever bank data
+// appears it points at master bank data, backend plus asset store). Same
+// superseded_by IS NULL rule as the delivery path above: after a recompose the
+// replacement row is the only card the vendor will ever print. Returns null
+// for an unknown id or type (a 404 upstream); an existing row whose reference
+// does not resolve throws AssetResolutionError, exactly like assembleGroupPdf,
+// because that is a fault and not an absence.
+export async function readComposedArtifact(
+  db: FulfillmentDb,
+  assetStore: AssetStore,
+  btchId: string,
+  asgnId: string,
+  artifactType: string,
+): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  if (!['SOUNDBOX_IMG', 'STANDEE_IMG', 'STICKER_IMG'].includes(artifactType)) return null
+  let btchUuid: string
+  let asgnUuid: string
+  try {
+    btchUuid = toUuid(btchId)
+    asgnUuid = toUuid(asgnId)
+  } catch {
+    return null
+  }
+  const rows = await db.$queryRaw<{ asset_reference: string }[]>`
+    SELECT asset_reference FROM composed_artifact
+    WHERE btch_id = ${btchUuid}::uuid AND asgn_id = ${asgnUuid}::uuid
+      AND artifact_type = ${artifactType} AND superseded_by IS NULL
+    LIMIT 1
+  `
+  const reference = rows[0]?.asset_reference
+  if (reference === undefined) return null
+  const rec = await assetStore.getByReference(reference)
+  if (rec === null) {
+    throw new AssetResolutionError(`stored collateral not found for a ${artifactType} artifact in batch ${btchId}`)
+  }
+  return { bytes: rec.bytes, contentType: rec.meta.contentType }
+}
+
 export function resolveCollateralGroup(key: string): CollateralGroup | null {
   switch (key) {
     case 'SOUNDBOX':

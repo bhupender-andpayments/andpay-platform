@@ -90,6 +90,15 @@ export interface CollateralInput {
   // the existing drawn layout below runs exactly as it always has: the master
   // is a strict addition, never a required input.
   templateMaster?: { bytes: Uint8Array } | null
+  // Standee-frame flow (2026-08-24): the per-bank co-brand HEADER BANNER
+  // strip ("<bank lockup> | Powered By GSC BANK"), drawn centered in the
+  // shared frame's top band on the MASTER path. The shared frame deliberately
+  // leaves that band blank; the banner is what makes the card that bank's.
+  // Same leniency as every other optional input: absent, or present but
+  // unembeddable, and the render proceeds without it rather than failing the
+  // batch. The drawn (no-master) path ignores it: that layout already carries
+  // its own logo-or-name header, and drawing both would double the lockup.
+  headerBanner?: { bytes: Uint8Array; contentType: string } | null
 }
 
 function readString(obj: unknown, key: string): string | undefined {
@@ -134,16 +143,27 @@ export function resolveTemplate(input: CollateralInput): ImageTemplate {
 // until then they are calibration defaults, overridable per product type via
 // image_templates.<TYPE>.overlay.
 export interface OverlayConfig {
-  name: { yFrac: number; size: number }
-  legal: { yFrac: number; size: number }
+  name: { yFrac: number; size: number; colorHex?: string }
+  legal: { yFrac: number; size: number; colorHex?: string }
   qr: { yFrac: number; sideFrac: number }
-  vpa: { yFrac: number; size: number }
+  vpa: { yFrac: number; size: number; colorHex?: string }
+  // The header banner's CENTER line as a fraction of page height, plus the
+  // width it scales to (height follows the image's own aspect ratio, since
+  // the shipped strips vary between roughly 6.9:1 and 7.1:1).
+  banner: { yFrac: number; widthFrac: number }
+  // The two reconciliation strips beside the QR (the rotated dispatch id and
+  // the bank code), individually optional (Rahul, 24 Aug 2026). Default ON:
+  // they are how the print vendor accounts for a page in a merged PDF, so
+  // turning one off is a deliberate per-bank/tenant choice, never a surprise.
+  marks: { dispatchId: boolean; bankCode: boolean }
 }
 const OVERLAY_DEFAULTS: OverlayConfig = {
   name: { yFrac: 0.815, size: 13 },
   legal: { yFrac: 0.775, size: 9 },
   qr: { yFrac: 0.33, sideFrac: 0.61 },
   vpa: { yFrac: 0.275, size: 11 },
+  banner: { yFrac: 0.925, widthFrac: 0.86 },
+  marks: { dispatchId: true, bankCode: true },
 }
 
 // readNumber reads one flat key. The overlay config nests one level deeper
@@ -157,6 +177,30 @@ function readOverlayNumber(imageTemplate: unknown, group: string, key: string, f
   if (overlay === null || typeof overlay !== 'object') return fallback
   const g = (overlay as Record<string, unknown>)[group]
   return readNumber(g, key) ?? fallback
+}
+
+// The string twin of readOverlayNumber, for per-element color overrides
+// (overlay.<group>.colorHex). The shared frame prints the UPI ID inside a
+// dark blue tab and the merchant name on a light ground, so one page needs
+// two text colors; absent or wrong-shaped falls through to undefined and the
+// caller keeps the template-wide ink, exactly as before this key existed.
+function readOverlayString(imageTemplate: unknown, group: string, key: string): string | undefined {
+  if (imageTemplate === null || typeof imageTemplate !== 'object') return undefined
+  const overlay = (imageTemplate as Record<string, unknown>)['overlay']
+  if (overlay === null || typeof overlay !== 'object') return undefined
+  return readString((overlay as Record<string, unknown>)[group], key)
+}
+
+// The boolean twin: absent or wrong-shaped falls through to the default,
+// so every config written before this key existed keeps both strips.
+function readOverlayBool(imageTemplate: unknown, group: string, key: string, fallback: boolean): boolean {
+  if (imageTemplate === null || typeof imageTemplate !== 'object') return fallback
+  const overlay = (imageTemplate as Record<string, unknown>)['overlay']
+  if (overlay === null || typeof overlay !== 'object') return fallback
+  const g = (overlay as Record<string, unknown>)[group]
+  if (g === null || typeof g !== 'object' || g === undefined || !(key in g)) return fallback
+  const v = (g as Record<string, unknown>)[key]
+  return typeof v === 'boolean' ? v : fallback
 }
 
 // Fix wave 2, Finding 5: resolveOverlay applied NO range clamp on what it
@@ -186,18 +230,29 @@ export function resolveOverlay(imageTemplate: unknown): OverlayConfig {
     name: {
       yFrac: clampFrac(readOverlayNumber(imageTemplate, 'name', 'yFrac', OVERLAY_DEFAULTS.name.yFrac)),
       size: clampOverlaySize(readOverlayNumber(imageTemplate, 'name', 'size', OVERLAY_DEFAULTS.name.size)),
+      colorHex: readOverlayString(imageTemplate, 'name', 'colorHex'),
     },
     legal: {
       yFrac: clampFrac(readOverlayNumber(imageTemplate, 'legal', 'yFrac', OVERLAY_DEFAULTS.legal.yFrac)),
       size: clampOverlaySize(readOverlayNumber(imageTemplate, 'legal', 'size', OVERLAY_DEFAULTS.legal.size)),
+      colorHex: readOverlayString(imageTemplate, 'legal', 'colorHex'),
     },
     qr: {
       yFrac: clampFrac(readOverlayNumber(imageTemplate, 'qr', 'yFrac', OVERLAY_DEFAULTS.qr.yFrac)),
       sideFrac: clampFrac(readOverlayNumber(imageTemplate, 'qr', 'sideFrac', OVERLAY_DEFAULTS.qr.sideFrac)),
     },
+    banner: {
+      yFrac: clampFrac(readOverlayNumber(imageTemplate, 'banner', 'yFrac', OVERLAY_DEFAULTS.banner.yFrac)),
+      widthFrac: clampFrac(readOverlayNumber(imageTemplate, 'banner', 'widthFrac', OVERLAY_DEFAULTS.banner.widthFrac)),
+    },
+    marks: {
+      dispatchId: readOverlayBool(imageTemplate, 'marks', 'dispatchId', OVERLAY_DEFAULTS.marks.dispatchId),
+      bankCode: readOverlayBool(imageTemplate, 'marks', 'bankCode', OVERLAY_DEFAULTS.marks.bankCode),
+    },
     vpa: {
       yFrac: clampFrac(readOverlayNumber(imageTemplate, 'vpa', 'yFrac', OVERLAY_DEFAULTS.vpa.yFrac)),
       size: clampOverlaySize(readOverlayNumber(imageTemplate, 'vpa', 'size', OVERLAY_DEFAULTS.vpa.size)),
+      colorHex: readOverlayString(imageTemplate, 'vpa', 'colorHex'),
     },
   }
 }
@@ -296,11 +351,22 @@ async function embedQrImage(doc: PDFDocument, qrValue: string): Promise<PDFImage
 // for why the id is on every page at all.
 function drawQrStrips(
   page: PDFPage,
-  opts: { qrX: number; qrY: number; qrSide: number; bankCode: string; dispatchId: string; font: PDFFont; color: ReturnType<typeof rgb> },
+  opts: {
+    qrX: number
+    qrY: number
+    qrSide: number
+    bankCode: string
+    dispatchId: string
+    font: PDFFont
+    color: ReturnType<typeof rgb>
+    show: { dispatchId: boolean; bankCode: boolean }
+  },
 ): void {
-  const { qrX, qrY, qrSide, bankCode, dispatchId, font, color } = opts
+  const { qrX, qrY, qrSide, bankCode, dispatchId, font, color, show } = opts
   // bank code as small vertical text to the RIGHT of the QR box (BRD 5.3)
-  page.drawText(winAnsiSafe(bankCode), { x: qrX + qrSide + 4, y: qrY, size: 8, font, color, rotate: degrees(90) })
+  if (show.bankCode) {
+    page.drawText(winAnsiSafe(bankCode), { x: qrX + qrSide + 4, y: qrY, size: 8, font, color, rotate: degrees(90) })
+  }
 
   // The dispatch id, mirroring that strip on the LEFT of the QR box. Small and
   // rotated because it is a reconciliation handle for the print vendor, not
@@ -308,6 +374,7 @@ function drawQrStrips(
   // competing with the QR or the names. A wire asgn_ id is 31 characters, so the
   // size is fitted to the QR side and clamped, which keeps it on the artwork
   // even on a page at the MIN_SIDE floor.
+  if (!show.dispatchId) return
   const idText = winAnsiSafe(dispatchId)
   const idSize = fitSize(idText, font, qrSide)
   page.drawText(clampText(idText, idSize, font, qrSide), {
@@ -489,7 +556,16 @@ async function renderDrawnLayout(doc: PDFDocument, input: CollateralInput): Prom
   const qrImg = await embedQrImage(doc, input.qrValue)
   page.drawImage(qrImg, { x: qrX, y: qrY, width: qrSide, height: qrSide })
 
-  drawQrStrips(page, { qrX, qrY, qrSide, bankCode: input.bankCode, dispatchId: input.dispatchId, font, color: ink })
+  drawQrStrips(page, {
+    qrX,
+    qrY,
+    qrSide,
+    bankCode: input.bankCode,
+    dispatchId: input.dispatchId,
+    font,
+    color: ink,
+    show: resolveOverlay(input.imageTemplate).marks,
+  })
 
   // --- bottom texts (all clamped to the content width) ---
   drawCenteredClamped(page, input.vpa, { y: vpaY, size: vpaSize, font, color: ink, maxWidth: contentW })
@@ -533,11 +609,34 @@ async function renderOverMaster(doc: PDFDocument, embedded: PDFEmbeddedPage, inp
     input.merchantLegalName !== input.merchantDisplayName &&
     H >= 288
 
+  // The co-brand header banner, centered in the frame's top band. Its height
+  // follows the image's own aspect ratio at the configured width, and yFrac
+  // names the strip's CENTER line so a slightly taller banner grows evenly
+  // instead of dropping its bottom edge onto the merchant name. Unembeddable
+  // bytes skip the banner and keep the render, same posture as the logo path.
+  if (input.headerBanner && input.headerBanner.bytes.length > 0) {
+    const ct = input.headerBanner.contentType.toLowerCase()
+    try {
+      const img = ct.includes('png')
+        ? await doc.embedPng(input.headerBanner.bytes)
+        : ct.includes('jpg') || ct.includes('jpeg')
+          ? await doc.embedJpg(input.headerBanner.bytes)
+          : null
+      if (img !== null) {
+        const bw = W * o.banner.widthFrac
+        const bh = bw * (img.height / img.width)
+        page.drawImage(img, { x: (W - bw) / 2, y: H * o.banner.yFrac - bh / 2, width: bw, height: bh })
+      }
+    } catch {
+      // fall through: the frame simply prints without the co-brand strip
+    }
+  }
+
   drawCenteredClamped(page, input.merchantDisplayName, {
     y: H * o.name.yFrac,
     size: o.name.size,
     font: bold,
-    color: ink,
+    color: o.name.colorHex === undefined ? ink : hexToRgb(o.name.colorHex),
     maxWidth: contentW,
   })
   if (includeLegal && input.merchantLegalName !== undefined) {
@@ -545,7 +644,7 @@ async function renderOverMaster(doc: PDFDocument, embedded: PDFEmbeddedPage, inp
       y: H * o.legal.yFrac,
       size: o.legal.size,
       font,
-      color: ink,
+      color: o.legal.colorHex === undefined ? ink : hexToRgb(o.legal.colorHex),
       maxWidth: contentW,
     })
   }
@@ -556,9 +655,15 @@ async function renderOverMaster(doc: PDFDocument, embedded: PDFEmbeddedPage, inp
   const qrImg = await embedQrImage(doc, input.qrValue)
   page.drawImage(qrImg, { x: qrX, y: qrY, width: qrSide, height: qrSide })
 
-  drawCenteredClamped(page, input.vpa, { y: H * o.vpa.yFrac, size: o.vpa.size, font, color: ink, maxWidth: contentW })
+  drawCenteredClamped(page, input.vpa, {
+    y: H * o.vpa.yFrac,
+    size: o.vpa.size,
+    font,
+    color: o.vpa.colorHex === undefined ? ink : hexToRgb(o.vpa.colorHex),
+    maxWidth: contentW,
+  })
 
-  drawQrStrips(page, { qrX, qrY, qrSide, bankCode: input.bankCode, dispatchId: input.dispatchId, font, color: ink })
+  drawQrStrips(page, { qrX, qrY, qrSide, bankCode: input.bankCode, dispatchId: input.dispatchId, font, color: ink, show: o.marks })
 
   return await doc.save()
 }

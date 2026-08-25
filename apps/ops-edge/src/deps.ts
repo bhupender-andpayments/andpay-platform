@@ -3,7 +3,7 @@ import {
   type FulfillmentDb,
   loadOpsConfig,
   type AssetStore,
-  FilesystemAssetStore,
+  resolveAssetStoreFromEnv,
 } from '@andpay/fulfillment-service'
 import { PrismaClient as TmsClient, type TmsDb } from '@andpay/tms-service'
 import { PrismaClient as AnalyticsClient, type AnalyticsDb } from '@andpay/analytics-service'
@@ -74,6 +74,14 @@ export const EDGE_DEPS = 'OPS_EDGE_DEPS'
 // extra exception filter is needed.
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
+// The multipart file size cap for the aggregator logo upload route
+// (authenticated-DoS guard). Bank .ai frame masters are vector artwork averaging
+// 9MB and peaking at 22MB in the real GSCB set, so the 5MB sheet cap cannot
+// serve this route. 32MB keeps a hard bound (the DoS guard survives, just sized
+// for artwork) and applies ONLY to the aggregator logo route, never the sheet
+// uploads.
+export const MAX_ARTWORK_UPLOAD_BYTES = 32 * 1024 * 1024
+
 export const DEFAULT_FULFILLMENT_DATABASE_URL =
   'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=fulfillment'
 export const DEFAULT_TMS_DATABASE_URL = 'postgresql://andpay:andpay_dev@localhost:5432/andpay?schema=tms'
@@ -86,7 +94,8 @@ export const DEFAULT_IDENTITY_DATABASE_URL =
 // builds its own OpsEdgeDeps with a jose-generated JWKS and test-scoped
 // clients). Every input is required and fails the process start closed if
 // absent (S4): the JWKS, issuer, and mode are never defaulted to a baked-in value.
-export function buildOpsEdgeDepsFromEnv(): OpsEdgeDeps {
+
+export async function buildOpsEdgeDepsFromEnv(): Promise<OpsEdgeDeps> {
   const rawJwks = process.env.OPS_EDGE_JWKS
   if (!rawJwks) {
     throw new Error('OPS_EDGE_JWKS is required (the human-plane public JWKS is never defaulted in code, S4)')
@@ -121,10 +130,9 @@ export function buildOpsEdgeDepsFromEnv(): OpsEdgeDeps {
     expectedMode,
     roleConfig: loadOpsConfig(),
     portalOrigin,
-    // Filesystem-backed so the edge can serve collateral rendered by the
-    // fulfillment CONSUMER, which is a different process. With the in-memory
-    // adapter each process had its own empty map and every collateral
-    // download answered 500. E-5 (the S3 adapter) is still open.
-    assetStore: new FilesystemAssetStore(),
+    // Filesystem-backed by default so the edge can serve collateral rendered
+    // by the fulfillment CONSUMER, a different process. Set ANDPAY_S3_BUCKET
+    // (plus ANDPAY_S3_PREFIX) to use the S3 adapter instead: E-5.
+    assetStore: await resolveAssetStoreFromEnv(),
   }
 }

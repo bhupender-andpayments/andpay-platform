@@ -155,3 +155,13 @@ describe('@andpay/ids sub-merchant prefix (Section 11)', () => {
     expect(isId('smrch', m)).toBe(false)
   })
 })
+
+describe('@andpay/ids aggregator prefix', () => {
+  it('mints and validates the aggr aggregator prefix', () => {
+    const id = newId('aggr')
+    expect(id.startsWith('aggr_')).toBe(true)
+    expect(parseId('aggr', id)).toBe(id)
+    expect(fromUuid('aggr', toUuid(id))).toBe(id)
+    expect(ID_PREFIXES.aggr).toBe('aggr_')
+  })
+})

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Pencil } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext.js'
 import { VendorRegistryPage } from './VendorRegistryPage.js'
 import { CourierMasterPage } from './CourierMasterPage.js'
 import { BankMasterCreateDialog } from './BankMasterCreateDialog.js'
-import { BankMasterEditDialog } from './BankMasterEditDialog.js'
+import { BankMasterDetailDialog } from './BankMasterDetailDialog.js'
+import { AggregatorCreateDialog } from './AggregatorCreateDialog.js'
 import { DamageReasonCreateDialog } from './DamageReasonCreateDialog.js'
 import { DamageReasonEditDialog } from './DamageReasonEditDialog.js'
 import { BatchingConfigDialog } from './BatchingConfigDialog.js'
@@ -17,9 +19,11 @@ import {
   type DamageReasonRow,
   type BatchingConfigRow,
 } from '../../api/endpoints.js'
-import { PageHeader, Button, Card, CardHeader, Tabs, ErrorNote, StatusPill, CodeChip, SkeletonRows } from '../../ui/primitives.js'
+import { PageHeader, Button, Card, CardHeader, Tabs, ErrorNote, StatusPill, CodeChip, SkeletonRows, Input } from '../../ui/primitives.js'
+import { IconSearch } from '../../ui/icons.js'
 import { fmtDate, fmtNumber, shortId } from '../../ui/format.js'
 import { fmtWait } from '../fulfillment/BatchingRules.js'
+import { MASTERDATA_PAGE_SIZE, matchesTenantQuery, matchesAggregatorQuery, initialsOf, StatusDot } from './shared.js'
 
 // Master data (Phase 7 Task 8, spec 13 check 6). Five real surfaces live here
 // as tabs on the one `/masterdata` route (routes.tsx, Nav.tsx): vendor
@@ -77,49 +81,26 @@ export function MasterDataPage() {
 }
 
 // -- Bank masters (GET /ops/bank-masters, identity.tenant list) ------- //
-
-function bankMasterColumns(onEdit: (row: BankMasterRow) => void): ReadonlyArray<DataTableColumn<BankMasterRow>> {
-  return [
-    { key: 'bankReferenceCode', header: 'Bank ref code', cell: (r) => <CodeChip>{r.bankReferenceCode}</CodeChip> },
-    {
-      key: 'displayName',
-      header: 'Display name',
-      cell: (r) => <span className="font-medium text-foreground">{r.displayName}</span>,
-    },
-    { key: 'status', header: 'Status', cell: (r) => <StatusPill value={r.status} /> },
-    { key: 'city', header: 'City', cell: (r) => r.city ?? <span className="text-muted-foreground">-</span> },
-    { key: 'country', header: 'Country', cell: (r) => r.country ?? <span className="text-muted-foreground">-</span> },
-    { key: 'mobile', header: 'Mobile', cell: (r) => r.mobile ?? <span className="text-muted-foreground">-</span> },
-    { key: 'email', header: 'Email', cell: (r) => r.email ?? <span className="text-muted-foreground">-</span> },
-    { key: 'tnntId', header: 'Tenant ID', cell: (r) => <CodeChip>{shortId(r.tnntId)}</CodeChip> },
-    {
-      key: 'actions',
-      header: '',
-      cell: (r) => (
-        <button
-          type="button"
-          aria-label={`Edit bank master ${r.displayName}`}
-          className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-          onClick={(e) => {
-            e.stopPropagation()
-            onEdit(r)
-          }}
-        >
-          <Pencil className="size-3.5" aria-hidden="true" />
-        </button>
-      ),
-    },
-  ]
-}
+//
+// TENANTS ONLY (Task 3, 24 Aug 2026): the collapsible in-list expand is gone.
+// Each tenant row links to its own page (/masterdata/bank-masters/:tnntId,
+// TenantAggregatorsPage), which carries the aggregator list, the card
+// template, and the per-aggregator View/Edit dialogs. A search here still
+// matches by aggregator name or code so a bank stays findable from this list;
+// a matching aggregator surfaces its tenant row.
 
 function BankMastersView() {
   const { client } = useAuth()
+  const navigate = useNavigate()
   const [rows, setRows] = useState<BankMasterRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<BankMasterRow | null>(null)
+  const [addingAggregatorFor, setAddingAggregatorFor] = useState<BankMasterRow | null>(null)
+  const [query, setQuery] = useState('')
+  const [page, setPage] = useState(0)
 
-  const load = useCallback((): void => {
+  const load = useCallback(() => {
     getBankMasters(client)
       .then((res) => {
         // A failed read arrives as an error envelope, not a list, and the
@@ -137,39 +118,178 @@ function BankMastersView() {
     load()
   }, [load])
 
+  const tenants = useMemo((): BankMasterRow[] => {
+    if (!Array.isArray(rows)) return []
+    const q = query.trim().toLowerCase()
+    return rows.filter((t) => matchesTenantQuery(t, q) || t.aggregators.some((a) => matchesAggregatorQuery(a, q)))
+  }, [rows, query])
+
+  const pageCount = Math.max(1, Math.ceil(tenants.length / MASTERDATA_PAGE_SIZE))
+  const safePage = Math.min(page, pageCount - 1)
+  const pageRows = tenants.slice(safePage * MASTERDATA_PAGE_SIZE, safePage * MASTERDATA_PAGE_SIZE + MASTERDATA_PAGE_SIZE)
+
+  const tenantCount = Array.isArray(rows) ? rows.length : 0
+  const bankCount = Array.isArray(rows) ? rows.reduce((n, t) => n + t.aggregators.length, tenantCount) : 0
+
   return (
     <div className="space-y-4">
       {error !== null && <ErrorNote>{error}</ErrorNote>}
       <Card>
-        <CardHeader
-          title="Bank masters"
-          subtitle={Array.isArray(rows) ? `${rows.length} banks` : undefined}
-          actions={
+        <div className="flex flex-wrap items-center gap-3 px-4 pt-4">
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-base font-semibold">Bank masters</h2>
+            {Array.isArray(rows) && (
+              <p className="text-sm text-muted-foreground">
+                {bankCount} banks · {tenantCount} {tenantCount === 1 ? 'tenant' : 'tenants'}
+              </p>
+            )}
+          </div>
+          <div className="ml-auto flex items-center gap-3">
+            <div className="relative w-64">
+              <IconSearch
+                width={16}
+                height={16}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                aria-label="Search bank masters"
+                placeholder="Search name or code"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value)
+                  setPage(0)
+                }}
+                className="h-9 pl-9"
+              />
+            </div>
             <Button type="button" onClick={() => setAdding(true)}>
               Add bank master
             </Button>
-          }
-        />
+          </div>
+        </div>
         {rows === null ? (
-          <SkeletonRows rows={5} cols={8} />
+          <SkeletonRows rows={5} cols={4} />
         ) : (
-          <DataTable
-            columns={bankMasterColumns(setEditing)}
-            rows={rows}
-            getRowKey={(r) => r.tnntId}
-            emptyMessage="No bank masters."
-          />
+          <div className="px-4 pb-4 pt-3">
+            <div className="grid grid-cols-[minmax(0,1fr)_180px_120px_110px] gap-3 border-b px-2 pb-2 text-[11px] font-medium uppercase tracking-[0.06em] text-muted-foreground max-sm:hidden">
+              <span>Bank</span>
+              <span>Contact</span>
+              <span>Status</span>
+              <span aria-hidden="true" />
+            </div>
+            {pageRows.length === 0 ? (
+              <p className="px-2 py-6 text-sm text-muted-foreground">No bank masters match.</p>
+            ) : (
+              <ul className="divide-y">
+                {pageRows.map((t) => (
+                  <li
+                    key={t.tnntId}
+                    className="grid grid-cols-[minmax(0,1fr)_180px_120px_110px] items-center gap-3 py-2.5 max-sm:grid-cols-[minmax(0,1fr)_110px]"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span
+                        aria-hidden="true"
+                        className="flex size-9 flex-none items-center justify-center rounded-lg bg-amber-100 text-[11px] font-semibold text-amber-800"
+                      >
+                        {initialsOf(t.displayName)}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-2 text-sm font-semibold">
+                          <button
+                            type="button"
+                            className="truncate text-left hover:underline"
+                            aria-label={`Open bank master ${t.displayName}`}
+                            onClick={() => navigate(`/masterdata/bank-masters/${t.tnntId}`)}
+                          >
+                            {t.displayName}
+                          </button>
+                          <span className="flex-none rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                            {t.aggregators.length} aggregators
+                          </span>
+                        </p>
+                        <p className="truncate font-mono text-[11px] text-muted-foreground">{t.bankReferenceCode}</p>
+                      </div>
+                    </div>
+                    <p className="truncate text-sm text-muted-foreground max-sm:hidden">{t.email ?? t.mobile ?? '-'}</p>
+                    <div className="max-sm:hidden">
+                      <StatusDot status={t.status} />
+                    </div>
+                    <div className="flex justify-end gap-3">
+                      <button
+                        type="button"
+                        className="text-sm font-medium text-primary hover:underline"
+                        aria-label={`View bank master ${t.displayName}`}
+                        onClick={() => navigate(`/masterdata/bank-masters/${t.tnntId}`)}
+                      >
+                        View
+                      </button>
+                      <button
+                        type="button"
+                        className="text-sm font-medium text-primary hover:underline"
+                        aria-label={`Edit bank master ${t.displayName}`}
+                        onClick={() => setEditing(t)}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex items-center justify-between border-t px-2 pt-3">
+              <p className="text-sm text-muted-foreground">
+                {tenants.length === 0
+                  ? '0 of 0'
+                  : `${safePage * MASTERDATA_PAGE_SIZE + 1}-${Math.min((safePage + 1) * MASTERDATA_PAGE_SIZE, tenants.length)} of ${tenants.length}`}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={safePage === 0}
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                >
+                  Previous
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={safePage >= pageCount - 1}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          </div>
         )}
       </Card>
       <BankMasterCreateDialog open={adding} onOpenChange={setAdding} onCreated={load} />
+      {addingAggregatorFor !== null && (
+        <AggregatorCreateDialog
+          tenant={addingAggregatorFor}
+          open
+          onOpenChange={(next) => {
+            if (!next) setAddingAggregatorFor(null)
+          }}
+          onCreated={load}
+        />
+      )}
       {editing !== null && (
-        <BankMasterEditDialog
+        <BankMasterDetailDialog
           bank={editing}
           open
           onOpenChange={(next) => {
             if (!next) setEditing(null)
           }}
           onSaved={load}
+          onAddAggregator={(t) => {
+            setEditing(null)
+            setAddingAggregatorFor(t)
+          }}
         />
       )}
     </div>

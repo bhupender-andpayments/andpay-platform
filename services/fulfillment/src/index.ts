@@ -71,7 +71,7 @@ export {
   type DispatchStateValue,
 } from './batch-status.js'
 export { BATCH_STATUSES, type BatchStatus } from './batch-status.js'
-export { consumeBatchFact, TemplateTrimMismatchError } from './dispatch.js'
+export { consumeBatchFact, preRenderArtifacts, TemplateTrimMismatchError } from './dispatch.js'
 export {
   type AdapterFunction,
   type PackageLine,
@@ -85,6 +85,7 @@ export {
   excelLinesFor,
   resolveCollateralGroup,
   assembleGroupPdf,
+  readComposedArtifact,
   AssetResolutionError,
 } from './package.js'
 export {
@@ -176,6 +177,10 @@ export {
   type UpsertBankCompositionConfigInput,
   setBankLogo,
   type SetBankLogoInput,
+  setBankLogoPair,
+  type SetBankLogoPairInput,
+  setBankBanner,
+  type SetBankBannerInput,
   setBankTemplateMaster,
   type SetBankTemplateMasterInput,
   upsertBatchingConfig,
@@ -262,12 +267,18 @@ export {
 export type { AssetStore, AssetMeta, StoredAsset, PutResult, AssetRecord } from './storage/asset-store.js'
 export { InMemoryAssetStore } from './storage/dev-asset-store.js'
 export { FilesystemAssetStore, defaultAssetDir } from './storage/fs-asset-store.js'
+export { S3AssetStore, createS3AssetStore, parseAssetReference, s3ObjectKey } from './storage/s3-asset-store.js'
+// The ONE resolver every process must use; see its header for the split-brain
+// bug that duplicating this rule caused.
+export { resolveAssetStoreFromEnv } from './storage/resolve-asset-store.js'
+export type { S3Like, S3AssetStoreOptions } from './storage/s3-asset-store.js'
 export {
   readShipments,
   readShipmentStatusTrail,
   type ShipmentReadRow,
   type ShipmentStatusEventRow,
 } from './read.js'
+export { renderSampleCard, type RenderSampleCardInput } from './collateral/sample.js'
 export {
   logUnitStatus,
   logUnitStatuses,

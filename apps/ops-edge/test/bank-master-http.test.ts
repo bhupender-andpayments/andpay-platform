@@ -143,9 +143,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await identityDb.$executeRawUnsafe(
-    'TRUNCATE sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
+    'TRUNCATE aggregator, sub_merchant, merchant, merchant_bank_ref, tenant, program, enrollment, outbox, inbox',
   )
-  await fulfillmentDb.$executeRawUnsafe('TRUNCATE outbox, inbox CASCADE')
+  await fulfillmentDb.$executeRawUnsafe('TRUNCATE outbox, inbox, bank_composition_config CASCADE')
 })
 
 describe('POST /ops/bank-masters (Phase 3 Task 7)', () => {
@@ -262,9 +262,9 @@ describe('POST /ops/bank-masters/:id/edit (Phase 3 Task 7)', () => {
 })
 
 describe('GET /ops/bank-masters (guard-only read)', () => {
-  it('returns configured Bank Masters, no 6e emitted', async () => {
+  it('returns configured Bank Masters, each nested with its aggregators, no 6e emitted', async () => {
     const token = await mint()
-    await request(app.getHttpServer())
+    const created = await request(app.getHttpServer())
       .post('/ops/bank-masters')
       .set('Authorization', `Bearer ${token}`)
       .set('Idempotency-Key', randomUUID())
@@ -273,11 +273,348 @@ describe('GET /ops/bank-masters (guard-only read)', () => {
     const res = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
     expect(Array.isArray(res.body)).toBe(true)
-    expect(res.body.some((b: { bankReferenceCode: string }) => b.bankReferenceCode === 'BREF-LIST-1')).toBe(true)
+    const row = res.body.find((b: { bankReferenceCode: string }) => b.bankReferenceCode === 'BREF-LIST-1')
+    expect(row).toBeDefined()
+    // A fresh tenant carries exactly its own default aggregator, unlogo'd.
+    expect(row.aggregators).toHaveLength(1)
+    expect(row.aggregators[0].aggregatorCode).toBe('BREF-LIST-1')
+    expect(row.aggregators[0].isDefault).toBe(true)
+    expect(row.aggregators[0].hasLogo).toBe(false)
+    void created
   })
 
   it('an unauthenticated request -> 401', async () => {
     const res = await request(app.getHttpServer()).get('/ops/bank-masters')
     expect(res.status).toBe(401)
+  })
+
+  it('hasLogo is scoped per tenant: two tenants sharing an aggregator code do not cross-contaminate', async () => {
+    const tok = await mint()
+    const sharedCode = `SHARED-${randomUUID().slice(0, 8)}`
+
+    const tenantA = await request(app.getHttpServer())
+      .post('/ops/bank-masters')
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send(body({ bankReferenceCode: `BREF-A-${randomUUID().slice(0, 8)}` }))
+      .expect(200)
+    const tenantB = await request(app.getHttpServer())
+      .post('/ops/bank-masters')
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send(body({ bankReferenceCode: `BREF-B-${randomUUID().slice(0, 8)}` }))
+      .expect(200)
+
+    const aggA = await request(app.getHttpServer())
+      .post(`/ops/bank-masters/${tenantA.body.tnntId}/aggregators`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ displayName: 'Shared Aggregator A', aggregatorCode: sharedCode })
+      .expect(200)
+    const aggB = await request(app.getHttpServer())
+      .post(`/ops/bank-masters/${tenantB.body.tnntId}/aggregators`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .send({ displayName: 'Shared Aggregator B', aggregatorCode: sharedCode })
+      .expect(200)
+
+    // Upload a logo pair for tenant A's aggregator ONLY.
+    await request(app.getHttpServer())
+      .post(`/ops/aggregators/${aggA.body.aggrId}/logo`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('master', Buffer.from('%!PS-Adobe ai bytes'), { filename: 'logo.ai', contentType: 'application/postscript' })
+      .attach('derivative', Buffer.from('png bytes'), { filename: 'logo.png', contentType: 'image/png' })
+      .expect(200)
+
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const rowA = list.body.find((r: { tnntId: string }) => r.tnntId === tenantA.body.tnntId)
+    const rowB = list.body.find((r: { tnntId: string }) => r.tnntId === tenantB.body.tnntId)
+    const shownA = rowA.aggregators.find((a: { aggrId: string }) => a.aggrId === aggA.body.aggrId)
+    const shownB = rowB.aggregators.find((a: { aggrId: string }) => a.aggrId === aggB.body.aggrId)
+    expect(shownA.aggregatorCode).toBe(sharedCode)
+    expect(shownB.aggregatorCode).toBe(sharedCode)
+    expect(shownA.hasLogo).toBe(true)
+    expect(shownB.hasLogo).toBe(false)
+  })
+})
+
+describe('aggregator create/edit over HTTP', () => {
+  it('creates and edits an aggregator over HTTP', async () => {
+    const tok = await mint()
+    const t = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'GSCB-T6' })).expect(200)
+    const created = await request(app.getHttpServer())
+      .post(`/ops/bank-masters/${t.body.tnntId}/aggregators`)
+      .set('Authorization', `Bearer ${tok}`).set('Idempotency-Key', randomUUID())
+      .send({ displayName: 'VSC Bank', aggregatorCode: 'VSC-T6' }).expect(200)
+    expect(created.body.aggrId.startsWith('aggr_')).toBe(true)
+    await request(app.getHttpServer())
+      .post(`/ops/aggregators/${created.body.aggrId}/edit`)
+      .set('Authorization', `Bearer ${tok}`).set('Idempotency-Key', randomUUID())
+      .send({ displayName: 'VSC Bank Ltd' }).expect(200)
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { bankReferenceCode: string }) => r.bankReferenceCode === 'GSCB-T6')
+    expect(row.aggregators.map((a: { aggregatorCode: string }) => a.aggregatorCode).sort()).toEqual(['GSCB-T6', 'VSC-T6'])
+  })
+})
+
+describe('aggregator logo over HTTP', () => {
+  it('uploads the master+derivative pair, then lists versions and streams the derivative', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T6' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    const upload = await request(app.getHttpServer())
+      .post(`/ops/aggregators/${aggrId}/logo`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('master', Buffer.from('%!PS-Adobe ai bytes'), { filename: 'logo.ai', contentType: 'application/postscript' })
+      .attach('derivative', Buffer.from('png bytes'), { filename: 'logo.png', contentType: 'image/png' })
+      .expect(200)
+    expect(upload.body.masterVersion).not.toBeNull()
+
+    const versions = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/versions`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(versions.body).toHaveLength(1)
+    expect(versions.body[0].filename).toBe('logo.ai')
+
+    const derivative = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/derivative`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(derivative.headers['content-type']).toContain('image/png')
+
+    const list2 = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row2 = list2.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    expect(row2.aggregators[0].hasLogo).toBe(true)
+  })
+
+  it('logo/current names the newest master and derivative, each from its own version sequence', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-CUR' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    // Before any upload: both sides null, not a 404 (the aggregator exists,
+    // it just has nothing stored).
+    const empty = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/current`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(empty.body).toEqual({ master: null, derivative: null, banner: null })
+
+    for (const n of [1, 2]) {
+      await request(app.getHttpServer())
+        .post(`/ops/aggregators/${aggrId}/logo`)
+        .set('Authorization', `Bearer ${tok}`)
+        .set('Idempotency-Key', randomUUID())
+        .attach('master', Buffer.from(`%!PS-Adobe ai bytes ${n}`), { filename: `cur-v${n}.ai`, contentType: 'application/postscript' })
+        .attach('derivative', Buffer.from(`png bytes ${n}`), { filename: `cur-v${n}.png`, contentType: 'image/png' })
+        .expect(200)
+    }
+
+    const current = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/current`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    // The NEWEST of each, by name; the version tokens come from each key's own
+    // sequence rather than being assumed equal.
+    expect(current.body.master.filename).toBe('cur-v2.ai')
+    expect(current.body.master.contentType).toBe('application/postscript')
+    expect(current.body.derivative.filename).toBe('cur-v2.png')
+    expect(current.body.derivative.contentType).toBe('image/png')
+    expect(current.body.master.version).toBeTruthy()
+    expect(current.body.derivative.version).toBeTruthy()
+
+    // An unknown aggregator id: the same null shape, matching the versions
+    // route's empty-list posture for an unknown id.
+    const unknown = await request(app.getHttpServer())
+      .get('/ops/aggregators/aggr_00000000000000000000000000/logo/current')
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(unknown.body).toEqual({ master: null, derivative: null, banner: null })
+  })
+
+  it('uploads the header banner, streams it back, and names it in logo/current (standee-frame flow)', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'BNR-T1' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    // No banner yet: 404 is the real answer, matching the derivative route.
+    await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/banner`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(404)
+
+    // A non-image upload is refused at the edge.
+    await request(app.getHttpServer())
+      .post(`/ops/aggregators/${aggrId}/banner`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('banner', Buffer.from('%PDF-1.4'), { filename: 'strip.pdf', contentType: 'application/pdf' })
+      .expect(400)
+
+    const upload = await request(app.getHttpServer())
+      .post(`/ops/aggregators/${aggrId}/banner`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('banner', Buffer.from('banner strip bytes'), { filename: 'strip.png', contentType: 'image/png' })
+      .expect(200)
+    expect(upload.body.version).not.toBeNull()
+
+    const stream = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/banner`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(stream.headers['content-type']).toContain('image/png')
+
+    const current = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/current`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(current.body.banner.filename).toBe('strip.png')
+    // The logo pair stays untouched by a banner upload.
+    expect(current.body.master).toBeNull()
+    expect(current.body.derivative).toBeNull()
+  })
+
+  it('card-preview renders a PDF for a known aggregator, 400s a bad type, 404s an unknown id (Task 4)', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'PREV-T1' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    const preview = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/card-preview/STANDEE_IMG`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(preview.headers['content-type']).toContain('application/pdf')
+    expect(preview.body.length).toBeGreaterThan(1000)
+
+    await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/card-preview/POSTER_IMG`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(400)
+    await request(app.getHttpServer())
+      .get('/ops/aggregators/aggr_00000000000000000000000000/card-preview/STANDEE_IMG')
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(404)
+  })
+
+  it('template/current answers null-null before any upload (Task 4)', async () => {
+    const tok = await mint()
+    const current = await request(app.getHttpServer())
+      .get('/ops/bank-config/template/current')
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    expect(current.body).toEqual({ collateral: null, soundbox: null })
+  })
+
+  it('streams the master bytes AT each listed version token, and 404s an unknown token', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T6C' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    // TOKENS COME FROM THE VERSIONS ENDPOINT, never hardcoded: the dev asset
+    // store persists in the OS tmpdir across gate runs, so this key's history
+    // does not restart at v1 each run.
+    for (const name of ['ai one.ai', 'ai two.ai']) {
+      await request(app.getHttpServer())
+        .post(`/ops/aggregators/${aggrId}/logo`)
+        .set('Authorization', `Bearer ${tok}`)
+        .set('Idempotency-Key', randomUUID())
+        .attach('master', Buffer.from(`master bytes of ${name}`), { filename: name, contentType: 'application/postscript' })
+        .attach('derivative', Buffer.from('png bytes'), { filename: 'logo.png', contentType: 'image/png' })
+        .expect(200)
+    }
+
+    const versions = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/versions`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(200)
+    // Newest first: [0] is "ai two.ai", [1] is "ai one.ai". Each token must
+    // return its OWN bytes, not the current version twice.
+    const [newest, older] = versions.body as { version: string; filename: string }[]
+    expect(newest!.filename).toBe('ai two.ai')
+    expect(older!.filename).toBe('ai one.ai')
+
+    // supertest only buffers content types it knows; application/postscript
+    // needs an explicit binary parse or body arrives as {}.
+    const asBuffer = (res: request.Response, cb: (err: Error | null, body: Buffer) => void) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => cb(null, Buffer.concat(chunks)))
+    }
+
+    const newRes = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/versions/${newest!.version}/master`)
+      .set('Authorization', `Bearer ${tok}`)
+      .buffer()
+      .parse(asBuffer)
+      .expect(200)
+    expect(newRes.headers['content-type']).toContain('application/postscript')
+    expect((newRes.body as Buffer).toString()).toBe('master bytes of ai two.ai')
+
+    const oldRes = await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/versions/${older!.version}/master`)
+      .set('Authorization', `Bearer ${tok}`)
+      .buffer()
+      .parse(asBuffer)
+      .expect(200)
+    expect((oldRes.body as Buffer).toString()).toBe('master bytes of ai one.ai')
+
+    await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/versions/v999999/master`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(404)
+  })
+
+  it('rejects a wrong-type derivative with a 400 and a missing file with a 400', async () => {
+    const tok = await mint()
+    const created = await request(app.getHttpServer()).post('/ops/bank-masters').set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID()).send(body({ bankReferenceCode: 'LOGO-T6B' })).expect(200)
+    const tnntId = created.body.tnntId as string
+    const list = await request(app.getHttpServer()).get('/ops/bank-masters').set('Authorization', `Bearer ${tok}`).expect(200)
+    const row = list.body.find((r: { tnntId: string }) => r.tnntId === tnntId)
+    const aggrId = row.aggregators[0].aggrId as string
+
+    await request(app.getHttpServer())
+      .post(`/ops/aggregators/${aggrId}/logo`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('master', Buffer.from('ai'), { filename: 'logo.ai', contentType: 'application/postscript' })
+      .attach('derivative', Buffer.from('exe'), { filename: 'logo.exe', contentType: 'application/octet-stream' })
+      .expect(400)
+    await request(app.getHttpServer())
+      .post(`/ops/aggregators/${aggrId}/logo`)
+      .set('Authorization', `Bearer ${tok}`)
+      .set('Idempotency-Key', randomUUID())
+      .attach('master', Buffer.from('ai'), { filename: 'logo.ai', contentType: 'application/postscript' })
+      .expect(400)
+    await request(app.getHttpServer())
+      .get(`/ops/aggregators/${aggrId}/logo/derivative`)
+      .set('Authorization', `Bearer ${tok}`)
+      .expect(404)
   })
 })

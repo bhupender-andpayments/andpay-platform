@@ -464,6 +464,12 @@ model BankCompositionConfig {
   // two masters of one row share one page box (the M2 equal-trim guarantee).
   soundboxTemplateRef   String? @map("soundbox_template_ref")
   collateralTemplateRef String? @map("collateral_template_ref")
+  // Standee-frame flow (2026-08-24): the co-brand HEADER BANNER strip
+  // ("<bank lockup> | Powered By GSC BANK"), a wide PNG the renderer draws
+  // into the shared frame's top band. Distinct from the logo pair: the logo
+  // is the bank's square mark, the banner is the finished lockup strip the
+  // product team ships per bank. Asset key is `<bankCode>:banner`.
+  headerBannerRef   String?  @map("header_banner_ref")
   brandingParams    Json     @map("branding_params") @db.JsonB
   imageTemplates    Json     @map("image_templates") @db.JsonB // per product_type {SOUNDBOX,STANDEE,STICKER}
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)

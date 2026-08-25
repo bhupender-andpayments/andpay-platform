@@ -28,6 +28,10 @@ export const ID_PREFIXES = {
   // smrch_ (Sub-Merchant, the Identity context entity below Merchant in the
   // 3-tier mrch_ -> smrch_ -> asgn_ model). A Section 11 registry row.
   smrch: 'smrch_',
+  // aggr_ (Aggregator, the Identity sub-tenant below Tenant in the
+  // tnnt_ -> aggr_ two-level bank model; spec 2026-08-20, ratification
+  // bundle item 1, submitted with that spec).
+  aggr: 'aggr_',
 } as const
 
 /** The set of registered id kinds. */
@@ -57,3 +61,4 @@ export type SgId = Id<'sg'>
 export type TnntId = Id<'tnnt'>
 export type ProgId = Id<'prog'>
 export type SmrchId = Id<'smrch'>
+export type AggrId = Id<'aggr'>

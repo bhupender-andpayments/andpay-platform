@@ -112,7 +112,9 @@ export class FilesystemAssetStore implements AssetStore {
       const existing = await this.versionsOnDisk(key)
       const next = existing.length === 0 ? 1 : versionNumber(existing[existing.length - 1]!) + 1
       const version = `v${next}`
-      const sidecar: Sidecar = { key, version, meta: { ...meta } }
+      // Stamped INTO the sidecar at put(), so every read path carries it for
+      // free; sidecars written before this field existed simply lack it.
+      const sidecar: Sidecar = { key, version, meta: { ...meta, lastModified: new Date().toISOString() } }
       try {
         // 'wx' fails if the file already exists, which is how a concurrent
         // writer is detected. The sidecar is the claim, so it is written

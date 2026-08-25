@@ -6,16 +6,26 @@ export { projectRowFact, type ProjectResult } from './project.js'
 export { IDENTITY_FACT_SCHEMAS } from './fact-schemas.js'
 export { enterWriteScope, enterWriteRole } from './write-context.js'
 export {
+  createAggregator,
   createBankMaster,
   createMerchant,
+  editAggregator,
   editBankMaster,
   listBankMasters,
   readMerchantContacts,
   OpsClientError,
+  type CreateAggregatorInput,
   type CreateMerchantInput,
   type CreateBankMasterInput,
+  type EditAggregatorInput,
   type EditBankMasterInput,
+  type AggregatorRow,
   type BankMasterAddressContact,
   type BankMasterRow,
   type MerchantContactRow,
 } from './ops.js'
+export {
+  announceDefaultAggregators,
+  type AnnouncedAggregator,
+  type AnnounceDefaultAggregatorsResult,
+} from './announce.js'

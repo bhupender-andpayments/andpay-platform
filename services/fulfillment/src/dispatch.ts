@@ -122,8 +122,10 @@ interface BankConfigRow {
   branding_params: unknown
   image_templates: unknown
   logo_master_ref: string | null
+  logo_derivative_ref: string | null
   soundbox_template_ref: string | null
   collateral_template_ref: string | null
+  header_banner_ref: string | null
 }
 
 // Track B: the DELIVERY GROUP's master for an artifact type. Sticker and
@@ -131,6 +133,21 @@ interface BankConfigRow {
 function templateRefFor(cfg: BankConfigRow | null, artifactType: ArtifactType): string | null {
   if (cfg === null) return null
   return artifactType === 'SOUNDBOX_IMG' ? cfg.soundbox_template_ref : cfg.collateral_template_ref
+}
+
+// Standee-frame flow (2026-08-24): the TEMPLATE-SHAPED fields fall back
+// per-field to the tenant default row ('' bank AND '' branch). The shared
+// frame is uploaded ONCE, on that default row; every bank inherits it and a
+// bank that uploads its own master still overrides. Without this, the frame
+// would have to be copied onto all 90-plus per-bank rows and every new bank
+// would silently miss it. Deliberately NOT applied to the logo pair: a logo
+// fallback would print the wrong bank's mark, which is worse than no mark.
+function templateRefWithDefault(
+  cfg: BankConfigRow | null,
+  defaultCfg: BankConfigRow | null,
+  artifactType: ArtifactType,
+): string | null {
+  return templateRefFor(cfg, artifactType) ?? templateRefFor(defaultCfg, artifactType)
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +176,16 @@ interface PreparedArtifact {
   reference: string
 }
 
-async function preRenderArtifacts(
+// EXPORTED for the one-time artifact regeneration (infra/regenerate-artifacts.mjs).
+// 74 composed_artifact rows reference bytes the in-memory store lost on
+// restart, and they are recoverable precisely because this render is
+// deterministic and the asset key is derived, not stored: re-running it for a
+// batch puts the same bytes back at the same key. Calling this rather than
+// recomposeArtifact is deliberate, since that function copies the prior row's
+// asset_reference verbatim and would only mint a second row pointing at the
+// same missing object. Nothing else should call this; composition proper goes
+// through consumeBatchFact.
+export async function preRenderArtifacts(
   db: FulfillmentDb,
   assetStore: AssetStore,
   p: BatchFactPayload,
@@ -177,10 +203,17 @@ async function preRenderArtifacts(
              vpa_value, qr_value, bank_reference_code, branch_code, dispatch_group, soundbox, standee_count, sticker_count
       FROM pending_pool_entry WHERE batch = ${btchUuid}::uuid AND program_id = ${programUuid}::uuid
     `
+    // TENANT-SCOPED (24 Aug 2026): the table keys on (tenant, bank, branch)
+    // and the in-transaction lookup below already filters by tenant, but this
+    // bulk read did not, so another tenant's row could collide with this
+    // batch's on the bank-code map key. Found live: an orphaned seed tenant's
+    // ('','') default row raced the real tenant's for the per-field template
+    // fallback, and which one won depended on row order.
     const cfgs = await tx.$queryRaw<BankConfigRow[]>`
       SELECT id::text AS id, bank_code, branch_code, branding_params, image_templates, logo_master_ref,
-             soundbox_template_ref, collateral_template_ref
+             logo_derivative_ref, soundbox_template_ref, collateral_template_ref, header_banner_ref
       FROM bank_composition_config
+      WHERE tenant_id = ${toUuid(p.tenantId)}::uuid
     `
     return { entries: rows, configs: cfgs }
   })
@@ -194,6 +227,9 @@ async function preRenderArtifacts(
   for (const c of configs) byKey.set(`${c.bank_code}|${c.branch_code ?? ''}`, c)
   const cfgFor = (bankCode: string, branchCode: string | null): BankConfigRow | null =>
     selectBankConfig(byKey, bankCode, branchCode)
+  // The tenant default row, the per-field fallback for template-shaped fields
+  // (see templateRefWithDefault above). null when no such row exists.
+  const defaultCfg = byKey.get('|') ?? null
 
   // ONE shared by-reference cache for every binary asset this phase reads --
   // the bank logo AND, as of Task 9, each group's template master. Both are
@@ -274,8 +310,12 @@ async function preRenderArtifacts(
     const cfg = cfgFor(e.bank_reference_code, e.branch_code)
     if (cfg === null || seenCfgIds.has(cfg.id)) continue
     seenCfgIds.add(cfg.id)
-    const soundboxBox = cfg.soundbox_template_ref === null ? undefined : await boxFor(cfg.soundbox_template_ref)
-    const collateralBox = cfg.collateral_template_ref === null ? undefined : await boxFor(cfg.collateral_template_ref)
+    // Effective refs, default-row fallback included, so the preflight judges
+    // the SAME masters the render below will actually embed.
+    const soundboxRef = templateRefWithDefault(cfg, defaultCfg, 'SOUNDBOX_IMG')
+    const collateralRef = templateRefWithDefault(cfg, defaultCfg, 'STANDEE_IMG')
+    const soundboxBox = soundboxRef === null ? undefined : await boxFor(soundboxRef)
+    const collateralBox = collateralRef === null ? undefined : await boxFor(collateralRef)
     const effSoundbox = soundboxBox ?? DEFAULT_BOX
     const effCollateral = collateralBox ?? DEFAULT_BOX
     const widthOff = Math.abs(effSoundbox.w - effCollateral.w) > 0.01
@@ -285,9 +325,16 @@ async function preRenderArtifacts(
 
   for (const e of entries) {
     const cfg = cfgFor(e.bank_reference_code, e.branch_code)
-    const logo = await assetFor(cfg?.logo_master_ref ?? null)
+    // Prefer the rasterised derivative: the master may be a .ai vector the
+    // PDF embedder cannot consume (BRD D.2). Falls back to the master for
+    // rows uploaded before the pair flow existed.
+    const logo = await assetFor(cfg?.logo_derivative_ref ?? cfg?.logo_master_ref ?? null)
+    // The banner is per-bank identity, but it still falls back to the default
+    // row: the tenant's OWN merchants resolve to the default row, and that
+    // row's banner is the tenant's own lockup, not another bank's.
+    const headerBanner = await assetFor(cfg?.header_banner_ref ?? defaultCfg?.header_banner_ref ?? null)
     for (const artifactType of artifactTypesFor(e)) {
-      const master = await assetFor(templateRefFor(cfg, artifactType))
+      const master = await assetFor(templateRefWithDefault(cfg, defaultCfg, artifactType))
       const pdfBytes = await renderCollateralPdf({
         artifactType,
         // The WIRE asgn_ id, printed on the page so the print vendor can
@@ -304,9 +351,14 @@ async function preRenderArtifacts(
         merchantLegalName: e.merchant_legal_name,
         bankName: e.bank_display_name,
         bankCode: e.bank_reference_code,
-        imageTemplate: templateFor(cfg?.image_templates, artifactType),
+        // Overlay calibration lives beside the frame it calibrates: a bank
+        // row without its own image_templates entry for this type inherits
+        // the default row's, the same per-field rule the template ref uses.
+        imageTemplate:
+          templateFor(cfg?.image_templates, artifactType) ?? templateFor(defaultCfg?.image_templates, artifactType),
         brandingParams: cfg?.branding_params,
         logo,
+        headerBanner,
         // Task 9: only the bytes cross into the renderer (CollateralInput
         // deliberately carries no reference, no key, nothing storage-shaped).
         // A master that failed to resolve (never set, or a stale ref) is

@@ -1,9 +1,19 @@
 import { useState } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { BatchEntryRow } from '../../../api/endpoints.js'
-import { CollateralCardProof } from './CollateralCardProof.js'
-import type { CardRow } from './collateralPdf.js'
+import { ArtifactCardProof } from './ArtifactCardProof.js'
 import { OUTPUT_BUNDLES, bundleById, bundlesFor, copiesLabel, type BundleId } from './collateralBundles.js'
+
+/** The facts panel's row shape, built by the batch page off the entry and its
+ *  composed artifact's own QR string (the ONE source for VPA and payload). */
+export interface CardRow {
+  rowNo: number
+  displayName: string
+  vpaValue: string
+  qrValue: string
+  bankReferenceCode: string
+  branchCode: string
+}
 
 // One dispatch's card, on demand, from the row that names it.
 //
@@ -23,11 +33,17 @@ export function QrPreviewDialog({
   onOpenChange,
   entry,
   card,
+  btchId,
+  artifactTypes,
 }: {
   open: boolean
   onOpenChange(open: boolean): void
   entry: BatchEntryRow
   card: CardRow
+  /** The batch this dispatch belongs to; the stored card is keyed by it. */
+  btchId: string
+  /** The artifact types this dispatch ACTUALLY has stored (superseded rows excluded). */
+  artifactTypes: readonly string[]
 }) {
   const counts = {
     soundbox: entry.soundbox,
@@ -41,6 +57,11 @@ export function QrPreviewDialog({
   // not have, which would render the wrong artwork's geometry.
   const active = available.includes(bundle) ? bundle : (available[0] ?? 'PRINT_CARD')
   const spec = bundleById(active)
+  // The STORED type behind this bundle: the first of the bundle's types this
+  // dispatch really has (standee before sticker, mirroring the server's group
+  // order), falling back to the bundle's lead type so a not-yet-composed
+  // dispatch asks for something and renders the honest 404 message.
+  const storedType = spec.covers.find((t) => artifactTypes.includes(t)) ?? spec.covers[0]!
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -48,7 +69,8 @@ export function QrPreviewDialog({
         <DialogHeader>
           <DialogTitle>{entry.merchantDisplayName}</DialogTitle>
           <DialogDescription>
-            The card as it will print, drawn from the QR held against this Dispatch ID.
+            The stored card, exactly as the print vendor receives it, with the aggregator&apos;s own logo from Master
+            Data.
           </DialogDescription>
         </DialogHeader>
 
@@ -79,7 +101,7 @@ export function QrPreviewDialog({
 
         <div className="grid gap-5 sm:grid-cols-[minmax(0,260px)_minmax(0,1fr)]">
           <div className="rounded-xl border bg-card p-3 shadow-sm">
-            <CollateralCardProof artifactType={spec.covers[0]!} row={card} className="rounded-md" />
+            <ArtifactCardProof btchId={btchId} asgnId={entry.asgnId} artifactType={storedType} className="rounded-md" />
           </div>
 
           <dl className="min-w-0 divide-y rounded-xl border">

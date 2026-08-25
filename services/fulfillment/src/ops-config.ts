@@ -93,6 +93,15 @@ const OPS_PERMISSIONS = [
   // dead. No step-up (master-data maintenance, not a destructive action).
   'ops:bank-master-create',
   'ops:bank-master-edit',
+  // Spec 2026-08-20: the aggregator (sub-tenant) admin create/edit pair,
+  // mirroring the bank-master-create/edit pair directly above exactly (shared
+  // bundle, NOT admin-tier; no step-up; master-data maintenance, not a
+  // destructive action). No `ops:aggregator-list` entry, same reasoning as
+  // `ops:bank-master-list`'s own absence: the list route
+  // (`GET /ops/bank-masters`, which nests `aggregators`) is guard-only at the
+  // edge, so a read-side permission string here would be dead.
+  'ops:aggregator-create',
+  'ops:aggregator-edit',
   // 2026-08-17: the ops Add-merchant write (POST /ops/merchants), for the
   // merchant no bank file has carried yet. Shared bundle, NOT admin-tier, and
   // no step-up, matching bank-master-create and vendor-create directly above:

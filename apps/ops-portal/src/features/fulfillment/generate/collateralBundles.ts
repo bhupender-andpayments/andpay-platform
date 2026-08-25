@@ -27,7 +27,7 @@
 // that lives on this side only, which is why it is a separate module from the
 // geometry and why nothing here invents a new type id.
 
-import { ARTIFACT_LABELS, type ArtifactType } from './collateralTemplate.js'
+import { ARTIFACT_LABELS, type ArtifactType } from './artifactTypes.js'
 
 export type BundleId = 'PRINT_CARD' | 'SOUNDBOX_CARD'
 

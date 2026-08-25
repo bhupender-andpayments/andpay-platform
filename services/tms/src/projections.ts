@@ -21,6 +21,14 @@ interface TenantFactView {
   bankReferenceCode: string
   status: string // part of the consumed fact; not projected in v1 (the bank snapshot needs only name + bankReferenceCode)
 }
+interface AggregatorFactView {
+  aggrId: string
+  tnntId: string
+  aggregatorCode: string
+  displayName: string
+  status: string
+  isDefault: boolean
+}
 
 export async function projectMerchantFact(db: TmsDb, env: Envelope<MerchantFactView>): Promise<void> {
   const p = env.payload
@@ -56,6 +64,29 @@ export async function projectTenantFact(db: TmsDb, env: Envelope<TenantFactView>
         ON CONFLICT (id) DO UPDATE SET
           display_name = EXCLUDED.display_name,
           bank_reference_code = EXCLUDED.bank_reference_code,
+          updated_at = now()
+      `
+    })
+  })
+}
+
+export async function projectAggregatorFact(db: TmsDb, env: Envelope<AggregatorFactView>): Promise<void> {
+  const p = env.payload
+  const uuid = toUuid(p.aggrId)
+  const tenantUuid = toUuid(p.tnntId)
+  await db.$transaction(async (tx: Tx) => {
+    // M-role only (spec 10d Task 3): no program-scoped write in this body.
+    await enterWriteRole(tx, 'tms_write')
+    await onceWithin(tx, CONSUMER, env.dedupKey, async () => {
+      await tx.$executeRaw`
+        INSERT INTO aggregator_projection (id, tenant_id, aggregator_code, display_name, status, is_default, updated_at)
+        VALUES (${uuid}::uuid, ${tenantUuid}::uuid, ${p.aggregatorCode}, ${p.displayName}, ${p.status}, ${p.isDefault}, now())
+        ON CONFLICT (id) DO UPDATE SET
+          tenant_id = EXCLUDED.tenant_id,
+          aggregator_code = EXCLUDED.aggregator_code,
+          display_name = EXCLUDED.display_name,
+          status = EXCLUDED.status,
+          is_default = EXCLUDED.is_default,
           updated_at = now()
       `
     })

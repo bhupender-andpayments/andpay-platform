@@ -12,6 +12,9 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run --typecheck",
     "build": "pnpm -r build",
+    "postman": "node postman/build-collection.mjs",
+    "postman:check": "node postman/build-collection.mjs --check",
+    "postman:diff": "node postman/sync.mjs",
     "demo": "bash ./scripts/demo.sh",
     "demo:reseed": "bash ./scripts/demo.sh --reseed",
     "dev:up": "docker compose -f infra/docker-compose.dev.yml up -d --wait",
@@ -19,6 +22,8 @@
     "db:up": "docker compose -f infra/docker-compose.dev.yml up -d --wait",
     "db:down": "docker compose -f infra/docker-compose.dev.yml down",
     "db:migrate": "./infra/db.sh",
+    "rds:sync": "bash ./infra/rds-sync.sh",
+    "s3:preflight": "node infra/s3-preflight.mjs",
     "db:migrate:dev": "./infra/db.sh dev init"
   },
   "devDependencies": {
@@ -39,6 +44,7 @@
     "@andpay/tms-service": "workspace:*",
     "@andpay/vendor-auth-edge": "workspace:*",
     "@andpay/vendor-edge": "workspace:*",
+    "@aws-sdk/client-s3": "^3.1115.0",
     "@eslint/js": "^9.18.0",
     "@nestjs/common": "^11.0.0",
     "@prisma/client": "^6.3.0",

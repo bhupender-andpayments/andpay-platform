@@ -1,3 +1,6 @@
+/// <reference types="vite/client" />
+// Root tsc and vitest typecheck contexts do not load Vite client types, so pin them here.
+
 // The portal reads exactly TWO environment variables, and both are optional.
 // Their resolution lives here rather than at the call sites because it was
 // wrong at every call site in the same way (G-6).

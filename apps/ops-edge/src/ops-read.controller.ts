@@ -11,6 +11,7 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common'
+import { toUuid } from '@andpay/ids'
 import {
   listVendors,
   readIntakeExceptions,
@@ -20,6 +21,8 @@ import {
   buildDispatchGroupXlsx,
   resolveCollateralGroup,
   assembleGroupPdf,
+  readComposedArtifact,
+  renderSampleCard,
   listBatches,
   readBatchDetail,
   listPoolEntries,
@@ -64,7 +67,12 @@ import {
   type ChainMemberRow,
   type DamageCaseSummary,
 } from '@andpay/tms-service'
-import { listBankMasters, readMerchantContacts, type BankMasterRow } from '@andpay/identity-service'
+import {
+  listBankMasters,
+  readMerchantContacts,
+  type AggregatorRow,
+  type BankMasterRow,
+} from '@andpay/identity-service'
 import { OpsEdgeGuard } from './guard.js'
 import { EDGE_DEPS, type OpsEdgeDeps } from './deps.js'
 import { requireUnrestrictedRead } from './read-restriction.js'
@@ -184,11 +192,208 @@ export class OpsReadController {
   // guard-only exactly like the reads above (no D2 authorize, no 6e). Calls
   // identity's own listBankMasters with deps.identityDb (no cross-context DB
   // read, C4). Returns every Bank Master (admin-created rows carry the full
-  // address/contact; ingest auto-minted rows carry nulls) for the admin UI.
+  // address/contact; ingest auto-minted rows carry nulls) nested with its
+  // `aggregators` (spec 2026-08-20; every tenant carries at least its own
+  // default aggregator) for the admin UI.
+  //
+  // Task 5 (2026-08-19), re-homed to the aggregator (spec 2026-08-20): composes
+  // in `hasLogo`, a PRESENCE boolean only, per AGGREGATOR, from fulfillment's
+  // bank_composition_config (a row with an EMPTY branchCode is the bank-level
+  // composition row a logo lands on, keyed on the aggregator's own code). No
+  // config DETAIL crosses the boundary, only the boolean; both reads are
+  // in-process domain calls (no cross-schema SQL, C4).
   @Get('bank-masters')
   @HttpCode(200)
-  async bankMasters(): Promise<BankMasterRow[]> {
-    return listBankMasters(this.deps.identityDb)
+  async bankMasters(): Promise<(BankMasterRow & { aggregators: (AggregatorRow & { hasLogo: boolean })[] })[]> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const configs = await listBankCompositionConfigs(this.deps.fulfillmentDb)
+    // Keyed on (tenantId, bankCode), not bankCode alone: two tenants can
+    // legitimately share an aggregator code, and a bare-code Set would let
+    // one tenant's uploaded logo read as present on the other's aggregator
+    // of the same code.
+    const withLogo = new Set(
+      configs
+        .filter((c) => c.branchCode === '' && c.logoMasterRef !== null)
+        .map((c) => `${c.tenantId}:${c.bankCode}`),
+    )
+    return rows.map((r) => ({
+      ...r,
+      aggregators: r.aggregators.map((a) => ({
+        ...a,
+        hasLogo: withLogo.has(`${toUuid(a.tnntId)}:${a.aggregatorCode}`),
+      })),
+    }))
+  }
+
+  // ROUTE ORDER: both aggregators/:aggrId/logo/* reads below MUST be
+  // registered before any future aggregators/:id catch-all (none exists
+  // today), or a generic :id route would swallow the /logo/versions and
+  // /logo/derivative segments as a param match.
+  //
+  // Guard-only exactly like bank-masters above (no requireUnrestrictedRead): a
+  // logo is print collateral input, not config detail, matching the list's own
+  // posture. Resolves the aggregator's own code via the same in-process
+  // identity call (spec 2026-08-20, re-homed from the tenant-keyed routes
+  // these replace).
+  @Get('aggregators/:aggrId/logo/versions')
+  @HttpCode(200)
+  async aggregatorLogoVersions(
+    @Param('aggrId') aggrId: string,
+  ): Promise<{ version: string; filename: string; contentType: string }[]> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    if (agg === undefined) return []
+    // Keys are the aggregator's immutable wire id (ruled 24 Aug 2026); the
+    // resolution above still runs so an unknown id answers [] rather than
+    // probing the store with arbitrary caller input.
+    const versions = await this.deps.assetStore.listVersions(agg.aggrId)
+    return versions.map((v) => ({ version: v.version, filename: v.meta.filename, contentType: v.meta.contentType }))
+  }
+
+  // The preview behind each row of the versions list above: the MASTER bytes
+  // at that exact token. The list is the master key's history, so its tokens
+  // are authoritative HERE and only here; the derivative key runs its own
+  // version sequence (per the AssetStore port) and matching across the two by
+  // token would silently serve the wrong artwork whenever they drift. The
+  // portal rasterizes the returned .ai in the browser, the same way it
+  // previews a freshly picked file.
+  @Get('aggregators/:aggrId/logo/versions/:version/master')
+  async aggregatorLogoVersionMaster(
+    @Param('aggrId') aggrId: string,
+    @Param('version') version: string,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    const versions = agg === undefined ? [] : await this.deps.assetStore.listVersions(agg.aggrId)
+    const match = versions.find((v) => v.version === version)
+    const rec = match === undefined ? null : await this.deps.assetStore.getByReference(match.reference)
+    if (rec === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+    res.setHeader('Content-Type', rec.meta.contentType)
+    res.status(200).send(Buffer.from(rec.bytes))
+  }
+
+  // What is stored RIGHT NOW, by name: the newest master and the newest
+  // derivative, as metadata only. The two are separate asset keys with
+  // separate version sequences (the port contract), so answering "which files
+  // are current" honestly takes one listVersions per key; neither call moves
+  // bytes. The dialog shows these next to the file inputs so an operator can
+  // see what is already chosen before deciding to replace it.
+  @Get('aggregators/:aggrId/logo/current')
+  @HttpCode(200)
+  async aggregatorLogoCurrent(@Param('aggrId') aggrId: string): Promise<{
+    master: { version: string; filename: string; contentType: string; lastModified: string | null } | null
+    derivative: { version: string; filename: string; contentType: string; lastModified: string | null } | null
+    banner: { version: string; filename: string; contentType: string; lastModified: string | null } | null
+  }> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    if (agg === undefined) return { master: null, derivative: null, banner: null }
+    const head = async (key: string) => {
+      const versions = await this.deps.assetStore.listVersions(key)
+      const newest = versions[0]
+      if (newest === undefined) return null
+      return {
+        version: newest.version,
+        filename: newest.meta.filename,
+        contentType: newest.meta.contentType,
+        // The store's own write instant; null for versions stored before the
+        // adapters recorded it. The dialog renders this as "replaced N ago".
+        lastModified: newest.meta.lastModified ?? null,
+      }
+    }
+    const [master, derivative, banner] = await Promise.all([
+      head(agg.aggrId),
+      head(`${agg.aggrId}:derivative`),
+      head(`${agg.aggrId}:banner`),
+    ])
+    return { master, derivative, banner }
+  }
+
+  // The SAMPLE card (standee-frame flow Task 4, 24 Aug 2026): the exact PDF a
+  // real dispatch would produce for this aggregator, with fixed sample
+  // variable data, rendered from its CURRENT master data (template, banner,
+  // logo, calibration). Guard-only, like every logo read here: it is print
+  // collateral input, not config detail. The type param is validated to the
+  // three literals at the door.
+  @Get('aggregators/:aggrId/card-preview/:artifactType')
+  async aggregatorCardPreview(
+    @Param('aggrId') aggrId: string,
+    @Param('artifactType') artifactType: string,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
+    if (artifactType !== 'STANDEE_IMG' && artifactType !== 'SOUNDBOX_IMG' && artifactType !== 'STICKER_IMG') {
+      throw new BadRequestException('artifactType must be STANDEE_IMG, SOUNDBOX_IMG or STICKER_IMG')
+    }
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    if (agg === undefined) throw new NotFoundException('aggregator not found')
+    const pdf = await renderSampleCard(this.deps.fulfillmentDb, this.deps.assetStore, {
+      tenantWire: agg.tnntId,
+      bankCode: agg.aggregatorCode,
+      bankName: agg.displayName,
+      artifactType,
+    })
+    res.setHeader('Content-Type', 'application/pdf')
+    res.status(200).send(Buffer.from(pdf))
+  }
+
+  // What frame template is stored RIGHT NOW for the tenant default row, by
+  // name: metadata only, one listVersions per group key (the exact keys
+  // setBankTemplateMaster builds for the '' default code). The Master Data
+  // template card shows these beside its Replace control.
+  @Get('bank-config/template/current')
+  @HttpCode(200)
+  async templateCurrent(@Req() req: EdgeRequest): Promise<{
+    collateral: { version: string; filename: string; contentType: string; lastModified: string | null } | null
+    soundbox: { version: string; filename: string; contentType: string; lastModified: string | null } | null
+  }> {
+    // A CONFIG VIEW, same D-29/DP-8 restriction as bank-config above.
+    requireUnrestrictedRead(req.claim)
+    const head = async (key: string) => {
+      const versions = await this.deps.assetStore.listVersions(key)
+      const newest = versions[0]
+      if (newest === undefined) return null
+      return {
+        version: newest.version,
+        filename: newest.meta.filename,
+        contentType: newest.meta.contentType,
+        lastModified: newest.meta.lastModified ?? null,
+      }
+    }
+    const [collateral, soundbox] = await Promise.all([head('template/COLLATERAL/'), head('template/SOUNDBOX/')])
+    return { collateral, soundbox }
+  }
+
+  // The stored co-brand header banner strip's bytes, for the dialog's
+  // preview. Same 404-as-answer posture as the derivative below.
+  @Get('aggregators/:aggrId/banner')
+  async aggregatorBanner(@Param('aggrId') aggrId: string, @Res() res: EdgeResponse): Promise<void> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    const rec = agg === undefined ? null : await this.deps.assetStore.getCurrent(`${agg.aggrId}:banner`)
+    if (rec === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+    res.setHeader('Content-Type', rec.meta.contentType)
+    res.status(200).send(Buffer.from(rec.bytes))
+  }
+
+  @Get('aggregators/:aggrId/logo/derivative')
+  async aggregatorLogoDerivative(@Param('aggrId') aggrId: string, @Res() res: EdgeResponse): Promise<void> {
+    const rows = await listBankMasters(this.deps.identityDb)
+    const agg = rows.flatMap((r) => r.aggregators).find((a) => a.aggrId === aggrId)
+    const rec = agg === undefined ? null : await this.deps.assetStore.getCurrent(`${agg.aggrId}:derivative`)
+    if (rec === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+    res.setHeader('Content-Type', rec.meta.contentType)
+    res.status(200).send(Buffer.from(rec.bytes))
   }
 
   // P2-1: the object-spine reads. Guard-only exactly like every read above (no
@@ -466,5 +671,30 @@ export class OpsReadController {
     // Batch id first, same reasoning as the Excel route above.
     res.setHeader('Content-Disposition', `attachment; filename="${btchId}-${collateralKey.toLowerCase()}.pdf"`)
     res.status(200).send(Buffer.from(pdf))
+  }
+
+  // ONE dispatch's stored card (ruled 21 Aug 2026: wherever bank data appears
+  // it points at master bank data, backend plus asset store). The portal's
+  // on-screen proof shows THESE bytes, rasterized in the browser, instead of
+  // re-drawing a lookalike card client-side, so proof and print cannot drift.
+  // A BINARY DOWNLOAD, carrying the same D-29/DP-8 read restriction as the two
+  // batch downloads above. 404 for an unknown id, type, or a dispatch whose
+  // card has not composed yet, the same null path those routes take.
+  @Get('batches/:btchId/artifacts/:asgnId/:artifactType')
+  async dispatchArtifact(
+    @Req() req: EdgeRequest,
+    @Param('btchId') btchId: string,
+    @Param('asgnId') asgnId: string,
+    @Param('artifactType') artifactType: string,
+    @Res() res: EdgeResponse,
+  ): Promise<void> {
+    requireUnrestrictedRead(req.claim)
+    const rec = await readComposedArtifact(this.deps.fulfillmentDb, this.deps.assetStore, btchId, asgnId, artifactType)
+    if (rec === null) {
+      res.status(404).send(Buffer.from(''))
+      return
+    }
+    res.setHeader('Content-Type', rec.contentType)
+    res.status(200).send(Buffer.from(rec.bytes))
   }
 }

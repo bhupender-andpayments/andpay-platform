@@ -42,7 +42,8 @@ export class InMemoryAssetStore implements AssetStore {
     const record: StoredVersion = {
       reference,
       version,
-      meta: { ...meta },
+      // The adapter's own clock, per the port: put() callers never supply it.
+      meta: { ...meta, lastModified: new Date().toISOString() },
       // Copy so a caller mutating its own buffer after put() cannot corrupt
       // the stored version.
       bytes: bytes.slice(),
